@@ -1,8 +1,20 @@
+> ## ⚠️ Pre-alpha — Not usable yet / 暂不可用
+>
+> **This project is under active development and is not ready for real-world use.**  
+> Security guarantees are **not in place** — do not deploy for production, team workflows, or sensitive data.
+>
+> **本项目仍处于早期研发，不可用于真实项目或生产环境。**  
+> 安全机制尚未完备，**请暂时不要使用**。
+>
+> **Current focus:** (1) per-persona skill design · (2) agent collaboration · (3) runtime algorithm  
+> **当前阶段：** 人物 Skill 设计 → Agent 协作机制 → 运行算法（详见 **[ROADMAP.md](ROADMAP.md)**）
+
 <p align="center">
   <img src="docs/assets/hero-banner.png" alt="Hall of Fame Studio — roundtable-first AI virtual team" width="100%">
 </p>
 
 <p align="center">
+  <img src="https://img.shields.io/badge/status-pre--alpha-red?style=flat-square" alt="Pre-alpha">
   <img src="https://img.shields.io/badge/React-18-61dafb?style=flat-square" alt="React 18">
   <img src="https://img.shields.io/badge/Vite-5-646cff?style=flat-square" alt="Vite 5">
   <img src="https://img.shields.io/badge/Personas-40-1a1a1a?style=flat-square" alt="40 Personas">
@@ -46,9 +58,11 @@ Hall of Fame Studio is an open, local-first prototype for a **roundtable-first A
 
 ## Quick start
 
+> **Developer preview only.** Local setup is for UI inspection and validation scripts — not a supported product install. See **[ROADMAP.md](ROADMAP.md)** for milestone status and **[CONTRIBUTING.md](CONTRIBUTING.md)** if you want to contribute.
+
 ```bash
-git clone <your-repo-url>
-cd hall-of-fame-studio
+git clone https://github.com/MrMaii/Hall-of-Fame-Studio.git
+cd Hall-of-Fame-Studio
 npm install
 npm run dev
 ```
@@ -223,10 +237,13 @@ This captures fresh screenshots from the live app and rebuilds demo GIFs in `doc
 
 ## Documentation
 
+- **[Development Roadmap (ROADMAP.md)](ROADMAP.md)** — milestone plan, current phase, contributor entry points (Chinese)
+- **[Contributing (CONTRIBUTING.md)](CONTRIBUTING.md)** — what to work on now, PR expectations
 - [Product Requirements (PRD)](PRD.md) — full product spec (Chinese)
 - [Agent Architecture](src/agents/README.md) — five-layer agent model, meeting protocols, autonomous cycles
 - [Persona Skill Bridge](src/skills/README.md) — how the app connects to the skill package
-- [Persona Market Reference](人物市场.md) — persona categories and slugs (Chinese)
+- [Persona Skill System (人物Skill系统.md)](人物Skill系统.md) — per-persona skill design spec (Chinese)
+- [Persona Market Reference (人物市场.md)](人物市场.md) — persona categories and slugs (Chinese)
 - [Image Attribution](IMAGE_ATTRIBUTION.md) — Wikimedia Commons avatar licensing
 
 ---
