@@ -1,0 +1,517 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { 
+  Settings, Grid, LayoutPanelLeft, Box,
+  MessageSquare, Plus, Network, Cpu, Clock, 
+  CheckCircle2, Activity, Play, StopCircle, CornerDownRight, 
+  Fingerprint, ChevronRight, BarChart3, Database, Search, SlidersHorizontal, UserPlus, FileSignature
+} from 'lucide-react';
+
+// --- Global CSS & Typography ---
+const globalStyles = `
+  @import url('https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;0,600;1,400&family=Space+Mono:ital,wght@0,400;0,700;1,400&display=swap');
+
+  :root {
+    --bg-color: #f5f4f0;
+    --text-main: #1a1a1a;
+    --border-color: #d1d0c9;
+    --warroom-bg: #0d0c0b;
+    --warroom-text: #e8e6df;
+  }
+
+  body {
+    background-color: var(--bg-color);
+    color: var(--text-main);
+    overflow: hidden;
+  }
+
+  .font-serif { font-family: 'EB Garamond', serif; }
+  .font-mono { font-family: 'Space Mono', monospace; }
+
+  ::-webkit-scrollbar { width: 5px; height: 5px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border-color); }
+  
+  .warroom-scrollbar::-webkit-scrollbar-thumb { background: #333; }
+
+  @keyframes link-flow { to { stroke-dashoffset: -12; } }
+  .link-active {
+    stroke: #777; stroke-width: 1.5px; stroke-dasharray: 4 4;
+    animation: link-flow 1.5s linear infinite;
+  }
+
+  .fade-in { animation: fadeIn 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+
+  /* Archive Specific Animations */
+  .decrypt-text {
+    position: relative;
+    display: inline-block;
+  }
+  .decrypt-text::after {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: var(--text-main);
+    animation: revealText 0.8s cubic-bezier(0.77, 0, 0.175, 1) forwards;
+    transform-origin: right;
+  }
+  @keyframes revealText {
+    0% { transform: scaleX(1); }
+    100% { transform: scaleX(0); }
+  }
+
+  /* Dossier Card Styling */
+  .dossier-card {
+    background: #fdfdfc;
+    border: 1px solid var(--border-color);
+    box-shadow: 4px 4px 0px rgba(0,0,0,0.03);
+    transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
+    position: relative;
+  }
+  .dossier-card:hover {
+    transform: translateY(-4px) rotate(-0.5deg);
+    box-shadow: 12px 12px 0px rgba(0,0,0,0.1);
+    border-color: #1a1a1a;
+    z-index: 10;
+  }
+  
+  /* Stamp Animation */
+  @keyframes stamp-down {
+    0% { opacity: 0; transform: scale(3) rotate(-15deg); }
+    50% { opacity: 1; transform: scale(0.9) rotate(-15deg); }
+    100% { opacity: 1; transform: scale(1) rotate(-15deg); }
+  }
+  .stamp-active {
+    animation: stamp-down 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
+  }
+
+  /* Barcode lines */
+  .barcode-line { background: #1a1a1a; height: 100%; display: inline-block; margin-right: 2px; }
+`;
+
+// --- Mock Architecture Data ---
+// 殿堂级人才库数据 (The Pantheon) - 40位顶级灵魂
+const LEGENDARY_AGENTS = [
+  { id: 'leg_1', name: 'Elon Musk', role: 'Chief Disruptor', category: 'Visionary', desc: '第一性原理信徒。擅长打破常规，执行极端目标。高风险，高回报。', stats: { logic: 85, creativity: 95, execution: 99 }, price: '$2.50/req' },
+  { id: 'leg_2', name: 'S. Holmes', role: 'Lead Investigator', category: 'Analytical', desc: '演绎法大师。能从微小的数据点中还原整个业务链路的逻辑漏洞。', stats: { logic: 99, creativity: 70, execution: 85 }, price: '$1.80/req' },
+  { id: 'leg_3', name: 'Warren Buffett', role: 'Capital Strategist', category: 'Finance', desc: '价值投资与护城河理论。只做具有长期复利效应的决策。', stats: { logic: 95, creativity: 50, execution: 80 }, price: '$3.00/req' },
+  { id: 'leg_4', name: 'Sigmund Freud', role: 'User Psychologist', category: 'Psychology', desc: '深究潜意识动机。擅长分析用户痛点背后的原始欲望，直击人心。', stats: { logic: 75, creativity: 90, execution: 60 }, price: '$1.50/req' },
+  { id: 'leg_5', name: 'Steve Jobs', role: 'Product Visionary', category: 'Visionary', desc: '站在科技与人文的十字路口。对细节有偏执的狂热，追求绝对的极简。', stats: { logic: 80, creativity: 99, execution: 95 }, price: '$2.80/req' },
+  { id: 'leg_6', name: 'Alan Turing', role: 'System Architect', category: 'Science', desc: '计算逻辑之父。擅长构建最底层、最严密的系统架构和密码学防御。', stats: { logic: 100, creativity: 85, execution: 90 }, price: '$2.00/req' },
+  { id: 'leg_7', name: 'Sun Tzu', role: 'Market Tactician', category: 'Strategy', desc: '《孙子兵法》。上兵伐谋。擅长在竞争激烈的红海市场中寻找不战而屈人之兵的策略。', stats: { logic: 90, creativity: 85, execution: 95 }, price: '$1.90/req' },
+  { id: 'leg_8', name: 'L. da Vinci', role: 'Creative Polymath', category: 'Creative', desc: '跨学科天才。将艺术、工程与解剖学融合，能产出极具美感且严谨的方案。', stats: { logic: 85, creativity: 100, execution: 80 }, price: '$2.20/req' },
+  { id: 'leg_9', name: 'Nikola Tesla', role: 'Innovation Engineer', category: 'Science', desc: '超越时代的直觉。擅长构想前沿科技落地，但可能超出当前工程极限。', stats: { logic: 95, creativity: 98, execution: 70 }, price: '$2.10/req' },
+  { id: 'leg_10', name: 'Marcus Aurelius', role: 'Crisis Manager', category: 'Strategy', desc: '斯多葛派哲学家皇帝。在项目面临崩溃或极度焦虑时，能提供绝对理性的控制力。', stats: { logic: 90, creativity: 60, execution: 85 }, price: '$1.60/req' },
+  { id: 'leg_11', name: 'Ada Lovelace', role: 'Algorithm Poet', category: 'Science', desc: '世界上第一位程序员。能将冰冷的算法转化为具有诗意和前瞻性的逻辑流。', stats: { logic: 95, creativity: 90, execution: 85 }, price: '$1.80/req' },
+  { id: 'leg_12', name: 'Carl Jung', role: 'Brand Archetypist', category: 'Psychology', desc: '集体无意识理论。擅长为产品/品牌构建深入灵魂的“原型”人设。', stats: { logic: 80, creativity: 95, execution: 65 }, price: '$1.50/req' },
+  { id: 'leg_13', name: 'N. Machiavelli', role: 'Growth Hacker', category: 'Strategy', desc: '《君主论》。为了达成目标不择手段。擅长极具侵略性的增长策略。', stats: { logic: 92, creativity: 80, execution: 98 }, price: '$1.70/req' },
+  { id: 'leg_14', name: 'Stanley Kubrick', role: 'Creative Director', category: 'Creative', desc: '完美主义暴君。对视觉、节奏和氛围有着极致的掌控欲，不容忍任何瑕疵。', stats: { logic: 85, creativity: 98, execution: 90 }, price: '$2.00/req' },
+  { id: 'leg_15', name: 'J. von Neumann', role: 'Game Theorist', category: 'Analytical', desc: '博弈论大师。在多方利益冲突和竞争中，计算出绝对的纳什均衡点。', stats: { logic: 100, creativity: 75, execution: 88 }, price: '$2.30/req' },
+  { id: 'leg_16', name: 'Marie Curie', role: 'Deep Researcher', category: 'Science', desc: '绝对的专注与奉献。在枯燥的底层研发和数据挖掘中能爆发出惊人能量。', stats: { logic: 95, creativity: 70, execution: 95 }, price: '$1.90/req' },
+  { id: 'leg_17', name: 'Henry Ford', role: 'Operations Optimizer', category: 'Operations', desc: '流水线工业思维。能将极其复杂的业务流程极限压缩，实现效率最大化。', stats: { logic: 90, creativity: 65, execution: 100 }, price: '$1.60/req' },
+  { id: 'leg_18', name: 'Albert Einstein', role: 'Paradigm Shifter', category: 'Science', desc: '思想实验专家。能够从物理学最高维度重新定义你正在解决的业务问题。', stats: { logic: 100, creativity: 95, execution: 60 }, price: '$2.80/req' },
+  { id: 'leg_19', name: 'Alexander', role: 'Expansion Lead', category: 'Strategy', desc: '马其顿王。对于抢占市场和快速扩张有着无与伦比的直觉和执行力。', stats: { logic: 80, creativity: 85, execution: 100 }, price: '$2.20/req' },
+  { id: 'leg_20', name: 'Aristotle', role: 'Knowledge Architect', category: 'Analytical', desc: '百科全书式学者。擅长将混乱的信息碎片构建为严密的本体论体系。', stats: { logic: 98, creativity: 75, execution: 80 }, price: '$1.70/req' },
+  { id: 'leg_21', name: 'J.P. Morgan', role: 'M&A Specialist', category: 'Finance', desc: '金融巨头。擅长资源整合、并购重组与建立行业垄断壁垒。', stats: { logic: 90, creativity: 60, execution: 95 }, price: '$2.50/req' },
+  { id: 'leg_22', name: 'Ray Dalio', role: 'Risk Analyst', category: 'Finance', desc: '绝对透明与原则。建立机器般的决策模型来对冲一切不可预见的风险。', stats: { logic: 95, creativity: 70, execution: 85 }, price: '$2.10/req' },
+  { id: 'leg_23', name: 'J.M. Keynes', role: 'Macro Economist', category: 'Finance', desc: '宏观调控大师。在经济周期波动中寻找逆向干预和增长的杠杆点。', stats: { logic: 92, creativity: 80, execution: 75 }, price: '$1.90/req' },
+  { id: 'leg_24', name: 'Pablo Picasso', role: 'Visual Disruptor', category: 'Creative', desc: '打破视觉规则。能提供极具冲击力、反常规的品牌视觉与交互方案。', stats: { logic: 60, creativity: 100, execution: 85 }, price: '$2.00/req' },
+  { id: 'leg_25', name: 'Coco Chanel', role: 'Trend Setter', category: 'Creative', desc: '极致的优雅与自由。精准把握甚至创造时代审美趋势，拒绝随波逐流。', stats: { logic: 75, creativity: 95, execution: 90 }, price: '$1.80/req' },
+  { id: 'leg_26', name: 'Dieter Rams', role: 'Industrial Designer', category: 'Creative', desc: '“少，却更好”。工业设计的真理，消除一切不必要的元素。', stats: { logic: 85, creativity: 90, execution: 95 }, price: '$1.90/req' },
+  { id: 'leg_27', name: 'D. Kahneman', role: 'Behavioral Economist', category: 'Psychology', desc: '系统1与系统2。精准利用人类决策中的认知偏差来设计产品路径。', stats: { logic: 95, creativity: 80, execution: 70 }, price: '$1.80/req' },
+  { id: 'leg_28', name: 'B.F. Skinner', role: 'Engagement Architect', category: 'Psychology', desc: '操作性条件反射。设计极具成瘾性的奖励反馈机制与用户留存循环。', stats: { logic: 90, creativity: 75, execution: 85 }, price: '$1.70/req' },
+  { id: 'leg_29', name: 'F. Nietzsche', role: 'Cultural Philosopher', category: 'Psychology', desc: '超人哲学。赋予品牌强烈的叛逆精神和摧毁旧偶像的叙事能力。', stats: { logic: 85, creativity: 95, execution: 60 }, price: '$1.60/req' },
+  { id: 'leg_30', name: 'Julius Caesar', role: 'Field Commander', category: 'Operations', desc: '跨越卢比孔河。在关键节点能做出不留退路的果断决策并迅速执行。', stats: { logic: 85, creativity: 75, execution: 98 }, price: '$2.00/req' },
+  { id: 'leg_31', name: 'Napoleon', role: 'Logistics Master', category: 'Operations', desc: '极其精密的战争机器调度。擅长在复杂约束下以最快速度集中优势资源。', stats: { logic: 92, creativity: 85, execution: 99 }, price: '$2.10/req' },
+  { id: 'leg_32', name: 'Thomas Edison', role: 'Commercializer', category: 'Operations', desc: '不仅是发明，更是量产。擅长将实验室技术迅速转化为商业专利和产品。', stats: { logic: 80, creativity: 90, execution: 95 }, price: '$1.80/req' },
+  { id: 'leg_33', name: 'A. Carnegie', role: 'Supply Chain Lead', category: 'Operations', desc: '垂直整合大师。掌控从上游原料到下游分发的每一个环节，追求极致成本。', stats: { logic: 88, creativity: 60, execution: 96 }, price: '$1.90/req' },
+  { id: 'leg_34', name: 'Zhuge Liang', role: 'Grand Strategist', category: 'Strategy', desc: '未出茅庐已定三分。擅长在极度弱势的开局下通过结盟与借力逆转局势。', stats: { logic: 98, creativity: 90, execution: 85 }, price: '$2.20/req' },
+  { id: 'leg_35', name: 'W. Churchill', role: 'Morale Booster', category: 'Strategy', desc: '绝不妥协的韧性。在项目陷入绝境、团队濒临崩溃时提供强大的精神力量和方向。', stats: { logic: 85, creativity: 80, execution: 90 }, price: '$1.80/req' },
+  { id: 'leg_36', name: 'Walt Disney', role: 'Experience Creator', category: 'Visionary', desc: '造梦机器。将枯燥的产品转化为具有完整世界观的情感体验。', stats: { logic: 75, creativity: 100, execution: 90 }, price: '$2.30/req' },
+  { id: 'leg_37', name: 'Isaac Newton', role: 'Fundamentalist', category: 'Analytical', desc: '万有引力般的底层洞察。建立严密且不可推翻的数学/逻辑基础模型。', stats: { logic: 100, creativity: 85, execution: 75 }, price: '$2.40/req' },
+  { id: 'leg_38', name: 'Adam Smith', role: 'Ecosystem Designer', category: 'Finance', desc: '看不见的手。擅长设计去中心化的平台规则，让生态系统自发繁荣。', stats: { logic: 95, creativity: 80, execution: 70 }, price: '$1.70/req' },
+  { id: 'leg_39', name: 'Genghis Khan', role: 'Global Scaler', category: 'Strategy', desc: '极其扁平高效的指挥体系。无视一切边界，追求最快速的全球化扩张。', stats: { logic: 85, creativity: 70, execution: 100 }, price: '$2.00/req' },
+  { id: 'leg_40', name: 'Oppenheimer', role: 'Project Manhattan', category: 'Science', desc: '管理最顶尖天才的能力。擅长统筹资源极度密集、技术风险极高的大型工程。', stats: { logic: 95, creativity: 85, execution: 92 }, price: '$2.60/req' }
+];
+
+const INITIAL_PROJECTS = [
+  {
+    id: 'p_1001',
+    name: 'Fig Mint App V1',
+    status: 'executing',
+    progress: 68,
+    team: [LEGENDARY_AGENTS[25], LEGENDARY_AGENTS[5], LEGENDARY_AGENTS[0]], // Dieter Rams, Alan Turing, Elon Musk
+    tasks: [
+      { id: 1, text: 'Define minimalist color palette', assignee: 'Dieter Rams', status: 'done' },
+      { id: 2, text: 'Setup BYOK Auth Middleware', assignee: 'Alan Turing', status: 'in-progress' },
+    ],
+    logs: [
+      { time: '14:22 PM', agent: 'Dieter Rams', log: 'Updated layout grid. Reduced margin by 4px globally.' }
+    ]
+  }
+];
+
+// Helper for Fake Barcode Generation
+const generateBarcode = (id) => {
+  const seed = id.split('_')[1];
+  const widths = [1, 2, 1, 3, 1, 1, 2, 1, 2, 3, 1, 1, 2, 1, 2];
+  return widths.map((w, i) => <div key={i} className="barcode-line" style={{ width: `${w * 2}px` }} />);
+};
+
+export default function EngineWorkspace() {
+  const [projects, setProjects] = useState(INITIAL_PROJECTS);
+  const [activeRoute, setActiveRoute] = useState('agent_market');
+  const [selectedProjectId, setSelectedProjectId] = useState(null);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+
+  // Market specific state
+  const [marketSearch, setMarketSearch] = useState('');
+  const [marketCategory, setMarketCategory] = useState('All');
+  const [recruitedIds, setRecruitedIds] = useState(['leg_26', 'leg_6', 'leg_1']); // Matches initial project
+  const [isDecrypting, setIsDecrypting] = useState(false);
+
+  // War Room state
+  const [meetingState, setMeetingState] = useState('idle');
+  const [meetingLogs, setMeetingLogs] = useState([]);
+  const [terminalInput, setTerminalInput] = useState('');
+  const [speakingAgent, setSpeakingAgent] = useState(null);
+  const [targetNodeIds, setTargetNodeIds] = useState([]);
+  const transcriptEndRef = useRef(null);
+
+  useEffect(() => {
+    const styleSheet = document.createElement("style");
+    styleSheet.innerText = globalStyles;
+    document.head.appendChild(styleSheet);
+    return () => styleSheet.remove();
+  }, []);
+
+  useEffect(() => {
+    if (transcriptEndRef.current) transcriptEndRef.current.scrollIntoView({ behavior: 'smooth' });
+  }, [meetingLogs]);
+
+  // Navigation Wrappers
+  const navToMarket = () => {
+    setActiveRoute('agent_market');
+    setSelectedProjectId(null);
+    setIsDecrypting(true);
+    setTimeout(() => setIsDecrypting(false), 800);
+  };
+  const navToDashboard = () => { setActiveRoute('dashboard'); setSelectedProjectId(null); };
+  const navToProject = (id) => { setSelectedProjectId(id); setActiveRoute('project_detail'); };
+  const navToWarRoom = () => { setActiveRoute('war_room'); setMeetingState('idle'); setMeetingLogs([]); setTargetNodeIds([]); };
+
+  const handleRecruit = (id) => {
+    if (!recruitedIds.includes(id)) {
+      setRecruitedIds([...recruitedIds, id]);
+    }
+  };
+
+  // --- Views ---
+
+  const renderSidebar = () => (
+    <div className={`h-screen border-r border-[#d1d0c9] bg-[#ebe9e0] flex flex-col transition-all duration-300 z-50 ${sidebarCollapsed ? 'w-16' : 'w-64'}`}>
+      <div className="h-16 flex items-center justify-between px-4 border-b border-[#d1d0c9]">
+        {!sidebarCollapsed && <span className="font-serif text-xl font-bold tracking-tight italic">Fig Mint.</span>}
+        <button onClick={() => setSidebarCollapsed(!sidebarCollapsed)} className="p-1 hover:bg-[#d1d0c9] rounded transition-colors text-gray-600 hover:text-black">
+          <LayoutPanelLeft size={18} />
+        </button>
+      </div>
+
+      <div className="flex-1 overflow-y-auto py-4 flex flex-col gap-6">
+        <div className="px-3 flex flex-col gap-1">
+          <button onClick={navToDashboard} className={`flex items-center gap-3 px-3 py-2 text-sm font-mono rounded-sm transition-colors ${activeRoute === 'dashboard' ? 'bg-[#1a1a1a] text-[#f5f4f0]' : 'hover:bg-[#d1d0c9] text-gray-700'}`}>
+            <Grid size={16} /> {!sidebarCollapsed && <span>Workspace Hub</span>}
+          </button>
+          <button onClick={navToMarket} className={`flex items-center gap-3 px-3 py-2 text-sm font-mono rounded-sm transition-colors ${activeRoute === 'agent_market' ? 'bg-[#1a1a1a] text-[#f5f4f0]' : 'hover:bg-[#d1d0c9] text-gray-700'}`}>
+            <Network size={16} /> {!sidebarCollapsed && <span>Talent Market</span>}
+          </button>
+        </div>
+
+        {!sidebarCollapsed && (
+          <div className="px-6 flex flex-col gap-2">
+            <div className="flex items-center justify-between text-gray-400 font-mono text-[10px] uppercase tracking-widest mb-2">
+              <span>Active Projects</span>
+              <button className="hover:text-black"><Plus size={12}/></button>
+            </div>
+            {projects.map(proj => (
+              <button 
+                key={proj.id}
+                onClick={() => navToProject(proj.id)}
+                className={`flex items-center gap-2 text-left font-serif text-lg transition-colors group ${selectedProjectId === proj.id && activeRoute !== 'dashboard' && activeRoute !== 'agent_market' ? 'text-black font-semibold' : 'text-gray-500 hover:text-black'}`}
+              >
+                <div className={`w-1.5 h-1.5 rounded-full ${proj.status === 'executing' ? 'bg-green-500' : 'bg-gray-400'}`}></div>
+                <span className="truncate">{proj.name}</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="p-4 border-t border-[#d1d0c9]">
+        {!sidebarCollapsed ? (
+          <div className="flex items-center gap-3 text-gray-600">
+            <Fingerprint size={16} />
+            <div className="flex flex-col">
+               <span className="font-mono text-[10px] uppercase">Admin Connection</span>
+               <span className="font-mono text-xs text-green-600">Secured</span>
+            </div>
+          </div>
+        ) : (
+           <Fingerprint size={16} className="mx-auto text-gray-600" />
+        )}
+      </div>
+    </div>
+  );
+
+  const renderAgentMarketView = () => {
+    const categories = ['All', 'Visionary', 'Strategy', 'Analytical', 'Science', 'Creative', 'Psychology', 'Finance', 'Operations'];
+    
+    const filteredAgents = LEGENDARY_AGENTS.filter(agent => {
+      const matchesSearch = agent.name.toLowerCase().includes(marketSearch.toLowerCase()) || 
+                            agent.role.toLowerCase().includes(marketSearch.toLowerCase()) ||
+                            agent.desc.toLowerCase().includes(marketSearch.toLowerCase());
+      const matchesCategory = marketCategory === 'All' || agent.category === marketCategory;
+      return matchesSearch && matchesCategory;
+    });
+
+    return (
+      <div className="flex-1 overflow-y-auto fade-in bg-[#f5f4f0] flex flex-col relative">
+        
+        {/* Decryption Overlay Effect */}
+        {isDecrypting && (
+          <div className="absolute inset-0 bg-[#f5f4f0] z-50 flex flex-col items-center justify-center font-mono text-xs uppercase tracking-widest text-black">
+             <Fingerprint size={48} className="mb-4 animate-pulse" />
+             <span>Decrypting Pantheon Archives...</span>
+             <span className="text-gray-400 mt-2">Clearance Level: Director</span>
+          </div>
+        )}
+
+        {/* Sticky Archive Header */}
+        <div className="sticky top-0 z-40 bg-[#f5f4f0] border-b border-[#d1d0c9] px-12 py-8 pt-12 shadow-[0_10px_30px_rgba(245,244,240,0.9)]">
+           <div className="flex justify-between items-end mb-8">
+             <div>
+               <h1 className="font-serif text-6xl tracking-tight mb-2 decrypt-text">The Pantheon.</h1>
+               <div className="flex items-center gap-3 font-mono text-[10px] text-gray-500 uppercase tracking-widest mt-3">
+                 <span className="bg-[#1a1a1a] text-white px-2 py-0.5">TOP SECRET</span>
+                 <span>Global Talent Archives</span>
+               </div>
+             </div>
+             
+             {/* Typewriter Search */}
+             <div className="flex items-center border-b-2 border-[#d1d0c9] w-80 pb-2 focus-within:border-black transition-colors">
+               <Search size={18} className="text-gray-400 mr-3" />
+               <input 
+                 type="text" 
+                 value={marketSearch}
+                 onChange={(e) => setMarketSearch(e.target.value)}
+                 placeholder="Query archives..."
+                 className="bg-transparent border-none outline-none font-mono text-sm w-full placeholder-gray-400 uppercase tracking-wider"
+               />
+             </div>
+           </div>
+
+           {/* Hardware-style Filter Toggles */}
+           <div className="flex items-center gap-6 overflow-x-auto pb-2 -mb-2">
+             <SlidersHorizontal size={18} className="text-gray-400 shrink-0" />
+             <div className="flex gap-2">
+               {categories.map(cat => (
+                 <button 
+                   key={cat}
+                   onClick={() => setMarketCategory(cat)}
+                   className={`font-mono text-[10px] uppercase tracking-widest px-3 py-1.5 transition-all whitespace-nowrap border
+                    ${marketCategory === cat ? 'bg-black text-white border-black' : 'bg-transparent text-gray-500 border-[#d1d0c9] hover:border-black hover:text-black'}
+                   `}
+                 >
+                   {cat}
+                 </button>
+               ))}
+             </div>
+             <span className="ml-auto font-mono text-[10px] text-gray-400 uppercase tracking-widest shrink-0 border-l border-[#d1d0c9] pl-6">
+               {filteredAgents.length} Records Found
+             </span>
+           </div>
+        </div>
+
+        {/* Dossier Grid */}
+        <div className="p-12 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-8">
+          {filteredAgents.map(agent => {
+            const isRecruited = recruitedIds.includes(agent.id);
+            return (
+              <div key={agent.id} className="dossier-card group flex flex-col">
+                
+                {/* Dossier Top Tab & Barcode */}
+                <div className="px-5 py-3 border-b border-[#d1d0c9] bg-[#ebe9e0] flex justify-between items-center">
+                  <div className="flex items-center gap-3">
+                    <div className="w-1.5 h-1.5 bg-black rounded-full opacity-30"></div>
+                    <span className="font-mono text-[9px] uppercase tracking-widest text-gray-600">ID:{agent.id}</span>
+                  </div>
+                  <div className="h-4 flex items-center opacity-40">
+                    {generateBarcode(agent.id)}
+                  </div>
+                </div>
+
+                {/* Dossier Identity Header */}
+                <div className="p-6 border-b border-[#ebe9e0] flex gap-4 items-start relative">
+                   {/* Monogram Photo Placeholder */}
+                   <div className="w-16 h-16 border-2 border-black flex items-center justify-center bg-white relative overflow-hidden shrink-0">
+                     <div className="absolute inset-0 opacity-[0.05]" style={{ backgroundImage: 'repeating-linear-gradient(45deg, #000 0, #000 1px, transparent 0, transparent 50%)', backgroundSize: '4px 4px'}}></div>
+                     <span className="font-serif text-3xl font-bold z-10">{agent.name.charAt(0)}</span>
+                   </div>
+                   <div className="flex flex-col pt-1">
+                     <h3 className="font-serif text-2xl font-bold leading-none tracking-tight mb-2">{agent.name}</h3>
+                     <span className="font-mono text-[9px] uppercase tracking-widest text-gray-500 bg-gray-100 px-1.5 py-0.5 self-start border border-gray-200">{agent.role}</span>
+                   </div>
+
+                   {/* Recruited Stamp Overlay */}
+                   {isRecruited && (
+                     <div className="absolute top-4 right-4 stamp-active pointer-events-none z-20 flex items-center justify-center">
+                       <div className="border-4 border-[#1a1a1a] text-[#1a1a1a] font-mono text-sm font-bold uppercase tracking-widest px-2 py-1 transform rotate-[-15deg] mix-blend-multiply opacity-90">
+                         CONTRACTED
+                       </div>
+                     </div>
+                   )}
+                </div>
+
+                {/* Dossier Description (Typewriter effect on hover via CSS) */}
+                <div className="p-6 flex-1 bg-[#fdfdfc] border-b border-[#ebe9e0] relative">
+                  <span className="inline-block px-2 py-0.5 bg-[#1a1a1a] text-white font-mono text-[8px] uppercase tracking-widest mb-4">
+                    CLASS: {agent.category}
+                  </span>
+                  <p className="font-serif text-gray-800 text-[15px] leading-relaxed relative z-10">
+                    {agent.desc}
+                  </p>
+                </div>
+
+                {/* Dossier Hidden Stats (Revealed/Expanded slightly on hover, visually anchored at bottom) */}
+                <div className="p-6 bg-[#f5f4f0] space-y-3 group-hover:bg-[#ebe9e0] transition-colors border-t border-dashed border-[#d1d0c9]">
+                   {[
+                     { label: 'LOGIC', val: agent.stats.logic },
+                     { label: 'CREATIVE', val: agent.stats.creativity },
+                     { label: 'EXECUTION', val: agent.stats.execution }
+                   ].map(stat => (
+                     <div key={stat.label} className="flex items-center gap-4">
+                       <span className="font-mono text-[9px] text-gray-600 uppercase tracking-widest w-16">{stat.label}</span>
+                       <div className="flex-1 h-[2px] bg-gray-300 relative">
+                         {/* Radar Dots */}
+                         <div className="absolute h-full bg-black transition-all duration-700 ease-out" style={{ width: `${stat.val}%` }}>
+                           <div className="absolute right-0 top-1/2 transform translate-x-1/2 -translate-y-1/2 w-1.5 h-1.5 bg-black rounded-full"></div>
+                         </div>
+                       </div>
+                       <span className={`font-mono text-[9px] w-6 text-right ${stat.val >= 95 ? 'text-black font-bold' : 'text-gray-500'}`}>{stat.val}</span>
+                     </div>
+                   ))}
+                </div>
+
+                {/* Action Footer */}
+                <div className="p-4 flex items-center justify-between border-t border-[#1a1a1a] bg-white">
+                   <span className="font-mono text-[10px] text-gray-600 font-bold bg-gray-100 px-2 py-1">{agent.price}</span>
+                   <button 
+                     onClick={() => handleRecruit(agent.id)}
+                     disabled={isRecruited}
+                     className={`flex items-center gap-2 font-mono text-[10px] uppercase tracking-widest px-4 py-2 transition-colors
+                      ${isRecruited ? 'bg-transparent text-gray-400 cursor-not-allowed' : 'bg-black text-white hover:bg-gray-800'}
+                     `}
+                   >
+                     {isRecruited ? <CheckCircle2 size={12} /> : <FileSignature size={12} />}
+                     {isRecruited ? 'Secured' : 'Authorize'}
+                   </button>
+                </div>
+              </div>
+            );
+          })}
+          
+          {filteredAgents.length === 0 && (
+             <div className="col-span-full py-32 flex flex-col items-center justify-center text-gray-400">
+                <Search size={48} className="mb-6 opacity-20" />
+                <p className="font-serif text-3xl mb-2 text-gray-800">No classified records found.</p>
+                <p className="font-mono text-xs uppercase tracking-widest">Adjust clearance filters or query parameters.</p>
+             </div>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  // --- Dashboard, Project Detail, War Room (Abbreviated/Maintained from previous for completeness) ---
+  const renderDashboardView = () => (
+    <div className="flex-1 p-12 overflow-y-auto fade-in bg-[#fdfdfc]">
+      <header className="mb-12">
+        <h1 className="font-serif text-5xl mb-3 tracking-tight">System Overview.</h1>
+        <p className="font-mono text-xs text-gray-500 uppercase tracking-widest">Global Dashboard & Resource Allocation</p>
+      </header>
+
+      <div className="border border-[#d1d0c9] bg-white p-8 shadow-sm">
+         <h2 className="font-serif text-2xl mb-6">Active Portfolios</h2>
+         <div className="flex flex-col gap-4">
+           {projects.map(proj => (
+             <div 
+               key={proj.id} 
+               onClick={() => navToProject(proj.id)}
+               className="border border-gray-200 p-5 hover:border-black transition-colors cursor-pointer group flex items-center justify-between"
+             >
+               <div className="flex items-center gap-6">
+                 <div className={`p-3 border ${proj.status === 'executing' ? 'bg-green-50 border-green-200' : 'bg-gray-50 border-gray-200'}`}>
+                   <Box size={20} className={proj.status === 'executing' ? 'text-green-700' : 'text-gray-500'} />
+                 </div>
+                 <div>
+                   <h3 className="font-serif text-2xl mb-1 group-hover:underline">{proj.name}</h3>
+                   <p className="font-mono text-[10px] text-gray-500 uppercase tracking-widest">
+                     ID: {proj.id} | {proj.team.length} Agents Assigned
+                   </p>
+                 </div>
+               </div>
+               <ChevronRight size={20} className="text-gray-300 group-hover:text-black transition-colors" />
+             </div>
+           ))}
+         </div>
+      </div>
+    </div>
+  );
+
+  const renderProjectDetailView = () => {
+    const proj = activeProject || projects[0];
+    return (
+    <div className="flex-1 p-12 overflow-y-auto fade-in bg-[#fdfdfc] flex flex-col">
+      <div className="flex justify-between items-end border-b border-[#d1d0c9] pb-8 mb-8">
+        <div>
+          <span className="font-mono text-xs text-gray-500 uppercase tracking-widest mb-2 block">Project Inspector</span>
+          <h1 className="font-serif text-5xl mb-3 tracking-tight">{proj.name}</h1>
+        </div>
+        <button 
+          onClick={navToWarRoom}
+          className="bg-[#1a1a1a] text-[#f5f4f0] font-mono text-sm px-8 py-4 hover:bg-black transition-transform hover:-translate-y-1 shadow-lg flex items-center gap-3"
+        >
+          <Play size={16} className="fill-current" />
+          ENTER WAR ROOM
+        </button>
+      </div>
+      <div className="font-serif text-xl text-gray-500">Project data rendering...</div>
+    </div>
+  )};
+
+  const renderWarRoomView = () => {
+    const proj = activeProject || projects[0];
+    return (
+      <div className="flex-1 bg-[var(--warroom-bg)] text-[var(--warroom-text)] flex flex-col fade-in h-screen items-center justify-center font-mono">
+        <Fingerprint size={48} className="mb-4 text-gray-600" />
+        <p className="tracking-widest uppercase">War Room Initialization for {proj.name}</p>
+        <button onClick={navToDashboard} className="mt-8 border border-white px-4 py-2 hover:bg-white hover:text-black transition-colors">Return</button>
+      </div>
+    );
+  };
+
+  // --- Root Layout ---
+  return (
+    <div className="h-screen w-full flex bg-black">
+      <div className="flex-1 flex overflow-hidden bg-white max-w-full">
+        {activeRoute !== 'war_room' && renderSidebar()}
+        <main className="flex-1 flex flex-col relative overflow-hidden bg-white">
+          {activeRoute === 'dashboard' && renderDashboardView()}
+          {activeRoute === 'project_detail' && renderProjectDetailView()}
+          {activeRoute === 'war_room' && renderWarRoomView()}
+          {activeRoute === 'agent_market' && renderAgentMarketView()}
+        </main>
+      </div>
+    </div>
+  );
+}

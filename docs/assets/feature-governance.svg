@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="450" viewBox="0 0 800 450" fill="none">
+  <rect width="800" height="450" fill="#f5f4f0"/>
+  <rect x="60" y="80" width="300" height="280" fill="#fdfdfc" stroke="#d1d0c9"/>
+  <text x="80" y="110" font-family="'Space Mono', monospace" font-size="11" fill="#888">LEAD</text>
+  <rect x="80" y="125" width="200" height="8" fill="#1a1a1a"/>
+  <rect x="80" y="145" width="160" height="4" fill="#ebe9e2"/>
+  <rect x="440" y="80" width="300" height="280" fill="#0d0c0b" stroke="#333"/>
+  <text x="460" y="110" font-family="'Space Mono', monospace" font-size="11" fill="#888">REVIEWER</text>
+  <rect x="460" y="125" width="180" height="8" fill="#e8e6df"/>
+  <rect x="60" y="380" width="680" height="24" fill="#fdfdfc" stroke="#d1d0c9"/>
+  <rect x="70" y="386" width="520" height="12" fill="#1a1a1a" opacity="0.85"/>
+  <text x="400" y="430" text-anchor="middle" font-family="'Space Mono', monospace" font-size="12" fill="#666" letter-spacing="2">ATTENTION-SCORED COMMS � COLLABORATION HEALTH</text>
+</svg>

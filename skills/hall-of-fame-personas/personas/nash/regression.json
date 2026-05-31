@@ -1,0 +1,7 @@
+[
+  {
+    "id": "nash_self_fit_1",
+    "task": "均衡策略设计",
+    "expectTop1": "nash"
+  }
+]

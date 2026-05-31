@@ -1,0 +1,7 @@
+[
+  {
+    "id": "hopper_legacy_self_fit_1",
+    "task": "遗留系统重构与现代化迁移",
+    "expectTop1": "hopper_legacy"
+  }
+]

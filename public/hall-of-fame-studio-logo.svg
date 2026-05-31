@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" fill="none">
+  <rect width="512" height="512" rx="64" fill="#f5f4f0"/>
+  <circle cx="256" cy="256" r="200" stroke="#1a1a1a" stroke-width="3" fill="none"/>
+  <polygon points="256,96 356,156 356,276 256,336 156,276 156,156" stroke="#d1d0c9" stroke-width="1.5" fill="none"/>
+  <ellipse cx="256" cy="256" rx="100" ry="36" stroke="#1a1a1a" stroke-width="1.5" fill="none" opacity="0.4"/>
+  <text x="256" y="280" text-anchor="middle" font-family="Georgia, 'EB Garamond', serif" font-size="120" font-weight="600" fill="#1a1a1a">H</text>
+</svg>

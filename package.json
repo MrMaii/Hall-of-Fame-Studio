@@ -1,0 +1,35 @@
+{
+  "name": "hall-of-fame-studio",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "build:single": "vite build && node scripts/build-single-html.cjs",
+    "agents:scenario": "node scripts/validate-agent-manager-scenario.mjs",
+    "preview": "vite preview",
+    "skills:validate": "python skills/hall-of-fame-personas/scripts/validate_personas.py",
+    "skills:regression": "python skills/hall-of-fame-personas/scripts/regression_check.py",
+    "skills:check": "npm run skills:validate && npm run skills:regression",
+    "readme:capture": "node scripts/capture-readme-demos.mjs",
+    "readme:gif": "node scripts/build-demo-animations.mjs",
+    "readme:export": "node scripts/export-logo-png.mjs && node scripts/export-hero-png.mjs",
+    "readme:assets": "npm run readme:capture && npm run readme:gif && npm run readme:export"
+  },
+  "dependencies": {
+    "lucide-react": "^0.468.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "autoprefixer": "^10.4.20",
+    "gifenc": "^1.0.3",
+    "playwright": "^1.60.0",
+    "pngjs": "^7.0.0",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.15",
+    "vite": "^5.4.11"
+  }
+}

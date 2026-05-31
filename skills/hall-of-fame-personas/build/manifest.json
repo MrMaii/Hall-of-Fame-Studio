@@ -1,0 +1,11 @@
+{
+  "schemaVersion": "1.0",
+  "publisher": "Hall of Fame Studio",
+  "product": "Hall of Fame Personas",
+  "generatedAt": "2026-05-27T18:37:07.028157+00:00",
+  "personaCount": 40,
+  "sourceRoot": "source/personas",
+  "registryPath": "build/personas.json",
+  "indexPath": "build/persona-index.json",
+  "mindframeRoot": "build/mindframe"
+}

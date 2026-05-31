@@ -1,0 +1,13 @@
+# ReCode local database
+.recode
+
+node_modules
+dist
+
+# External skill tooling (not part of Hall of Fame private assets)
+tools/
+.recode/nuwa-skill-source/
+
+# Legacy external-artifact paths
+skills/hall-of-fame-personas/build/nuwa/
+skills/hall-of-fame-personas/personas/**/nuwa.md

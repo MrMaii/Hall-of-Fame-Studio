@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="450" viewBox="0 0 800 450" fill="none">
+  <rect width="800" height="450" fill="#f5f4f0"/>
+  <rect x="80" y="100" width="140" height="44" fill="#1a1a1a"/>
+  <text x="150" y="128" text-anchor="middle" font-family="'Space Mono', monospace" font-size="11" fill="#f5f4f0">HOUR PULSE</text>
+  <rect x="240" y="100" width="140" height="44" fill="#fdfdfc" stroke="#d1d0c9"/>
+  <text x="310" y="128" text-anchor="middle" font-family="'Space Mono', monospace" font-size="11" fill="#1a1a1a">DAY REPORT</text>
+  <line x1="80" y1="200" x2="720" y2="200" stroke="#d1d0c9"/>
+  <circle cx="120" cy="260" r="8" fill="#1a1a1a"/>
+  <circle cx="280" cy="300" r="8" fill="#888"/>
+  <circle cx="440" cy="240" r="8" fill="#1a1a1a"/>
+  <circle cx="600" cy="320" r="8" fill="#888"/>
+  <circle cx="720" cy="280" r="8" fill="#1a1a1a"/>
+  <path d="M120 260 L280 300 L440 240 L600 320 L720 280" stroke="#d1d0c9" stroke-width="1.5" fill="none"/>
+  <text x="400" y="400" text-anchor="middle" font-family="'Space Mono', monospace" font-size="12" fill="#666" letter-spacing="2">AUTONOMOUS CYCLES � PROJECT LEDGER</text>
+</svg>

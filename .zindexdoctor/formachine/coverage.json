@@ -1,0 +1,575 @@
+{
+  "pagesDiscovered": 1,
+  "pagesScanned": 1,
+  "routesObserved": 0,
+  "scrollSegmentsScanned": 7,
+  "interactionStatesScanned": 43,
+  "popupWindowsScanned": 0,
+  "totalStatesScanned": 47,
+  "denominatorSource": "discovered",
+  "uncovered": [
+    {
+      "url": "http://localhost:5173/",
+      "reason": "navigation_error",
+      "detail": "ENOENT: no such file or directory, open 'D:\\项目文件\\Hall of Fame Studio\\.zindexdoctor\\forperson\\screenshots\\_-desktop-anchor-[class*='panel' i]-0-init.png'"
+    }
+  ],
+  "stateLog": [
+    {
+      "stateId": "http://localhost:5173/::desktop::interaction-probe::Start InitiationMandatory roundtable",
+      "url": "http://localhost:5173/",
+      "viewport": "desktop",
+      "scrollSegment": "interaction-probe",
+      "actionPath": [
+        "Start InitiationMandatory roundtable"
+      ],
+      "windowId": "main",
+      "issuesFound": 6,
+      "durationMs": 0
+    },
+    {
+      "stateId": "http://localhost:5173/::desktop::interaction-probe::Workspace Hub",
+      "url": "http://localhost:5173/",
+      "viewport": "desktop",
+      "scrollSegment": "interaction-probe",
+      "actionPath": [
+        "Workspace Hub"
+      ],
+      "windowId": "main",
+      "issuesFound": 3,
+      "durationMs": 0
+    },
+    {
+      "stateId": "http://localhost:5173/::desktop::interaction-probe::Talent Market",
+      "url": "http://localhost:5173/",
+      "viewport": "desktop",
+      "scrollSegment": "interaction-probe",
+      "actionPath": [
+        "Talent Market"
+      ],
+      "windowId": "main",
+      "issuesFound": 15,
+      "durationMs": 0
+    },
+    {
+      "stateId": "http://localhost:5173/::desktop::interaction-probe::Hall of Fame Studio V1",
+      "url": "http://localhost:5173/",
+      "viewport": "desktop",
+      "scrollSegment": "interaction-probe",
+      "actionPath": [
+        "Hall of Fame Studio V1"
+      ],
+      "windowId": "main",
+      "issuesFound": 2,
+      "durationMs": 0
+    },
+    {
+      "stateId": "http://localhost:5173/::desktop::interaction-probe::Apollo Neural API",
+      "url": "http://localhost:5173/",
+      "viewport": "desktop",
+      "scrollSegment": "interaction-probe",
+      "actionPath": [
+        "Apollo Neural API"
+      ],
+      "windowId": "main",
+      "issuesFound": 1,
+      "durationMs": 0
+    },
+    {
+      "stateId": "http://localhost:5173/::desktop::interaction-probe::D",
+      "url": "http://localhost:5173/",
+      "viewport": "desktop",
+      "scrollSegment": "interaction-probe",
+      "actionPath": [
+        "D"
+      ],
+      "windowId": "main",
+      "issuesFound": 13,
+      "durationMs": 0
+    },
+    {
+      "stateId": "http://localhost:5173/::desktop::interaction-probe::[data-zindexdoctor-action-id=\"zdx-action-000\"]",
+      "url": "http://localhost:5173/",
+      "viewport": "desktop",
+      "scrollSegment": "interaction-probe",
+      "actionPath": [
+        "[data-zindexdoctor-action-id=\"zdx-action-000\"]"
+      ],
+      "windowId": "main",
+      "issuesFound": 3,
+      "durationMs": 0
+    },
+    {
+      "stateId": "http://localhost:5173/::desktop::interaction-probe::[data-zindexdoctor-action-id=\"zdx-action-003\"]",
+      "url": "http://localhost:5173/",
+      "viewport": "desktop",
+      "scrollSegment": "interaction-probe",
+      "actionPath": [
+        "[data-zindexdoctor-action-id=\"zdx-action-003\"]"
+      ],
+      "windowId": "main",
+      "issuesFound": 6,
+      "durationMs": 0
+    },
+    {
+      "stateId": "http://localhost:5173/::desktop::interaction-probe::Studio Director@director",
+      "url": "http://localhost:5173/",
+      "viewport": "desktop",
+      "scrollSegment": "interaction-probe",
+      "actionPath": [
+        "Studio Director@director"
+      ],
+      "windowId": "main",
+      "issuesFound": 13,
+      "durationMs": 0
+    },
+    {
+      "stateId": "http://localhost:5173/::desktop::interaction-probe::[data-zindexdoctor-action-id=\"zdx-action-008\"]",
+      "url": "http://localhost:5173/",
+      "viewport": "desktop",
+      "scrollSegment": "interaction-probe",
+      "actionPath": [
+        "[data-zindexdoctor-action-id=\"zdx-action-008\"]"
+      ],
+      "windowId": "main",
+      "issuesFound": 13,
+      "durationMs": 0
+    },
+    {
+      "stateId": "http://localhost:5173/::desktop::scroll-0pct::init",
+      "url": "http://localhost:5173/",
+      "viewport": "desktop",
+      "scrollSegment": "scroll-0pct",
+      "actionPath": [],
+      "windowId": "main",
+      "issuesFound": 3,
+      "durationMs": 15469
+    },
+    {
+      "stateId": "http://localhost:5173/::desktop::scroll-0pct::Start InitiationMandatory roundtable",
+      "url": "http://localhost:5173/",
+      "viewport": "desktop",
+      "scrollSegment": "scroll-0pct",
+      "actionPath": [
+        "Start InitiationMandatory roundtable"
+      ],
+      "windowId": "main",
+      "issuesFound": 6,
+      "durationMs": 16179
+    },
+    {
+      "stateId": "http://localhost:5173/::desktop::scroll-0pct::Start initiation roundtable",
+      "url": "http://localhost:5173/",
+      "viewport": "desktop",
+      "scrollSegment": "scroll-0pct",
+      "actionPath": [
+        "Start initiation roundtable"
+      ],
+      "windowId": "main",
+      "issuesFound": 6,
+      "durationMs": 17024
+    },
+    {
+      "stateId": "http://localhost:5173/::desktop::scroll-0pct::Open user settings",
+      "url": "http://localhost:5173/",
+      "viewport": "desktop",
+      "scrollSegment": "scroll-0pct",
+      "actionPath": [
+        "Open user settings"
+      ],
+      "windowId": "main",
+      "issuesFound": 6,
+      "durationMs": 17839
+    },
+    {
+      "stateId": "http://localhost:5173/::desktop::scroll-0pct::Settings",
+      "url": "http://localhost:5173/",
+      "viewport": "desktop",
+      "scrollSegment": "scroll-0pct",
+      "actionPath": [
+        "Settings"
+      ],
+      "windowId": "main",
+      "issuesFound": 6,
+      "durationMs": 18653
+    },
+    {
+      "stateId": "http://localhost:5173/::desktop::scroll-14pct::init",
+      "url": "http://localhost:5173/",
+      "viewport": "desktop",
+      "scrollSegment": "scroll-14pct",
+      "actionPath": [],
+      "windowId": "main",
+      "issuesFound": 7,
+      "durationMs": 19280
+    },
+    {
+      "stateId": "http://localhost:5173/::desktop::scroll-14pct::Back",
+      "url": "http://localhost:5173/",
+      "viewport": "desktop",
+      "scrollSegment": "scroll-14pct",
+      "actionPath": [
+        "Back"
+      ],
+      "windowId": "main",
+      "issuesFound": 3,
+      "durationMs": 19897
+    },
+    {
+      "stateId": "http://localhost:5173/::tablet::interaction-probe::Start InitiationMandatory roundtable",
+      "url": "http://localhost:5173/",
+      "viewport": "tablet",
+      "scrollSegment": "interaction-probe",
+      "actionPath": [
+        "Start InitiationMandatory roundtable"
+      ],
+      "windowId": "main",
+      "issuesFound": 7,
+      "durationMs": 0
+    },
+    {
+      "stateId": "http://localhost:5173/::tablet::interaction-probe::Workspace Hub",
+      "url": "http://localhost:5173/",
+      "viewport": "tablet",
+      "scrollSegment": "interaction-probe",
+      "actionPath": [
+        "Workspace Hub"
+      ],
+      "windowId": "main",
+      "issuesFound": 4,
+      "durationMs": 0
+    },
+    {
+      "stateId": "http://localhost:5173/::tablet::interaction-probe::Talent Market",
+      "url": "http://localhost:5173/",
+      "viewport": "tablet",
+      "scrollSegment": "interaction-probe",
+      "actionPath": [
+        "Talent Market"
+      ],
+      "windowId": "main",
+      "issuesFound": 52,
+      "durationMs": 0
+    },
+    {
+      "stateId": "http://localhost:5173/::tablet::interaction-probe::Hall of Fame Studio V1",
+      "url": "http://localhost:5173/",
+      "viewport": "tablet",
+      "scrollSegment": "interaction-probe",
+      "actionPath": [
+        "Hall of Fame Studio V1"
+      ],
+      "windowId": "main",
+      "issuesFound": 7,
+      "durationMs": 0
+    },
+    {
+      "stateId": "http://localhost:5173/::tablet::interaction-probe::Apollo Neural API",
+      "url": "http://localhost:5173/",
+      "viewport": "tablet",
+      "scrollSegment": "interaction-probe",
+      "actionPath": [
+        "Apollo Neural API"
+      ],
+      "windowId": "main",
+      "issuesFound": 8,
+      "durationMs": 0
+    },
+    {
+      "stateId": "http://localhost:5173/::tablet::interaction-probe::D",
+      "url": "http://localhost:5173/",
+      "viewport": "tablet",
+      "scrollSegment": "interaction-probe",
+      "actionPath": [
+        "D"
+      ],
+      "windowId": "main",
+      "issuesFound": 14,
+      "durationMs": 0
+    },
+    {
+      "stateId": "http://localhost:5173/::tablet::interaction-probe::[data-zindexdoctor-action-id=\"zdx-action-000\"]",
+      "url": "http://localhost:5173/",
+      "viewport": "tablet",
+      "scrollSegment": "interaction-probe",
+      "actionPath": [
+        "[data-zindexdoctor-action-id=\"zdx-action-000\"]"
+      ],
+      "windowId": "main",
+      "issuesFound": 4,
+      "durationMs": 0
+    },
+    {
+      "stateId": "http://localhost:5173/::tablet::interaction-probe::[data-zindexdoctor-action-id=\"zdx-action-003\"]",
+      "url": "http://localhost:5173/",
+      "viewport": "tablet",
+      "scrollSegment": "interaction-probe",
+      "actionPath": [
+        "[data-zindexdoctor-action-id=\"zdx-action-003\"]"
+      ],
+      "windowId": "main",
+      "issuesFound": 7,
+      "durationMs": 0
+    },
+    {
+      "stateId": "http://localhost:5173/::tablet::interaction-probe::Studio Director@director",
+      "url": "http://localhost:5173/",
+      "viewport": "tablet",
+      "scrollSegment": "interaction-probe",
+      "actionPath": [
+        "Studio Director@director"
+      ],
+      "windowId": "main",
+      "issuesFound": 14,
+      "durationMs": 0
+    },
+    {
+      "stateId": "http://localhost:5173/::tablet::interaction-probe::[data-zindexdoctor-action-id=\"zdx-action-008\"]",
+      "url": "http://localhost:5173/",
+      "viewport": "tablet",
+      "scrollSegment": "interaction-probe",
+      "actionPath": [
+        "[data-zindexdoctor-action-id=\"zdx-action-008\"]"
+      ],
+      "windowId": "main",
+      "issuesFound": 14,
+      "durationMs": 0
+    },
+    {
+      "stateId": "http://localhost:5173/::tablet::scroll-0pct::init",
+      "url": "http://localhost:5173/",
+      "viewport": "tablet",
+      "scrollSegment": "scroll-0pct",
+      "actionPath": [],
+      "windowId": "main",
+      "issuesFound": 4,
+      "durationMs": 14874
+    },
+    {
+      "stateId": "http://localhost:5173/::tablet::scroll-0pct::Start InitiationMandatory roundtable",
+      "url": "http://localhost:5173/",
+      "viewport": "tablet",
+      "scrollSegment": "scroll-0pct",
+      "actionPath": [
+        "Start InitiationMandatory roundtable"
+      ],
+      "windowId": "main",
+      "issuesFound": 7,
+      "durationMs": 15549
+    },
+    {
+      "stateId": "http://localhost:5173/::tablet::scroll-0pct::Start initiation roundtable",
+      "url": "http://localhost:5173/",
+      "viewport": "tablet",
+      "scrollSegment": "scroll-0pct",
+      "actionPath": [
+        "Start initiation roundtable"
+      ],
+      "windowId": "main",
+      "issuesFound": 7,
+      "durationMs": 16332
+    },
+    {
+      "stateId": "http://localhost:5173/::tablet::scroll-0pct::Open user settings",
+      "url": "http://localhost:5173/",
+      "viewport": "tablet",
+      "scrollSegment": "scroll-0pct",
+      "actionPath": [
+        "Open user settings"
+      ],
+      "windowId": "main",
+      "issuesFound": 7,
+      "durationMs": 17109
+    },
+    {
+      "stateId": "http://localhost:5173/::tablet::scroll-0pct::Settings",
+      "url": "http://localhost:5173/",
+      "viewport": "tablet",
+      "scrollSegment": "scroll-0pct",
+      "actionPath": [
+        "Settings"
+      ],
+      "windowId": "main",
+      "issuesFound": 7,
+      "durationMs": 17905
+    },
+    {
+      "stateId": "http://localhost:5173/::mobile::interaction-probe::Start InitiationMandatory roundtable",
+      "url": "http://localhost:5173/",
+      "viewport": "mobile",
+      "scrollSegment": "interaction-probe",
+      "actionPath": [
+        "Start InitiationMandatory roundtable"
+      ],
+      "windowId": "main",
+      "issuesFound": 12,
+      "durationMs": 0
+    },
+    {
+      "stateId": "http://localhost:5173/::mobile::interaction-probe::Workspace Hub",
+      "url": "http://localhost:5173/",
+      "viewport": "mobile",
+      "scrollSegment": "interaction-probe",
+      "actionPath": [
+        "Workspace Hub"
+      ],
+      "windowId": "main",
+      "issuesFound": 16,
+      "durationMs": 0
+    },
+    {
+      "stateId": "http://localhost:5173/::mobile::interaction-probe::Talent Market",
+      "url": "http://localhost:5173/",
+      "viewport": "mobile",
+      "scrollSegment": "interaction-probe",
+      "actionPath": [
+        "Talent Market"
+      ],
+      "windowId": "main",
+      "issuesFound": 15,
+      "durationMs": 0
+    },
+    {
+      "stateId": "http://localhost:5173/::mobile::interaction-probe::Hall of Fame Studio V1",
+      "url": "http://localhost:5173/",
+      "viewport": "mobile",
+      "scrollSegment": "interaction-probe",
+      "actionPath": [
+        "Hall of Fame Studio V1"
+      ],
+      "windowId": "main",
+      "issuesFound": 21,
+      "durationMs": 0
+    },
+    {
+      "stateId": "http://localhost:5173/::mobile::interaction-probe::Apollo Neural API",
+      "url": "http://localhost:5173/",
+      "viewport": "mobile",
+      "scrollSegment": "interaction-probe",
+      "actionPath": [
+        "Apollo Neural API"
+      ],
+      "windowId": "main",
+      "issuesFound": 21,
+      "durationMs": 0
+    },
+    {
+      "stateId": "http://localhost:5173/::mobile::interaction-probe::D",
+      "url": "http://localhost:5173/",
+      "viewport": "mobile",
+      "scrollSegment": "interaction-probe",
+      "actionPath": [
+        "D"
+      ],
+      "windowId": "main",
+      "issuesFound": 39,
+      "durationMs": 0
+    },
+    {
+      "stateId": "http://localhost:5173/::mobile::interaction-probe::[data-zindexdoctor-action-id=\"zdx-action-000\"]",
+      "url": "http://localhost:5173/",
+      "viewport": "mobile",
+      "scrollSegment": "interaction-probe",
+      "actionPath": [
+        "[data-zindexdoctor-action-id=\"zdx-action-000\"]"
+      ],
+      "windowId": "main",
+      "issuesFound": 13,
+      "durationMs": 0
+    },
+    {
+      "stateId": "http://localhost:5173/::mobile::interaction-probe::[data-zindexdoctor-action-id=\"zdx-action-003\"]",
+      "url": "http://localhost:5173/",
+      "viewport": "mobile",
+      "scrollSegment": "interaction-probe",
+      "actionPath": [
+        "[data-zindexdoctor-action-id=\"zdx-action-003\"]"
+      ],
+      "windowId": "main",
+      "issuesFound": 12,
+      "durationMs": 0
+    },
+    {
+      "stateId": "http://localhost:5173/::mobile::interaction-probe::Studio Director@director",
+      "url": "http://localhost:5173/",
+      "viewport": "mobile",
+      "scrollSegment": "interaction-probe",
+      "actionPath": [
+        "Studio Director@director"
+      ],
+      "windowId": "main",
+      "issuesFound": 39,
+      "durationMs": 0
+    },
+    {
+      "stateId": "http://localhost:5173/::mobile::interaction-probe::[data-zindexdoctor-action-id=\"zdx-action-008\"]",
+      "url": "http://localhost:5173/",
+      "viewport": "mobile",
+      "scrollSegment": "interaction-probe",
+      "actionPath": [
+        "[data-zindexdoctor-action-id=\"zdx-action-008\"]"
+      ],
+      "windowId": "main",
+      "issuesFound": 39,
+      "durationMs": 0
+    },
+    {
+      "stateId": "http://localhost:5173/::mobile::scroll-0pct::init",
+      "url": "http://localhost:5173/",
+      "viewport": "mobile",
+      "scrollSegment": "scroll-0pct",
+      "actionPath": [],
+      "windowId": "main",
+      "issuesFound": 16,
+      "durationMs": 14936
+    },
+    {
+      "stateId": "http://localhost:5173/::mobile::scroll-0pct::Start InitiationMandatory roundtable",
+      "url": "http://localhost:5173/",
+      "viewport": "mobile",
+      "scrollSegment": "scroll-0pct",
+      "actionPath": [
+        "Start InitiationMandatory roundtable"
+      ],
+      "windowId": "main",
+      "issuesFound": 12,
+      "durationMs": 15646
+    },
+    {
+      "stateId": "http://localhost:5173/::mobile::scroll-0pct::Start initiation roundtable",
+      "url": "http://localhost:5173/",
+      "viewport": "mobile",
+      "scrollSegment": "scroll-0pct",
+      "actionPath": [
+        "Start initiation roundtable"
+      ],
+      "windowId": "main",
+      "issuesFound": 12,
+      "durationMs": 16456
+    },
+    {
+      "stateId": "http://localhost:5173/::mobile::scroll-0pct::Open user settings",
+      "url": "http://localhost:5173/",
+      "viewport": "mobile",
+      "scrollSegment": "scroll-0pct",
+      "actionPath": [
+        "Open user settings"
+      ],
+      "windowId": "main",
+      "issuesFound": 12,
+      "durationMs": 17268
+    },
+    {
+      "stateId": "http://localhost:5173/::mobile::scroll-0pct::Settings",
+      "url": "http://localhost:5173/",
+      "viewport": "mobile",
+      "scrollSegment": "scroll-0pct",
+      "actionPath": [
+        "Settings"
+      ],
+      "windowId": "main",
+      "issuesFound": 12,
+      "durationMs": 18084
+    }
+  ]
+}

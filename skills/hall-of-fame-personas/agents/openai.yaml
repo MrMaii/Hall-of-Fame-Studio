@@ -1,0 +1,4 @@
+interface:
+  display_name: "Hall of Fame Personas"
+  short_description: "Choose, prompt, and run persona agents"
+  default_prompt: "Use $hall-of-fame-personas to choose the best historical persona team for a product strategy roundtable."

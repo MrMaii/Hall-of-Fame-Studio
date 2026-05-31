@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Hall of Fame Persona",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "slug",
+    "name",
+    "role",
+    "motto",
+    "identity",
+    "intro",
+    "achievements",
+    "scores",
+    "bestFor",
+    "notFor",
+    "principles",
+    "style",
+    "defaultFormat",
+    "sceneRules",
+    "keywords"
+  ],
+  "properties": {
+    "schemaVersion": { "type": "string", "const": "1.0" },
+    "slug": { "type": "string", "pattern": "^[a-z0-9_]+$" },
+    "name": { "type": "string", "minLength": 1 },
+    "role": { "type": "string", "minLength": 1 },
+    "motto": { "type": "string", "minLength": 1 },
+    "identity": { "type": "string", "minLength": 1 },
+    "intro": { "type": "string", "minLength": 1 },
+    "achievements": { "type": "array", "minItems": 3, "items": { "type": "string" } },
+    "bestFor": { "type": "array", "minItems": 3, "items": { "type": "string" } },
+    "notFor": { "type": "array", "minItems": 3, "items": { "type": "string" } },
+    "principles": { "type": "array", "minItems": 5, "items": { "type": "string" } },
+    "style": { "type": "array", "minItems": 3, "items": { "type": "string" } },
+    "defaultFormat": { "type": "array", "minItems": 3, "items": { "type": "string" } },
+    "keywords": { "type": "array", "minItems": 5, "items": { "type": "string" } },
+    "scores": {
+      "type": "object",
+      "required": [
+        "activity",
+        "optimism",
+        "leadership",
+        "rigor",
+        "initiative",
+        "riskTolerance",
+        "patience",
+        "collaboration",
+        "skepticism",
+        "creativity"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "activity": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "optimism": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "leadership": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "rigor": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "initiative": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "riskTolerance": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "patience": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "collaboration": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "skepticism": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "creativity": { "type": "integer", "minimum": 0, "maximum": 100 }
+      }
+    },
+    "sceneRules": {
+      "type": "object",
+      "required": [
+        "unclearRequest",
+        "conflict",
+        "urgentDeadline",
+        "riskFound",
+        "taskFits",
+        "taskMisfit"
+      ],
+      "properties": {
+        "unclearRequest": { "type": "string", "minLength": 1 },
+        "conflict": { "type": "string", "minLength": 1 },
+        "urgentDeadline": { "type": "string", "minLength": 1 },
+        "riskFound": { "type": "string", "minLength": 1 },
+        "taskFits": { "type": "string", "minLength": 1 },
+        "taskMisfit": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

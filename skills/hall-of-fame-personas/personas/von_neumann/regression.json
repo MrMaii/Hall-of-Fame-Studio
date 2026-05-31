@@ -1,0 +1,7 @@
+[
+  {
+    "id": "von_neumann_self_fit_1",
+    "task": "博弈策略建模",
+    "expectTop1": "von_neumann"
+  }
+]

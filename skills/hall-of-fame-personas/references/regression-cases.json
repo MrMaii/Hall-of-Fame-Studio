@@ -1,0 +1,282 @@
+[
+  {
+    "id": "musk_mvp_launch_1",
+    "task": "从0到1做新产品原型，今天要上线MVP并快速收集反馈",
+    "expectTop1": "musk"
+  },
+  {
+    "id": "musk_cost_engineering_1",
+    "task": "需要在两周内压缩硬件成本并快速做工程降本方案",
+    "expectTop1": "musk"
+  },
+  {
+    "id": "musk_breakthrough_push_1",
+    "task": "团队要做突破式创新，要求高压推进和强执行节奏",
+    "expectTop1": "musk"
+  },
+  {
+    "id": "curie_risk_validation_1",
+    "task": "发布前进行风险评审、证据复核和安全验证",
+    "expectTop1": "curie"
+  },
+  {
+    "id": "curie_data_method_1",
+    "task": "研究结论存在争议，需要补做实验和数据复核",
+    "expectTop1": "curie"
+  },
+  {
+    "id": "curie_causality_1",
+    "task": "分析报告中因果关系不明确，需要方法学审查",
+    "expectTop1": "curie"
+  },
+  {
+    "id": "confucius_conflict_1",
+    "task": "跨部门冲突升级，需要协调责任边界和协作规则",
+    "expectTop1": "confucius"
+  },
+  {
+    "id": "confucius_governance_1",
+    "task": "团队流程混乱，想建立长期治理制度和复盘机制",
+    "expectTop1": "confucius"
+  },
+  {
+    "id": "confucius_culture_1",
+    "task": "组织文化出现信任问题，需要伦理校准和秩序恢复",
+    "expectTop1": "confucius"
+  },
+  {
+    "id": "turing_system_model_1",
+    "task": "要把复杂业务抽象成状态机和自动化决策模型",
+    "expectTop1": "turing"
+  },
+  {
+    "id": "turing_algo_1",
+    "task": "需要算法优化和系统架构重构，明确输入输出约束",
+    "expectTop1": "turing"
+  },
+  {
+    "id": "turing_security_1",
+    "task": "平台出现安全漏洞，需要威胁建模和修复优先级",
+    "expectTop1Any": ["turing", "curie"]
+  },
+  {
+    "id": "buffett_value_1",
+    "task": "评估一个业务是否有长期价值、现金流和安全边际",
+    "expectTop1": "buffett"
+  },
+  {
+    "id": "buffett_capital_1",
+    "task": "制定资本配置与机会成本排序方案，评估长期回报和现金流质量",
+    "expectTop1": "buffett"
+  },
+  {
+    "id": "buffett_strategy_1",
+    "task": "制定三年战略，重点关注复利增长和下行风险",
+    "expectTop1": "buffett"
+  },
+  {
+    "id": "mixed_launch_risk_1",
+    "task": "新品上线窗口很紧，既要速度也要风险验证",
+    "expectTop1Any": ["musk", "curie"],
+    "expectTop3Includes": ["musk", "curie"]
+  },
+  {
+    "id": "mixed_strategy_governance_1",
+    "task": "在组织扩张期制定长期战略，同时重建治理和责任体系",
+    "expectTop1Any": ["buffett", "confucius"],
+    "expectTop3Includes": ["buffett", "confucius"]
+  },
+  {
+    "id": "mixed_model_validation_1",
+    "task": "提出了新算法方案，需要先建模再验证其可靠性",
+    "expectTop1Any": ["turing", "curie"],
+    "expectTop3Includes": ["turing", "curie"]
+  },
+  {
+    "id": "mixed_innovation_value_1",
+    "task": "探索新赛道时要兼顾突破速度和商业可持续性",
+    "expectTop1Any": ["musk", "buffett"],
+    "expectTop3Includes": ["musk"]
+  },
+  {
+    "id": "mixed_conflict_delivery_1",
+    "task": "项目临近发布但团队冲突激烈，需要先稳定协作再推进交付",
+    "expectTop1Any": ["confucius", "musk"],
+    "expectTop3Includes": ["confucius"]
+  },
+  {
+    "id": "jobs_experience_focus_1",
+    "task": "产品体验打磨和功能取舍需要统一，准备一次重大发布叙事",
+    "expectTop1": "jobs"
+  },
+  {
+    "id": "da_vinci_cross_domain_1",
+    "task": "要做跨学科创新探索，先输出多路径创意草图和概念验证方案",
+    "expectTop1": "da_vinci"
+  },
+  {
+    "id": "nightingale_ops_quality_1",
+    "task": "客服流程混乱，需要SOP、指标监控和培训机制来稳定服务质量",
+    "expectTop1": "nightingale"
+  },
+  {
+    "id": "sun_tzu_competition_1",
+    "task": "竞争加剧，需要制定攻防节奏、资源配置和止损策略",
+    "expectTop1": "sun_tzu"
+  },
+  {
+    "id": "kahneman_bias_audit_1",
+    "task": "重大投资决策前需要识别确认偏误和过度自信，做概率评审",
+    "expectTop1": "kahneman"
+  },
+  {
+    "id": "ada_lovelace_orchestration_1",
+    "task": "把业务能力做成规则引擎和可编排自动化模块，兼顾扩展性",
+    "expectTop1": "ada_lovelace"
+  },
+  {
+    "id": "mandela_reconciliation_1",
+    "task": "管理层与执行层严重对立，需要和解谈判和共识重建机制",
+    "expectTop1": "mandela"
+  },
+  {
+    "id": "goodall_field_insight_1",
+    "task": "用户反馈矛盾，需要现场观察、采样记录和行为洞察",
+    "expectTop1": "goodall"
+  },
+  {
+    "id": "einstein_fundamental_model_1",
+    "task": "现有解释互相矛盾，需要提炼核心变量并建立统一机理模型",
+    "expectTop1": "einstein"
+  },
+  {
+    "id": "drucker_management_system_1",
+    "task": "组织扩张后职责混乱，需要OKR、KPI和管理闭环来提升执行效率",
+    "expectTop1": "drucker"
+  },
+  {
+    "id": "shannon_signal_optimization_1",
+    "task": "数据链路噪声过高，需要优化编码传输、误码率和吞吐",
+    "expectTop1": "shannon"
+  },
+  {
+    "id": "toyoda_lean_quality_1",
+    "task": "产线缺陷率上升，需要精益改造、质量内建和异常停线机制",
+    "expectTop1": "toyoda"
+  },
+  {
+    "id": "oprah_communication_trust_1",
+    "task": "变革推进阻力大，需要共情沟通、公众叙事和信任重建",
+    "expectTop1": "oprah"
+  },
+  {
+    "id": "tesla_deep_tech_proto_1",
+    "task": "需要设计深科技系统样机，验证核心物理机理和能源路径",
+    "expectTop1": "tesla"
+  },
+  {
+    "id": "feynman_debug_explain_1",
+    "task": "线上故障反复出现，需要最小复现、调试定位并讲清根因",
+    "expectTop1": "feynman"
+  },
+  {
+    "id": "deming_spc_quality_1",
+    "task": "质量波动明显，需要SPC过程控制和持续改进机制",
+    "expectTop1": "deming"
+  },
+  {
+    "id": "hopper_legacy_modernize_1",
+    "task": "遗留系统维护成本过高，需要渐进重构和工具链现代化",
+    "expectTop1": "hopper_legacy"
+  },
+  {
+    "id": "carson_longterm_risk_1",
+    "task": "项目短期收益高但外部性不明，需要长期风险预警和影响评估",
+    "expectTop1": "carson"
+  },
+  {
+    "id": "carnegie_negotiation_1",
+    "task": "关键合作方迟迟不签约，需要谈判策略与利益相关方说服方案",
+    "expectTop1": "carnegie"
+  },
+  {
+    "id": "berners_protocol_interop_1",
+    "task": "多个系统打不通，需要开放协议、API标准和兼容版本策略",
+    "expectTop1": "berners_lee"
+  },
+  {
+    "id": "noether_invariant_check_1",
+    "task": "规则系统频繁冲突，需要识别不变量并做形式化一致性审查",
+    "expectTop1": "noether"
+  },
+  {
+    "id": "simon_decision_flow_1",
+    "task": "高层决策总反复，需要设计有限理性的决策流程和启发式规则",
+    "expectTop1": "simon"
+  },
+  {
+    "id": "ostrom_collective_governance_1",
+    "task": "多团队共用资源经常扯皮，需要共治规则和激励监督机制",
+    "expectTop1": "ostrom"
+  },
+  {
+    "id": "john_snow_source_trace_1",
+    "task": "线上异常扩散，需用地图化分布和证据链快速溯源止损",
+    "expectTop1": "john_snow"
+  },
+  {
+    "id": "chanel_brand_consistency_1",
+    "task": "品牌表达很散，需要统一调性、视觉语言和发布叙事质感",
+    "expectTop1": "chanel"
+  },
+  {
+    "id": "aristotle_taxonomy_logic_1",
+    "task": "团队术语混乱，需要先做定义澄清和分类框架再推进讨论",
+    "expectTop1": "aristotle"
+  },
+  {
+    "id": "lincoln_crisis_unity_1",
+    "task": "组织在重大危机下出现分裂，需要原则统一和高压领导整合",
+    "expectTop1": "lincoln"
+  },
+  {
+    "id": "von_neumann_game_strategy_1",
+    "task": "竞品博弈激烈，需要收益矩阵和最优策略推演来做决策",
+    "expectTop1": "von_neumann"
+  },
+  {
+    "id": "edison_experiment_productize_1",
+    "task": "要把技术点子快速产品化，需要高频实验迭代和商业化验证",
+    "expectTop1": "edison"
+  },
+  {
+    "id": "wangari_sustainable_mobilization_1",
+    "task": "项目要做长期可持续推进，需要社区动员和协作网络机制",
+    "expectTop1": "wangari_maathai"
+  },
+  {
+    "id": "nash_equilibrium_negotiation_1",
+    "task": "多方谈判僵持，需要分析最优反应和均衡策略来破局",
+    "expectTop1": "nash"
+  },
+  {
+    "id": "amelia_frontier_path_1",
+    "task": "要进入未知新市场，需要高风险航线规划和阶段开拓执行",
+    "expectTop1": "amelia_earhart"
+  },
+  {
+    "id": "ibn_khaldun_macro_trend_1",
+    "task": "公司要做十年布局，需要长周期趋势和结构性风险分析",
+    "expectTop1": "ibn_khaldun"
+  },
+  {
+    "id": "babbage_workflow_automation_1",
+    "task": "运营大量重复手工步骤，需做流程自动化和效率工程改造",
+    "expectTop1": "babbage"
+  },
+  {
+    "id": "ramanujan_numeric_pattern_1",
+    "task": "指标序列很复杂，需要提炼数值模式并给出可验证公式猜想",
+    "expectTop1": "ramanujan"
+  }
+]

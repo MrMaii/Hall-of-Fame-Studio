@@ -1,0 +1,7 @@
+[
+  {
+    "id": "ramanujan_self_fit_1",
+    "task": "数值模式识别",
+    "expectTop1": "ramanujan"
+  }
+]
