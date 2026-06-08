@@ -6,6 +6,7 @@ import {
 } from '../skills/personSkillSystem.js';
 
 export const DIRECTOR_AGENT_ID = 'director';
+const EVENT_LEDGER_RETAINED_LIMIT = 1000;
 
 const ROLE_PATTERNS = [
   { test: /manager|lead|founder|steward|driver|vision|strategy/i, capability: 'orchestration' },
@@ -119,6 +120,362 @@ const CAPABILITY_KEYWORDS = {
   generalist: /./i,
 };
 
+function compactObject(value = {}) {
+  return Object.fromEntries(Object.entries(value).filter(([, item]) => (
+    item !== null
+    && item !== undefined
+    && (!(Array.isArray(item)) || item.length > 0)
+  )));
+}
+
+export function createProjectLedgerEvent({
+  id,
+  type = 'project-event',
+  time = nowIso(),
+  actor = 'Agent Runtime',
+  summary = '',
+  source = 'runtime',
+  channelId = null,
+  evidenceIds = [],
+  entityIds = {},
+  payload = {},
+} = {}) {
+  const timestamp = Date.parse(time) || Date.now();
+  return compactObject({
+    id: id || `evt_${type}_${timestamp}_${Math.random().toString(36).slice(2, 8)}`,
+    type,
+    time,
+    actor,
+    summary,
+    source,
+    channelId,
+    evidenceIds: evidenceIds.filter(Boolean),
+    entityIds: compactObject(entityIds),
+    payload: compactObject(payload),
+  });
+}
+
+export function appendProjectEvents(project = {}, events = []) {
+  const existing = project.eventLedger || [];
+  const lastKnownSequence = Math.max(
+    project.eventLedgerLastSequence || 0,
+    existing.reduce((max, event) => Math.max(max, event.sequence || 0), 0),
+  );
+  const normalizedEvents = events
+    .filter(Boolean)
+    .map((event, index) => ({
+      ...event,
+      sequence: event.sequence || lastKnownSequence + index + 1,
+      projectId: event.projectId || project.id || null,
+    }));
+  const nextLedger = [...existing, ...normalizedEvents].slice(-EVENT_LEDGER_RETAINED_LIMIT);
+  const lastEvent = nextLedger[nextLedger.length - 1] || null;
+  return {
+    ...project,
+    eventLedger: nextLedger,
+    eventLedgerFirstSequence: nextLedger[0]?.sequence || 0,
+    eventLedgerLastSequence: lastEvent?.sequence || lastKnownSequence,
+    eventLedgerEventCount: Math.max(project.eventLedgerEventCount || 0, lastKnownSequence) + normalizedEvents.length,
+  };
+}
+
+function ledgerEventsFromLogs(logs = [], source = 'timeline-log') {
+  return logs.map((log) => createProjectLedgerEvent({
+    id: `evt_${log.id}`,
+    type: log.eventType || 'timeline-log',
+    time: log.time || nowIso(),
+    actor: log.agent || log.agentId || 'Agent Runtime',
+    summary: log.log || '',
+    source,
+    channelId: log.sourceChannelId || null,
+    evidenceIds: [log.id],
+    entityIds: {
+      messageId: String(log.id || '').startsWith('log_') ? String(log.id).slice(4) : null,
+      taskId: log.taskId || null,
+      agentId: log.agentId || null,
+      targetAgentId: log.targetAgentId || null,
+    },
+    payload: {
+      cadence: log.cadence || null,
+      receiptCount: log.receiptCount || null,
+      directTargetIds: log.directTargetIds || [],
+    },
+  }));
+}
+
+function uniqueLedgerEvents(events = []) {
+  const seen = new Set();
+  return events.filter(Boolean).filter((event) => {
+    const key = event.id || `${event.type}:${event.time}:${event.source}:${event.summary}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function sortLedgerEvents(events = []) {
+  return events
+    .filter(Boolean)
+    .map((event, index) => ({ event, index, timeMs: Date.parse(event.time) || 0 }))
+    .sort((a, b) => a.timeMs - b.timeMs || a.index - b.index)
+    .map(({ event }) => {
+      const { sequence, projectId, ...eventWithoutRuntimeCursors } = event;
+      return eventWithoutRuntimeCursors;
+    });
+}
+
+function legacyKickoffLedgerEvents(project = {}) {
+  const initiation = project.initiation || {};
+  const roleTranscript = initiation.roleNegotiation?.transcript || project.roleNegotiation?.transcript || [];
+  const leaderTranscript = initiation.leaderElection?.transcript || project.leaderElection?.transcript || [];
+  const charter = project.kickoffCharter || {};
+  const kickoffTime = charter.createdAt || initiation.approvedAt || initiation.createdAt || project.createdAt || nowIso();
+  const directorBriefIds = charter.evidence?.directorBriefIds?.length
+    ? charter.evidence.directorBriefIds
+    : [initiation.directorBriefId].filter(Boolean);
+  const directorBriefEvents = directorBriefIds.map((id) => createProjectLedgerEvent({
+    id: `evt_${id}`,
+    type: 'kickoff-director-brief',
+    time: kickoffTime,
+    actor: 'Director',
+    summary: initiation.summary || project.currentObjective || project.objective || project.name || '',
+    source: 'kickoff-meeting-migration',
+    channelId: 'main',
+    evidenceIds: [id],
+    entityIds: { speakerId: 'director' },
+    payload: { hears: (project.team || []).map((agent) => agent.id).filter(Boolean) },
+  }));
+  const roleSpeechEvents = roleTranscript
+    .filter((item) => item?.type === 'role-question' || item?.type === 'role-volunteer')
+    .map((item) => createProjectLedgerEvent({
+      id: `evt_${item.id}`,
+      type: item.type === 'role-question' ? 'kickoff-role-question' : 'kickoff-role-volunteer',
+      time: item.createdAt || item.time || kickoffTime,
+      actor: item.speaker || item.speakerId || 'Agent',
+      summary: item.text || '',
+      source: 'kickoff-meeting-migration',
+      channelId: item.channelId || 'main',
+      evidenceIds: [item.id],
+      entityIds: { speakerId: item.speakerId || null },
+      payload: { hears: item.hears || [] },
+    }));
+  const leaderCampaignEvents = leaderTranscript
+    .filter(Boolean)
+    .map((item) => createProjectLedgerEvent({
+      id: `evt_${item.id}`,
+      type: 'kickoff-leader-campaign',
+      time: item.createdAt || item.time || kickoffTime,
+      actor: item.speaker || item.speakerId || 'Agent',
+      summary: item.text || '',
+      source: 'kickoff-meeting-migration',
+      channelId: item.channelId || 'main',
+      evidenceIds: [item.id],
+      entityIds: { speakerId: item.speakerId || null },
+      payload: { hears: item.hearsOthers || item.hears || [] },
+    }));
+  const charterEvent = charter.id ? createProjectLedgerEvent({
+    id: `evt_${charter.id}`,
+    type: 'kickoff-charter-approved',
+    time: kickoffTime,
+    actor: 'Director',
+    summary: `${charter.title || project.name || 'Project kickoff charter'} approved.`,
+    source: 'kickoff-meeting-migration',
+    channelId: 'main',
+    evidenceIds: [
+      charter.id,
+      ...(charter.evidence?.directorBriefIds || []),
+      ...(charter.evidence?.roleTranscriptIds || []),
+      ...(charter.evidence?.leaderCampaignIds || []),
+      ...(charter.evidence?.assignmentMessageIds || []),
+      ...(charter.evidence?.acknowledgementMessageIds || []),
+    ],
+    entityIds: {
+      leaderId: charter.governance?.leaderId || initiation.leaderId || null,
+      reviewerId: charter.governance?.reviewerId || null,
+    },
+    payload: {
+      roleQuestionCount: charter.meeting?.roleQuestionCount || roleSpeechEvents.filter((event) => event.type === 'kickoff-role-question').length,
+      selfNominationCount: charter.meeting?.selfNominationCount || roleSpeechEvents.filter((event) => event.type === 'kickoff-role-volunteer').length,
+      leaderCandidateCount: charter.meeting?.leaderCandidateCount || leaderCampaignEvents.length,
+    },
+  }) : null;
+
+  return [
+    ...(charter.ledgerEvents || []),
+    ...(charter.ledgerEvent ? [charter.ledgerEvent] : []),
+    ...directorBriefEvents,
+    ...roleSpeechEvents,
+    ...leaderCampaignEvents,
+    charterEvent,
+  ];
+}
+
+function legacyChangeLedgerEvents(changes = []) {
+  return changes.map((change) => createProjectLedgerEvent({
+    id: `evt_${change.id}`,
+    type: 'change-confirmed-and-synced',
+    time: change.requestedAt || change.confirmedAt || nowIso(),
+    actor: change.ownerName || change.leadName || 'Responsible Agent',
+    summary: `${change.ownerName || 'Owner'} accepted "${change.requestText || change.taskId || 'change'}" from ${change.source || 'change request'} and synced ${change.teamSyncCount || 0} Agent(s).`,
+    source: change.source || 'change-ledger-migration',
+    channelId: change.sourceChannelId || null,
+    evidenceIds: [
+      change.id,
+      change.confirmationMessageId,
+      change.syncMessageId,
+      ...(change.discussionMessageIds || []),
+    ].filter(Boolean),
+    entityIds: {
+      taskId: change.taskId || null,
+      ownerId: change.ownerId || null,
+      changeRecordId: change.id || null,
+    },
+    payload: {
+      status: change.status || null,
+      teamSyncCount: change.teamSyncCount || 0,
+      sourceChannelId: change.sourceChannelId || null,
+    },
+  }));
+}
+
+function legacyPeerHandoffLedgerEvents(handoffs = []) {
+  return handoffs.map((handoff) => createProjectLedgerEvent({
+    id: `evt_${handoff.id}`,
+    type: 'peer-handoff-accepted',
+    time: handoff.acknowledgedAt || handoff.requestedAt || nowIso(),
+    actor: handoff.requesterName || handoff.requesterId || 'Requesting Agent',
+    summary: `${handoff.requesterName || 'Requester'} handed a dependency to ${handoff.targetName || 'peer'} and received acknowledgement.`,
+    source: 'peer-handoff-migration',
+    channelId: handoff.sourceChannelId || null,
+    evidenceIds: [
+      handoff.id,
+      handoff.requestMessageId,
+      handoff.acknowledgementMessageId,
+    ].filter(Boolean),
+    entityIds: {
+      taskId: handoff.taskId || null,
+      requesterId: handoff.requesterId || null,
+      targetAgentId: handoff.targetId || null,
+    },
+    payload: { status: handoff.status || null },
+  }));
+}
+
+function legacyAutonomousSchedulerLedgerEvents(schedulerRecords = []) {
+  return schedulerRecords.map((record) => createProjectLedgerEvent({
+    id: `evt_${record.id}`,
+    type: 'autonomous-scheduler',
+    time: record.ranAt || record.dueAt || record.createdAt || nowIso(),
+    actor: 'Agent Runtime',
+    summary: `${record.trigger || 'autonomous'} ${record.cadence || 'hourly'} cycle ran; next run ${record.nextRunAt || 'unscheduled'}.`,
+    source: 'autonomous-scheduler-migration',
+    evidenceIds: [record.id].filter(Boolean),
+    entityIds: { cycleId: record.cycleId || record.id || null },
+    payload: {
+      trigger: record.trigger || null,
+      reason: record.reason || record.schedulerReason || null,
+      dueAt: record.dueAt || null,
+      nextRunAt: record.nextRunAt || null,
+    },
+  }));
+}
+
+export function backfillProjectEventLedger(project = {}) {
+  const currentSummary = summarizeProjectEventLedger(project);
+  if (currentSummary.contiguous && currentSummary.replayProjection.replayReady) return project;
+
+  const generatedEvents = uniqueLedgerEvents(sortLedgerEvents([
+    ...(project.eventLedger || []),
+    ...legacyKickoffLedgerEvents(project),
+    ...ledgerEventsFromLogs(project.logs || [], 'timeline-log-migration'),
+    ...legacyChangeLedgerEvents(project.changeLedger || []),
+    ...legacyPeerHandoffLedgerEvents(project.peerHandoffs || []),
+    ...legacyAutonomousSchedulerLedgerEvents(project.autonomousSchedulerLedger || []),
+  ]));
+
+  if (!generatedEvents.length) return project;
+
+  return appendProjectEvents({
+    ...project,
+    eventLedger: [],
+    eventLedgerFirstSequence: 0,
+    eventLedgerLastSequence: 0,
+    eventLedgerEventCount: 0,
+  }, generatedEvents);
+}
+
+export function summarizeProjectEventLedger(project = {}) {
+  const events = project.eventLedger || [];
+  const typeCounts = events.reduce((counts, event) => ({
+    ...counts,
+    [event.type]: (counts[event.type] || 0) + 1,
+  }), {});
+  const contiguous = events.every((event, index) => (
+    index === 0 || event.sequence === events[index - 1].sequence + 1
+  ));
+  const latestByType = Object.fromEntries(events.map((event) => [event.type, event]));
+  const replayProjection = projectEventReplayProjection(project);
+  return {
+    eventCount: project.eventLedgerEventCount || project.eventLedgerLastSequence || events.length,
+    retainedCount: events.length,
+    firstSequence: project.eventLedgerFirstSequence || events[0]?.sequence || 0,
+    lastSequence: project.eventLedgerLastSequence || events[events.length - 1]?.sequence || 0,
+    contiguous,
+    typeCounts,
+    latestByType,
+    replayProjection,
+    coverage: {
+      kickoff: Boolean(typeCounts['kickoff-charter-approved']),
+      kickoffRoleQuestion: Boolean(typeCounts['kickoff-role-question']),
+      kickoffRoleVolunteer: Boolean(typeCounts['kickoff-role-volunteer']),
+      kickoffLeaderCampaign: Boolean(typeCounts['kickoff-leader-campaign']),
+      leaderAssignment: Boolean(typeCounts['leader-assignment']),
+      change: Boolean(typeCounts['change-confirmed-and-synced']),
+      peerHandoff: Boolean(typeCounts['peer-handoff-accepted']),
+      autonomous: Boolean(typeCounts['autonomous-scheduler']),
+    },
+  };
+}
+
+export function projectEventReplayProjection(project = {}) {
+  const events = project.eventLedger || [];
+  const byType = (type) => events.filter((event) => event.type === type);
+  const roleQuestions = byType('kickoff-role-question');
+  const roleVolunteers = byType('kickoff-role-volunteer');
+  const leaderCampaigns = byType('kickoff-leader-campaign');
+  const assignments = byType('leader-assignment');
+  const assignmentAcks = byType('assignment-acknowledged');
+  const changes = byType('change-confirmed-and-synced');
+  const handoffs = byType('peer-handoff-accepted');
+  const autonomousSchedulers = byType('autonomous-scheduler');
+  const managementEvents = events.filter((event) => ['management-check-in', 'peer-management-check-in', 'review-sweep'].includes(event.type));
+  const taskCompletions = byType('task-completed');
+
+  return {
+    kickoffSpeechCount: roleQuestions.length + roleVolunteers.length + leaderCampaigns.length,
+    roleQuestionCount: roleQuestions.length,
+    roleVolunteerCount: roleVolunteers.length,
+    leaderCampaignCount: leaderCampaigns.length,
+    leaderAssignmentCount: assignments.length,
+    assignmentAcknowledgementCount: assignmentAcks.length,
+    changeConfirmationCount: changes.length,
+    peerHandoffCount: handoffs.length,
+    autonomousRunCount: autonomousSchedulers.length,
+    managementEventCount: managementEvents.length,
+    taskCompletionCount: taskCompletions.length,
+    latestEvent: events[events.length - 1] || null,
+    replayReady: Boolean(
+      roleQuestions.length
+      && roleVolunteers.length
+      && leaderCampaigns.length
+      && assignments.length
+      && changes.length
+      && handoffs.length
+      && autonomousSchedulers.length
+    ),
+  };
+}
+
 function nowIso() {
   return new Date().toISOString();
 }
@@ -133,6 +490,51 @@ function getMeetingProtocol(type = DEFAULT_PROTOCOL_ID) {
 
 function getCadence(cadence = 'hourly') {
   return WORK_CADENCE[cadence] || WORK_CADENCE.hourly;
+}
+
+export function intervalMsForCadence(cadence = 'hourly') {
+  return getCadence(cadence).horizonHours * 60 * 60 * 1000;
+}
+
+function safeDateMs(value, fallback = Date.now()) {
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+export function evaluateAutonomousSchedule({ project = {}, cadence = project.autonomy?.cadence || project.autonomousCadence || 'hourly', now = nowIso() } = {}) {
+  const intervalMs = intervalMsForCadence(cadence);
+  const nowMs = safeDateMs(now);
+  const lastRunAt = project.lastAutonomousRunAt || null;
+  const storedNextRunAt = project.nextAutonomousRunAt || null;
+  const lastRunMs = lastRunAt ? safeDateMs(lastRunAt, nowMs) : null;
+  const nextRunMs = storedNextRunAt
+    ? safeDateMs(storedNextRunAt, nowMs)
+    : lastRunMs
+      ? lastRunMs + intervalMs
+      : nowMs;
+  const dueAt = new Date(nextRunMs).toISOString();
+  const enabled = Boolean(project.autonomy?.enabled);
+  const due = enabled && nowMs >= nextRunMs;
+  const reason = !enabled
+    ? 'autonomy-paused'
+    : !lastRunAt && !storedNextRunAt
+      ? 'no-previous-autonomous-cycle'
+      : due
+        ? `${cadence}-cadence-due`
+        : `${cadence}-cadence-waiting`;
+
+  return {
+    cadence,
+    enabled,
+    due,
+    reason,
+    dueAt,
+    now,
+    lastRunAt,
+    nextRunAt: dueAt,
+    intervalMs,
+    lagMs: due ? Math.max(0, nowMs - nextRunMs) : 0,
+  };
 }
 
 function hasCapabilitySignal(agent, text = '') {
@@ -481,7 +883,7 @@ export function buildAgentChatReplies({ team = [], text = '', targets = [], chan
     },
   });
 
-  return processed.utterances.map((utterance, index) => {
+  return attachReceiptsToMessages(processed.utterances.map((utterance, index) => {
     const agent = processed.network.agents.find((item) => item.id === utterance.agentId);
     const reading = processed.readings.find((item) => item.agentId === utterance.agentId);
     return {
@@ -501,7 +903,7 @@ export function buildAgentChatReplies({ team = [], text = '', targets = [], chan
         decision: reading.shouldSpeak ? 'speak' : reading.shouldRead ? 'read' : 'ignore',
       } : null,
     };
-  });
+  }), team, { seenAt: context.now || null });
 }
 
 export function readCommunication(agent, message = {}, network = null) {
@@ -568,6 +970,177 @@ export function readCommunication(agent, message = {}, network = null) {
   };
 }
 
+function targetMatchesAgent(target = '', agent = {}) {
+  const normalized = String(target).toLowerCase();
+  if (!normalized) return false;
+  return normalized === String(agent.id || '').toLowerCase()
+    || normalized === String(agent.name || '').toLowerCase()
+    || (agent.slug && normalized === String(agent.slug).toLowerCase());
+}
+
+function authorMatchesAgent(message = {}, agent = {}) {
+  return targetMatchesAgent(message.authorId || '', agent)
+    || targetMatchesAgent(message.author || '', agent);
+}
+
+export function attachMessageReceipts(message = {}, team = [], options = {}) {
+  const targetTokens = new Set([
+    ...(message.targetIds || []),
+    ...(message.targets || []),
+  ].map((target) => String(target).toLowerCase()));
+  const text = message.text || '';
+  const broadcast = options.broadcast ?? (
+    targetTokens.has('all')
+    || /@all\b/i.test(text)
+    || ['main', 'google_chat'].includes(message.channelId)
+  );
+  const directTargets = team.filter((agent) => (
+    targetTokens.has(String(agent.id || '').toLowerCase())
+    || targetTokens.has(String(agent.name || '').toLowerCase())
+    || text.toLowerCase().includes(`@${String(agent.name || '').toLowerCase()}`)
+    || text.toLowerCase().includes(`@${String(agent.id || '').toLowerCase()}`)
+  ));
+  const recipients = team.filter((agent) => (
+    !authorMatchesAgent(message, agent)
+    && (broadcast || directTargets.some((target) => target.id === agent.id))
+  ));
+  const directTargetIds = directTargets.map((agent) => agent.id);
+  const receipts = recipients.map((agent) => ({
+    agentId: agent.id,
+    agentName: agent.name,
+    mode: directTargetIds.includes(agent.id) || targetTokens.has('all') ? 'direct' : 'ambient',
+    seenAt: options.seenAt || message.createdAt || null,
+    channelId: message.channelId || 'main',
+  }));
+
+  return {
+    ...message,
+    heardBy: receipts.map((receipt) => receipt.agentId),
+    directTargetIds,
+    receipts,
+    visibility: {
+      scope: broadcast ? 'project-team' : 'direct-targets',
+      channelId: message.channelId || 'main',
+      receiptCount: receipts.length,
+      directTargetCount: directTargetIds.length,
+    },
+  };
+}
+
+export function attachReceiptsToMessages(messages = [], team = [], options = {}) {
+  return messages.map((message) => attachMessageReceipts(message, team, options));
+}
+
+export function applyChatMessagesToAgentStates({
+  project = {},
+  team = project.team || [],
+  messages = [],
+  now = nowIso(),
+  source = 'group-chat',
+} = {}) {
+  if (!messages.length) return project;
+  const network = createAgentNetwork(team, {
+    projectId: project.id,
+    projectName: project.name,
+    topic: messages.map((message) => message.text).join(' '),
+  });
+  const previousStates = project.agentStates || {};
+  const nextAgentStates = { ...previousStates };
+
+  network.agents.forEach((agent) => {
+    const previous = previousStates[agent.id] || {};
+    const receivedMessages = messages.filter((message) => (
+      (message.receipts || []).some((receipt) => receipt.agentId === agent.id)
+    ));
+    const directMessages = receivedMessages.filter((message) => (
+      (message.directTargetIds || []).includes(agent.id)
+      || (message.receipts || []).some((receipt) => receipt.agentId === agent.id && receipt.mode === 'direct')
+    ));
+    const authoredMessages = messages.filter((message) => authorMatchesAgent(message, agent));
+    if (!receivedMessages.length && !authoredMessages.length && previousStates[agent.id]) return;
+
+    const existingMessageIds = new Set((previous.inbox || []).map((item) => item.sourceMessageId || item.messageId).filter(Boolean));
+    const inboxItems = directMessages
+      .filter((message) => !existingMessageIds.has(message.id))
+      .map((message) => ({
+        id: `chat_inbox_${message.id}_${agent.id}`,
+        source,
+        sourceMessageId: message.id,
+        channelId: message.channelId || 'main',
+        from: message.authorId || message.author || 'unknown',
+        text: message.text || '',
+        taskId: message.assignment?.taskId || message.assignmentReceipt?.taskId || message.handoffReceipt?.taskId || null,
+        receiptMode: 'direct',
+        receivedAt: now,
+      }));
+    const obligationItems = inboxItems.map((item) => ({
+      id: `chat_obligation_${item.sourceMessageId}_${agent.id}`,
+      source,
+      sourceMessageId: item.sourceMessageId,
+      text: item.text,
+      status: 'open',
+      openedAt: now,
+      due: 'next visible response',
+    }));
+    const worklogItems = authoredMessages.map((message) => ({
+      id: `chat_worklog_${message.id}_${agent.id}`,
+      at: now,
+      kind: 'chat-message-sent',
+      source,
+      sourceMessageId: message.id,
+      channelId: message.channelId || 'main',
+      text: message.text || '',
+    }));
+
+    nextAgentStates[agent.id] = {
+      agentId: agent.id,
+      name: previous.name || agent.name,
+      role: previous.role || agent.role,
+      managerId: previous.managerId || agent.managerId || null,
+      managedIds: previous.managedIds || agent.managedIds || [],
+      peerManagedIds: previous.peerManagedIds || [],
+      peerManagerId: previous.peerManagerId || null,
+      peerManagerIds: previous.peerManagerIds || [],
+      peerIds: previous.peerIds || agent.peerIds || [],
+      status: inboxItems.length ? 'reading-chat' : previous.status || (authoredMessages.length ? 'responding-chat' : 'monitoring'),
+      currentPlan: previous.currentPlan || {
+        focus: 'monitor group chat and respond to direct obligations',
+        next: 'answer direct mentions or keep watching project channel',
+        routine: workRoutineForAgent(agent),
+      },
+      taskIds: previous.taskIds || [],
+      inbox: [...inboxItems, ...(previous.inbox || [])].slice(0, 80),
+      obligations: [...obligationItems, ...(previous.obligations || [])].slice(0, 80),
+      worklog: [...worklogItems, ...(previous.worklog || [])].slice(0, 80),
+      lastActiveAt: (inboxItems.length || authoredMessages.length) ? now : previous.lastActiveAt || null,
+    };
+  });
+
+  const ledgerEvents = messages.map((message) => createProjectLedgerEvent({
+    id: `evt_chat_${message.id}`,
+    type: 'group-chat-message',
+    time: now,
+    actor: message.author || message.authorId || 'Chat',
+    summary: message.text || '',
+    source,
+    channelId: message.channelId || 'main',
+    evidenceIds: [message.id],
+    entityIds: {
+      messageId: message.id,
+    },
+    payload: {
+      receiptCount: message.visibility?.receiptCount || message.receipts?.length || 0,
+      directTargetIds: message.directTargetIds || [],
+      heardBy: message.heardBy || [],
+    },
+  }));
+
+  return appendProjectEvents({
+    ...project,
+    agentStates: nextAgentStates,
+  }, ledgerEvents);
+}
+
 export function planAgentUtterance(agent, reading, context = {}) {
   const protocol = getMeetingProtocol(context.meetingType);
   const cadence = context.cadence ? getCadence(context.cadence) : null;
@@ -630,6 +1203,75 @@ function agentWorkPriority(agent, context = {}) {
   return Math.min(100, score);
 }
 
+function taskBelongsToAgent(task = {}, agent = {}) {
+  return task.ownerId === agent.id
+    || task.assignee === agent.id
+    || task.assignee === agent.name;
+}
+
+function buildManagementEvents({ network, project = {}, cadence = 'hourly' } = {}) {
+  const lead = getLead(network);
+  const reviewer = getReviewer(network);
+  const openTasks = (project.tasks || []).filter((task) => task.status !== 'done');
+  const events = [];
+
+  if (lead) {
+    (lead.managedIds || [])
+      .map((managedId) => getAgent(network, managedId))
+      .filter(Boolean)
+      .forEach((managedAgent) => {
+        const ownedTasks = openTasks.filter((task) => taskBelongsToAgent(task, managedAgent));
+        if (!ownedTasks.length) return;
+        const blockedCount = ownedTasks.filter((task) => task.status === 'blocked').length;
+        events.push({
+          kind: 'management-check-in',
+          agentId: lead.id,
+          targetAgentId: managedAgent.id,
+          targetName: managedAgent.name,
+          taskIds: ownedTasks.map((task) => task.id).filter(Boolean).slice(0, 3),
+          channel: 'team-management',
+          text: `${lead.name}: @${managedAgent.name} management check-in for ${ownedTasks.length} open task${ownedTasks.length === 1 ? '' : 's'}. ${blockedCount ? `${blockedCount} blocker${blockedCount === 1 ? '' : 's'} need escalation; ` : ''}confirm next artifact and timeline proof before the next ${cadence} pulse.`,
+        });
+      });
+  }
+
+  if (reviewer && lead && reviewer.id !== lead.id && (cadence === 'daily' || (project.changeLedger || []).length || (project.peerHandoffs || []).length)) {
+    const evidencedTasks = (project.tasks || [])
+      .filter((task) => (task.timelineLogIds || []).length || task.completedAt || task.confirmationMessageId || task.acknowledgementMessageId)
+      .slice(0, 4);
+    events.push({
+      kind: 'review-sweep',
+      agentId: reviewer.id,
+      targetAgentId: lead.id,
+      targetName: lead.name,
+      taskIds: evidencedTasks.map((task) => task.id).filter(Boolean),
+      channel: 'evidence-review',
+      text: `${reviewer.name}: @${lead.name} review sweep is active. I am checking ${evidencedTasks.length || 'the current'} evidence thread${evidencedTasks.length === 1 ? '' : 's'} for assignment proof, owner acknowledgement, and timeline continuity.`,
+    });
+  }
+
+  Object.values(project.agentStates || {}).forEach((state) => {
+    const requester = getAgent(network, state.agentId);
+    if (!requester) return;
+    (state.peerManagedIds || []).forEach((targetId) => {
+      const target = getAgent(network, targetId);
+      if (!target) return;
+      const ownedTasks = openTasks.filter((task) => taskBelongsToAgent(task, target));
+      events.push({
+        kind: 'peer-management-check-in',
+        agentId: requester.id,
+        targetAgentId: target.id,
+        targetName: target.name,
+        taskIds: ownedTasks.map((task) => task.id).filter(Boolean).slice(0, 2),
+        channel: 'peer-management',
+        text: `${requester.name}: @${target.name} peer-management check-in on our dependency. Please publish the next evidence update and call out any blocker before I integrate it.`,
+      });
+    });
+  });
+
+  return events.slice(0, 6);
+}
+
 export function planAutonomousWorkCycle({ team = [], project = {}, cadence = 'hourly', messages = [], now = nowIso() }) {
   const cadenceProfile = getCadence(cadence);
   const network = createAgentNetwork(team, {
@@ -683,6 +1325,7 @@ export function planAutonomousWorkCycle({ team = [], project = {}, cadence = 'ho
         : null,
     };
   });
+  const managementEvents = buildManagementEvents({ network, project, cadence });
   const communicationDiagnostics = messages.flatMap((message) => (
     network.agents.map((agent) => {
       const reading = readCommunication(agent, message, network);
@@ -712,15 +1355,17 @@ export function planAutonomousWorkCycle({ team = [], project = {}, cadence = 'ho
     now,
     leadPlan,
     agentPlans,
+    managementEvents,
     communicationDiagnostics,
     events: [
       leadPlan,
+      ...managementEvents,
       ...agentPlans.map((plan) => plan.publish).filter(Boolean),
     ].filter(Boolean),
   };
 }
 
-function updateAgentStates({ project = {}, cycle, messages = [], tasks = [], logs = [], now = nowIso(), cadence = 'hourly', cycleId = '' }) {
+function updateAgentStates({ project = {}, cycle, messages = [], tasks = [], logs = [], now = nowIso(), cadence = 'hourly', cycleId = '', scheduledNextRunAt = null }) {
   const previousStates = project.agentStates || {};
   return Object.fromEntries(cycle.network.agents.map((agent) => {
     const previous = previousStates[agent.id] || {};
@@ -745,6 +1390,20 @@ function updateAgentStates({ project = {}, cycle, messages = [], tasks = [], log
         receivedAt: now,
       };
     });
+    const managementInboxItems = (cycle.managementEvents || [])
+      .filter((event) => event.targetAgentId === agent.id)
+      .map((event, index) => ({
+        id: `${cycleId}_management_inbox_${agent.id}_${index}`,
+        messageId: `${cycleId}_${event.agentId}_${event.kind}_${index}`,
+        from: event.agentId,
+        source: event.kind,
+        decision: 'accept',
+        attentionScore: 100,
+        explanation: `${event.kind} from ${getAgent(cycle.network, event.agentId)?.name || 'manager'}`,
+        obligationCount: 1,
+        taskIds: event.taskIds || [],
+        receivedAt: now,
+      }));
     const worklogItems = logs
       .filter((log) => log.agentId === agent.id || log.agent === agent.name)
       .map((log) => ({
@@ -760,7 +1419,7 @@ function updateAgentStates({ project = {}, cycle, messages = [], tasks = [], log
         openedAt: now,
       })),
       ...(previous.obligations || []).filter((obligation) => obligation.status === 'open'),
-    ].slice(0, 20);
+    ].slice(0, 80);
     const status = assignedTasks.some((task) => task.status === 'blocked')
       ? 'blocked'
       : plan?.publish
@@ -790,28 +1449,57 @@ function updateAgentStates({ project = {}, cycle, messages = [], tasks = [], log
         routine: plan?.privateWork?.routine || workRoutineForAgent(agent),
       },
       taskIds: assignedTasks.map((task) => task.id).filter(Boolean),
-      inbox: [...inboxItems, ...(previous.inbox || [])].slice(0, 20),
+      inbox: [...managementInboxItems, ...inboxItems, ...(previous.inbox || [])].slice(0, 80),
       obligations,
-      worklog: [...worklogItems, ...(previous.worklog || [])].slice(0, 20),
-      lastActiveAt: (plan?.publish || inboxItems.length || worklogItems.length) ? now : previous.lastActiveAt || null,
+      worklog: [...worklogItems, ...(previous.worklog || [])].slice(0, 80),
+      lastActiveAt: (plan?.publish || managementInboxItems.length || inboxItems.length || worklogItems.length) ? now : previous.lastActiveAt || null,
+      nextAgentRunAt: scheduledNextRunAt || previous.nextAgentRunAt || null,
     }];
   }));
 }
 
-export function advanceAutonomousProjectCycle({ project = {}, team = project.team || [], cadence = 'hourly', messages = [], now = nowIso() }) {
+export function advanceAutonomousProjectCycle({
+  project = {},
+  team = project.team || [],
+  cadence = 'hourly',
+  messages = [],
+  now = nowIso(),
+  trigger = 'manual',
+  schedulerReason = null,
+  dueAt = null,
+}) {
   const cycle = planAutonomousWorkCycle({ team, project, cadence, messages, now });
   const progressDelta = cadence === 'daily' ? 4 : 1;
   const publishEvents = cycle.events.filter((event) => event.text);
   const cycleId = `cycle_${cadence}_${Date.parse(now) || Date.now()}`;
+  const intervalMs = intervalMsForCadence(cadence);
+  const nowMs = safeDateMs(now);
+  const nextRunAt = new Date(nowMs + intervalMs).toISOString();
+  const schedulerRecord = {
+    id: `scheduler_${cycleId}`,
+    cycleId,
+    cadence,
+    trigger,
+    reason: schedulerReason || (trigger === 'scheduler' ? `${cadence}-cadence-due` : `${trigger}-autonomous-cycle`),
+    dueAt: dueAt || now,
+    ranAt: now,
+    nextRunAt,
+    intervalHours: getCadence(cadence).horizonHours,
+  };
   const nextLogs = publishEvents.map((event) => {
     const agent = cycle.network.agents.find((item) => item.id === event.agentId);
     return {
       id: `${cycleId}_${event.agentId || event.kind || 'event'}`,
       time: now,
       agent: agent?.name || 'Agent Runtime',
+      agentId: event.agentId || null,
       log: event.text,
       cadence,
       eventType: event.kind || 'work-cycle',
+      targetAgentId: event.targetAgentId || null,
+      targetName: event.targetName || null,
+      taskIds: event.taskIds || [],
+      sourceChannelId: 'main',
     };
   });
   const completedTaskLogs = [];
@@ -858,7 +1546,73 @@ export function advanceAutonomousProjectCycle({ project = {}, team = project.tea
     now,
     cadence,
     cycleId,
+    scheduledNextRunAt: nextRunAt,
   });
+  const nextProjectState = {
+    ...project,
+    progress: Math.min(100, (project.progress || 0) + (publishEvents.length ? progressDelta : 0) + (completedTaskLogs.length * 2)),
+    tasks: nextTasks,
+    logs: [...combinedLogs, ...(project.logs || [])],
+    agentStates: nextAgentStates,
+    autonomousLedger: [
+      {
+        id: cycleId,
+        cadence,
+        ranAt: now,
+        trigger,
+        schedulerReason: schedulerRecord.reason,
+        dueAt: schedulerRecord.dueAt,
+        nextRunAt,
+        leadId: cycle.leadPlan?.agentId || null,
+        publishedEventCount: publishEvents.length,
+        managementEventCount: cycle.managementEvents?.length || 0,
+        managementEvents: (cycle.managementEvents || []).map((event) => ({
+          kind: event.kind,
+          agentId: event.agentId,
+          targetAgentId: event.targetAgentId || null,
+          taskIds: event.taskIds || [],
+        })),
+        agentPlans: cycle.agentPlans.map((plan) => ({
+          agentId: plan.agentId,
+          priority: plan.priority,
+          readCount: plan.reads,
+          obligationCount: plan.obligations.length,
+          published: Boolean(plan.publish),
+          channel: plan.publish?.channel || null,
+          status: nextAgentStates[plan.agentId]?.status || 'unknown',
+          routineId: plan.privateWork?.routine?.id || null,
+          routineLabel: plan.privateWork?.routine?.label || null,
+          routineArtifact: plan.privateWork?.routine?.artifact || null,
+          routineChecklist: plan.privateWork?.routine?.checklist || [],
+        })),
+        communicationDiagnostics: (cycle.communicationDiagnostics || [])
+          .filter((item) => item.decision !== 'ignore' || item.obligationCount > 0)
+          .slice(0, 24),
+      },
+      ...(project.autonomousLedger || []),
+    ].slice(0, 50),
+    lastAutonomousRunAt: now,
+    nextAutonomousRunAt: nextRunAt,
+    autonomousCadence: cadence,
+    autonomousSchedulerLedger: [
+      schedulerRecord,
+      ...(project.autonomousSchedulerLedger || []),
+    ].slice(0, 50),
+  };
+  const projectWithLedger = appendProjectEvents(nextProjectState, [
+    createProjectLedgerEvent({
+      id: `evt_${schedulerRecord.id}`,
+      type: 'autonomous-scheduler',
+      time: now,
+      actor: 'Agent Runtime',
+      summary: `${trigger} ${cadence} cycle ran; next run ${nextRunAt}.`,
+      source: 'autonomous-scheduler',
+      evidenceIds: [schedulerRecord.id, cycleId],
+      entityIds: { cycleId },
+      payload: { reason: schedulerRecord.reason, dueAt: schedulerRecord.dueAt, nextRunAt },
+    }),
+    ...ledgerEventsFromLogs(combinedLogs, 'autonomous-cycle'),
+  ]);
 
   return {
     cycle: {
@@ -866,41 +1620,7 @@ export function advanceAutonomousProjectCycle({ project = {}, team = project.tea
       taskCompletionEvents: completedTaskLogs,
       agentStates: nextAgentStates,
     },
-    project: {
-      ...project,
-      progress: Math.min(100, (project.progress || 0) + (publishEvents.length ? progressDelta : 0) + (completedTaskLogs.length * 2)),
-      tasks: nextTasks,
-      logs: [...combinedLogs, ...(project.logs || [])],
-      agentStates: nextAgentStates,
-      autonomousLedger: [
-        {
-          id: cycleId,
-          cadence,
-          ranAt: now,
-          leadId: cycle.leadPlan?.agentId || null,
-          publishedEventCount: publishEvents.length,
-          agentPlans: cycle.agentPlans.map((plan) => ({
-            agentId: plan.agentId,
-            priority: plan.priority,
-            readCount: plan.reads,
-            obligationCount: plan.obligations.length,
-            published: Boolean(plan.publish),
-            channel: plan.publish?.channel || null,
-            status: nextAgentStates[plan.agentId]?.status || 'unknown',
-            routineId: plan.privateWork?.routine?.id || null,
-            routineLabel: plan.privateWork?.routine?.label || null,
-            routineArtifact: plan.privateWork?.routine?.artifact || null,
-            routineChecklist: plan.privateWork?.routine?.checklist || [],
-          })),
-          communicationDiagnostics: (cycle.communicationDiagnostics || [])
-            .filter((item) => item.decision !== 'ignore' || item.obligationCount > 0)
-            .slice(0, 24),
-        },
-        ...(project.autonomousLedger || []),
-      ].slice(0, 50),
-      lastAutonomousRunAt: now,
-      autonomousCadence: cadence,
-    },
+    project: projectWithLedger,
   };
 }
 
@@ -917,17 +1637,20 @@ export function createAutonomousCycleChatMessages({ project = {}, cycle = {}, ca
     })),
   ].filter((event) => event?.text);
 
-  return cycleEvents.slice(0, 8).map((event, index) => {
+  return attachReceiptsToMessages(cycleEvents.slice(0, 8).map((event, index) => {
     const agent = team.find((item) => item.id === event.agentId || item.name === event.agent);
+    const isManagementEvent = ['management-check-in', 'peer-management-check-in', 'review-sweep'].includes(event.kind);
     return {
       id: `auto_${projectId || 'project'}_${timestamp}_${index}`,
       projectId: projectId || project.id || null,
       channelId: 'main',
-      type: event.kind === 'coordination' ? 'decision' : 'progress',
+      type: event.kind === 'coordination' ? 'decision' : isManagementEvent ? 'mention' : 'progress',
       author: agent?.name || event.agent || 'Agent Runtime',
       role: agent?.role || 'Autonomy',
-      time: event.kind === 'task-completed' ? 'Completed' : cadence === 'daily' ? 'Daily' : 'Hourly',
+      time: event.kind === 'task-completed' ? 'Completed' : isManagementEvent ? 'Check-in' : cadence === 'daily' ? 'Daily' : 'Hourly',
       text: event.text,
+      targets: event.targetName ? [event.targetName] : [],
+      weight: isManagementEvent ? 'Management' : undefined,
       decisionId: event.kind === 'coordination' ? `AUTO-${String(timestamp).slice(-4)}` : undefined,
       autonomous: {
         cadence,
@@ -935,7 +1658,39 @@ export function createAutonomousCycleChatMessages({ project = {}, cycle = {}, ca
         cycleId: cycle.id || null,
       },
     };
-  });
+  }), team, { seenAt: cycleTime });
+}
+
+export function publishAutonomousCycleChat({
+  project = {},
+  cycle = {},
+  cadence = cycle.cadence || 'hourly',
+  projectId = project.id,
+  now = cycle.now || cycle.ranAt || nowIso(),
+  source = 'autonomous-cycle-chat',
+} = {}) {
+  const messages = createAutonomousCycleChatMessages({
+    project,
+    cycle,
+    cadence,
+    projectId,
+  }).map((message) => ({
+    ...message,
+    source,
+  }));
+  if (!messages.length) {
+    return { project, messages };
+  }
+  return {
+    project: applyChatMessagesToAgentStates({
+      project,
+      team: project.team || cycle.network?.agents || [],
+      messages,
+      now,
+      source,
+    }),
+    messages,
+  };
 }
 
 export function evaluateCollaborationState({ project = {}, team = project.team || [], messages = [] }) {
@@ -1010,6 +1765,243 @@ export function evaluateCollaborationState({ project = {}, team = project.team |
   };
 }
 
+export function evaluateManagerScenarioReadiness({ project = {}, team = project.team || [], messages = [] } = {}) {
+  const charter = project.kickoffCharter || {};
+  const evidence = charter.evidence || {};
+  const projectLogs = project.logs || [];
+  const projectTasks = project.tasks || [];
+  const projectStates = project.agentStates || {};
+  const changes = project.changeLedger || [];
+  const peerHandoffs = project.peerHandoffs || [];
+  const ledger = project.autonomousLedger || [];
+  const schedulerLedger = project.autonomousSchedulerLedger || [];
+  const eventLedger = project.eventLedger || [];
+  const eventLedgerSummary = summarizeProjectEventLedger(project);
+  const leaderId = charter.governance?.leaderId || team.find((agent) => agent.isLeader)?.id || null;
+  const leader = team.find((agent) => agent.id === leaderId || agent.isLeader);
+  const latestCycle = ledger[0] || null;
+  const projectMessages = messages.filter((message) => !project.id || !message.projectId || message.projectId === project.id);
+  const add = (id, passed, label, detail = '') => ({ id, passed: Boolean(passed), label, detail });
+
+  const changeWithOwnerSync = changes.find((change) => {
+    const ownerState = projectStates[change.ownerId] || {};
+    return change.status === 'confirmed-and-synced'
+      && change.ownerStateUpdated
+      && (
+        ownerState.currentPlan?.taskId === change.taskId
+        || (ownerState.taskIds || []).includes(change.taskId)
+        || (ownerState.obligations || []).some((item) => item.taskId === change.taskId)
+        || (ownerState.worklog || []).some((item) => item.text?.includes(change.requestText))
+      );
+  });
+  const changeWithTeamSync = changes.find((change) => (
+    change.status === 'confirmed-and-synced'
+    && change.teamStateSynced
+    && (change.teamSyncAgentIds || []).length > 0
+    && (change.teamSyncAgentIds || []).every((agentId) => (
+      (projectStates[agentId]?.inbox || []).some((item) => item.source === 'change-sync' && item.taskId === change.taskId)
+      || (projectStates[agentId]?.worklog || []).some((item) => item.kind === 'change-sync-received' && item.text?.includes(change.requestText))
+    ))
+  ));
+  const logTypes = new Set(projectLogs.map((log) => log.eventType).filter(Boolean));
+  const managementLogTypes = ['management-check-in', 'peer-management-check-in', 'review-sweep'];
+  const hasManagementTimeline = projectLogs.some((log) => managementLogTypes.includes(log.eventType));
+  const hasManagementInbox = Object.values(projectStates).some((state) => (
+    (state.inbox || []).some((item) => managementLogTypes.includes(item.source))
+  ));
+  const hasMessageReceiptEvidence = projectMessages.some((message) => (
+    (message.heardBy || []).length > 0
+    && (message.receipts || []).length === (message.heardBy || []).length
+    && message.visibility?.receiptCount > 0
+  ));
+  const hasDurableReceiptEvidence = projectLogs.some((log) => log.receiptCount > 0);
+  const durableGroupChatEvidence = Boolean(
+    (evidence.assignmentMessageIds || []).length
+      || peerHandoffs.some((handoff) => handoff.requestMessageId && handoff.acknowledgementMessageId)
+      || changes.some((change) => (change.discussionMessageIds || []).length)
+      || ledger.some((cycle) => cycle.publishedEventCount > 0 || cycle.managementEventCount > 0)
+  );
+  const evidenceTasks = projectTasks.filter((task) => (
+    task.source === 'leader-chat-assignment'
+    || task.source === 'peer-handoff'
+    || task.source === 'google-chat-mention-change-request'
+    || task.source === 'war-room-meeting-change-request'
+    || task.assignedBy
+  ));
+  const taskHasMessageEvidence = (task) => Boolean(
+    (task.assignmentMessageId && task.acknowledgementMessageId)
+    || (task.requestMessageId && task.acknowledgementMessageId)
+    || (task.confirmationMessageId && task.syncMessageId)
+  );
+
+  const checks = [
+    add(
+      'kickoff-approved',
+      charter.status === 'approved',
+      'Kickoff approved',
+      charter.status ? `${charter.title || 'Project'} is ${charter.status}.` : 'No approved kickoff charter.',
+    ),
+    add(
+      'role-clarification',
+      (charter.meeting?.roleQuestionCount || 0) > 0 && (charter.meeting?.selfNominationCount || 0) > 0,
+      'Role questions and self-nominations captured',
+      `${charter.meeting?.roleQuestionCount || 0} role question(s), ${charter.meeting?.selfNominationCount || 0} self-nomination(s).`,
+    ),
+    add(
+      'agents-hear-each-other',
+      (evidence.roleHearingEdges || []).some((edge) => edge.hears?.length > 0)
+        && (evidence.leaderHearingEdges || []).some((edge) => edge.hears?.length > 0),
+      'Agents hear peer turns',
+      `${(evidence.roleHearingEdges || []).length} role hearing edge(s), ${(evidence.leaderHearingEdges || []).length} Leader hearing edge(s).`,
+    ),
+    add(
+      'leader-election-confirmed',
+      Boolean(leader && leader.isLeader && (charter.meeting?.leaderCandidateCount || 0) >= 2),
+      'Leader elected and confirmed',
+      leader ? `${leader.name} has Leader marker after ${charter.meeting?.leaderCandidateCount || 0} candidate(s).` : 'No confirmed Leader marker.',
+    ),
+    add(
+      'leader-assignments-acknowledged',
+      (evidence.assignmentMessageIds || []).length > 0
+        && (evidence.acknowledgementMessageIds || []).length >= (evidence.assignmentMessageIds || []).length
+        && logTypes.has('leader-assignment')
+        && logTypes.has('assignment-acknowledged'),
+      'Leader @assignments acknowledged',
+      `${(evidence.assignmentMessageIds || []).length} assignment message(s), ${(evidence.acknowledgementMessageIds || []).length} acknowledgement(s).`,
+    ),
+    add(
+      'task-evidence-linked',
+      evidenceTasks.length > 0
+        && evidenceTasks.every((task) => taskHasMessageEvidence(task) && task.sourceChannelId && (task.timelineLogIds || []).length > 0),
+      'Tasks link chat and timeline evidence',
+      `${evidenceTasks.filter((task) => taskHasMessageEvidence(task) && task.sourceChannelId && (task.timelineLogIds || []).length > 0).length}/${evidenceTasks.length} evidence task(s) linked.`,
+    ),
+    add(
+      'agent-states-independent',
+      team.length > 0 && team.every((agent) => projectStates[agent.id]?.currentPlan?.routine?.id),
+      'Independent Agent states and routines',
+      `${Object.keys(projectStates).length}/${team.length} Agent state(s) with current plans.`,
+    ),
+    add(
+      'autonomous-work-running',
+      Boolean(latestCycle?.publishedEventCount > 0 && latestCycle.agentPlans?.every((plan) => plan.routineId && plan.routineArtifact)),
+      '24/7 autonomous work evidence',
+      latestCycle ? `${latestCycle.cadence} cycle, ${latestCycle.publishedEventCount} published event(s).` : 'No autonomous cycle recorded.',
+    ),
+    add(
+      'management-loop-running',
+      Boolean(latestCycle?.managementEventCount > 0 && hasManagementTimeline && hasManagementInbox),
+      'Agents actively manage each other',
+      latestCycle ? `${latestCycle.managementEventCount || 0} management event(s), timeline=${hasManagementTimeline}, inbox=${hasManagementInbox}.` : 'No autonomous management cycle recorded.',
+    ),
+    add(
+      'autonomous-scheduler-evidence',
+      Boolean(project.nextAutonomousRunAt && schedulerLedger[0]?.nextRunAt === project.nextAutonomousRunAt && latestCycle?.nextRunAt === project.nextAutonomousRunAt),
+      'Autonomous scheduler evidence',
+      schedulerLedger[0] ? `${schedulerLedger[0].trigger} / ${schedulerLedger[0].reason} / next ${schedulerLedger[0].nextRunAt}.` : 'No scheduler ledger record.',
+    ),
+    add(
+      'timeline-progress',
+      logTypes.has('work-pulse') || logTypes.has('daily-report') || logTypes.has('task-completed'),
+      'Progress reaches timeline',
+      logTypes.has('task-completed') ? 'Task completion published.' : 'Work pulse or daily report published.',
+    ),
+    add(
+      'group-chat-visible',
+      projectMessages.some((message) => message.channelId === 'main' && (message.type === 'mention' || message.type === 'progress' || message.type === 'decision'))
+        || durableGroupChatEvidence,
+      'Group chat evidence visible',
+      durableGroupChatEvidence
+        ? 'Durable project evidence contains group-chat messages.'
+        : `${projectMessages.filter((message) => message.channelId === 'main').length} main-channel message(s).`,
+    ),
+    add(
+      'message-receipts-recorded',
+      hasMessageReceiptEvidence || hasDurableReceiptEvidence,
+      'Message receipt evidence recorded',
+      hasMessageReceiptEvidence
+        ? `${projectMessages.filter((message) => message.visibility?.receiptCount > 0).length} message(s) carry receipts.`
+        : `${projectLogs.filter((log) => log.receiptCount > 0).length} durable log receipt(s).`,
+    ),
+    add(
+      'event-ledger-continuity',
+      eventLedger.length > 0
+        && eventLedgerSummary.contiguous
+        && eventLedgerSummary.lastSequence >= eventLedgerSummary.firstSequence
+        && eventLedgerSummary.coverage.kickoff
+        && eventLedgerSummary.coverage.kickoffRoleQuestion
+        && eventLedgerSummary.coverage.kickoffRoleVolunteer
+        && eventLedgerSummary.coverage.kickoffLeaderCampaign
+        && eventLedgerSummary.coverage.leaderAssignment
+        && eventLedgerSummary.coverage.change
+        && eventLedgerSummary.coverage.peerHandoff
+        && eventLedgerSummary.coverage.autonomous,
+      'Unified project event ledger',
+      eventLedger.length
+        ? `${eventLedgerSummary.retainedCount}/${eventLedgerSummary.eventCount} event(s), sequence ${eventLedgerSummary.firstSequence}-${eventLedgerSummary.lastSequence}.`
+        : 'No project event ledger.',
+    ),
+    add(
+      'event-ledger-replay-ready',
+      Boolean(eventLedgerSummary.replayProjection.replayReady),
+      'Event ledger can replay manager scenario',
+      eventLedgerSummary.replayProjection.replayReady
+        ? `${eventLedgerSummary.replayProjection.kickoffSpeechCount} kickoff speech event(s), ${eventLedgerSummary.replayProjection.leaderAssignmentCount} assignment(s), ${eventLedgerSummary.replayProjection.changeConfirmationCount} change(s), ${eventLedgerSummary.replayProjection.peerHandoffCount} handoff(s), ${eventLedgerSummary.replayProjection.autonomousRunCount} autonomous run(s).`
+        : 'Event ledger is missing one or more replay stages.',
+    ),
+    add(
+      'peer-handoff-accepted',
+      peerHandoffs.some((handoff) => handoff.status === 'accepted') && logTypes.has('peer-handoff') && logTypes.has('peer-handoff-ack'),
+      'Agent-to-Agent handoff accepted',
+      `${peerHandoffs.length} peer handoff record(s).`,
+    ),
+    add(
+      'midproject-change-synced',
+      Boolean(changeWithOwnerSync),
+      'Mid-project change confirmed and synced',
+      changeWithOwnerSync ? `${changeWithOwnerSync.ownerName || changeWithOwnerSync.ownerId} owns ${changeWithOwnerSync.taskId}.` : 'No owner-synced change record.',
+    ),
+    add(
+      'team-received-change-sync',
+      Boolean(changeWithTeamSync),
+      'Team received owner sync',
+      changeWithTeamSync ? `${changeWithTeamSync.teamSyncCount || changeWithTeamSync.teamSyncAgentIds?.length || 0} Agent sync receipt(s).` : 'No team sync receipt state.',
+    ),
+    add(
+      'google-chat-change-source',
+      changes.some((change) => change.sourceChannelId === 'google_chat'),
+      'Google Chat source preserved',
+      `${changes.filter((change) => change.sourceChannelId === 'google_chat').length} Google Chat change(s).`,
+    ),
+    add(
+      'meeting-change-source',
+      changes.some((change) => change.source === 'war-room-meeting-change-request'),
+      'Meeting change source preserved',
+      `${changes.filter((change) => change.source === 'war-room-meeting-change-request').length} meeting change(s).`,
+    ),
+    add(
+      'dual-channel-change-source',
+      changes.some((change) => (
+        change.source === 'multi-channel-change-request'
+        && (change.sourceMessageIds || []).length >= 2
+        && ((change.sourceModes || []).includes('war_room_meeting') || (change.sourceChannelIds || []).includes('main'))
+        && (change.sourceChannelIds || []).includes('google_chat')
+      )),
+      'Meeting plus Google Chat broadcast preserved',
+      `${changes.filter((change) => change.source === 'multi-channel-change-request').length} dual-channel change(s).`,
+    ),
+  ];
+
+  const passedCount = checks.filter((check) => check.passed).length;
+  return {
+    status: checks.every((check) => check.passed) ? 'manager-ready' : 'needs-evidence',
+    score: checks.length ? Math.round((passedCount / checks.length) * 100) : 0,
+    passedCount,
+    totalCount: checks.length,
+    checks,
+  };
+}
+
 export function createLeaderElection(team = [], projectBrief = '', context = {}) {
   const network = createAgentNetwork(team, {
     ...context,
@@ -1041,6 +2033,7 @@ export function createLeaderElection(team = [], projectBrief = '', context = {})
       role: candidate.role,
       text: candidate.claim,
       type: 'leader-campaign',
+      hearsOthers: candidate.hearsOthers || [],
     })),
   };
 }
@@ -1080,7 +2073,7 @@ export function createLeaderAssignmentPackage({ project = {}, leaderId, now = no
   const members = team.filter((agent) => agent.id !== leader?.id);
   const tasks = project.tasks || [];
 
-  const assignmentMessages = tasks
+  const assignmentMessages = attachReceiptsToMessages(tasks
     .filter((task) => task.status !== 'done')
     .map((task, index) => {
       const assignee = team.find((agent) => agent.name === task.assignee || agent.id === task.assignee)
@@ -1103,7 +2096,7 @@ export function createLeaderAssignmentPackage({ project = {}, leaderId, now = no
           assignedBy: leader?.id || null,
         },
       };
-    });
+    }), team, { seenAt: now });
 
   const assignmentLogs = assignmentMessages.map((message) => ({
     id: `log_${message.id}`,
@@ -1112,8 +2105,10 @@ export function createLeaderAssignmentPackage({ project = {}, leaderId, now = no
     log: message.text,
     eventType: 'leader-assignment',
     cadence: 'kickoff',
+    receiptCount: message.visibility?.receiptCount || 0,
+    directTargetIds: message.directTargetIds || [],
   }));
-  const acknowledgementMessages = assignmentMessages.map((message, index) => {
+  const acknowledgementMessages = attachReceiptsToMessages(assignmentMessages.map((message, index) => {
     const assignee = team.find((agent) => agent.id === message.assignment?.ownerId || agent.name === message.assignment?.ownerName);
     return {
       id: `ack_${Date.parse(now) || Date.now()}_${message.assignment?.taskId || index}`,
@@ -1133,7 +2128,7 @@ export function createLeaderAssignmentPackage({ project = {}, leaderId, now = no
         receivedAt: now,
       },
     };
-  });
+  }), team, { seenAt: now });
   const acknowledgementLogs = acknowledgementMessages.map((message) => ({
     id: `log_${message.id}`,
     time: now,
@@ -1141,7 +2136,21 @@ export function createLeaderAssignmentPackage({ project = {}, leaderId, now = no
     log: message.text,
     eventType: 'assignment-acknowledged',
     cadence: 'kickoff',
+    receiptCount: message.visibility?.receiptCount || 0,
+    directTargetIds: message.directTargetIds || [],
   }));
+  const assignmentEvidenceByTaskId = new Map(assignmentMessages.map((message, index) => [
+    message.assignment?.taskId,
+    {
+      assignmentMessageId: message.id,
+      acknowledgementMessageId: acknowledgementMessages[index]?.id || null,
+      acknowledgedAt: now,
+      timelineLogIds: [
+        assignmentLogs[index]?.id,
+        acknowledgementLogs[index]?.id,
+      ].filter(Boolean),
+    },
+  ]));
 
   return {
     leader,
@@ -1149,17 +2158,28 @@ export function createLeaderAssignmentPackage({ project = {}, leaderId, now = no
     assignmentLogs,
     acknowledgementMessages,
     acknowledgementLogs,
+    ledgerEvents: ledgerEventsFromLogs([...assignmentLogs, ...acknowledgementLogs], 'kickoff-leader-assignment'),
     tasks: tasks.map((task, index) => {
       if (task.status === 'done') return task;
       const assignee = team.find((agent) => agent.name === task.assignee || agent.id === task.assignee)
         || members[index % Math.max(1, members.length)]
         || leader;
+      const evidence = assignmentEvidenceByTaskId.get(task.id) || {};
       return {
         ...task,
         assignee: assignee?.name || task.assignee,
         ownerId: assignee?.id || task.ownerId || null,
         assignedBy: leader?.id || task.assignedBy || null,
         assignedAt: now,
+        source: task.source || 'kickoff-leader-assignment',
+        sourceChannelId: task.sourceChannelId || 'main',
+        assignmentMessageId: evidence.assignmentMessageId || task.assignmentMessageId || null,
+        acknowledgementMessageId: evidence.acknowledgementMessageId || task.acknowledgementMessageId || null,
+        acknowledgedAt: evidence.acknowledgedAt || task.acknowledgedAt || null,
+        timelineLogIds: Array.from(new Set([
+          ...(task.timelineLogIds || []),
+          ...(evidence.timelineLogIds || []),
+        ])),
         status: task.status === 'pending' ? 'in-progress' : task.status,
       };
     }),
@@ -1230,8 +2250,22 @@ function createAgentStateFromAssignment(agent, { leader, task, now, existingStat
       ? `Assigned "${task.text}" to ${task.assignee}.`
       : `Accepted "${task.text}" from ${leader?.name || 'Leader'}.`,
   };
+  const previousPlan = existingState.currentPlan || {};
+  const nextPlan = isLeader
+    ? previousPlan.focus
+      ? previousPlan
+      : { focus: 'coordinate assigned work', next: 'watch acknowledgements and timeline proof', routine: workRoutineForAgent(agent) }
+    : {
+      ...previousPlan,
+      focus: task.text,
+      next: 'publish progress to the timeline',
+      routine: previousPlan.routine || workRoutineForAgent(agent),
+    };
   return {
+    ...existingState,
     agentId: agent.id,
+    name: existingState.name || agent.name,
+    role: existingState.role || agent.role,
     managerId: isLeader ? null : leader?.id || existingState.managerId || null,
     managedIds: isLeader
       ? Array.from(new Set([...(existingState.managedIds || []), task.ownerId].filter(Boolean)))
@@ -1249,9 +2283,7 @@ function createAgentStateFromAssignment(agent, { leader, task, now, existingStat
         },
         ...(existingState.obligations || []),
       ],
-    currentPlan: isLeader
-      ? existingState.currentPlan || { focus: 'coordinate assigned work', next: 'watch acknowledgements and timeline proof' }
-      : { focus: task.text, next: 'publish progress to the timeline' },
+    currentPlan: nextPlan,
     taskIds: Array.from(new Set([...(existingState.taskIds || []), ...(isLeader ? [] : [task.id])])),
     worklog: [worklogEntry, ...(existingState.worklog || [])],
     status: isLeader ? 'coordinating' : 'working',
@@ -1286,7 +2318,7 @@ export function handleLeaderChatAssignment({
     assignedAt: now,
     workPulseCount: 0,
   };
-  const assignmentMessage = {
+  const assignmentMessage = attachMessageReceipts({
     id: `leader_assign_${timestamp}`,
     projectId: project.id || null,
     channelId,
@@ -1304,8 +2336,8 @@ export function handleLeaderChatAssignment({
       assignedBy: task.assignedBy,
       source: task.source,
     },
-  };
-  const acknowledgementMessage = {
+  }, team, { seenAt: now });
+  const acknowledgementMessage = attachMessageReceipts({
     id: `leader_ack_${timestamp}`,
     projectId: project.id || null,
     channelId,
@@ -1323,7 +2355,7 @@ export function handleLeaderChatAssignment({
       assignedBy: task.assignedBy,
       receivedAt: now,
     },
-  };
+  }, team, { seenAt: now });
   const logs = [
     {
       id: `log_${assignmentMessage.id}`,
@@ -1332,6 +2364,8 @@ export function handleLeaderChatAssignment({
       log: assignmentMessage.text,
       eventType: 'leader-assignment',
       cadence: 'chat',
+      receiptCount: assignmentMessage.visibility?.receiptCount || 0,
+      directTargetIds: assignmentMessage.directTargetIds || [],
     },
     {
       id: `log_${acknowledgementMessage.id}`,
@@ -1340,30 +2374,40 @@ export function handleLeaderChatAssignment({
       log: acknowledgementMessage.text,
       eventType: 'assignment-acknowledged',
       cadence: 'chat',
+      receiptCount: acknowledgementMessage.visibility?.receiptCount || 0,
+      directTargetIds: acknowledgementMessage.directTargetIds || [],
     },
   ];
+  const evidencedTask = {
+    ...task,
+    assignmentMessageId: assignmentMessage.id,
+    acknowledgementMessageId: acknowledgementMessage.id,
+    acknowledgedAt: now,
+    timelineLogIds: logs.map((log) => log.id),
+  };
   const previousStates = project.agentStates || {};
   const nextAgentStates = { ...previousStates };
   [leader, assignee].filter(Boolean).forEach((agent) => {
     nextAgentStates[agent.id] = createAgentStateFromAssignment(agent, {
       leader,
-      task,
+      task: evidencedTask,
       now,
       existingState: previousStates[agent.id] || {},
     });
   });
+  const projectWithLedger = appendProjectEvents({
+    ...project,
+    tasks: [evidencedTask, ...(project.tasks || [])],
+    logs: [...logs, ...(project.logs || [])],
+    agentStates: nextAgentStates,
+  }, ledgerEventsFromLogs(logs, 'leader-chat-assignment'));
 
   return {
-    task,
+    task: evidencedTask,
     assignmentMessage,
     acknowledgementMessage,
     logs,
-    project: {
-      ...project,
-      tasks: [task, ...(project.tasks || [])],
-      logs: [...logs, ...(project.logs || [])],
-      agentStates: nextAgentStates,
-    },
+    project: projectWithLedger,
   };
 }
 
@@ -1432,7 +2476,7 @@ export function handlePeerHandoff({
     assignedAt: now,
     workPulseCount: 0,
   };
-  const requestMessage = {
+  const requestMessage = attachMessageReceipts({
     id: `peer_handoff_${timestamp}`,
     projectId: project.id || null,
     channelId,
@@ -1450,8 +2494,8 @@ export function handlePeerHandoff({
       targetId: target?.id || null,
       targetName: target?.name || null,
     },
-  };
-  const acknowledgementMessage = {
+  }, team, { seenAt: now });
+  const acknowledgementMessage = attachMessageReceipts({
     id: `peer_handoff_ack_${timestamp}`,
     projectId: project.id || null,
     channelId,
@@ -1468,7 +2512,7 @@ export function handlePeerHandoff({
       targetId: target?.id || null,
       receivedAt: now,
     },
-  };
+  }, team, { seenAt: now });
   const logs = [
     {
       id: `log_${requestMessage.id}`,
@@ -1477,6 +2521,8 @@ export function handlePeerHandoff({
       log: requestMessage.text,
       eventType: 'peer-handoff',
       cadence: 'chat',
+      receiptCount: requestMessage.visibility?.receiptCount || 0,
+      directTargetIds: requestMessage.directTargetIds || [],
     },
     {
       id: `log_${acknowledgementMessage.id}`,
@@ -1485,12 +2531,21 @@ export function handlePeerHandoff({
       log: acknowledgementMessage.text,
       eventType: 'peer-handoff-ack',
       cadence: 'chat',
+      receiptCount: acknowledgementMessage.visibility?.receiptCount || 0,
+      directTargetIds: acknowledgementMessage.directTargetIds || [],
     },
   ];
+  const evidencedDependencyTask = {
+    ...dependencyTask,
+    requestMessageId: requestMessage.id,
+    acknowledgementMessageId: acknowledgementMessage.id,
+    acknowledgedAt: now,
+    timelineLogIds: logs.map((log) => log.id),
+  };
   const handoffRecord = {
     id: `peer_handoff_record_${timestamp}`,
     projectId: project.id || null,
-    taskId: dependencyTask.id,
+    taskId: evidencedDependencyTask.id,
     requesterId: requester?.id || null,
     requesterName: requester?.name || null,
     targetId: target?.id || null,
@@ -1570,20 +2625,34 @@ export function handlePeerHandoff({
       lastActiveAt: now,
     };
   }
+  const projectWithLedger = appendProjectEvents({
+    ...project,
+    tasks: [evidencedDependencyTask, ...(project.tasks || [])],
+    logs: [...logs, ...(project.logs || [])],
+    peerHandoffs: [handoffRecord, ...(project.peerHandoffs || [])],
+    agentStates: nextAgentStates,
+  }, [
+    createProjectLedgerEvent({
+      id: `evt_${handoffRecord.id}`,
+      type: 'peer-handoff-accepted',
+      time: now,
+      actor: requester?.name || 'Requesting Agent',
+      summary: `${requester?.name || 'Requester'} handed "${dependencyTask.text}" to ${target?.name || 'peer'} and received acknowledgement.`,
+      source: 'peer-handoff',
+      channelId,
+      evidenceIds: [requestMessage.id, acknowledgementMessage.id, handoffRecord.id],
+      entityIds: { taskId: evidencedDependencyTask.id, requesterId: requester?.id || null, targetAgentId: target?.id || null },
+    }),
+    ...ledgerEventsFromLogs(logs, 'peer-handoff'),
+  ]);
 
   return {
-    task: dependencyTask,
+    task: evidencedDependencyTask,
     handoffRecord,
     requestMessage,
     acknowledgementMessage,
     logs,
-    project: {
-      ...project,
-      tasks: [dependencyTask, ...(project.tasks || [])],
-      logs: [...logs, ...(project.logs || [])],
-      peerHandoffs: [handoffRecord, ...(project.peerHandoffs || [])],
-      agentStates: nextAgentStates,
-    },
+    project: projectWithLedger,
   };
 }
 
@@ -1607,8 +2676,10 @@ export function createKickoffCharter({
   const candidateCount = leaderElection.candidates?.length || leaderElection.transcript?.length || 0;
   const assignments = assignmentPackage.assignmentMessages || [];
   const acknowledgements = assignmentPackage.acknowledgementMessages || [];
+  const directorBriefId = project.initiation?.directorBriefId || `director_brief_${project.id || Date.parse(now) || Date.now()}`;
+  const directorBriefText = project.initiation?.summary || project.currentObjective || project.objective || project.name || '';
 
-  return {
+  const charter = {
     id: `charter_${project.id || Date.parse(now) || Date.now()}`,
     projectId: project.id || null,
     createdAt: now,
@@ -1649,11 +2720,93 @@ export function createKickoffCharter({
       'Autonomous cycles update project logs, agent states, task state, and the timeline.',
     ],
     evidence: {
+      directorBriefIds: [directorBriefId].filter(Boolean),
       roleTranscriptIds: (roleNegotiation.transcript || []).map((item) => item.id),
       leaderCampaignIds: (leaderElection.transcript || []).map((item) => item.id),
       assignmentMessageIds: assignments.map((message) => message.id),
       acknowledgementMessageIds: acknowledgements.map((message) => message.id),
+      briefHearingEdges: [{
+        speakerId: 'director',
+        hears: team.map((agent) => agent.id),
+      }],
+      roleHearingEdges: (roleNegotiation.transcript || []).map((item) => ({
+        speakerId: item.speakerId,
+        hears: item.hears || [],
+      })),
+      leaderHearingEdges: (leaderElection.transcript || []).map((item) => ({
+        speakerId: item.speakerId,
+        hears: item.hearsOthers || [],
+      })),
     },
+  };
+  const directorBriefEvent = createProjectLedgerEvent({
+    id: `evt_${directorBriefId}`,
+    type: 'kickoff-director-brief',
+    time: now,
+    actor: 'Director',
+    summary: directorBriefText,
+    source: 'kickoff-meeting',
+    channelId: 'main',
+    evidenceIds: [directorBriefId],
+    entityIds: { speakerId: 'director' },
+    payload: { hears: team.map((agent) => agent.id) },
+  });
+  const roleSpeechEvents = (roleNegotiation.transcript || []).map((item) => createProjectLedgerEvent({
+    id: `evt_${item.id}`,
+    type: item.type === 'role-question' ? 'kickoff-role-question' : 'kickoff-role-volunteer',
+    time: now,
+    actor: item.speaker || item.speakerId || 'Agent',
+    summary: item.text || '',
+    source: 'kickoff-meeting',
+    channelId: 'main',
+    evidenceIds: [item.id],
+    entityIds: { speakerId: item.speakerId || null },
+    payload: { hears: item.hears || [] },
+  }));
+  const leaderCampaignEvents = (leaderElection.transcript || []).map((item) => createProjectLedgerEvent({
+    id: `evt_${item.id}`,
+    type: 'kickoff-leader-campaign',
+    time: now,
+    actor: item.speaker || item.speakerId || 'Agent',
+    summary: item.text || '',
+    source: 'kickoff-meeting',
+    channelId: 'main',
+    evidenceIds: [item.id],
+    entityIds: { speakerId: item.speakerId || null },
+    payload: { hears: item.hearsOthers || [] },
+  }));
+  const charterLedgerEvent = createProjectLedgerEvent({
+    id: `evt_${charter.id}`,
+    type: 'kickoff-charter-approved',
+    time: now,
+    actor: 'Director',
+    summary: `${charter.title} approved with ${leader?.name || 'Leader'} as Leader and ${reviewer?.name || 'Reviewer'} as Reviewer.`,
+    source: 'kickoff-meeting',
+    channelId: 'main',
+    evidenceIds: [
+      charter.id,
+      ...(charter.evidence.directorBriefIds || []),
+      ...(charter.evidence.roleTranscriptIds || []),
+      ...(charter.evidence.leaderCampaignIds || []),
+      ...(charter.evidence.assignmentMessageIds || []),
+      ...(charter.evidence.acknowledgementMessageIds || []),
+    ],
+    entityIds: { leaderId: leader?.id || null, reviewerId: reviewer?.id || null },
+    payload: {
+      roleQuestionCount: charter.meeting.roleQuestionCount,
+      selfNominationCount: charter.meeting.selfNominationCount,
+      leaderCandidateCount: charter.meeting.leaderCandidateCount,
+    },
+  });
+  return {
+    ...charter,
+    ledgerEvent: charterLedgerEvent,
+    ledgerEvents: [
+      directorBriefEvent,
+      ...roleSpeechEvents,
+      ...leaderCampaignEvents,
+      charterLedgerEvent,
+    ],
   };
 }
 
@@ -1670,6 +2823,7 @@ export function handleFeatureChangeRequest({
   now = nowIso(),
   channelId = 'main',
   source = 'group-chat-change-request',
+  requestMessageId = null,
 } = {}) {
   const team = project.team || [];
   const timestamp = Date.parse(now) || Date.now();
@@ -1700,8 +2854,9 @@ export function handleFeatureChangeRequest({
     createdAt: now,
     source,
     sourceChannelId: channelId,
+    requestMessageId,
   };
-  const discussionMessages = [
+  const discussionMessages = attachReceiptsToMessages([
     {
       id: `change_discuss_${timestamp}_lead`,
       channelId,
@@ -1747,7 +2902,7 @@ export function handleFeatureChangeRequest({
       targets: network.agents.map((agent) => agent.name),
       weight: 'Plan Sync',
     },
-  ];
+  ], team, { seenAt: now });
   const confirmationMessage = discussionMessages.find((message) => message.type === 'decision');
   const syncMessage = discussionMessages.find((message) => message.id.includes('change_sync'));
   const previousStates = project.agentStates || {};
@@ -1786,7 +2941,7 @@ export function handleFeatureChangeRequest({
         receivedAt: now,
       },
       ...(ownerState.inbox || []),
-    ].slice(0, 20),
+    ].slice(0, 80),
     obligations: [
       {
         id: `obligation_${changeTask.id}`,
@@ -1798,7 +2953,7 @@ export function handleFeatureChangeRequest({
         openedAt: now,
       },
       ...(ownerState.obligations || []).filter((obligation) => obligation.status === 'open'),
-    ].slice(0, 20),
+    ].slice(0, 80),
     worklog: [
       {
         id: `worklog_${changeTask.id}_${owner.id}`,
@@ -1807,12 +2962,63 @@ export function handleFeatureChangeRequest({
         text: syncMessage?.text || `Plan updated for "${text}".`,
       },
       ...(ownerState.worklog || []),
-    ].slice(0, 20),
+    ].slice(0, 80),
     lastActiveAt: now,
   } : null;
-  const nextAgentStates = ownerStateUpdate
-    ? { ...previousStates, [owner.id]: ownerStateUpdate }
-    : previousStates;
+  const teamSyncAgentIds = network.agents
+    .filter((agent) => agent.id !== owner?.id)
+    .map((agent) => agent.id);
+  const teamSyncStateUpdates = Object.fromEntries(teamSyncAgentIds.map((agentId) => {
+    const agent = getAgent(network, agentId);
+    const previous = previousStates[agentId] || {};
+    return [agentId, {
+      agentId,
+      name: previous.name || agent?.name,
+      role: previous.role || agent?.role,
+      managerId: previous.managerId || agent?.managerId || null,
+      managedIds: previous.managedIds || agent?.managedIds || [],
+      peerManagedIds: previous.peerManagedIds || [],
+      peerManagerId: previous.peerManagerId || null,
+      peerManagerIds: previous.peerManagerIds || [],
+      peerIds: previous.peerIds || agent?.peerIds || [],
+      status: previous.status || 'synced-change',
+      currentPlan: previous.currentPlan || {
+        focus: 'track accepted change sync',
+        next: 'watch owner progress pulse',
+        routine: agent ? workRoutineForAgent(agent) : null,
+      },
+      taskIds: previous.taskIds || [],
+      inbox: [
+        {
+          id: `sync_inbox_${changeTask.id}_${agentId}`,
+          from: owner?.id || lead?.id || null,
+          taskId: changeTask.id,
+          text: syncMessage?.text || `Plan updated for "${text}".`,
+          source: 'change-sync',
+          sourceChannelId: channelId,
+          sourceMessageId: syncMessage?.id || null,
+          receivedAt: now,
+        },
+        ...(previous.inbox || []),
+      ].slice(0, 80),
+      obligations: previous.obligations || [],
+      worklog: [
+        {
+          id: `sync_worklog_${changeTask.id}_${agentId}`,
+          at: now,
+          kind: 'change-sync-received',
+          text: `Received owner sync for "${text}".`,
+        },
+        ...(previous.worklog || []),
+      ].slice(0, 80),
+      lastActiveAt: previous.lastActiveAt || now,
+    }];
+  }));
+  const nextAgentStates = {
+    ...previousStates,
+    ...teamSyncStateUpdates,
+    ...(ownerStateUpdate ? { [owner.id]: ownerStateUpdate } : {}),
+  };
   const changeRecord = {
     id: `change_record_${timestamp}`,
     projectId: project.id || null,
@@ -1821,6 +3027,7 @@ export function handleFeatureChangeRequest({
     requestText: text,
     source,
     sourceChannelId: channelId,
+    requestMessageId,
     status: 'confirmed-and-synced',
     leadId: lead?.id || null,
     leadName: lead?.name || null,
@@ -1832,8 +3039,11 @@ export function handleFeatureChangeRequest({
     discussionMessageIds: discussionMessages.map((message) => message.id),
     confirmationMessageId: confirmationMessage?.id || null,
     syncMessageId: syncMessage?.id || null,
+    teamSyncAgentIds,
+    teamSyncCount: teamSyncAgentIds.length,
     planUpdate: syncMessage?.text || null,
     ownerStateUpdated: Boolean(ownerStateUpdate),
+    teamStateSynced: teamSyncAgentIds.length > 0,
   };
   const logs = discussionMessages.map((message) => ({
     id: `log_${message.id}`,
@@ -1844,23 +3054,61 @@ export function handleFeatureChangeRequest({
     cadence: 'change',
     source,
     sourceChannelId: channelId,
+    receiptCount: message.visibility?.receiptCount || 0,
+    directTargetIds: message.directTargetIds || [],
   }));
+  const evidencedChangeTask = {
+    ...changeTask,
+    confirmationMessageId: confirmationMessage?.id || null,
+    syncMessageId: syncMessage?.id || null,
+    acknowledgedAt: now,
+    timelineLogIds: logs.map((log) => log.id),
+  };
+  const projectWithLedger = appendProjectEvents({
+    ...project,
+    tasks: [...(project.tasks || []), evidencedChangeTask],
+    changeLedger: [changeRecord, ...(project.changeLedger || [])],
+    logs: [...logs, ...(project.logs || [])],
+    agentStates: nextAgentStates,
+  }, [
+    createProjectLedgerEvent({
+      id: `evt_${changeRecord.id}`,
+      type: 'change-confirmed-and-synced',
+      time: now,
+      actor: owner?.name || lead?.name || 'Responsible Agent',
+      summary: `${owner?.name || 'Owner'} accepted "${text}" from ${source} and synced ${teamSyncAgentIds.length} Agent(s).`,
+      source,
+      channelId,
+      evidenceIds: [
+        changeRecord.id,
+        requestMessageId,
+        confirmationMessage?.id,
+        syncMessage?.id,
+        ...logs.map((log) => log.id),
+      ].filter(Boolean),
+      entityIds: { taskId: evidencedChangeTask.id, ownerId: owner?.id || null, changeRecordId: changeRecord.id, messageId: requestMessageId },
+      payload: { teamSyncCount: teamSyncAgentIds.length, sourceChannelId: channelId },
+    }),
+    ...ledgerEventsFromLogs(logs, source),
+  ]);
+  const projectWithDiscussionDelivery = applyChatMessagesToAgentStates({
+    project: projectWithLedger,
+    team,
+    messages: discussionMessages,
+    now,
+    source: 'change-discussion-chat',
+  });
 
   return {
     network,
     owner,
-    changeTask,
+    changeTask: evidencedChangeTask,
     changeRecord,
     ownerStateUpdate,
+    teamSyncStateUpdates,
     discussionMessages,
     logs,
-    project: {
-      ...project,
-      tasks: [...(project.tasks || []), changeTask],
-      changeLedger: [changeRecord, ...(project.changeLedger || [])],
-      logs: [...logs, ...(project.logs || [])],
-      agentStates: nextAgentStates,
-    },
+    project: projectWithDiscussionDelivery,
     diagnostics: readings.map((reading) => ({
       agentId: reading.agentId,
       attentionScore: reading.score,

@@ -3,6 +3,7 @@
 
 node_modules
 dist
+.tmp
 
 # External skill tooling (not part of Hall of Fame private assets)
 tools/
