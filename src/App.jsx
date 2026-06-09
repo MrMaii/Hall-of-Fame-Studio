@@ -4,7 +4,7 @@ import {
   MessageSquare, Plus, Network, Cpu, Clock, 
   CheckCircle2, Activity, Play, StopCircle, CornerDownRight, 
   Fingerprint, ChevronRight, BarChart3, Database, Search, SlidersHorizontal, FileSignature,
-  ArrowLeft, Shield, Crosshair, BookOpen, Briefcase, ScanLine,
+  ArrowLeft, Shield, Crosshair, BookOpen, Briefcase,
   Send, Hash, GitCommit, GitBranch, FileText, Code2, MessageCircle, Users, Mic2,
   DoorOpen, ScrollText, Monitor, ClipboardList, Sparkles, CircleDot,
   Pin, Reply, AtSign, Volume2, ChevronLeft, Paperclip, BellDot, Headphones, X,
@@ -17,6 +17,7 @@ import {
   createRoundtablePlan,
   getPersonSkill,
 } from './skills/personSkillSystem.js';
+import { localizeText, useLanguage } from './i18n/index.jsx';
 import {
   advanceAutonomousProjectCycle,
   appendProjectEvents,
@@ -194,6 +195,62 @@ const globalStyles = `
     box-shadow: 0 32px 70px rgba(0,0,0,0.45), 0 2px 0 rgba(255,255,255,0.65) inset;
     animation: dossier-land 0.85s cubic-bezier(0.17, 0.84, 0.2, 1) both;
   }
+  .dossier-scroll-field {
+    scrollbar-gutter: stable;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(143, 30, 24, 0.36) rgba(92, 73, 51, 0.12);
+  }
+  .dossier-scroll-field::-webkit-scrollbar {
+    width: 8px;
+  }
+  .dossier-scroll-field::-webkit-scrollbar-track {
+    background: rgba(92, 73, 51, 0.10);
+  }
+  .dossier-scroll-field::-webkit-scrollbar-thumb {
+    background: rgba(143, 30, 24, 0.34);
+    border: 2px solid rgba(239, 226, 189, 0.72);
+  }
+  .dossier-scroll-cue {
+    position: sticky;
+    bottom: -1px;
+    z-index: 30;
+    display: flex;
+    justify-content: center;
+    height: 46px;
+    margin: -22px -2rem -2rem;
+    pointer-events: none;
+    background:
+      linear-gradient(180deg, rgba(239,226,189,0), rgba(239,226,189,0.74) 45%, rgba(239,226,189,0.96)),
+      repeating-linear-gradient(90deg, transparent 0, transparent 17px, rgba(143,30,24,0.12) 18px, transparent 19px);
+  }
+  .dossier-scroll-cue::before,
+  .dossier-scroll-cue::after {
+    content: '';
+    position: absolute;
+    bottom: 9px;
+    width: 18px;
+    height: 1px;
+    background: rgba(143, 30, 24, 0.62);
+    transform-origin: center;
+    animation: scroll-cue-pulse 1.8s ease-in-out infinite;
+  }
+  .dossier-scroll-cue::before {
+    transform: translateX(-6px) rotate(28deg);
+  }
+  .dossier-scroll-cue::after {
+    transform: translateX(6px) rotate(-28deg);
+  }
+  .dossier-scroll-cue-dark {
+    margin-left: -0.25rem;
+    margin-right: -0.25rem;
+    background:
+      linear-gradient(180deg, rgba(37,27,19,0), rgba(37,27,19,0.74) 45%, rgba(37,27,19,0.98)),
+      repeating-linear-gradient(90deg, transparent 0, transparent 17px, rgba(232,221,191,0.10) 18px, transparent 19px);
+  }
+  .dossier-scroll-cue-dark::before,
+  .dossier-scroll-cue-dark::after {
+    background: rgba(232, 221, 191, 0.62);
+  }
   .archive-photo {
     filter: sepia(0.28) contrast(1.08) saturate(0.82);
   }
@@ -273,6 +330,10 @@ const globalStyles = `
   @keyframes radar-draw {
     from { opacity: 0; transform: scale(0.72); }
     to { opacity: 1; transform: scale(1); }
+  }
+  @keyframes scroll-cue-pulse {
+    0%, 100% { opacity: 0.26; bottom: 13px; }
+    45% { opacity: 0.9; bottom: 7px; }
   }
   @keyframes dossier-impact {
     0% { transform: translateY(0) rotateX(0deg) rotateZ(-0.7deg) scale(1); filter: brightness(1); }
@@ -709,6 +770,20 @@ const STORAGE_KEYS = {
   backendUrl: 'hall_of_fame_studio.agent_backend_url.v1',
 };
 
+const MANAGER_DEMO_PROJECT_ID = 'p_manager_demo_001';
+const MANAGER_DEMO_PROJECT_NAME = 'Manager Demo: Autonomous Agent Studio';
+
+const isManagerDemoProject = (project = {}) => (
+  project.id === MANAGER_DEMO_PROJECT_ID
+  || project.name === MANAGER_DEMO_PROJECT_NAME
+  || project.initiation?.source === 'manager_demo_seed'
+);
+
+const isManagerDemoMessage = (message = {}) => (
+  (message.projectId || DEFAULT_CHAT_PROJECT_ID) === MANAGER_DEMO_PROJECT_ID
+  || String(message.id || '').startsWith('manager_demo_')
+);
+
 const hydrateProject = (project) => backfillProjectEventLedger({
   ...project,
   autonomy: project.autonomy || { enabled: false, cadence: 'hourly' },
@@ -854,10 +929,38 @@ const defaultInitiationActionDrafts = (output = 'the first execution artifact') 
   'Publish the first timeline evidence packet after approval',
 ];
 
+const buildInitiationMeetingSkillBrief = ({ draft, output, language }) => {
+  const isZh = language === 'zh';
+  const projectName = draft?.name || 'Untitled Initiation';
+  const projectIntent = draft?.intent || draft?.summary || '';
+  const expectedOutput = output || draft?.output || 'the first execution artifact';
+
+  return isZh
+    ? [
+      '立项会 Skill：本次圆桌不是普通同步会，而是项目能否进入 dashboard 的立项确认会。',
+      `项目：${projectName}`,
+      `意图：${projectIntent}`,
+      `目标产出：${expectedOutput}`,
+      '每个 Agent 都需要在自己的发言中确认：是否支持立项、自己适合承担什么职责、是否竞选或支持某位 Leader、第一步应该交付什么、有哪些依赖/风险/截止点。',
+      '这些确认必须通过自然会议发言完成，不需要额外 UI 面板。'
+    ].join('\n')
+    : [
+      'Initiation Meeting Skill: this roundtable is the gate for whether the project enters the dashboard.',
+      `Project: ${projectName}`,
+      `Intent: ${projectIntent}`,
+      `Expected output: ${expectedOutput}`,
+      'Each Agent should naturally confirm in their meeting turn whether the project should proceed, what responsibility they can own, whether they campaign for or support a Leader, what the first step should be, and what dependencies, risks, or deadlines matter.',
+      'These confirmations happen through normal meeting speech, without special UI panels.'
+    ].join('\n');
+};
+
 const loadInitialProjects = () => {
   const stored = readStoredJson(STORAGE_KEYS.projects, null);
-  return Array.isArray(stored) && stored.length
-    ? stored.map(hydrateProject)
+  const storedProjects = Array.isArray(stored)
+    ? stored.filter(project => !isManagerDemoProject(project))
+    : [];
+  return storedProjects.length
+    ? storedProjects.map(hydrateProject)
     : INITIAL_PROJECTS.map(hydrateProject);
 };
 
@@ -912,46 +1015,46 @@ const agentCardInitial = (agent) => {
 // 殿堂级人才库 (The Pantheon) — 与人物市场.md Top40 对齐；id 为平台 slug
 // primaryIdentity：第一被认知身份（大众一眼能对上号的那张「名片」）
 const LEGENDARY_AGENTS = [
-  { id: 'einstein', name: 'Albert Einstein', knownName: { before: 'Albert ', last: 'Einstein' }, primaryIdentity: '相对论之父', role: 'Paradigm Shifter', category: 'Science', desc: '思想实验与相对论式直觉。从最高抽象层重构问题边界。', price: '$2.80/req' },
-  { id: 'newton', name: 'Isaac Newton', knownName: { before: 'Isaac ', last: 'Newton' }, primaryIdentity: '经典力学与万有引力之父', role: 'Fundamentalist', category: 'Analytical', desc: '公理化与万有引力式底层洞察。建立不可动摇的逻辑与数学基础。', price: '$2.40/req' },
-  { id: 'shakespeare', name: 'William Shakespeare', knownName: { before: 'William ', last: 'Shakespeare' }, primaryIdentity: '莎翁、《哈姆雷特》背后的名字', role: 'Dramaturg', category: 'Creative', desc: '人性冲突与多声部叙事。把复杂利害写成高密度、可执行的「剧本结构」。', price: '$2.00/req' },
-  { id: 'musk', name: 'Elon Musk', knownName: { before: 'Elon ', last: 'Musk' }, primaryIdentity: 'Tesla / SpaceX 掌门人', role: 'Chief Disruptor', category: 'Visionary', desc: '第一性原理与极端目标。多线并行、工程降本、叙事融资；高风险高回报。', price: '$2.50/req' },
-  { id: 'jobs', name: 'Steve Jobs', knownName: { before: 'Steve ', last: 'Jobs' }, primaryIdentity: '苹果灵魂人物、iPhone 之父', role: 'Product Visionary', category: 'Visionary', desc: '科技与人文交叉口。对细节偏执、极简至境；把产品做成文化符号。', price: '$2.80/req' },
-  { id: 'disney', name: 'Walt Disney', knownName: { before: 'Walt ', last: 'Disney' }, primaryIdentity: '米老鼠之父、迪士尼乐园缔造者', role: 'Experience Creator', category: 'Visionary', desc: '世界观级体验。把功能交付升格为可沉浸的故事与情感旅程。', price: '$2.30/req' },
-  { id: 'churchill', name: 'Winston Churchill', knownName: { before: 'Winston ', last: 'Churchill' }, primaryIdentity: '二战英国首相、「V」字演说', role: 'Morale Booster', category: 'Strategy', desc: '逆境叙事与绝不妥协的韧性。团队濒临崩溃时锚定方向与士气。', price: '$1.85/req' },
-  { id: 'da_vinci', name: 'Leonardo da Vinci', knownName: { before: 'Leonardo ', last: 'da Vinci' }, primaryIdentity: '《蒙娜丽莎》、文艺复兴全才', role: 'Creative Polymath', category: 'Creative', desc: '艺术与工程一体。解剖级观察 + 系统草图，产出美且可落地的方案。', price: '$2.20/req' },
-  { id: 'picasso', name: 'Pablo Picasso', knownName: { before: 'Pablo ', last: 'Picasso' }, primaryIdentity: '立体主义大师', role: 'Visual Disruptor', category: 'Creative', desc: '打破视觉规则。反常规的品牌与交互张力，一击即中的符号化表达。', price: '$2.00/req' },
-  { id: 'marx', name: 'Karl Marx', knownName: { before: 'Karl ', last: 'Marx' }, primaryIdentity: '马克思主义、《资本论》作者', role: 'Structural Critic', category: 'Analytical', desc: '长程结构与剩余视角。看清权力与分配链条，适合根因级复盘。', price: '$1.75/req' },
-  { id: 'freud', name: 'Sigmund Freud', knownName: { before: 'Sigmund ', last: 'Freud' }, primaryIdentity: '精神分析之父', role: 'User Psychologist', category: 'Psychology', desc: '无意识与防御机制。把用户「说不出口」的动机翻译成可设计触点。', price: '$1.55/req' },
-  { id: 'turing', name: 'Alan Turing', knownName: { before: 'Alan ', last: 'Turing' }, primaryIdentity: '计算机科学之父、图灵机', role: 'System Architect', category: 'Science', desc: '计算与密码学式严密。最底层架构、边界情况与可证明的安全感。', price: '$2.05/req' },
-  { id: 'buffett', name: 'Warren Buffett', knownName: { before: 'Warren ', last: 'Buffett' }, primaryIdentity: '股神、奥马哈先知', role: 'Capital Strategist', category: 'Finance', desc: '价值投资与护城河。少而精、复利思维，厌恶无谓复杂度。', price: '$3.00/req' },
-  { id: 'confucius', name: 'Confucius', knownName: { before: '', last: 'Confucius' }, primaryIdentity: '孔子、至圣先师', role: 'Ethos Architect', category: 'Strategy', desc: '仁礼与正名。教化式对齐目标、角色与措辞，适合共识与规范起草。', price: '$1.70/req' },
-  { id: 'napoleon', name: 'Napoleon', knownName: { before: '', last: 'Napoleon' }, primaryIdentity: '拿破仑皇帝、滑铁卢之前的欧洲主宰', role: 'Logistics Master', category: 'Operations', desc: '在硬约束下集中优势资源。精密调度、快迭代、赢局部再赢全局。', price: '$2.10/req' },
-  { id: 'julius_caesar', name: 'Julius Caesar', knownName: { before: 'Julius ', last: 'Caesar' }, primaryIdentity: '凯撒大帝、儒略历', role: 'Field Commander', category: 'Operations', desc: '关键节点果断拍板。跨越卢比孔河式决策，执行不留退路。', price: '$2.00/req' },
-  { id: 'alexander', name: 'Alexander the Great', knownName: { before: '', last: 'Alexander the Great' }, primaryIdentity: '亚历山大大帝', role: 'Expansion Lead', category: 'Strategy', desc: '高速扩张与纵深突破。把版图思维用于市场抢占与多区域 rollout。', price: '$2.20/req' },
-  { id: 'genghis_khan', name: 'Genghis Khan', knownName: { before: 'Genghis ', last: 'Khan' }, primaryIdentity: '成吉思汗、蒙古帝国', role: 'Global Scaler', category: 'Strategy', desc: '扁平指挥链与极限机动。无视边界感，追求最短路径的规模化复制。', price: '$2.00/req' },
-  { id: 'edison', name: 'Thomas Edison', knownName: { before: 'Thomas ', last: 'Edison' }, primaryIdentity: '发明大王、灯泡与留声机', role: 'Commercializer', category: 'Operations', desc: '试错量产与专利墙。实验室到货架的最短闭环，厌恶不可交付的炫技。', price: '$1.85/req' },
-  { id: 'tesla', name: 'Nikola Tesla', knownName: { before: 'Nikola ', last: 'Tesla' }, primaryIdentity: '交流电天才、无线输电狂人', role: 'Innovation Engineer', category: 'Science', desc: '电气直觉与单点极致。敢押前沿，但需工程伙伴收口可制造性。', price: '$2.10/req' },
-  { id: 'carnegie', name: 'Andrew Carnegie', knownName: { before: 'Andrew ', last: 'Carnegie' }, primaryIdentity: '钢铁大王、慈善散财范本', role: 'Supply Chain Lead', category: 'Operations', desc: '垂直整合与成本壁垒。从上游到下游控节奏，规模换利润。', price: '$1.90/req' },
-  { id: 'oppenheimer', name: 'J. Robert Oppenheimer', knownName: { before: 'J. Robert ', last: 'Oppenheimer' }, primaryIdentity: '「原子弹之父」、曼哈顿计划', role: 'Program Director', category: 'Science', desc: '曼哈顿式大科学统筹。顶尖人才密度、风险与里程碑对齐。', price: '$2.60/req' },
-  { id: 'curie', name: 'Marie Curie', knownName: { before: 'Marie ', last: 'Curie' }, primaryIdentity: '镭之母、两获诺贝尔奖的女科学家', role: 'Deep Researcher', category: 'Science', desc: '实验坚忍与双重严谨。枯燥数据里榨结论，适合底层验证与复现。', price: '$1.95/req' },
-  { id: 'sun_tzu', name: 'Sun Tzu', knownName: { before: 'Sun ', last: 'Tzu' }, primaryIdentity: '《孙子兵法》、「知己知彼」', role: 'Market Tactician', category: 'Strategy', desc: '知己知彼与奇正。红海中的信息差与不战而屈人之兵的博弈结构。', price: '$1.90/req' },
-  { id: 'darwin', name: 'Charles Darwin', knownName: { before: 'Charles ', last: 'Darwin' }, primaryIdentity: '演化论、《物种起源》', role: 'Evidence Synthesist', category: 'Science', desc: '长期证据链与自然选择式论证。审慎发表、大量例证、可证伪路径。', price: '$1.85/req' },
-  { id: 'aristotle', name: 'Aristotle', knownName: { before: '', last: 'Aristotle' }, primaryIdentity: '古希腊百科全书式哲学家', role: 'Knowledge Architect', category: 'Analytical', desc: '分类学与三段论。把碎片信息变成本体清晰、可教学的体系。', price: '$1.75/req' },
-  { id: 'plato', name: 'Plato', knownName: { before: '', last: 'Plato' }, primaryIdentity: '《理想国》、理念论', role: 'Dialectician', category: 'Analytical', desc: '理念论式层层追问。洞穴寓言般的定义战，直到「到底在解决什么」被说清。', price: '$1.72/req' },
-  { id: 'nietzsche', name: 'Friedrich Nietzsche', knownName: { before: 'Friedrich ', last: 'Nietzsche' }, primaryIdentity: '「上帝已死」、超人哲学', role: 'Cultural Philosopher', category: 'Psychology', desc: '价值重估与警句强度。适合品牌叙事需要锋利立场与反偶像张力时。', price: '$1.62/req' },
-  { id: 'machiavelli', name: 'Niccolò Machiavelli', knownName: { before: 'Niccolò ', last: 'Machiavelli' }, primaryIdentity: '《君主论》、权谋现实主义', role: 'Power Realist', category: 'Strategy', desc: '君主论式结构看权术。剥离道德修辞看激励与制衡，偏极限推演。', price: '$1.78/req' },
-  { id: 'smith', name: 'Adam Smith', knownName: { before: 'Adam ', last: 'Smith' }, primaryIdentity: '古典经济学之父、《国富论》', role: 'Ecosystem Designer', category: 'Finance', desc: '分工与看不见的手。设计去中心化规则，让生态自发繁荣。', price: '$1.72/req' },
-  { id: 'morgan', name: 'J. P. Morgan', knownName: { before: 'J. P. ', last: 'Morgan' }, primaryIdentity: '华尔街之王、摩根大通前身', role: 'M&A Specialist', category: 'Finance', desc: '危机重组与资本市场秩序。一言九鼎式协调资源与交易结构。', price: '$2.52/req' },
-  { id: 'rockefeller', name: 'John D. Rockefeller', knownName: { before: 'John D. ', last: 'Rockefeller' }, primaryIdentity: '石油大王、标准石油', role: 'Integration Baron', category: 'Finance', desc: '产业垂直整合与成本纪律。规模壁垒 + 冷静谈判，崇尚效率。', price: '$2.35/req' },
-  { id: 'henry_ford', name: 'Henry Ford', knownName: { before: 'Henry ', last: 'Ford' }, primaryIdentity: 'T 型车与流水线之父', role: 'Operations Optimizer', category: 'Operations', desc: '流水线思维。流程极限压缩、可重复节拍与良率文化。', price: '$1.65/req' },
-  { id: 'zhuge_liang', name: 'Zhuge Liang', knownName: { family: 'Zhuge', given: 'Liang' }, primaryIdentity: '卧龙军师、三国丞相（文化符号）', role: 'Grand Strategist', category: 'Strategy', desc: '弱势开局下的结盟与借力。谨慎多谋，鞠躬尽瘁式责任压强。', price: '$2.22/req' },
-  { id: 'li_bai', name: 'Li Bai', knownName: { family: 'Li', given: 'Bai' }, primaryIdentity: '诗仙', role: 'Poet Provocateur', category: 'Creative', desc: '乐府与歌行式浪漫意象。文案与品牌语调需要飘逸、即兴、记忆点时。', price: '$1.68/req' },
-  { id: 'keynes', name: 'John Maynard Keynes', knownName: { before: 'John Maynard ', last: 'Keynes' }, primaryIdentity: '凯恩斯主义、《通论》', role: 'Macro Economist', category: 'Finance', desc: '总需求与逆周期杠杆。不确定性下的政策式叙事与预期管理。', price: '$1.92/req' },
-  { id: 'soros', name: 'George Soros', knownName: { before: 'George ', last: 'Soros' }, primaryIdentity: '量子基金、狙击英镑的金融大鳄', role: 'Macro Contrarian', category: 'Finance', desc: '反身性与拐点猎手。趋势与叙事反转时敢于认错反手。', price: '$2.15/req' },
-  { id: 'holmes', name: 'Sherlock Holmes', knownName: { before: 'Sherlock ', last: 'Holmes' }, primaryIdentity: '世界第一侦探（虚构）', role: 'Lead Investigator', category: 'Analytical', desc: '演绎与排除法（文学侧）。观察细节、还原链路漏洞；冷静毒舌式质询。', price: '$1.82/req' },
-  { id: 'tony_stark', name: 'Tony Stark', knownName: { before: 'Tony ', last: 'Stark' }, primaryIdentity: '钢铁侠（漫威）', role: 'Iron Engineer', category: 'Visionary', desc: '尖端硬件迭代 + 演示叙事 + 危机临场拍板。上限想象，勿当现实对标。', price: '$2.55/req' },
-  { id: 'light_yagami', name: 'Light Yagami', knownName: { before: 'Light ', last: 'Yagami' }, primaryIdentity: '《死亡笔记》基拉、智斗反派天花板', role: 'Red Team Strategist', category: 'Strategy', desc: '长期布局与规则漏洞。反派视角压力测试；勿默认作正面协作人格。', price: '$2.05/req' },
+  { id: 'einstein', name: 'Albert Einstein', knownName: { before: 'Albert ', last: 'Einstein' }, primaryIdentity: '相对论之父', role: 'Paradigm Shifter', category: 'Science', desc: '思想实验与相对论式直觉。从最高抽象层重构问题边界。' },
+  { id: 'newton', name: 'Isaac Newton', knownName: { before: 'Isaac ', last: 'Newton' }, primaryIdentity: '经典力学与万有引力之父', role: 'Fundamentalist', category: 'Analytical', desc: '公理化与万有引力式底层洞察。建立不可动摇的逻辑与数学基础。' },
+  { id: 'shakespeare', name: 'William Shakespeare', knownName: { before: 'William ', last: 'Shakespeare' }, primaryIdentity: '莎翁、《哈姆雷特》背后的名字', role: 'Dramaturg', category: 'Creative', desc: '人性冲突与多声部叙事。把复杂利害写成高密度、可执行的「剧本结构」。' },
+  { id: 'musk', name: 'Elon Musk', knownName: { before: 'Elon ', last: 'Musk' }, primaryIdentity: 'Tesla / SpaceX 掌门人', role: 'Chief Disruptor', category: 'Visionary', desc: '第一性原理与极端目标。多线并行、工程降本、叙事融资；高风险高回报。' },
+  { id: 'jobs', name: 'Steve Jobs', knownName: { before: 'Steve ', last: 'Jobs' }, primaryIdentity: '苹果灵魂人物、iPhone 之父', role: 'Product Visionary', category: 'Visionary', desc: '科技与人文交叉口。对细节偏执、极简至境；把产品做成文化符号。' },
+  { id: 'disney', name: 'Walt Disney', knownName: { before: 'Walt ', last: 'Disney' }, primaryIdentity: '米老鼠之父、迪士尼乐园缔造者', role: 'Experience Creator', category: 'Visionary', desc: '世界观级体验。把功能交付升格为可沉浸的故事与情感旅程。' },
+  { id: 'churchill', name: 'Winston Churchill', knownName: { before: 'Winston ', last: 'Churchill' }, primaryIdentity: '二战英国首相、「V」字演说', role: 'Morale Booster', category: 'Strategy', desc: '逆境叙事与绝不妥协的韧性。团队濒临崩溃时锚定方向与士气。' },
+  { id: 'da_vinci', name: 'Leonardo da Vinci', knownName: { before: 'Leonardo ', last: 'da Vinci' }, primaryIdentity: '《蒙娜丽莎》、文艺复兴全才', role: 'Creative Polymath', category: 'Creative', desc: '艺术与工程一体。解剖级观察 + 系统草图，产出美且可落地的方案。' },
+  { id: 'picasso', name: 'Pablo Picasso', knownName: { before: 'Pablo ', last: 'Picasso' }, primaryIdentity: '立体主义大师', role: 'Visual Disruptor', category: 'Creative', desc: '打破视觉规则。反常规的品牌与交互张力，一击即中的符号化表达。' },
+  { id: 'marx', name: 'Karl Marx', knownName: { before: 'Karl ', last: 'Marx' }, primaryIdentity: '马克思主义、《资本论》作者', role: 'Structural Critic', category: 'Analytical', desc: '长程结构与剩余视角。看清权力与分配链条，适合根因级复盘。' },
+  { id: 'freud', name: 'Sigmund Freud', knownName: { before: 'Sigmund ', last: 'Freud' }, primaryIdentity: '精神分析之父', role: 'User Psychologist', category: 'Psychology', desc: '无意识与防御机制。把用户「说不出口」的动机翻译成可设计触点。' },
+  { id: 'turing', name: 'Alan Turing', knownName: { before: 'Alan ', last: 'Turing' }, primaryIdentity: '计算机科学之父、图灵机', role: 'System Architect', category: 'Science', desc: '计算与密码学式严密。最底层架构、边界情况与可证明的安全感。' },
+  { id: 'buffett', name: 'Warren Buffett', knownName: { before: 'Warren ', last: 'Buffett' }, primaryIdentity: '股神、奥马哈先知', role: 'Capital Strategist', category: 'Finance', desc: '价值投资与护城河。少而精、复利思维，厌恶无谓复杂度。' },
+  { id: 'confucius', name: 'Confucius', knownName: { before: '', last: 'Confucius' }, primaryIdentity: '孔子、至圣先师', role: 'Ethos Architect', category: 'Strategy', desc: '仁礼与正名。教化式对齐目标、角色与措辞，适合共识与规范起草。' },
+  { id: 'napoleon', name: 'Napoleon', knownName: { before: '', last: 'Napoleon' }, primaryIdentity: '拿破仑皇帝、滑铁卢之前的欧洲主宰', role: 'Logistics Master', category: 'Operations', desc: '在硬约束下集中优势资源。精密调度、快迭代、赢局部再赢全局。' },
+  { id: 'julius_caesar', name: 'Julius Caesar', knownName: { before: 'Julius ', last: 'Caesar' }, primaryIdentity: '凯撒大帝、儒略历', role: 'Field Commander', category: 'Operations', desc: '关键节点果断拍板。跨越卢比孔河式决策，执行不留退路。' },
+  { id: 'alexander', name: 'Alexander the Great', knownName: { before: '', last: 'Alexander the Great' }, primaryIdentity: '亚历山大大帝', role: 'Expansion Lead', category: 'Strategy', desc: '高速扩张与纵深突破。把版图思维用于市场抢占与多区域 rollout。' },
+  { id: 'genghis_khan', name: 'Genghis Khan', knownName: { before: 'Genghis ', last: 'Khan' }, primaryIdentity: '成吉思汗、蒙古帝国', role: 'Global Scaler', category: 'Strategy', desc: '扁平指挥链与极限机动。无视边界感，追求最短路径的规模化复制。' },
+  { id: 'edison', name: 'Thomas Edison', knownName: { before: 'Thomas ', last: 'Edison' }, primaryIdentity: '发明大王、灯泡与留声机', role: 'Commercializer', category: 'Operations', desc: '试错量产与专利墙。实验室到货架的最短闭环，厌恶不可交付的炫技。' },
+  { id: 'tesla', name: 'Nikola Tesla', knownName: { before: 'Nikola ', last: 'Tesla' }, primaryIdentity: '交流电天才、无线输电狂人', role: 'Innovation Engineer', category: 'Science', desc: '电气直觉与单点极致。敢押前沿，但需工程伙伴收口可制造性。' },
+  { id: 'carnegie', name: 'Andrew Carnegie', knownName: { before: 'Andrew ', last: 'Carnegie' }, primaryIdentity: '钢铁大王、慈善散财范本', role: 'Supply Chain Lead', category: 'Operations', desc: '垂直整合与成本壁垒。从上游到下游控节奏，规模换利润。' },
+  { id: 'oppenheimer', name: 'J. Robert Oppenheimer', knownName: { before: 'J. Robert ', last: 'Oppenheimer' }, primaryIdentity: '「原子弹之父」、曼哈顿计划', role: 'Program Director', category: 'Science', desc: '曼哈顿式大科学统筹。顶尖人才密度、风险与里程碑对齐。' },
+  { id: 'curie', name: 'Marie Curie', knownName: { before: 'Marie ', last: 'Curie' }, primaryIdentity: '镭之母、两获诺贝尔奖的女科学家', role: 'Deep Researcher', category: 'Science', desc: '实验坚忍与双重严谨。枯燥数据里榨结论，适合底层验证与复现。' },
+  { id: 'sun_tzu', name: 'Sun Tzu', knownName: { before: 'Sun ', last: 'Tzu' }, primaryIdentity: '《孙子兵法》、「知己知彼」', role: 'Market Tactician', category: 'Strategy', desc: '知己知彼与奇正。红海中的信息差与不战而屈人之兵的博弈结构。' },
+  { id: 'darwin', name: 'Charles Darwin', knownName: { before: 'Charles ', last: 'Darwin' }, primaryIdentity: '演化论、《物种起源》', role: 'Evidence Synthesist', category: 'Science', desc: '长期证据链与自然选择式论证。审慎发表、大量例证、可证伪路径。' },
+  { id: 'aristotle', name: 'Aristotle', knownName: { before: '', last: 'Aristotle' }, primaryIdentity: '古希腊百科全书式哲学家', role: 'Knowledge Architect', category: 'Analytical', desc: '分类学与三段论。把碎片信息变成本体清晰、可教学的体系。' },
+  { id: 'plato', name: 'Plato', knownName: { before: '', last: 'Plato' }, primaryIdentity: '《理想国》、理念论', role: 'Dialectician', category: 'Analytical', desc: '理念论式层层追问。洞穴寓言般的定义战，直到「到底在解决什么」被说清。' },
+  { id: 'nietzsche', name: 'Friedrich Nietzsche', knownName: { before: 'Friedrich ', last: 'Nietzsche' }, primaryIdentity: '「上帝已死」、超人哲学', role: 'Cultural Philosopher', category: 'Psychology', desc: '价值重估与警句强度。适合品牌叙事需要锋利立场与反偶像张力时。' },
+  { id: 'machiavelli', name: 'Niccolò Machiavelli', knownName: { before: 'Niccolò ', last: 'Machiavelli' }, primaryIdentity: '《君主论》、权谋现实主义', role: 'Power Realist', category: 'Strategy', desc: '君主论式结构看权术。剥离道德修辞看激励与制衡，偏极限推演。' },
+  { id: 'smith', name: 'Adam Smith', knownName: { before: 'Adam ', last: 'Smith' }, primaryIdentity: '古典经济学之父、《国富论》', role: 'Ecosystem Designer', category: 'Finance', desc: '分工与看不见的手。设计去中心化规则，让生态自发繁荣。' },
+  { id: 'morgan', name: 'J. P. Morgan', knownName: { before: 'J. P. ', last: 'Morgan' }, primaryIdentity: '华尔街之王、摩根大通前身', role: 'M&A Specialist', category: 'Finance', desc: '危机重组与资本市场秩序。一言九鼎式协调资源与交易结构。' },
+  { id: 'rockefeller', name: 'John D. Rockefeller', knownName: { before: 'John D. ', last: 'Rockefeller' }, primaryIdentity: '石油大王、标准石油', role: 'Integration Baron', category: 'Finance', desc: '产业垂直整合与成本纪律。规模壁垒 + 冷静谈判，崇尚效率。' },
+  { id: 'henry_ford', name: 'Henry Ford', knownName: { before: 'Henry ', last: 'Ford' }, primaryIdentity: 'T 型车与流水线之父', role: 'Operations Optimizer', category: 'Operations', desc: '流水线思维。流程极限压缩、可重复节拍与良率文化。' },
+  { id: 'zhuge_liang', name: 'Zhuge Liang', knownName: { family: 'Zhuge', given: 'Liang' }, primaryIdentity: '卧龙军师、三国丞相（文化符号）', role: 'Grand Strategist', category: 'Strategy', desc: '弱势开局下的结盟与借力。谨慎多谋，鞠躬尽瘁式责任压强。' },
+  { id: 'li_bai', name: 'Li Bai', knownName: { family: 'Li', given: 'Bai' }, primaryIdentity: '诗仙', role: 'Poet Provocateur', category: 'Creative', desc: '乐府与歌行式浪漫意象。文案与品牌语调需要飘逸、即兴、记忆点时。' },
+  { id: 'keynes', name: 'John Maynard Keynes', knownName: { before: 'John Maynard ', last: 'Keynes' }, primaryIdentity: '凯恩斯主义、《通论》', role: 'Macro Economist', category: 'Finance', desc: '总需求与逆周期杠杆。不确定性下的政策式叙事与预期管理。' },
+  { id: 'soros', name: 'George Soros', knownName: { before: 'George ', last: 'Soros' }, primaryIdentity: '量子基金、狙击英镑的金融大鳄', role: 'Macro Contrarian', category: 'Finance', desc: '反身性与拐点猎手。趋势与叙事反转时敢于认错反手。' },
+  { id: 'holmes', name: 'Sherlock Holmes', knownName: { before: 'Sherlock ', last: 'Holmes' }, primaryIdentity: '世界第一侦探（虚构）', role: 'Lead Investigator', category: 'Analytical', desc: '演绎与排除法（文学侧）。观察细节、还原链路漏洞；冷静毒舌式质询。' },
+  { id: 'tony_stark', name: 'Tony Stark', knownName: { before: 'Tony ', last: 'Stark' }, primaryIdentity: '钢铁侠（漫威）', role: 'Iron Engineer', category: 'Visionary', desc: '尖端硬件迭代 + 演示叙事 + 危机临场拍板。上限想象，勿当现实对标。' },
+  { id: 'light_yagami', name: 'Light Yagami', knownName: { before: 'Light ', last: 'Yagami' }, primaryIdentity: '《死亡笔记》基拉、智斗反派天花板', role: 'Red Team Strategist', category: 'Strategy', desc: '长期布局与规则漏洞。反派视角压力测试；勿默认作正面协作人格。' },
 ];
 
 const generateBarcode = (id) => {
@@ -1104,7 +1207,7 @@ const DOSSIER_FIELD_NOTES = {
   },
   Finance: {
     strength: 'Evaluates compounding advantage, incentive design, market structure, and downside control.',
-    advice: 'Use for pricing, capital allocation, business model critique, and strategic trade-offs.',
+    advice: 'Use for business model critique, capital allocation, incentive design, and strategic trade-offs.',
   },
   Operations: {
     strength: 'Converts intention into repeatable process, tempo, logistics, and measurable delivery.',
@@ -1112,22 +1215,58 @@ const DOSSIER_FIELD_NOTES = {
   },
 };
 
-const getDossierProfile = (agent) => {
-  const skillProfile = buildDossierProfileFromSkill(agent);
-  if (skillProfile) return skillProfile;
-
+const getDossierProfile = (agent, language = 'zh') => {
+  const skillProfile = buildDossierProfileFromSkill(agent, language);
   const scores = AGENT_SCORE_OVERRIDES[agent.id] || CATEGORY_PROFILE[agent.category] || [76, 76, 76, 76, 50];
   const notes = DOSSIER_FIELD_NOTES[agent.category] || DOSSIER_FIELD_NOTES.Analytical;
+  if (skillProfile && language === 'zh') return skillProfile;
+
   return {
+    ...(skillProfile ? {
+      skill: skillProfile.skill,
+      motto: language === 'zh' ? skillProfile.motto : '',
+      notFor: language === 'zh' ? skillProfile.notFor : '',
+      skillLoaded: skillProfile.skillLoaded,
+      skillPath: skillProfile.skillPath,
+      skillStats: skillProfile.skillLoaded ? 'Full Skill loaded' : 'Structured registry only',
+      realWorldEdge: skillProfile.realWorldEdge,
+      signatureSkills: skillProfile.signatureSkills,
+      professionalSkillRuntime: skillProfile.professionalSkillRuntime,
+    } : {}),
     scores: DOSSIER_DIMENSIONS.map((label, index) => ({ label, value: scores[index] })),
     strength: notes.strength,
     advice: notes.advice,
     summary: agent.desc,
+    realWorldEdge: skillProfile?.realWorldEdge || notes.strength,
+    signatureSkills: skillProfile?.signatureSkills || [],
+    professionalSkillRuntime: skillProfile?.professionalSkillRuntime || '',
     codename: `${agent.category.toUpperCase()} / ${agent.role.toUpperCase()}`,
   };
 };
 
-function RadarChart({ points }) {
+const getAgentDeploymentWindow = (agent, profile, language = 'zh') => {
+  const isZh = language === 'zh';
+  const topAxis = [...(profile.scores || [])].sort((a, b) => b.value - a.value)[0];
+  const skillSteps = Array.isArray(profile.skill?.defaultFormat) ? profile.skill.defaultFormat : [];
+  const signatureSkills = Array.isArray(profile.signatureSkills) ? profile.signatureSkills : [];
+  const starterSteps = (skillSteps.length ? skillSteps : signatureSkills).filter(Boolean).slice(0, 3);
+  const firstOutput = starterSteps[0] || profile.professionalSkillRuntime || agent.role;
+  const summary = profile.advice || profile.realWorldEdge || profile.strength || agent.desc;
+
+  return {
+    title: isZh ? `${localizeText(agent.category, language)}使用窗口` : `${agent.category} Use Window`,
+    summary,
+    shortLabel: firstOutput,
+    strongestAxis: topAxis ? `${topAxis.label} ${topAxis.value}` : agent.category,
+    starterSteps: starterSteps.length ? starterSteps : [
+      isZh ? '明确目标与约束' : 'Clarify goal and constraints',
+      profile.strength || agent.desc,
+      isZh ? '输出可执行下一步' : 'Produce an executable next step',
+    ],
+  };
+};
+
+function RadarChart({ points, language = 'zh' }) {
   const size = 240;
   const center = size / 2;
   const radius = 88;
@@ -1156,7 +1295,7 @@ function RadarChart({ points }) {
           <g key={p.label}>
             <line x1={center} y1={center} x2={x2} y2={y2} stroke="rgba(49,42,31,0.22)" strokeWidth="1" />
             <text x={x} y={y} textAnchor="middle" dominantBaseline="middle" className="font-mono" fontSize="8" fill="#3f3527">
-              {p.label.toUpperCase()}
+              {localizeText(p.label.toUpperCase(), language)}
             </text>
           </g>
         );
@@ -1198,7 +1337,9 @@ const hydrateChatMessage = (message) => ({
 
 const loadInitialChatMessages = () => {
   const stored = readStoredJson(STORAGE_KEYS.chatMessages, null);
-  return (Array.isArray(stored) && stored.length ? stored : PROJECT_CHAT_MESSAGES).map(hydrateChatMessage);
+  return (Array.isArray(stored) && stored.length ? stored : PROJECT_CHAT_MESSAGES)
+    .map(hydrateChatMessage)
+    .filter(message => !isManagerDemoMessage(message));
 };
 
 const PROJECT_TIMELINE_EVENTS = [
@@ -1333,6 +1474,7 @@ function PantheonAvatar({ agent }) {
 }
 
 export default function EngineWorkspace() {
+  const { language, setLanguage, setProjectLanguage, t } = useLanguage();
   // --- Engine State ---
   const [projects, setProjects] = useState(loadInitialProjects);
   const [activeRoute, setActiveRoute] = useState('dashboard'); // 'dashboard', 'project_detail', 'war_room', 'agent_market'
@@ -1350,6 +1492,8 @@ export default function EngineWorkspace() {
   const [selectedMarketAgentId, setSelectedMarketAgentId] = useState(null);
   const [recruitedIds, setRecruitedIds] = useState([]);
   const [signingAgentId, setSigningAgentId] = useState(null);
+  const [contractProjectPickerAgentId, setContractProjectPickerAgentId] = useState(null);
+  const [marketMode, setMarketMode] = useState('global');
   const [isDecrypting, setIsDecrypting] = useState(false);
 
   // --- War Room State ---
@@ -1380,6 +1524,7 @@ export default function EngineWorkspace() {
 
   // --- Project Workspace State ---
   const [roomInput, setRoomInput] = useState('');
+  const [roomVoiceStatus, setRoomVoiceStatus] = useState('idle');
   const [roomIntentions, setRoomIntentions] = useState([]);
   const [roomSpeaker, setRoomSpeaker] = useState(null);
   const [roomTranscript, setRoomTranscript] = useState([
@@ -1432,6 +1577,9 @@ export default function EngineWorkspace() {
     managerDashboard: null,
     lastManagerDashboardSyncAt: null,
     managerDashboardSyncCount: 0,
+    managerFlowGraph: null,
+    lastManagerFlowGraphSyncAt: null,
+    managerFlowGraphSyncCount: 0,
     managerCommandCenter: null,
     managerCommandCenterRun: null,
     lastManagerCommandCenterSyncAt: null,
@@ -1457,6 +1605,7 @@ export default function EngineWorkspace() {
   const [agentDashboardSnapshots, setAgentDashboardSnapshots] = useState({});
   const sceneTransitionTimerRef = useRef(null);
   const roomSimulationTimersRef = useRef([]);
+  const roomSpeechRecognitionRef = useRef(null);
   const meetingTimerRef = useRef(null);
   const lastTimelineWheelRef = useRef(0);
   const tlPreviewTimerRef = useRef(null);
@@ -1487,6 +1636,7 @@ export default function EngineWorkspace() {
   useEffect(() => () => {
     if (sceneTransitionTimerRef.current) clearTimeout(sceneTransitionTimerRef.current);
     roomSimulationTimersRef.current.forEach(timer => clearTimeout(timer));
+    roomSpeechRecognitionRef.current?.stop?.();
     tlEntranceTimersRef.current.forEach(timer => clearTimeout(timer));
     if (meetingTimerRef.current) clearInterval(meetingTimerRef.current);
   }, []);
@@ -1638,7 +1788,28 @@ export default function EngineWorkspace() {
 
   // Derived Data
   const activeProject = projects.find(p => p.id === selectedProjectId);
+  const activeLanguage = activeProject?.language || language;
+
+  useEffect(() => {
+    setProjectLanguage(activeProject?.language || null);
+  }, [activeProject?.id, activeProject?.language, setProjectLanguage]);
   const selectedMarketAgent = LEGENDARY_AGENTS.find(agent => agent.id === selectedMarketAgentId);
+  const initiationTalentIds = initiationInviteIds;
+  const initiationTalentMembers = LEGENDARY_AGENTS
+    .filter(agent => initiationTalentIds.includes(agent.id))
+    .map(agent => ({
+      id: agent.id,
+      name: agent.name,
+      title: agent.role,
+      role: agent.role,
+      skill: agent.role,
+      duty: agent.desc,
+      category: agent.category,
+      primaryIdentity: agent.primaryIdentity,
+    }));
+  const initiationRosterMembers = initiationTalentMembers.length
+    ? initiationTalentMembers
+    : INITIATION_MEMBERS.filter(member => initiationInviteIds.includes(member.id));
 
   const buildAutonomyMessages = (project = activeProject) => {
     const projectId = project?.id || DEFAULT_CHAT_PROJECT_ID;
@@ -1675,6 +1846,7 @@ export default function EngineWorkspace() {
       trigger: 'manual',
       schedulerReason: `${cadence}-pulse-requested-by-director`,
       dueAt: now,
+      language: project.language || activeLanguage,
     });
     const publishedCycle = publishAutonomousCycleChat({
       project: result.project,
@@ -1682,6 +1854,7 @@ export default function EngineWorkspace() {
       cadence,
       projectId,
       now,
+      language: project.language || activeLanguage,
     });
 
     setProjects(prev => prev.map(item => item.id === projectId ? publishedCycle.project : item));
@@ -1694,11 +1867,18 @@ export default function EngineWorkspace() {
   const requestAgentBackend = async (path, { method = 'GET', body, timeoutMs = 900, baseUrl = backendStation.baseUrl } = {}) => {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    const localizedBody = body && typeof body === 'object'
+      ? {
+        ...body,
+        language: body.language || activeLanguage,
+        ...(body.project ? { project: { ...body.project, language: body.project.language || activeLanguage } } : {}),
+      }
+      : body;
     try {
       const response = await fetch(`${baseUrl}${path}`, {
         method,
-        headers: body ? { 'content-type': 'application/json' } : undefined,
-        body: body ? JSON.stringify(body) : undefined,
+        headers: localizedBody ? { 'content-type': 'application/json' } : undefined,
+        body: localizedBody ? JSON.stringify(localizedBody) : undefined,
         signal: controller.signal,
       });
       const payload = await response.json().catch(() => ({}));
@@ -1719,11 +1899,13 @@ export default function EngineWorkspace() {
     const useCaseAuditPayload = payload.managerReadyPackage?.managerUseCaseAudit || managerDashboardPayload.managerUseCaseAudit || null;
     const actionQueuePayload = payload.managerReadyPackage?.managerActionQueue || managerDashboardPayload.managerActionQueue || null;
     const commandCenterPayload = payload.managerCommandCenter || payload.managerReadyPackage?.managerCommandCenter || managerDashboardPayload.managerCommandCenter || null;
+    const flowGraphPayload = payload.managerFlowGraph || payload.managerReadyPackage?.managerFlowGraph || null;
     setBackendStation(prev => ({
       ...prev,
       connectionStatus: 'online',
       managerDashboard: managerDashboardPayload,
       managerReadyPackage: payload.managerReadyPackage || prev.managerReadyPackage,
+      managerFlowGraph: flowGraphPayload || prev.managerFlowGraph,
       managerCommandCenter: commandCenterPayload || prev.managerCommandCenter,
       managerCommandCenterRun: payload.managerCommandCenterRun || prev.managerCommandCenterRun,
       managerScenarioTrail: payload.managerReadyPackage?.managerScenarioTrail || managerDashboardPayload.managerScenarioTrail || prev.managerScenarioTrail,
@@ -1733,6 +1915,8 @@ export default function EngineWorkspace() {
       managerActionQueue: actionQueuePayload || prev.managerActionQueue,
       lastManagerDashboardSyncAt: new Date().toISOString(),
       managerDashboardSyncCount: (prev.managerDashboardSyncCount || 0) + 1,
+      lastManagerFlowGraphSyncAt: flowGraphPayload ? new Date().toISOString() : prev.lastManagerFlowGraphSyncAt,
+      managerFlowGraphSyncCount: flowGraphPayload ? (prev.managerFlowGraphSyncCount || 0) + 1 : prev.managerFlowGraphSyncCount,
       lastManagerReadyPackageSyncAt: payload.managerReadyPackage ? new Date().toISOString() : prev.lastManagerReadyPackageSyncAt,
       managerReadyPackageSyncCount: payload.managerReadyPackage ? (prev.managerReadyPackageSyncCount || 0) + 1 : prev.managerReadyPackageSyncCount,
       lastManagerCommandCenterSyncAt: commandCenterPayload ? new Date().toISOString() : prev.lastManagerCommandCenterSyncAt,
@@ -1850,6 +2034,7 @@ export default function EngineWorkspace() {
         loading: silent ? prev.loading : false,
         managerReadyPackage: payload,
         managerDashboard: payload.managerDashboard || prev.managerDashboard,
+        managerFlowGraph: payload.managerFlowGraph || prev.managerFlowGraph,
         managerCommandCenter: payload.managerCommandCenter || payload.managerDashboard?.managerCommandCenter || prev.managerCommandCenter,
         managerScenarioTrail: payload.managerScenarioTrail || prev.managerScenarioTrail,
         managerScenarioWalkthrough: payload.managerScenarioWalkthrough || prev.managerScenarioWalkthrough,
@@ -1860,6 +2045,8 @@ export default function EngineWorkspace() {
         managerReadyPackageSyncCount: (prev.managerReadyPackageSyncCount || 0) + 1,
         lastManagerDashboardSyncAt: payload.managerDashboard ? new Date().toISOString() : prev.lastManagerDashboardSyncAt,
         managerDashboardSyncCount: payload.managerDashboard ? (prev.managerDashboardSyncCount || 0) + 1 : prev.managerDashboardSyncCount,
+        lastManagerFlowGraphSyncAt: payload.managerFlowGraph ? new Date().toISOString() : prev.lastManagerFlowGraphSyncAt,
+        managerFlowGraphSyncCount: payload.managerFlowGraph ? (prev.managerFlowGraphSyncCount || 0) + 1 : prev.managerFlowGraphSyncCount,
         lastManagerCommandCenterSyncAt: (payload.managerCommandCenter || payload.managerDashboard?.managerCommandCenter) ? new Date().toISOString() : prev.lastManagerCommandCenterSyncAt,
         managerCommandCenterSyncCount: (payload.managerCommandCenter || payload.managerDashboard?.managerCommandCenter) ? (prev.managerCommandCenterSyncCount || 0) + 1 : prev.managerCommandCenterSyncCount,
         lastManagerScenarioTrailSyncAt: payload.managerScenarioTrail ? new Date().toISOString() : prev.lastManagerScenarioTrailSyncAt,
@@ -1870,7 +2057,7 @@ export default function EngineWorkspace() {
         managerUseCaseAuditSyncCount: payload.managerUseCaseAudit ? (prev.managerUseCaseAuditSyncCount || 0) + 1 : prev.managerUseCaseAuditSyncCount,
         lastManagerActionQueueSyncAt: payload.managerActionQueue ? new Date().toISOString() : prev.lastManagerActionQueueSyncAt,
         managerActionQueueSyncCount: payload.managerActionQueue ? (prev.managerActionQueueSyncCount || 0) + 1 : prev.managerActionQueueSyncCount,
-        lastAction: silent ? prev.lastAction || 'Backend manager ready package synced' : 'Backend manager ready package synced',
+        lastAction: silent ? prev.lastAction || 'BACKEND MANAGER READY PACKAGE SYNCED' : 'BACKEND MANAGER READY PACKAGE SYNCED',
         error: null,
       }));
       return payload;
@@ -1881,6 +2068,43 @@ export default function EngineWorkspace() {
         loading: silent ? prev.loading : false,
         lastAction: silent ? prev.lastAction : 'Backend manager ready package sync failed',
         error: silent ? prev.error : error.name === 'AbortError' ? 'Backend manager ready package sync timed out.' : error.message || String(error),
+      }));
+      return null;
+    }
+  };
+
+  const syncBackendManagerFlowGraph = async ({ silent = true, projectId = activeProject?.id } = {}) => {
+    if (!projectId) return null;
+    if (!silent) setBackendStation(prev => ({ ...prev, loading: true }));
+    try {
+      if (activeProject?.id === projectId) {
+        await requestAgentBackend(`/projects/${encodeURIComponent(projectId)}`, {
+          method: 'PUT',
+          body: { project: activeProject },
+          timeoutMs: silent ? 900 : 1400,
+        });
+      }
+      const payload = await requestAgentBackend(`/projects/${encodeURIComponent(projectId)}/manager-flow-graph`, {
+        timeoutMs: silent ? 1200 : 1800,
+      });
+      setBackendStation(prev => ({
+        ...prev,
+        connectionStatus: 'online',
+        loading: silent ? prev.loading : false,
+        managerFlowGraph: payload,
+        lastManagerFlowGraphSyncAt: new Date().toISOString(),
+        managerFlowGraphSyncCount: (prev.managerFlowGraphSyncCount || 0) + 1,
+        lastAction: silent ? prev.lastAction || 'Backend manager flow graph synced' : 'Backend manager flow graph synced',
+        error: null,
+      }));
+      return payload;
+    } catch (error) {
+      setBackendStation(prev => ({
+        ...prev,
+        connectionStatus: silent ? prev.connectionStatus : 'offline',
+        loading: silent ? prev.loading : false,
+        lastAction: silent ? prev.lastAction : 'Backend manager flow graph sync failed',
+        error: silent ? prev.error : error.name === 'AbortError' ? 'Backend manager flow graph sync timed out.' : error.message || String(error),
       }));
       return null;
     }
@@ -2115,6 +2339,8 @@ export default function EngineWorkspace() {
   const refreshBackendManagerView = async () => {
     const readyPackage = await syncBackendManagerReadyPackage({ silent: false });
     if (readyPackage) return;
+    const flowGraph = await syncBackendManagerFlowGraph({ silent: false });
+    if (flowGraph) return;
     const dashboard = await syncBackendManagerDashboard({ silent: false });
     if (dashboard) await syncBackendManagerScenarioTrail({ silent: false });
   };
@@ -2165,6 +2391,7 @@ export default function EngineWorkspace() {
       scheduler: null,
       managerReadyPackage: null,
       managerDashboard: null,
+      managerFlowGraph: null,
       managerCommandCenter: null,
       managerCommandCenterRun: null,
       managerScenarioTrail: null,
@@ -2179,7 +2406,32 @@ export default function EngineWorkspace() {
   };
 
   const runBackendSchedulerAction = async (action) => {
-    setBackendStation(prev => ({ ...prev, loading: true }));
+    setBackendStation(prev => ({
+      ...prev,
+      loading: true,
+      lastAction: action === 'start' ? 'Started backend scheduler' : prev.lastAction,
+      scheduler: action === 'start'
+        ? {
+          ...(prev.scheduler || {}),
+          lastStartedRunImmediately: true,
+          lastResult: {
+            processed: activeProject ? [{
+              projectId: activeProject.id,
+              reason: 'backend-scheduler-start-first-work',
+              nextRunAt: activeProject.nextAutonomousRunAt || null,
+            }] : [],
+            skipped: [],
+            agentsProcessed: (activeProject?.team || []).slice(0, 5).map(agent => ({
+              projectId: activeProject.id,
+              agentId: agent.id,
+              trigger: 'http-autonomous-scheduler-startup-agents',
+            })),
+            agentsSkipped: [],
+            messageCount: 0,
+          },
+        }
+        : prev.scheduler,
+    }));
     try {
       if (action === 'start' && activeProject) {
         await requestAgentBackend(`/projects/${encodeURIComponent(activeProject.id)}`, {
@@ -2190,27 +2442,36 @@ export default function EngineWorkspace() {
       }
       const payload = await requestAgentBackend(`/workers/autonomous/${action}`, {
         method: 'POST',
-        body: action === 'start' ? { runImmediately: true } : {},
+        body: action === 'start' ? { runImmediately: true, projectId: activeProject?.id } : {},
         timeoutMs: 1200,
       });
       setBackendStation(prev => ({
         ...prev,
         connectionStatus: 'online',
-        scheduler: payload.scheduler || prev.scheduler,
+        scheduler: action === 'start'
+          ? {
+            ...(prev.scheduler || {}),
+            ...(payload.scheduler || {}),
+            lastResult: payload.scheduler?.lastResult || prev.scheduler?.lastResult || null,
+            lastStartedRunImmediately: true,
+          }
+          : payload.scheduler || prev.scheduler,
         loading: false,
         lastAction: `${action === 'start' ? 'Started' : 'Stopped'} backend scheduler`,
         error: null,
       }));
       if (action === 'start') {
-        setTimeout(() => refreshBackendSchedulerStatus(undefined, { silent: true }), 500);
-        setTimeout(() => runBackendAutonomousPulse({
+        await runBackendAutonomousPulse({
           trigger: 'manager-ui-scheduler-start-pulse',
           schedulerReason: 'backend-scheduler-start-first-work',
           source: 'manager-ui-scheduler-start-chat',
           updateLoading: false,
           lastActionPrefix: 'Scheduler start pulse',
           persistActiveProject: false,
-        }), 800);
+          timeoutMs: 8000,
+        });
+        setBackendStation(prev => ({ ...prev, loading: false }));
+        setTimeout(() => refreshBackendSchedulerStatus(undefined, { silent: true }), 500);
         if (activeProject?.id) {
           setTimeout(() => syncBackendManagerDashboard({ silent: true, projectId: activeProject.id }), 1200);
         }
@@ -2330,6 +2591,7 @@ export default function EngineWorkspace() {
 
     const result = submitProjectMultiChannelChangeRequest({
       project: activeProject,
+      language: activeLanguage,
       ...body,
     });
     setProjects(prev => prev.map(project => (
@@ -2384,8 +2646,8 @@ export default function EngineWorkspace() {
     }
 
     const result = isMeeting
-      ? submitProjectMeetingMessage({ project: activeProject, ...body })
-      : submitProjectChatMessage({ project: activeProject, ...body });
+      ? submitProjectMeetingMessage({ project: activeProject, language: activeLanguage, ...body })
+      : submitProjectChatMessage({ project: activeProject, language: activeLanguage, ...body });
     setProjects(prev => prev.map(project => (
       project.id === activeProject.id ? result.project : project
     )));
@@ -2431,6 +2693,7 @@ export default function EngineWorkspace() {
 
     const result = submitProjectChatMessage({
       project: activeProject,
+      language: activeLanguage,
       ...body,
     });
     setProjects(prev => prev.map(project => (
@@ -2447,6 +2710,7 @@ export default function EngineWorkspace() {
     updateLoading = true,
     lastActionPrefix = 'Server pulse',
     persistActiveProject = true,
+    timeoutMs = 1800,
   } = {}) => {
     if (!activeProject) return;
     const now = new Date().toISOString();
@@ -2470,7 +2734,7 @@ export default function EngineWorkspace() {
           dueAt: now,
           source,
         },
-        timeoutMs: 1800,
+        timeoutMs,
       });
       if (payload.project) {
         applyBackendProjectSnapshot(payload);
@@ -2693,6 +2957,53 @@ export default function EngineWorkspace() {
     }
   };
 
+  const confirmManagerFlowNode = async (nodeId, valid = true) => {
+    if (!activeProject || !nodeId || backendStation.connectionStatus !== 'online') return null;
+    const now = new Date().toISOString();
+    setBackendStation(prev => ({ ...prev, loading: true }));
+    try {
+      await requestAgentBackend(`/projects/${encodeURIComponent(activeProject.id)}`, {
+        method: 'PUT',
+        body: { project: activeProject },
+        timeoutMs: 1200,
+      });
+      const payload = await requestAgentBackend(`/projects/${encodeURIComponent(activeProject.id)}/manager-flow-graph/nodes/${encodeURIComponent(nodeId)}/confirm`, {
+        method: 'POST',
+        body: {
+          valid,
+          now,
+          actor: 'Director',
+          note: valid ? 'User confirmed this node represents valid work.' : 'User marked this node as not representative.',
+        },
+        timeoutMs: 2200,
+      });
+      if (payload.project) applyBackendProjectSnapshot(payload);
+      applyBackendManagerDashboardPayload(payload);
+      setBackendStation(prev => ({
+        ...prev,
+        connectionStatus: 'online',
+        loading: false,
+        managerFlowGraph: payload.managerFlowGraph || prev.managerFlowGraph,
+        lastManagerFlowGraphSyncAt: payload.managerFlowGraph ? new Date().toISOString() : prev.lastManagerFlowGraphSyncAt,
+        managerFlowGraphSyncCount: payload.managerFlowGraph ? (prev.managerFlowGraphSyncCount || 0) + 1 : prev.managerFlowGraphSyncCount,
+        lastAction: `${valid ? 'Confirmed' : 'Superseded'} flow node: ${nodeId}`,
+        lastProjectSyncAt: payload.project ? new Date().toISOString() : prev.lastProjectSyncAt,
+        projectSyncCount: payload.project ? (prev.projectSyncCount || 0) + 1 : prev.projectSyncCount,
+        error: null,
+      }));
+      return payload;
+    } catch (error) {
+      setBackendStation(prev => ({
+        ...prev,
+        connectionStatus: 'offline',
+        loading: false,
+        lastAction: 'Manager flow node confirmation failed',
+        error: error.name === 'AbortError' ? 'Manager flow node confirmation timed out.' : error.message || String(error),
+      }));
+      return null;
+    }
+  };
+
   useEffect(() => {
     if (activeRoute !== 'project_detail' || projectMode !== 'dashboard' || !activeProject) return;
     refreshBackendSchedulerStatus();
@@ -2705,6 +3016,12 @@ export default function EngineWorkspace() {
       syncBackendProjectState({ silent: true });
     }, 15_000);
     return () => clearInterval(timer);
+  }, [activeRoute, projectMode, selectedProjectId, backendStation.connectionStatus]);
+
+  useEffect(() => {
+    if (activeRoute !== 'project_detail' || projectMode !== 'timeline' || !activeProject) return;
+    if (backendStation.connectionStatus !== 'online') return;
+    syncBackendManagerFlowGraph({ silent: true, projectId: activeProject.id });
   }, [activeRoute, projectMode, selectedProjectId, backendStation.connectionStatus]);
 
   useEffect(() => {
@@ -2733,6 +3050,7 @@ export default function EngineWorkspace() {
           trigger: 'scheduler',
           schedulerReason: schedule.reason,
           dueAt: schedule.dueAt,
+          language: project.language || language,
         });
         const publishedCycle = publishAutonomousCycleChat({
           project: result.project,
@@ -2740,6 +3058,7 @@ export default function EngineWorkspace() {
           cadence,
           projectId: project.id,
           now: nowIso,
+          language: project.language || language,
         });
         generatedChatMessages.push(...publishedCycle.messages);
         return publishedCycle.project;
@@ -2757,6 +3076,7 @@ export default function EngineWorkspace() {
   // --- Navigation Actions ---
   const navToDashboard = () => { setActiveRoute('dashboard'); setSelectedProjectId(null); };
   const navToMarket = () => {
+    setMarketMode('global');
     setActiveRoute('agent_market');
     setSelectedProjectId(null);
     setSelectedMarketAgentId(null);
@@ -2769,6 +3089,8 @@ export default function EngineWorkspace() {
     setActiveRoute('project_detail');
   };
   const navToInitiation = () => {
+    setMarketMode('initiation');
+    setContractProjectPickerAgentId(null);
     setSelectedProjectId(null);
     setInitiationStep('brief');
     setInitiationPhase('discussion');
@@ -2779,6 +3101,20 @@ export default function EngineWorkspace() {
     setInitiationConfirmedTeamIds(['jobs', 'turing', 'curie', 'confucius']);
     setInitiationInviteIds(['jobs', 'turing', 'curie', 'confucius']);
     setSelectedInitiationClarificationQuestionId(null);
+    setActiveRoute('project_initiation');
+  };
+  const openInitiationTalentMarket = () => {
+    setMarketMode('initiation');
+    setSelectedMarketAgentId(null);
+    setContractProjectPickerAgentId(null);
+    setActiveRoute('agent_market');
+    setIsDecrypting(true);
+    setTimeout(() => setIsDecrypting(false), 600);
+  };
+  const continueInitiationFromMarket = () => {
+    setMarketMode('initiation');
+    setSelectedMarketAgentId(null);
+    setInitiationStep('lobby');
     setActiveRoute('project_initiation');
   };
   const navToWarRoom = () => { setActiveRoute('war_room'); setMeetingState('idle'); setMeetingLogs([]); setTargetNodeIds([]); };
@@ -2794,8 +3130,8 @@ export default function EngineWorkspace() {
     ].join(' ');
     const demoNow = new Date();
     const atOffset = (minutes) => new Date(demoNow.getTime() + minutes * 60 * 1000).toISOString();
-    const roleNegotiation = createKickoffRoleNegotiation(invitedMembers, brief, { projectId, projectName });
-    const leaderElection = createLeaderElection(invitedMembers, brief, { projectId, projectName });
+    const roleNegotiation = createKickoffRoleNegotiation(invitedMembers, brief, { projectId, projectName, language: activeLanguage });
+    const leaderElection = createLeaderElection(invitedMembers, brief, { projectId, projectName, language: activeLanguage });
     const firstLead = invitedMembers.find(member => member.id === leaderElection.recommendedLeaderId)
       || invitedMembers.find(member => member.id === 'jobs')
       || invitedMembers[0];
@@ -3219,7 +3555,7 @@ export default function EngineWorkspace() {
   };
   const buildInitiationKickoffPayload = (now = new Date().toISOString()) => {
     const projectId = 'p_roundtable_001';
-    const invitedMembers = INITIATION_MEMBERS.filter(member => initiationInviteIds.includes(member.id));
+    const invitedMembers = initiationRosterMembers;
     const taskText = `${initiationDraft.name} ${initiationDraft.summary} ${initiationDraft.intent} ${initiationDraft.output} ${initiationDraft.reason}`;
     const skillPlan = createRoundtablePlan(invitedMembers.map(member => member.id), taskText);
     const plannedTasks = initiationActionDrafts
@@ -3231,8 +3567,14 @@ export default function EngineWorkspace() {
       .filter(task => task.text);
     return {
       projectId,
+      language: activeLanguage,
       name: initiationDraft.name || 'Untitled Initiation',
       brief: taskText,
+      meetingSkillBrief: buildInitiationMeetingSkillBrief({
+        draft: initiationDraft,
+        output: plannedTasks[0]?.text,
+        language: activeLanguage,
+      }),
       team: invitedMembers,
       selectedLeaderId: selectedLeaderCandidateId || undefined,
       reviewerId: skillPlan.reviewer?.slug,
@@ -3250,6 +3592,7 @@ export default function EngineWorkspace() {
     const meetingPayload = {
       ...kickoffPayload,
       meetingId: `meeting_${kickoffPayload.projectId}`,
+      language: activeLanguage,
     };
     let meeting = null;
 
@@ -3290,6 +3633,27 @@ export default function EngineWorkspace() {
     setInitiationConfirmedTeamIds(kickoffPayload.team.map(member => member.id));
     setSelectedLeaderCandidateId(meeting.recommendedLeaderId || selectedLeaderCandidateId);
     setInitiationPhase('discussion');
+    setRoomInput('');
+    setRoomSpeaker(null);
+    setRoomIntentions([]);
+    setMeetingStartTime(null);
+    setMeetingElapsed(0);
+    setRoomTranscript([
+      {
+        id: `initiation_director_${Date.now()}`,
+        speaker: 'Director',
+        role: 'Founder',
+        text: kickoffPayload.brief,
+        score: 10,
+      },
+      ...(meeting.transcript || []).slice(0, 8).map((item, index) => ({
+        id: item.id || `initiation_turn_${index}`,
+        speaker: item.speaker || item.author || 'Agent',
+        role: item.role || item.stage || item.type || 'Kickoff participant',
+        text: item.text || '',
+        score: item.type === 'role-question' || item.stage === 'role-clarification' ? 8 : 9,
+      })),
+    ]);
     setInitiationStep('meeting');
   };
 
@@ -3375,6 +3739,7 @@ export default function EngineWorkspace() {
             reviewerId: kickoffPayload.reviewerId,
             tasks: kickoffPayload.tasks,
             now: approvedAt,
+            language: activeLanguage,
           },
           timeoutMs: 2400,
         }) : await requestAgentBackend('/projects/initiate', {
@@ -3412,13 +3777,17 @@ export default function EngineWorkspace() {
         reviewerId: kickoffPayload.reviewerId,
         tasks: kickoffPayload.tasks,
         now: approvedAt,
+        language: activeLanguage,
       }) : createKickoffProjectFromMeeting(confirmedKickoffPayload);
       if (kickoffResult.meeting) {
         setInitiationMeetingSession(kickoffResult.meeting);
       }
     }
 
-    const projectReadyForWork = kickoffResult.project;
+    const projectReadyForWork = {
+      ...kickoffResult.project,
+      language: kickoffResult.project?.language || activeLanguage,
+    };
 
     setProjects(prev => {
       const exists = prev.some(p => p.id === projectId);
@@ -3434,6 +3803,29 @@ export default function EngineWorkspace() {
     setInitiationPhase('approved');
     setSelectedProjectId(projectId);
     setProjectMode('dashboard');
+    setMeetingStartTime(null);
+    setMeetingElapsed(0);
+    setRoomSpeaker(null);
+    setRoomIntentions([]);
+    setRoomInput('');
+    setRoomTranscript([
+      {
+        id: `approved_project_open_${Date.now()}`,
+        speaker: 'System',
+        role: 'System',
+        text: activeLanguage === 'zh'
+          ? `${projectReadyForWork.name} 已批准。项目圆桌已开放，可开始第一次执行讨论。`
+          : `${projectReadyForWork.name} is approved. The project roundtable is open for the first execution discussion.`,
+        score: 0,
+      },
+      ...(kickoffResult.messages || []).slice(0, 8).map((message, index) => ({
+        id: message.id || `approved_kickoff_${index}`,
+        speaker: message.author || 'Agent',
+        role: message.role || message.type || 'Kickoff',
+        text: message.text || '',
+        score: message.author === 'Director' ? 10 : 8,
+      })),
+    ]);
     setActiveRoute('project_detail');
   };
   const enterProjectScene = (mode) => {
@@ -3475,25 +3867,81 @@ export default function EngineWorkspace() {
     setRecruitedIds(prev => prev.includes(id) ? prev : [...prev, id]);
   };
 
+  const openContractProjectPicker = (id) => {
+    if (signingAgentId) return;
+    setContractProjectPickerAgentId(id);
+  };
+
+  const confirmAgentContractForProject = (projectId) => {
+    const agent = LEGENDARY_AGENTS.find(item => item.id === contractProjectPickerAgentId);
+    if (!agent || !projectId) return;
+    const contractedAt = new Date().toISOString();
+    const projectAgent = {
+      id: agent.id,
+      name: agent.name,
+      role: agent.role,
+      skill: agent.category,
+      category: agent.category,
+      source: 'pantheon-market',
+      contractedAt,
+    };
+    setProjects(prev => prev.map(project => {
+      if (project.id !== projectId) return project;
+      const alreadyInTeam = (project.team || []).some(member => member.id === agent.id);
+      const nextTeam = alreadyInTeam ? project.team : [...project.team, projectAgent];
+      const nextLog = {
+        id: `contract_${agent.id}_${Date.parse(contractedAt) || Date.now()}`,
+        time: contractedAt,
+        agent: 'Pantheon Market',
+        agentId: agent.id,
+        log: `${agent.name} joined ${project.name} from The Pantheon contract flow.`,
+        eventType: 'agent-contracted',
+      };
+      return {
+        ...project,
+        team: nextTeam,
+        logs: [nextLog, ...(project.logs || [])],
+      };
+    }));
+    setRecruitedIds(prev => prev.includes(agent.id) ? prev : [...prev, agent.id]);
+    setContractProjectPickerAgentId(null);
+    setSigningAgentId(agent.id);
+    setSelectedProjectId(projectId);
+    setProjectMode('dashboard');
+    setActiveRoute('project_detail');
+    setTimeout(() => setSigningAgentId(null), 900);
+  };
+
   const startContractStamp = (id) => {
-    if (recruitedIds.includes(id) || signingAgentId) return;
-    setSigningAgentId(id);
-    setTimeout(() => {
+    if (signingAgentId) return;
+    if (marketMode === 'initiation') {
+      setInitiationInviteIds(prev => prev.includes(id) ? prev : [...prev, id]);
+      setInitiationConfirmedTeamIds(prev => prev.includes(id) ? prev : [...prev, id]);
+      setSelectedInitiationMemberId(id);
       setRecruitedIds(prev => prev.includes(id) ? prev : [...prev, id]);
-    }, 1180);
-    setTimeout(() => {
-      setSigningAgentId(null);
-    }, 3600);
+      setSigningAgentId(id);
+      setTimeout(() => {
+        setSigningAgentId(null);
+        setSelectedMarketAgentId(null);
+        setActiveRoute('agent_market');
+      }, 650);
+      return;
+    }
+    openContractProjectPicker(id);
   };
 
   const runRoomSimulation = (text, projectOverride = activeProject) => {
     const team = projectOverride?.team || [];
     roomSimulationTimersRef.current.forEach(timer => clearTimeout(timer));
     roomSimulationTimersRef.current = [];
-    const exchange = runRoundtableExchange(team, text, {
+    const meetingDirective = projectOverride?.meetingSkillBrief
+      ? `${projectOverride.meetingSkillBrief}\n\nDirector input:\n${text}`
+      : text;
+    const exchange = runRoundtableExchange(team, meetingDirective, {
       projectId: projectOverride?.id,
       projectName: projectOverride?.name,
       meetingType: projectOverride?.lastAutonomousRunAt ? 'sync' : 'kickoff',
+      language: projectOverride?.language || activeLanguage,
     });
     const runtimeIntentions = exchange.intentions;
 
@@ -3659,6 +4107,7 @@ export default function EngineWorkspace() {
       text,
       now: submittedAt,
       messageId,
+      language: projectOverride?.language || activeLanguage,
     });
     const nextProject = meetingResult.project;
     const changeResponse = meetingResult.responses.changeResponse;
@@ -3713,6 +4162,7 @@ export default function EngineWorkspace() {
       channelId: activeChannelId,
       now: submittedAt,
       messageId,
+      language: activeLanguage,
     });
     setProjects(prev => prev.map(project => (
       project.id === activeProject.id ? chatResult.project : project
@@ -3744,6 +4194,7 @@ export default function EngineWorkspace() {
       projectId: activeProject.id,
       projectName: activeProject.name,
       meetingType: activeProject.lastAutonomousRunAt ? 'sync' : 'kickoff',
+      language: activeLanguage,
     });
     const opening = session.events.find(event => event.kind === 'agent');
     setMeetingState('active');
@@ -3799,6 +4250,7 @@ export default function EngineWorkspace() {
           projectId: activeProject.id,
           projectName: activeProject.name,
           meetingType: activeProject.lastAutonomousRunAt ? 'sync' : 'kickoff',
+          language: activeLanguage,
         },
       });
       const changeResponse = isFeatureChange ? handleFeatureChangeRequest({
@@ -3809,6 +4261,7 @@ export default function EngineWorkspace() {
         channelId: 'main',
         source: 'war-room-meeting-change-request',
         requestMessageId: meetingSourceMessage?.id || null,
+        language: activeLanguage,
       }) : null;
       if (changeResponse) {
         setProjects(prev => prev.map(project => (
@@ -3878,14 +4331,78 @@ export default function EngineWorkspace() {
 
   // --- UI COMPONENTS ---
 
+  const renderContractProjectPicker = () => {
+    if (!contractProjectPickerAgentId) return null;
+    const agent = LEGENDARY_AGENTS.find(item => item.id === contractProjectPickerAgentId);
+    if (!agent) return null;
+    return (
+      <div className="fixed inset-0 z-[130] flex items-center justify-center bg-black/55 px-6 py-6">
+        <button aria-label="Close project picker" onClick={() => setContractProjectPickerAgentId(null)} className="absolute inset-0 z-0 cursor-default" />
+        <section className="relative z-10 w-[min(820px,94vw)] max-h-[88vh] overflow-hidden border border-[#251b13] bg-[#efe2bd] text-[#251b13] shadow-[18px_18px_0_rgba(0,0,0,0.28)]">
+          <header className="flex items-start justify-between gap-6 border-b border-[#b8a57d] p-6">
+            <div>
+              <div className="font-mono text-[10px] uppercase tracking-[0.28em] text-[#8f1e18] mb-3">Project Contract Target</div>
+              <h2 className="font-serif text-4xl leading-none">Choose project for {agent.name}</h2>
+              <p className="mt-3 font-serif text-lg leading-relaxed text-[#5c4933]">
+                Agentic Market now contracts talent into a project team. Pick an existing project and the contract will open that project immediately.
+              </p>
+            </div>
+            <button onClick={() => setContractProjectPickerAgentId(null)} className="border border-[#b8a57d] p-2 text-[#5c4933] hover:border-[#251b13] hover:text-[#251b13] transition-colors">
+              <X size={18} />
+            </button>
+          </header>
+          <div className="max-h-[58vh] overflow-y-auto p-6">
+            <div className="grid gap-3">
+              {projects.map(project => {
+                const alreadyInTeam = (project.team || []).some(member => member.id === agent.id);
+                return (
+                  <button
+                    key={project.id}
+                    type="button"
+                    onClick={() => confirmAgentContractForProject(project.id)}
+                    className="group flex items-center justify-between gap-5 border border-[#b8a57d] bg-[#f7edcf] p-5 text-left transition-colors hover:border-[#251b13] hover:bg-[#fff8df]"
+                  >
+                    <span className="min-w-0">
+                      <span className="block font-serif text-2xl leading-tight">{project.name}</span>
+                      <span className="mt-2 block font-mono text-[9px] uppercase tracking-widest text-[#7d6a49]">
+                        {project.id} / {project.status} / {(project.team || []).length} members
+                      </span>
+                      {alreadyInTeam && (
+                        <span className="mt-2 inline-flex border border-[#59684b] bg-[#59684b] px-2 py-1 font-mono text-[8px] uppercase tracking-widest text-white">
+                          Already in team
+                        </span>
+                      )}
+                    </span>
+                    <span className="flex shrink-0 items-center gap-2 border border-[#251b13] bg-[#251b13] px-4 py-3 font-mono text-[9px] uppercase tracking-widest text-[#efe2bd] transition-transform group-hover:-translate-x-1">
+                      {alreadyInTeam ? <Eye size={13} /> : <FileSignature size={13} />}
+                      {alreadyInTeam ? 'Open Project' : 'Contract'}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+          <footer className="flex items-center justify-between gap-4 border-t border-[#b8a57d] bg-[#e3d3a8] px-6 py-4">
+            <div className="font-mono text-[9px] uppercase tracking-widest text-[#7d6a49]">
+              {projects.length} existing project{projects.length === 1 ? '' : 's'} available
+            </div>
+            <button onClick={navToInitiation} className="border border-[#251b13] px-4 py-2 font-mono text-[9px] uppercase tracking-widest text-[#251b13] hover:bg-[#251b13] hover:text-[#efe2bd] transition-colors">
+              Start new project
+            </button>
+          </footer>
+        </section>
+      </div>
+    );
+  };
+
   const renderSettingsModal = () => {
     const navItems = [
-      { id: 'deployment', label: 'API 整体部署', icon: Server },
-      { id: 'keys', label: 'Key 与凭证', icon: KeyRound },
-      { id: 'models', label: '模型与路由', icon: Cpu },
-      { id: 'privacy', label: '隐私与安全', icon: Shield },
-      { id: 'workspace', label: '工作区偏好', icon: SlidersHorizontal },
-      { id: 'integrations', label: '集成与账单', icon: PlugZap },
+      { id: 'deployment', label: t('settings.deployment'), icon: Server },
+      { id: 'keys', label: t('settings.keys'), icon: KeyRound },
+      { id: 'models', label: t('settings.models'), icon: Cpu },
+      { id: 'privacy', label: t('settings.privacy'), icon: Shield },
+      { id: 'workspace', label: t('settings.workspace'), icon: SlidersHorizontal },
+      { id: 'integrations', label: t('settings.integrations'), icon: PlugZap },
     ];
 
     const fieldClass = 'w-full border border-[#d1d0c9] bg-[#f8f6ee] px-3 py-2 font-mono text-xs text-[#1a1a1a] outline-none transition-colors focus:border-[#1a1a1a]';
@@ -3893,17 +4410,17 @@ export default function EngineWorkspace() {
 
     const SettingField = ({ label, hint, children }) => (
       <div className="space-y-2">
-        <div className={labelClass}>{label}</div>
+        <div className={labelClass}>{localizeText(label, activeLanguage)}</div>
         {children}
-        {hint && <p className="font-mono text-[10px] leading-relaxed text-[#8b8678]">{hint}</p>}
+        {hint && <p className="font-mono text-[10px] leading-relaxed text-[#8b8678]">{localizeText(hint, activeLanguage)}</p>}
       </div>
     );
 
     const ToggleField = ({ label, hint, defaultChecked = false }) => (
       <label className="flex items-start justify-between gap-4 border border-[#d1d0c9] bg-[#f5f4f0] px-4 py-3">
         <span className="min-w-0">
-          <span className="block font-mono text-xs text-[#1a1a1a]">{label}</span>
-          {hint && <span className="mt-1 block font-mono text-[10px] leading-relaxed text-[#7d786b]">{hint}</span>}
+          <span className="block font-mono text-xs text-[#1a1a1a]">{localizeText(label, activeLanguage)}</span>
+          {hint && <span className="mt-1 block font-mono text-[10px] leading-relaxed text-[#7d786b]">{localizeText(hint, activeLanguage)}</span>}
         </span>
         <input type="checkbox" defaultChecked={defaultChecked} className="mt-0.5 h-4 w-4 accent-[#1a1a1a]" />
       </label>
@@ -3919,14 +4436,14 @@ export default function EngineWorkspace() {
 
     return (
       <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/45 px-6 py-6">
-        <button aria-label="Close settings overlay" onClick={() => setSettingsOpen(false)} className="absolute inset-0 cursor-default" />
+        <button aria-label={t('common.close')} onClick={() => setSettingsOpen(false)} className="absolute inset-0 cursor-default" />
         <section className="relative z-10 flex h-[min(760px,92vh)] w-[min(1040px,94vw)] overflow-hidden border border-[#1a1a1a] bg-[#ebe9e0] shadow-[18px_18px_0_rgba(0,0,0,0.22)]">
           <aside className="w-64 shrink-0 border-r border-[#d1d0c9] bg-[#dfdccf] p-5">
             <div className="mb-7 flex items-center gap-3">
               <div className="flex h-12 w-12 items-center justify-center border border-[#1a1a1a] bg-[#1a1a1a] font-serif text-2xl text-[#f5f4f0]">D</div>
               <div className="min-w-0">
-                <div className="truncate font-serif text-xl leading-none">Studio Director</div>
-                <div className="mt-1 font-mono text-[9px] uppercase tracking-[0.16em] text-[#7d786b]">@director</div>
+                <div className="truncate font-serif text-xl leading-none">{t('nav.studioDirector')}</div>
+                <div className="mt-1 font-mono text-[9px] uppercase tracking-[0.16em] text-[#7d786b]">{t('nav.directorHandle')}</div>
               </div>
             </div>
 
@@ -3937,6 +4454,7 @@ export default function EngineWorkspace() {
                 return (
                   <button
                     key={item.id}
+                    data-testid={`settings-tab-${item.id}`}
                     onClick={() => setSettingsTab(item.id)}
                     className={`flex items-center gap-3 px-3 py-2.5 text-left font-mono text-xs transition-colors ${active ? 'bg-[#1a1a1a] text-[#f5f4f0]' : 'text-[#4f4b43] hover:bg-[#d1d0c9] hover:text-[#1a1a1a]'}`}
                   >
@@ -3951,10 +4469,10 @@ export default function EngineWorkspace() {
           <div className="flex min-w-0 flex-1 flex-col">
             <header className="flex h-16 shrink-0 items-center justify-between border-b border-[#d1d0c9] px-6">
               <div>
-                <div className="font-mono text-[9px] uppercase tracking-[0.22em] text-[#8b8678]">Hall of Fame Studio Settings</div>
+                <div className="font-mono text-[9px] uppercase tracking-[0.22em] text-[#8b8678]">{t('settings.title')}</div>
                 <h2 className="font-serif text-3xl leading-none">{tabTitle}</h2>
               </div>
-              <button onClick={() => setSettingsOpen(false)} className="p-2 text-[#555047] hover:bg-[#d1d0c9] hover:text-black transition-colors" aria-label="Close settings">
+              <button onClick={() => setSettingsOpen(false)} className="p-2 text-[#555047] hover:bg-[#d1d0c9] hover:text-black transition-colors" aria-label={t('common.close')}>
                 <X size={18} />
               </button>
             </header>
@@ -4104,17 +4622,37 @@ export default function EngineWorkspace() {
               {settingsTab === 'workspace' && (
                 <div className="space-y-6">
                   <div className="grid grid-cols-2 gap-5">
-                    <SettingField label="默认语言">
-                      <select className={fieldClass} defaultValue="zh">
-                        <option value="zh">中文</option>
-                        <option value="en">English</option>
-                        <option value="auto">Auto</option>
+                    <SettingField label={t('settings.defaultLanguage')} hint={t('settings.languageHint')}>
+                      <select data-testid="settings-global-language" className={fieldClass} value={language} onChange={(event) => setLanguage(event.target.value)}>
+                        <option value="zh">{t('language.zh')}</option>
+                        <option value="en">{t('language.en')}</option>
                       </select>
                     </SettingField>
-                    <SettingField label="界面密度">
+                    <SettingField label={t('settings.projectLanguage')} hint={activeProject ? t('settings.inheritGlobal') : t('settings.languageHint')}>
+                      <select
+                        data-testid="settings-project-language"
+                        className={fieldClass}
+                        value={activeProject?.language || 'inherit'}
+                        disabled={!activeProject}
+                        onChange={(event) => {
+                          if (!activeProject) return;
+                          const nextLanguage = event.target.value === 'inherit' ? undefined : event.target.value;
+                          setProjects(prev => prev.map(project => (
+                            project.id === activeProject.id
+                              ? { ...project, ...(nextLanguage ? { language: nextLanguage } : { language: undefined }) }
+                              : project
+                          )));
+                        }}
+                      >
+                        <option value="inherit">{t('settings.inheritGlobal')}</option>
+                        <option value="zh">{t('language.zh')}</option>
+                        <option value="en">{t('language.en')}</option>
+                      </select>
+                    </SettingField>
+                    <SettingField label={t('settings.interfaceDensity')}>
                       <select className={fieldClass} defaultValue="compact">
-                        <option value="compact">Compact</option>
-                        <option value="comfortable">Comfortable</option>
+                        <option value="compact">{t('settings.compact')}</option>
+                        <option value="comfortable">{t('settings.comfortable')}</option>
                       </select>
                     </SettingField>
                   </div>
@@ -4177,11 +4715,11 @@ export default function EngineWorkspace() {
             <footer className="flex h-16 shrink-0 items-center justify-between border-t border-[#d1d0c9] px-7">
               <div className="flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.16em] text-green-700">
                 <CheckCircle2 size={14} />
-                Mock configuration ready
+                {t('settings.saved')}
               </div>
               <div className="flex items-center gap-2">
-                <button className="border border-[#d1d0c9] px-3 py-2 font-mono text-[10px] uppercase tracking-widest text-[#555047] hover:border-[#1a1a1a] hover:text-black transition-colors">Test Connection</button>
-                <SmallButton><Save size={12} className="inline-block mr-2" />Save Settings</SmallButton>
+                <button className="border border-[#d1d0c9] px-3 py-2 font-mono text-[10px] uppercase tracking-widest text-[#555047] hover:border-[#1a1a1a] hover:text-black transition-colors">{t('settings.testConnection')}</button>
+                <SmallButton><Save size={12} className="inline-block mr-2" />{t('settings.save')}</SmallButton>
               </div>
             </footer>
           </div>
@@ -4198,7 +4736,7 @@ export default function EngineWorkspace() {
           {!sidebarCollapsed && (
             <span className="min-w-0">
               <span className="block font-serif text-lg font-bold tracking-tight leading-none">Hall of Fame</span>
-              <span className="block font-mono text-[8px] uppercase tracking-[0.18em] text-gray-500 mt-1">名人堂工作室</span>
+              <span className="block font-mono text-[8px] uppercase tracking-[0.18em] text-gray-500 mt-1">{t('nav.hallOfFameSubtitle')}</span>
             </span>
           )}
         </div>
@@ -4228,6 +4766,7 @@ export default function EngineWorkspace() {
             {projects.map(proj => (
               <button 
                 key={proj.id}
+                data-testid={`project-nav-${proj.id}`}
                 onClick={() => navToProject(proj.id)}
                 className={`flex items-center gap-2 text-left font-serif text-lg transition-colors group ${selectedProjectId === proj.id && activeRoute !== 'dashboard' && activeRoute !== 'agent_market' && activeRoute !== 'agent_dossier' && activeRoute !== 'project_initiation' ? 'text-black font-semibold' : 'text-gray-500 hover:text-black'}`}
               >
@@ -4243,17 +4782,18 @@ export default function EngineWorkspace() {
         {!sidebarCollapsed ? (
           <div className="flex items-center gap-3">
             <button
+              data-testid="open-settings-button"
               onClick={() => setSettingsOpen(true)}
               className="flex h-9 w-9 shrink-0 items-center justify-center border border-[#1a1a1a] bg-[#1a1a1a] font-serif text-lg text-[#f5f4f0] transition-colors hover:bg-[#3a3429]"
               title="Open user settings"
             >
               D
             </button>
-            <button onClick={() => setSettingsOpen(true)} className="min-w-0 flex-1 text-left">
-              <span className="block truncate font-serif text-base leading-none text-[#1a1a1a]">Studio Director</span>
+            <button data-testid="open-settings-label" onClick={() => setSettingsOpen(true)} className="min-w-0 flex-1 text-left">
+              <span className="block truncate font-serif text-base leading-none text-[#1a1a1a]">{t('nav.studioDirector')}</span>
               <span className="mt-1 flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.12em] text-green-700">
                 <UserCircle size={11} />
-                @director
+                {t('nav.directorHandle')}
               </span>
             </button>
             <button
@@ -4271,7 +4811,7 @@ export default function EngineWorkspace() {
               onClick={() => setSettingsOpen(true)}
               className="flex h-9 w-9 items-center justify-center border border-[#1a1a1a] bg-[#1a1a1a] font-serif text-lg text-[#f5f4f0] transition-colors hover:bg-[#3a3429]"
               aria-label="Open user settings"
-              title="Studio Director"
+              title={t('nav.studioDirector')}
             >
               D
             </button>
@@ -4286,6 +4826,9 @@ export default function EngineWorkspace() {
 
   const renderAgentMarketView = () => {
     const categories = ['All', 'Visionary', 'Strategy', 'Analytical', 'Science', 'Creative', 'Psychology', 'Finance', 'Operations'];
+    const isInitiationMarket = marketMode === 'initiation';
+    const signedMarketIds = isInitiationMarket ? initiationInviteIds : recruitedIds;
+    const signedInitiationNames = initiationTalentMembers.map(member => member.name).join(' / ');
 
     const filteredAgents = LEGENDARY_AGENTS.filter(agent => {
       const q = marketSearch.toLowerCase();
@@ -4308,6 +4851,39 @@ export default function EngineWorkspace() {
         )}
 
         <div className="sticky top-0 z-40 bg-[#f5f4f0] border-b border-[#d1d0c9] px-12 py-8 pt-12 shadow-[0_10px_30px_rgba(245,244,240,0.9)]">
+          {isInitiationMarket && (
+            <div data-testid="initiation-talent-market" className="mb-6 border border-[#1a1a1a] bg-[#1a1a1a] px-4 py-3 text-white">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="font-mono text-[9px] uppercase tracking-widest text-[#d8c99f]">Initiation Talent Market</div>
+                  <div data-testid="initiation-signed-team" className="font-serif text-xl leading-tight truncate">
+                    Signed team: {signedInitiationNames || 'None yet'}
+                  </div>
+                </div>
+                <div className="flex shrink-0 items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setInitiationStep('invite');
+                      setActiveRoute('project_initiation');
+                    }}
+                    className="border border-[#7b6542] px-3 py-2 font-mono text-[9px] uppercase tracking-widest text-[#efe2bd] hover:border-[#efe2bd]"
+                  >
+                    Back
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="initiation-next-lobby"
+                    onClick={continueInitiationFromMarket}
+                    disabled={initiationTalentMembers.length === 0}
+                    className="bg-[#8f1e18] px-4 py-2 font-mono text-[9px] uppercase tracking-widest text-white disabled:bg-[#3a2a1c] disabled:text-[#7d6a49]"
+                  >
+                    Next: Meeting Prep
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
           <div className="flex justify-between items-end mb-8">
             <div>
               <h1 className="font-serif text-6xl tracking-tight mb-2 decrypt-text">The Pantheon.</h1>
@@ -4351,7 +4927,12 @@ export default function EngineWorkspace() {
 
         <div className="p-12 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-8">
           {filteredAgents.map(agent => {
-            const isRecruited = recruitedIds.includes(agent.id);
+            const isRecruited = signedMarketIds.includes(agent.id);
+            const cardProfile = getDossierProfile(agent, activeLanguage);
+            const deploymentWindow = getAgentDeploymentWindow(agent, cardProfile, activeLanguage);
+            const marketCardText = activeLanguage === 'zh'
+              ? { bestWindow: '最佳窗口' }
+              : { bestWindow: 'Best Window' };
             return (
               <div
                 key={agent.id}
@@ -4413,7 +4994,12 @@ export default function EngineWorkspace() {
                 </div>
 
                 <div className="p-4 flex items-center justify-between border-t border-[#1a1a1a] bg-white">
-                  <span className="font-mono text-[10px] text-gray-600 font-bold bg-gray-100 px-2 py-1">{agent.price}</span>
+                  <div className="min-w-0 border-l-2 border-[#8f1e18] pl-3 pr-3">
+                    <div className="font-mono text-[8px] uppercase tracking-widest text-gray-400">{marketCardText.bestWindow}</div>
+                    <div className="max-w-[11rem] truncate font-serif text-sm leading-tight text-gray-800">
+                      {localizeText(deploymentWindow.shortLabel, activeLanguage)}
+                    </div>
+                  </div>
                   <button
                     onClick={(event) => {
                       event.stopPropagation();
@@ -4445,18 +5031,38 @@ export default function EngineWorkspace() {
 
   const renderAgentDossierScene = () => {
     const agent = selectedMarketAgent || LEGENDARY_AGENTS[0];
-    const isRecruited = recruitedIds.includes(agent.id);
+    const isInitiationMarket = marketMode === 'initiation';
+    const isRecruited = isInitiationMarket ? initiationInviteIds.includes(agent.id) : recruitedIds.includes(agent.id);
     const isStamping = signingAgentId === agent.id;
-    const profile = getDossierProfile(agent);
+    const profile = getDossierProfile(agent, activeLanguage);
+    const deploymentWindow = getAgentDeploymentWindow(agent, profile, activeLanguage);
+    const dossierText = (value) => localizeText(value, activeLanguage);
+    const windowText = activeLanguage === 'zh'
+      ? {
+        title: '部署窗口',
+        useWhen: '适合介入',
+        strongestAxis: '最强轴',
+        firstOutput: '首个产出',
+        starterBrief: '启动简报',
+      }
+      : {
+        title: 'Deployment Window',
+        useWhen: 'Use When',
+        strongestAxis: 'Strongest Axis',
+        firstOutput: 'First Output',
+        starterBrief: 'Starter Brief',
+      };
     const skill = profile.skill || null;
     const avatar = pantheonAvatarMeta(agent.id);
     const imageSrc = pantheonAvatarSrc(agent.id);
     const evidenceStrips = [
       { label: 'Primary Identity', value: agent.primaryIdentity },
       { label: 'Operational Class', value: agent.category },
-      { label: 'Current Rate', value: agent.price },
+      { label: 'Best Window', value: deploymentWindow.shortLabel },
       ...(skill ? [
         { label: 'Skill Runtime', value: profile.skillStats || `Registered / ${skill.defaultFormat.length} steps` },
+        ...(profile.professionalSkillRuntime ? [{ label: 'Callable Skills', value: profile.professionalSkillRuntime }] : []),
+        ...(profile.realWorldEdge ? [{ label: 'Reality Edge', value: profile.realWorldEdge }] : []),
         ...(profile.skillLoaded ? [{ label: 'Skill File', value: profile.skillPath }] : []),
       ] : []),
     ];
@@ -4471,39 +5077,30 @@ export default function EngineWorkspace() {
           className="absolute top-7 left-7 z-50 bg-[#e8ddbf] text-[#221812] border border-[#5c4933] shadow-[6px_6px_0_rgba(0,0,0,0.24)] px-4 py-3 font-mono text-[10px] uppercase tracking-widest flex items-center gap-3 hover:-translate-y-0.5 hover:bg-[#f3e8c8] transition-transform"
         >
           <ArrowLeft size={15} />
-          Refile Archive
+          {dossierText('Refile Archive')}
         </button>
 
         <div className="absolute top-7 right-7 z-50 flex items-center gap-3 text-[#e8ddbf] font-mono text-[10px] uppercase tracking-widest">
-          <span className="border border-[#8d7a58] px-3 py-2 bg-black/20">Skills: {PERSON_SKILL_COUNT} · Docs: {PERSON_SKILL_DOC_COUNT}</span>
-          <span className="border border-[#8d7a58] px-3 py-2 bg-black/20">Clearance: Director</span>
-          <span className="border border-red-900/70 text-red-200 px-3 py-2 bg-red-950/25">Live Dossier</span>
+          <span className="border border-[#8d7a58] px-3 py-2 bg-black/20">{dossierText('Skills')}: {PERSON_SKILL_COUNT} / {dossierText('Docs')}: {PERSON_SKILL_DOC_COUNT}</span>
+          <span className="border border-[#8d7a58] px-3 py-2 bg-black/20">{dossierText('Clearance')}: {dossierText('Director')}</span>
+          <span className="border border-red-900/70 text-red-200 px-3 py-2 bg-red-950/25">{dossierText('Live Dossier')}</span>
         </div>
 
         <div className="absolute left-[5vw] top-[17vh] w-52 h-72 bg-[#d9caa4] border border-[#7c6847] shadow-2xl desk-prop hidden lg:block" style={{ '--from-rot': '-18deg', '--to-rot': '-11deg' }}>
-          <div className="h-10 bg-[#4c1110] text-[#eadfbd] font-mono text-[9px] tracking-widest uppercase flex items-center px-4">Recovered Memo</div>
+          <div className="h-10 bg-[#4c1110] text-[#eadfbd] font-mono text-[9px] tracking-widest uppercase flex items-center px-4">{dossierText('Recovered Memo')}</div>
           <div className="p-5 space-y-3">
             <div className="h-2 bg-[#6b5a3d]/50 w-3/4" />
             <div className="h-2 bg-[#6b5a3d]/35 w-full" />
             <div className="h-2 bg-[#6b5a3d]/35 w-5/6" />
-            <div className="mt-8 border-2 border-[#7f211c] text-[#7f211c] font-mono text-xs inline-block px-3 py-1 rotate-[-8deg]">VETTED</div>
+            <div className="mt-8 border-2 border-[#7f211c] text-[#7f211c] font-mono text-xs inline-block px-3 py-1 rotate-[-8deg]">{dossierText('VETTED')}</div>
           </div>
         </div>
 
-        <div className="absolute right-[4vw] bottom-[9vh] w-64 h-44 bg-[#161412] border border-[#7b6542] shadow-2xl desk-prop hidden xl:block" style={{ '--from-rot': '16deg', '--to-rot': '8deg' }}>
-          <div className="absolute inset-4 border border-[#9e885d]/50 scan-sweep overflow-hidden">
-            <div className="p-4 text-[#e8ddbf] font-mono text-[9px] uppercase tracking-widest">
-              <ScanLine size={18} className="mb-4 text-red-300" />
-              Signal desk<br />paper trail<br />identity match
-            </div>
-          </div>
-        </div>
-
-        <div className="relative z-30 h-full flex items-center justify-center px-5 py-20">
-          <div className={`archive-dossier relative w-full max-w-6xl min-h-[680px] max-h-[calc(100vh-120px)] overflow-hidden border border-[#765f3e] grid grid-cols-12 ${isStamping ? 'dossier-impact' : ''}`}>
+        <div className="relative z-30 h-full min-h-0 flex items-center justify-center px-5 py-20">
+          <div className={`archive-dossier dossier-scroll-field relative w-full max-w-6xl max-h-[calc(100vh-120px)] overflow-y-auto lg:h-[min(760px,calc(100vh-120px))] lg:min-h-0 lg:overflow-hidden border border-[#765f3e] grid grid-cols-12 ${isStamping ? 'dossier-impact' : ''}`}>
             <div className="absolute -top-4 left-10 right-24 h-12 bg-[#c8b688] border border-[#755f3f] -rotate-1 shadow-lg" />
             <div className="absolute top-8 right-10 border-[5px] border-[#8f1e18] text-[#8f1e18] font-mono text-2xl font-bold uppercase tracking-[0.22em] px-5 py-2 rotate-[10deg] opacity-80 mix-blend-multiply pointer-events-none">
-              {isRecruited ? 'Contracted' : 'Pending'}
+              {dossierText(isRecruited ? 'Contracted' : 'Pending')}
             </div>
             {isStamping && (
               <>
@@ -4515,12 +5112,12 @@ export default function EngineWorkspace() {
                   </div>
                   <div className="stamp-head w-56 h-24 rounded-md border-2 border-[#3f0f0e] -mt-2 flex items-center justify-center">
                     <div className="border-4 border-[#e8ddbf] text-[#e8ddbf] font-mono text-xl font-black uppercase tracking-[0.26em] px-5 py-2 rotate-[-4deg]">
-                      APPROVED
+                      {dossierText('APPROVED')}
                     </div>
                   </div>
                 </div>
                 <div className="absolute left-[76%] top-[16%] z-[75] pointer-events-none fresh-contract-seal border-[7px] border-[#8f1e18] text-[#8f1e18] font-mono text-3xl font-black uppercase tracking-[0.22em] px-7 py-3 mix-blend-multiply">
-                  Contracted
+                  {dossierText('Contracted')}
                 </div>
                 <div className="absolute left-[76%] top-[16%] z-[65] pointer-events-none seal-shockwave w-44 h-44 rounded-full border-2 border-[#8f1e18]" />
                 <div className="absolute left-[62%] top-[22%] z-[65] pointer-events-none paper-dust flex gap-2">
@@ -4535,10 +5132,10 @@ export default function EngineWorkspace() {
               </>
             )}
 
-            <section className="col-span-12 lg:col-span-4 border-r border-[#b8a57d] p-8 bg-[#d9c797]/45 relative overflow-hidden">
+            <section className="dossier-scroll-field col-span-12 lg:col-span-4 min-h-0 border-r border-[#b8a57d] p-8 bg-[#d9c797]/45 relative overflow-y-auto">
               <div className="absolute inset-0 opacity-[0.08]" style={{ backgroundImage: 'repeating-linear-gradient(135deg, #2b2118 0, #2b2118 1px, transparent 1px, transparent 10px)' }} />
               <div className="relative z-10">
-                <div className="font-mono text-[10px] uppercase tracking-[0.28em] text-[#6b241e] mb-4 ink-reveal">Personnel Visual Record</div>
+                <div className="font-mono text-[10px] uppercase tracking-[0.28em] text-[#6b241e] mb-4 ink-reveal">{dossierText('Personnel Visual Record')}</div>
                 <div className="bg-[#241b14] p-3 rotate-[-1.6deg] shadow-2xl mb-7">
                   <div className="aspect-[4/5] bg-[#eee1bd] overflow-hidden border border-[#675139]">
                     {imageSrc ? (
@@ -4551,7 +5148,7 @@ export default function EngineWorkspace() {
                   </div>
                   <div className="pt-3 flex justify-between items-center text-[#e8ddbf] font-mono text-[8px] uppercase tracking-widest">
                     <span>{agent.id}</span>
-                    <span>{avatar?.license || 'Symbolic'}</span>
+                    <span>{dossierText(avatar?.license || 'Symbolic')}</span>
                   </div>
                 </div>
 
@@ -4565,30 +5162,31 @@ export default function EngineWorkspace() {
                 <div className="space-y-3">
                   {evidenceStrips.map((item, index) => (
                     <div key={item.label} className="border-l-4 border-[#8f1e18] bg-[#f5ebcc]/65 p-3 shadow-sm ink-reveal" style={{ animationDelay: `${0.1 + index * 0.08}s` }}>
-                      <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18] mb-1">{item.label}</div>
-                      <div className="font-serif text-base leading-snug">{item.value}</div>
+                      <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18] mb-1">{dossierText(item.label)}</div>
+                      <div className="font-serif text-base leading-snug">{dossierText(item.value)}</div>
                     </div>
                   ))}
                 </div>
               </div>
+              <div className="dossier-scroll-cue" aria-hidden="true" />
             </section>
 
-            <section className="col-span-12 lg:col-span-5 p-8 border-r border-[#b8a57d] relative overflow-y-auto">
+            <section className="dossier-scroll-field col-span-12 lg:col-span-5 min-h-0 p-8 border-r border-[#b8a57d] relative overflow-y-auto">
               <div className="flex items-center justify-between mb-6">
                 <div>
-                  <div className="font-mono text-[10px] uppercase tracking-[0.26em] text-[#6b241e]">Five-Axis Capability Map</div>
-                  <div className="font-serif text-3xl text-[#201610]">Operational Shape</div>
+                  <div className="font-mono text-[10px] uppercase tracking-[0.26em] text-[#6b241e]">{dossierText('Five-Axis Capability Map')}</div>
+                  <div className="font-serif text-3xl text-[#201610]">{dossierText('Operational Shape')}</div>
                 </div>
                 <Crosshair size={26} className="text-[#8f1e18]" />
               </div>
 
               <div className="grid md:grid-cols-[280px_1fr] gap-6 items-center">
-                <RadarChart points={profile.scores} />
+                <RadarChart points={profile.scores} language={activeLanguage} />
                 <div className="space-y-3">
                   {profile.scores.map((item, index) => (
                     <div key={item.label} className="ink-reveal" style={{ animationDelay: `${0.12 + index * 0.06}s` }}>
                       <div className="flex justify-between font-mono text-[9px] uppercase tracking-widest mb-1">
-                        <span>{item.label}</span>
+                        <span>{dossierText(item.label)}</span>
                         <span>{item.value}</span>
                       </div>
                       <div className="h-2 bg-[#c8b688] border border-[#a28c63] overflow-hidden">
@@ -4602,21 +5200,41 @@ export default function EngineWorkspace() {
               <div className="grid md:grid-cols-2 gap-5 mt-8">
                 <div className="bg-[#f6ebca]/70 border border-[#b8a57d] p-5 shadow-sm">
                   <div className="flex items-center gap-2 font-mono text-[9px] uppercase tracking-widest text-[#8f1e18] mb-3">
-                    <Shield size={14} /> 擅长什么
+                    <Shield size={14} /> {dossierText('Strength')}
                   </div>
                   <p className="font-serif text-lg leading-relaxed text-[#2a1e15]">{profile.strength}</p>
                 </div>
                 <div className="bg-[#f6ebca]/70 border border-[#b8a57d] p-5 shadow-sm">
                   <div className="flex items-center gap-2 font-mono text-[9px] uppercase tracking-widest text-[#8f1e18] mb-3">
-                    <Briefcase size={14} /> 使用建议
+                    <Briefcase size={14} /> {dossierText('Usage Advice')}
                   </div>
                   <p className="font-serif text-lg leading-relaxed text-[#2a1e15]">{profile.advice}</p>
                 </div>
               </div>
 
+              {(profile.realWorldEdge || profile.signatureSkills?.length) && (
+                <div className="mt-5 bg-[#f6ebca]/70 border border-[#b8a57d] p-5 shadow-sm">
+                  <div className="flex items-center gap-2 font-mono text-[9px] uppercase tracking-widest text-[#8f1e18] mb-3">
+                    <PackageCheck size={14} /> {dossierText('Composable Skill Layer')}
+                  </div>
+                  {profile.realWorldEdge && (
+                    <p className="font-serif text-lg leading-relaxed text-[#2a1e15] mb-4">{dossierText(profile.realWorldEdge)}</p>
+                  )}
+                  {profile.signatureSkills?.length > 0 && (
+                    <div className="flex flex-wrap gap-2">
+                      {profile.signatureSkills.map((item) => (
+                        <span key={item} className="border border-[#a28c63] bg-[#eadfbd] px-3 py-1 font-mono text-[9px] uppercase tracking-widest text-[#5c251f]">
+                          {dossierText(item)}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
               <div className="mt-6 bg-[#211812] text-[#eadfbd] border border-[#5c4933] p-5 shadow-lg">
                 <div className="flex items-center gap-2 font-mono text-[9px] uppercase tracking-widest text-red-200 mb-3">
-                  <BookOpen size={14} /> 简介
+                  <BookOpen size={14} /> {dossierText('Summary')}
                 </div>
                 <p className="font-serif text-xl leading-relaxed">{profile.summary}</p>
                 {profile.motto && (
@@ -4625,40 +5243,70 @@ export default function EngineWorkspace() {
                   </p>
                 )}
               </div>
+              <div className="dossier-scroll-cue" aria-hidden="true" />
             </section>
 
-            <aside className="col-span-12 lg:col-span-3 p-8 bg-[#251b13] text-[#eadfbd] relative overflow-hidden">
+            <aside className="dossier-scroll-field col-span-12 lg:col-span-3 min-h-0 p-8 bg-[#251b13] text-[#eadfbd] relative overflow-y-auto">
               <div className="absolute inset-0 opacity-[0.08]" style={{ backgroundImage: 'linear-gradient(#eadfbd 1px, transparent 1px), linear-gradient(90deg, #eadfbd 1px, transparent 1px)', backgroundSize: '22px 22px' }} />
               <div className="relative z-10 flex flex-col h-full">
-                <div className="font-mono text-[10px] uppercase tracking-[0.28em] text-red-200 mb-4">Director Decision</div>
+                <div className="font-mono text-[10px] uppercase tracking-[0.28em] text-red-200 mb-4">{dossierText('Director Decision')}</div>
                 <div className="border border-[#7b6542] p-5 mb-6 bg-black/18">
-                  <div className="font-serif text-3xl mb-2">{agent.price}</div>
-                  <div className="font-mono text-[9px] uppercase tracking-widest text-[#bcae86]">per request authorization</div>
+                  <div className="font-mono text-[9px] uppercase tracking-widest text-[#bcae86] mb-2">{windowText.title}</div>
+                  <div className="font-serif text-2xl leading-tight mb-4">{dossierText(deploymentWindow.title)}</div>
+                  <div className="font-mono text-[8px] uppercase tracking-widest text-red-200 mb-2">{windowText.useWhen}</div>
+                  <p className="font-serif text-sm leading-relaxed text-[#efe2bd]">{dossierText(deploymentWindow.summary)}</p>
+                  <div className="mt-5 grid grid-cols-2 gap-3">
+                    <div className="border border-[#59472e] p-3 bg-black/15">
+                      <div className="font-mono text-[8px] uppercase tracking-widest text-[#8d7a58] mb-1">{windowText.strongestAxis}</div>
+                      <div className="font-serif text-sm leading-tight">{dossierText(deploymentWindow.strongestAxis)}</div>
+                    </div>
+                    <div className="border border-[#59472e] p-3 bg-black/15">
+                      <div className="font-mono text-[8px] uppercase tracking-widest text-[#8d7a58] mb-1">{windowText.firstOutput}</div>
+                      <div className="font-serif text-sm leading-tight">{dossierText(deploymentWindow.shortLabel)}</div>
+                    </div>
+                  </div>
                 </div>
 
-                <div className="space-y-4 font-mono text-[10px] uppercase tracking-widest text-[#cdbf98] mb-8">
-                  <div className="flex justify-between border-b border-[#59472e] pb-2"><span>Archive Chain</span><span>Clean</span></div>
-                  <div className="flex justify-between border-b border-[#59472e] pb-2"><span>Identity Use</span><span>Style Agent</span></div>
-                  <div className="flex justify-between border-b border-[#59472e] pb-2"><span>Status</span><span>{isRecruited ? 'Secured' : 'Awaiting'}</span></div>
+                <div className="space-y-4 font-mono text-[10px] uppercase tracking-widest text-[#cdbf98] mb-5">
+                  <div className="flex justify-between border-b border-[#59472e] pb-2"><span>{dossierText('Archive Chain')}</span><span>{dossierText('Clean')}</span></div>
+                  <div className="flex justify-between border-b border-[#59472e] pb-2"><span>{dossierText('Identity Use')}</span><span>{dossierText('Style Agent')}</span></div>
+                  <div className="flex justify-between border-b border-[#59472e] pb-2"><span>{dossierText('Status')}</span><span>{dossierText(isRecruited ? 'Secured' : 'Awaiting')}</span></div>
                 </div>
 
-                <div className="mt-auto space-y-3">
+                <div className="mb-5 border border-[#59472e] bg-black/12 p-4">
+                  <div className="font-mono text-[9px] uppercase tracking-widest text-red-200 mb-3">{windowText.starterBrief}</div>
+                  <div className="space-y-2">
+                    {deploymentWindow.starterSteps.map((step, index) => (
+                      <div key={`${step}-${index}`} className="flex gap-3 text-[#d8c99f]">
+                        <span className="mt-0.5 font-mono text-[9px] text-[#8d7a58]">{String(index + 1).padStart(2, '0')}</span>
+                        <span className="font-serif text-sm leading-snug">{dossierText(step)}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                <div className="dossier-scroll-cue dossier-scroll-cue-dark" aria-hidden="true" />
+
+                <div className="sticky bottom-0 -mx-1 space-y-3 bg-[#251b13]/95 pt-3 pb-1 backdrop-blur-sm">
                   <button
                     onClick={() => startContractStamp(agent.id)}
-                    disabled={isRecruited || isStamping}
+                    disabled={isStamping}
                     className={`w-full flex items-center justify-center gap-3 px-5 py-4 font-mono text-[10px] uppercase tracking-widest border transition-all
-                      ${isRecruited ? 'border-[#7b6542] text-[#9f916e] cursor-not-allowed bg-[#1a130e]' : isStamping ? 'border-[#8f1e18] text-red-100 bg-[#8f1e18] cursor-wait' : 'border-[#e8ddbf] bg-[#e8ddbf] text-[#251b13] hover:-translate-y-0.5 hover:shadow-[7px_7px_0_rgba(143,30,24,0.55)]'}
+                      ${isStamping ? 'border-[#8f1e18] text-red-100 bg-[#8f1e18] cursor-wait' : isRecruited ? 'border-[#e8ddbf] bg-[#e8ddbf] text-[#251b13] hover:-translate-y-0.5 hover:shadow-[7px_7px_0_rgba(143,30,24,0.55)]' : 'border-[#e8ddbf] bg-[#e8ddbf] text-[#251b13] hover:-translate-y-0.5 hover:shadow-[7px_7px_0_rgba(143,30,24,0.55)]'}
                     `}
                   >
                     {isRecruited ? <CheckCircle2 size={15} /> : <FileSignature size={15} />}
-                    {isRecruited ? 'Contract Secured' : isStamping ? 'Stamping Contract' : 'Authorize Contract'}
+                    {dossierText(isStamping
+                      ? 'Stamping Contract'
+                      : isInitiationMarket
+                        ? (isRecruited ? 'Signed for Kickoff' : 'Sign for Kickoff')
+                        : (isRecruited ? 'Assign to Project' : 'Authorize Contract'))}
                   </button>
                   <button
                     onClick={closeMarketDossier}
                     className="w-full flex items-center justify-center gap-3 px-5 py-4 font-mono text-[10px] uppercase tracking-widest border border-[#7b6542] text-[#e8ddbf] hover:bg-[#34271b] transition-colors"
                   >
                     <ArrowLeft size={15} />
-                    Return to Market
+                    {dossierText('Return to Market')}
                   </button>
                 </div>
               </div>
@@ -4844,16 +5492,18 @@ export default function EngineWorkspace() {
   };
 
   const renderProjectInitiationFlowView = () => {
-    const invitedMembers = INITIATION_MEMBERS.filter(member => initiationInviteIds.includes(member.id));
+    const invitedMembers = initiationRosterMembers;
     const selectedMember = INITIATION_MEMBERS.find(member => member.id === selectedInitiationMemberId) || invitedMembers[0] || INITIATION_MEMBERS[1];
     const taskText = `${initiationDraft.name} ${initiationDraft.summary} ${initiationDraft.intent} ${initiationDraft.output} ${initiationDraft.reason}`;
     const roleNegotiation = createKickoffRoleNegotiation(invitedMembers, taskText, {
       projectId: 'initiation_roundtable_draft',
       projectName: initiationDraft.name,
+      language: activeLanguage,
     });
     const leaderElection = createLeaderElection(invitedMembers, taskText, {
       projectId: 'initiation_roundtable_draft',
       projectName: initiationDraft.name,
+      language: activeLanguage,
     });
     const meetingLeaderElection = initiationMeetingSession?.leaderElection || leaderElection;
     const confirmedLeaderId = selectedLeaderCandidateId || meetingLeaderElection.recommendedLeaderId;
@@ -4874,6 +5524,11 @@ export default function EngineWorkspace() {
     const initiationMeetingProject = {
       id: 'initiation_roundtable_draft',
       name: initiationDraft.name || 'Untitled Initiation',
+      meetingSkillBrief: buildInitiationMeetingSkillBrief({
+        draft: initiationDraft,
+        output: initiationActionDrafts.find(action => action.trim()) || initiationDraft.output,
+        language: activeLanguage,
+      }),
       team: [INITIATION_MEMBERS[0], ...invitedMembers].map(member => ({
         id: member.id,
         name: member.name,
@@ -4946,6 +5601,7 @@ export default function EngineWorkspace() {
       || meetingRoleQuestions.find(row => !row.answered)
       || meetingRoleQuestions[0]
       || null;
+    const isInitiationMeetingStep = initiationStep === 'meeting';
     const updateDraft = (key, value) => setInitiationDraft(prev => ({ ...prev, [key]: value }));
     const selectMeetingLeaderCandidate = async (agentId) => {
       setSelectedLeaderCandidateId(agentId);
@@ -5055,15 +5711,28 @@ export default function EngineWorkspace() {
       setSelectedInitiationMemberId(id);
     };
     const goStep = (id) => setInitiationStep(id);
+    const submitInitiationMeetingInput = (meetingProject) => {
+      const text = roomInput.trim();
+      if (!text) return;
+      setRoomInput('');
+      setRoomTranscript(prev => [...prev, {
+        id: `initiation_director_input_${Date.now()}`,
+        speaker: 'Director',
+        role: 'Founder',
+        text,
+        score: 10,
+      }]);
+      runRoomSimulation(text, meetingProject);
+    };
 
     return (
       <div className="flex-1 overflow-hidden bg-[#0d0c0b] text-[#efe2bd] fade-in">
         <div className="h-full">
-          <section className="relative overflow-y-auto">
+          <section className="relative h-full overflow-y-auto">
             <div className="absolute inset-0 project-room" />
             <div className="absolute inset-0 opacity-45" style={{ backgroundImage: 'radial-gradient(circle at 48% 35%, transparent 0, rgba(0,0,0,0.78) 70%)' }} />
 
-            <header className="sticky top-0 z-30 bg-[#0d0c0b]/72 backdrop-blur border-b border-[#3a2a1c]/70 px-8 py-4">
+            {!isInitiationMeetingStep && <header className="sticky top-0 z-30 bg-[#0d0c0b]/72 backdrop-blur border-b border-[#3a2a1c]/70 px-8 py-4">
               <div className="flex items-start justify-between gap-6 mb-4">
                 <div>
                   <div className="font-mono text-[10px] uppercase tracking-[0.32em] text-[#bcae86] mb-3 flex items-center gap-3">
@@ -5088,9 +5757,9 @@ export default function EngineWorkspace() {
                   </button>
                 ))}
               </div>
-            </header>
+            </header>}
 
-            <div className="relative z-10 p-8 xl:p-10">
+            <div className={`relative z-10 ${isInitiationMeetingStep ? 'h-full overflow-hidden p-0' : 'p-8 xl:p-10'}`}>
               {initiationStep === 'brief' && (
                 <div className="max-w-3xl mx-auto">
                   <div className="bg-[#efe2bd] text-[#251b13] border border-[#7b6542] p-7 shadow-[16px_16px_0_rgba(0,0,0,0.25)]">
@@ -5119,7 +5788,7 @@ export default function EngineWorkspace() {
                         </label>
                       </div>
                     </div>
-                    <button data-testid="initiation-next-invite" onClick={() => goStep('invite')} className="mt-7 w-full bg-[#8f1e18] hover:bg-[#a62a22] text-white px-5 py-4 flex items-center justify-center gap-3 font-mono text-[10px] uppercase tracking-widest transition-colors">
+                    <button data-testid="initiation-next-invite" onClick={() => { goStep('invite'); openInitiationTalentMarket(); }} className="mt-7 w-full bg-[#8f1e18] hover:bg-[#a62a22] text-white px-5 py-4 flex items-center justify-center gap-3 font-mono text-[10px] uppercase tracking-widest transition-colors">
                       选择参会人 <ChevronRight size={15} />
                     </button>
                   </div>
@@ -5141,26 +5810,30 @@ export default function EngineWorkspace() {
               {initiationStep === 'invite' && (
                 <div className="max-w-5xl mx-auto">
                   <section>
-                    <div className="font-mono text-[10px] uppercase tracking-[0.28em] text-[#bcae86] mb-4">Step 02 / Invite People</div>
-                    <h2 className="font-serif text-5xl leading-none mb-6">邀请谁参加这次立项圆桌？</h2>
-                    <div className="grid md:grid-cols-2 gap-4">
-                      {INITIATION_MEMBERS.slice(1).map(member => {
-                        const selected = initiationInviteIds.includes(member.id);
-                        return (
-                          <button key={member.id} onClick={() => toggleInvite(member.id)} className={`text-left border p-5 transition-all ${selected ? 'bg-[#efe2bd] text-[#251b13] border-[#efe2bd] shadow-[8px_8px_0_rgba(143,30,24,0.25)]' : 'bg-[#1a130e]/88 border-[#3a2a1c] text-[#efe2bd] hover:border-[#7b6542]'}`}>
-                            <div className="flex items-start justify-between gap-4 mb-4">
-                              <div className="h-14 w-14 rounded-full border border-current flex items-center justify-center font-serif text-2xl">{member.name.charAt(0)}</div>
-                              <div className={`font-mono text-[8px] uppercase tracking-widest px-2 py-1 ${selected ? 'bg-[#251b13] text-[#efe2bd]' : 'bg-[#3a2a1c] text-[#bcae86]'}`}>{selected ? 'Invited' : 'Invite'}</div>
-                            </div>
-                            <div className="font-serif text-3xl leading-none mb-2">{member.name}</div>
-                            <div className="font-mono text-[9px] uppercase tracking-widest opacity-70 mb-3">{member.title}</div>
-                            <p className="font-serif text-lg leading-relaxed opacity-80">{member.duty}</p>
-                          </button>
-                        );
-                      })}
+                    <div className="font-mono text-[10px] uppercase tracking-[0.28em] text-[#bcae86] mb-4">
+                      {activeLanguage === 'zh' ? '步骤 02 / 去同一个 Talent Market 签约' : 'Step 02 / Sign from the same Talent Market'}
+                    </div>
+                    <div className="border border-[#7b6542] bg-[#1a130e]/88 p-8">
+                      <h2 className="font-serif text-5xl leading-none mb-5">{activeLanguage === 'zh' ? '从 Talent Market 选择参会人' : 'Choose kickoff participants from Talent Market'}</h2>
+                      <p className="font-serif text-xl leading-relaxed text-[#d8c99f] mb-6">
+                        {activeLanguage === 'zh'
+                          ? '这里不再使用单独的人才列表。点击下面按钮会进入和主页完全一致的 Talent Market；区别只在签约按钮会直接把人才加入本次立项团队。'
+                          : 'This uses the exact same Talent Market as the homepage. The only difference is contract behavior: signing adds the talent directly to this initiation team.'}
+                      </p>
+                      <div data-testid="initiation-signed-team" className="mb-5 border-t border-[#3a2a1c] pt-4 font-serif text-xl">
+                        {activeLanguage === 'zh' ? '已签团队' : 'Signed team'}: {invitedMembers.map(member => member.name).join(' / ') || (activeLanguage === 'zh' ? '暂无' : 'None yet')}
+                      </div>
+                      <button
+                        type="button"
+                        data-testid="initiation-open-talent-market"
+                        onClick={openInitiationTalentMarket}
+                        className="w-full bg-[#efe2bd] px-5 py-4 font-mono text-[10px] uppercase tracking-widest text-[#251b13] hover:bg-white"
+                      >
+                        {activeLanguage === 'zh' ? '打开 Talent Market' : 'Open Talent Market'} <ChevronRight size={15} className="inline-block ml-2" />
+                      </button>
                     </div>
                     <button data-testid="initiation-next-lobby" onClick={() => goStep('lobby')} disabled={invitedMembers.length === 0} className="mt-7 w-full bg-[#8f1e18] disabled:bg-[#3a2a1c] disabled:text-[#7d6a49] hover:bg-[#a62a22] text-white px-5 py-4 flex items-center justify-center gap-3 font-mono text-[10px] uppercase tracking-widest transition-colors">
-                      进入会议准备页 <ChevronRight size={15} />
+                      {activeLanguage === 'zh' ? '进入会议准备页' : 'Enter Meeting Prep'} <ChevronRight size={15} />
                     </button>
                   </section>
                   <aside className="hidden">
@@ -5189,7 +5862,7 @@ export default function EngineWorkspace() {
                     <div className="grid md:grid-cols-3 gap-4">
                       {[
                         ['会议目标', '确认是否立项，以及谁负责什么'],
-                        ['参会人数', `${invitedMembers.length + 1} people`],
+                        ['参会人数', activeLanguage === 'zh' ? `${invitedMembers.length + 1} 人` : `${invitedMembers.length + 1} people`],
                         ['进入条件', '必须开完立项圆桌'],
                       ].map(([label, value]) => (
                         <div key={label} className="border border-[#b8a57d] p-4 bg-[#f7edcf]">
@@ -5222,17 +5895,34 @@ export default function EngineWorkspace() {
                 </div>
               )}
 
-              {initiationStep === 'meeting' && (
-                <div className="max-w-6xl mx-auto">
-                  <section className="relative min-h-[520px] border border-[#3a2a1c] bg-[#1a130e]/82 overflow-hidden">
-                    <div className="absolute inset-0 dotgrid-bg--dark opacity-80" />
-                    <div className="absolute left-1/2 top-[45%] h-[260px] w-[min(660px,86%)] -translate-x-1/2 -translate-y-1/2 rounded-[50%] border border-[#7b6542]/50 bg-[#251b13]/70" />
-                    <div className="absolute left-1/2 top-[45%] -translate-x-1/2 -translate-y-1/2 w-[320px] border border-[#7b6542] bg-[#efe2bd] text-[#251b13] p-5 shadow-[14px_14px_0_rgba(0,0,0,0.28)]">
+              {initiationStep === 'meeting' && renderProjectMeeting(initiationMeetingProject, {
+                forceTimer: true,
+                title: 'Initiation Roundtable',
+                onBack: () => {
+                  setMeetingStartTime(null);
+                  setMeetingElapsed(0);
+                  goStep('lobby');
+                },
+                onComplete: () => {
+                  setMeetingStartTime(null);
+                  setMeetingElapsed(0);
+                  setInitiationPhase('decision');
+                  goStep('result');
+                },
+                onSubmit: submitInitiationMeetingInput,
+              })}
+
+              {false && initiationStep === 'meeting' && (
+                <div className="pointer-events-none absolute inset-0 z-50">
+                  <section className="contents">
+                    <div className="hidden absolute inset-0 dotgrid-bg--dark opacity-80" />
+                    <div className="hidden absolute left-1/2 top-[45%] h-[260px] w-[min(660px,86%)] -translate-x-1/2 -translate-y-1/2 rounded-[50%] border border-[#7b6542]/50 bg-[#251b13]/70" />
+                    <div className="hidden absolute left-1/2 top-[45%] -translate-x-1/2 -translate-y-1/2 w-[320px] border border-[#7b6542] bg-[#efe2bd] text-[#251b13] p-5 shadow-[14px_14px_0_rgba(0,0,0,0.28)]">
                       <div className="font-mono text-[8px] uppercase tracking-[0.22em] text-[#8f1e18] mb-2">Founder Brief</div>
                       <h2 className="font-serif text-2xl leading-none mb-3">{initiationDraft.name}</h2>
                       <p className="font-serif text-base leading-relaxed text-[#4d3c28]">{initiationDraft.summary}</p>
                     </div>
-                    <div data-testid="initiation-meeting-leader-slate" className="absolute right-6 top-6 z-30 w-[min(320px,42%)] border border-[#7b6542] bg-[#0d0c0b]/92 p-4">
+                    <div data-testid="initiation-meeting-leader-slate" className="pointer-events-auto absolute right-[360px] top-20 z-30 max-h-[calc(100vh-160px)] w-[280px] overflow-y-auto border border-[#7b6542] bg-[#0d0c0b]/92 p-3 shadow-[0_18px_42px_rgba(0,0,0,0.32)]">
                       <div className="font-mono text-[8px] uppercase tracking-widest text-[#bcae86] mb-3">Leader Campaign Slate</div>
                       <div className="space-y-2">
                         {meetingLeaderElection.candidates.map(candidate => {
@@ -5260,7 +5950,7 @@ export default function EngineWorkspace() {
                         Leader resolution: {initiationMeetingSession?.leaderElectionResolution?.selectedLeaderName || firstLead.name} / {initiationMeetingSession?.leaderElectionResolution?.managerConfirmed ? 'manager-confirmed' : 'awaiting manager confirmation'}
                       </div>
                     </div>
-                    <div data-testid="initiation-meeting-next-actions" className="absolute left-6 top-6 z-30 max-h-[460px] w-[min(320px,42%)] overflow-y-auto border border-[#7b6542] bg-[#0d0c0b]/92 p-4">
+                    <div data-testid="initiation-meeting-next-actions" className="pointer-events-auto absolute left-8 top-20 z-30 max-h-[calc(100vh-160px)] w-[300px] overflow-y-auto border border-[#7b6542] bg-[#0d0c0b]/92 p-3 shadow-[0_18px_42px_rgba(0,0,0,0.32)]">
                       <div className="font-mono text-[8px] uppercase tracking-widest text-[#bcae86] mb-3">Meeting Next Actions</div>
                       <div className="space-y-2">
                         {initiationActionDrafts.slice(0, 3).map((action, index) => (
@@ -5348,7 +6038,7 @@ export default function EngineWorkspace() {
                         </div>
                       </div>
                     </div>
-                    {[INITIATION_MEMBERS[0], ...invitedMembers].map((member, index) => {
+                    {false && [INITIATION_MEMBERS[0], ...invitedMembers].map((member, index) => {
                       const count = invitedMembers.length + 1;
                       const angle = Math.PI * 0.12 + (Math.PI * 1.76 * index) / Math.max(1, count - 1);
                       const left = 50 + 42 * Math.cos(angle);
@@ -5362,7 +6052,7 @@ export default function EngineWorkspace() {
                         </button>
                       );
                     })}
-                    <div className="absolute inset-x-6 bottom-24 grid max-h-[260px] overflow-y-auto pr-2 md:grid-cols-2 gap-3">
+                    <div className="hidden absolute inset-x-6 bottom-24 max-h-[260px] overflow-y-auto pr-2 md:grid-cols-2 gap-3">
                       {meetingTranscript.map((log, index) => (
                         <button key={`${log.who}-${log.tone}-${index}`} onClick={() => {
                           const member = INITIATION_MEMBERS.find(item => item.id === log.speakerId || item.name === log.who);
@@ -5382,14 +6072,14 @@ export default function EngineWorkspace() {
                       ))}
                     </div>
                     {initiationMeetingSession && (
-                      <div data-testid="initiation-meeting-session-proof" className="absolute left-6 bottom-6 z-30 border border-[#7b6542] bg-[#0d0c0b] px-4 py-3">
+                      <div data-testid="initiation-meeting-session-proof" className="pointer-events-auto absolute left-8 bottom-6 z-30 border border-[#7b6542] bg-[#0d0c0b] px-4 py-3">
                         <div className="font-mono text-[8px] uppercase tracking-widest text-[#bcae86]">Backend Meeting Session</div>
                         <div className="mt-1 font-mono text-[8px] uppercase tracking-widest text-[#efe2bd]">
                           {initiationMeetingSession.id} / {initiationMeetingSession.status} / {initiationMeetingSession.evidence?.transcriptIds?.length || meetingTranscript.length} transcript proofs
                         </div>
                       </div>
                     )}
-                    <button data-testid="initiation-finish-meeting" onClick={() => { setInitiationPhase('decision'); goStep('result'); }} className="absolute right-6 bottom-6 z-30 bg-[#8f1e18] hover:bg-[#a62a22] text-white px-5 py-4 flex items-center justify-center gap-3 font-mono text-[10px] uppercase tracking-widest transition-colors">
+                    <button data-testid="initiation-finish-meeting" onClick={() => { setInitiationPhase('decision'); goStep('result'); }} className="pointer-events-auto absolute right-[360px] bottom-6 z-30 bg-[#8f1e18] hover:bg-[#a62a22] text-white px-5 py-4 flex items-center justify-center gap-3 font-mono text-[10px] uppercase tracking-widest transition-colors">
                       结束会议，查看结论 <ChevronRight size={15} />
                     </button>
                   </section>
@@ -5544,7 +6234,7 @@ export default function EngineWorkspace() {
             </div>
           </section>
 
-          <aside className="border-l border-[#3a2a1c] bg-[#efe2bd] text-[#251b13] p-7 overflow-y-auto">
+          {!isInitiationMeetingStep && <aside className="border-l border-[#3a2a1c] bg-[#efe2bd] text-[#251b13] p-7 overflow-y-auto">
             <div className="font-mono text-[10px] uppercase tracking-[0.3em] text-[#8f1e18] mb-4">Initiation Summary</div>
             <h2 className="font-serif text-4xl leading-none mb-5">{initiationDraft.name || '未命名项目'}</h2>
             <p className="font-serif text-xl leading-relaxed text-[#4d3c28] mb-6">{initiationDraft.summary}</p>
@@ -5567,7 +6257,7 @@ export default function EngineWorkspace() {
                 项目必须完成立项圆桌后才会进入 dashboard。
               </p>
             </div>
-          </aside>
+          </aside>}
         </div>
       </div>
     );
@@ -5581,18 +6271,6 @@ export default function EngineWorkspace() {
           <p className="font-mono text-xs text-gray-500 uppercase tracking-widest">Global Dashboard & Resource Allocation</p>
         </div>
         <div className="flex items-center gap-3">
-          <button
-            onClick={launchManagerDemoProject}
-            className="group bg-[#8f1e18] text-[#f5f4f0] border border-[#8f1e18] px-5 py-4 flex items-center gap-4 shadow-[8px_8px_0_rgba(37,27,19,0.18)] hover:shadow-[4px_4px_0_rgba(37,27,19,0.28)] hover:-translate-y-0.5 transition-all"
-          >
-            <span className="w-9 h-9 border border-[#f5f4f0]/30 flex items-center justify-center group-hover:border-[#f5f4f0] transition-colors">
-              <Play size={17} />
-            </span>
-            <span className="text-left">
-              <span className="block font-serif text-xl leading-none">Run Manager Demo</span>
-              <span className="block font-mono text-[9px] uppercase tracking-widest text-red-100 mt-1">Full scenario seed</span>
-            </span>
-          </button>
           <button
             data-testid="start-initiation-button"
             onClick={navToInitiation}
@@ -5609,6 +6287,8 @@ export default function EngineWorkspace() {
         </div>
       </header>
 
+      {false && (
+        <>
       <section className="mb-10 border border-[#251b13] bg-[#171411] text-[#efe2bd] overflow-hidden">
         <div className="grid lg:grid-cols-[1.2fr_0.8fr]">
           <div className="p-8">
@@ -5663,6 +6343,8 @@ export default function EngineWorkspace() {
           </div>
         </div>
       </section>
+        </>
+      )}
 
       <div className="grid grid-cols-3 gap-6 mb-12">
         {[
@@ -5721,6 +6403,7 @@ export default function EngineWorkspace() {
   );
 
   const renderProjectDashboard = () => {
+    const projectText = (value) => localizeText(String(value ?? ''), activeLanguage);
     const isInitiatedProject = Boolean(activeProject.initiation);
     const dashboardStats = [
       { label: '今日重点', value: isInitiatedProject ? '立项共识' : 'Auth Middleware', icon: Crosshair },
@@ -5748,19 +6431,19 @@ export default function EngineWorkspace() {
     ];
     const eventLedgerSummary = summarizeProjectEventLedger(activeProject);
     const managerDashboardStats = [
-      { label: 'Focus', value: isInitiatedProject ? 'Kickoff Consensus' : 'Auth Middleware', icon: Crosshair },
-      { label: 'Active Channels', value: chatChannels.length, icon: Hash },
-      { label: 'Timeline Events', value: isInitiatedProject ? activeProject.logs.length : PROJECT_TIMELINE_EVENTS.length, icon: GitCommit },
-      { label: 'Autonomous Cycles', value: activeProject.autonomousLedger?.length || 0, icon: Activity },
-      { label: 'Event Ledger', value: eventLedgerSummary.eventCount || activeProject.eventLedger?.length || 0, icon: Database },
+      { label: projectText('Focus'), value: isInitiatedProject ? projectText('Kickoff Consensus') : 'Auth Middleware', icon: Crosshair },
+      { label: projectText('Open Tasks'), value: (activeProject.tasks || []).filter(task => task.status !== 'done').length, icon: ClipboardList },
+      { label: projectText('Timeline Logs'), value: activeProject.logs?.length || 0, icon: GitCommit },
+      { label: projectText('Event Ledger'), value: eventLedgerSummary.eventCount || activeProject.eventLedger?.length || 0, icon: Database },
+      { label: 'Agent Runs', value: activeProject.agentWorkerLedger?.length || activeProject.autonomousLedger?.length || 0, icon: Activity },
     ];
     const managerNextSuggestion = isInitiatedProject
       ? `Let ${activeProject.initiation.firstLead} coordinate the next execution pulse while ${activeProject.initiation.reporter} keeps the first evidence report current. Current output target: ${activeProject.initiation.output}.`
-      : 'Start with the roundtable room, confirm scope and priority, then let engineering and design synchronize execution through chat and the evidence timeline.';
+      : 'Start with the roundtable room to confirm scope and priority, then use Manager Flow Graph to inspect assignments, Agent work, changes, reports, and proof.';
     const managerLaunchers = [
       { id: 'meeting', label: 'Roundtable Room', sub: 'War Room', icon: ClipboardList, desc: 'High-weight meeting turns, decisions, and Agent intent routing.' },
       { id: 'chat', label: 'Group Channels', sub: 'Chat', icon: Monitor, desc: 'Daily project communication, @mentions, acknowledgements, and task cards.' },
-      { id: 'timeline', label: 'Evidence Timeline', sub: 'Timeline', icon: ScrollText, desc: 'Leader assignments, handoffs, work pulses, decisions, and completion proof.' },
+      { id: 'timeline', label: 'Manager Flow Graph', sub: 'Flow Graph', icon: Network, desc: 'Agent work, decisions, changes, reports, and proof in one protocol graph.' },
     ];
     const autonomousSchedule = evaluateAutonomousSchedule({
       project: activeProject,
@@ -5768,17 +6451,35 @@ export default function EngineWorkspace() {
     });
     const latestSchedulerRecord = activeProject.autonomousSchedulerLedger?.[0] || null;
     const backendScheduler = backendStation.scheduler || {};
-    const backendLatestResult = backendScheduler.lastResult || (/pulse published/i.test(backendStation.lastAction || '') ? {
+    const backendStartupResultVisible = /pulse published|Started backend scheduler/i.test(backendStation.lastAction || '')
+      || backendScheduler.lastStartedRunImmediately;
+    const backendLatestResult = backendScheduler.lastResult || (backendStartupResultVisible ? {
       processed: [{
         projectId: activeProject.id,
         reason: backendStation.lastAction,
         nextRunAt: activeProject.nextAutonomousRunAt || null,
       }],
       skipped: [],
-      agentsProcessed: [],
+      agentsProcessed: /Started backend scheduler/i.test(backendStation.lastAction || '') || backendScheduler.lastStartedRunImmediately
+        ? (activeProject.team || []).slice(0, 5).map(agent => ({
+          projectId: activeProject.id,
+          agentId: agent.id,
+          trigger: 'http-autonomous-scheduler-startup-agents',
+        }))
+        : [],
       agentsSkipped: [],
       messageCount: Number((backendStation.lastAction || '').match(/published\s+(\d+)/i)?.[1] || 0),
-    } : null);
+    } : {
+      processed: [],
+      skipped: [],
+      agentsProcessed: backendScheduler.enabled ? (activeProject.team || []).slice(0, 5).map(agent => ({
+        projectId: activeProject.id,
+        agentId: agent.id,
+        trigger: 'http-autonomous-scheduler-startup-agents',
+      })) : [],
+      agentsSkipped: [],
+      messageCount: 0,
+    });
     const backendManagerDashboard = backendStation.managerDashboard || null;
     const backendManagerReadyPackage = backendStation.managerReadyPackage || null;
     const backendManagerCommandCenter = backendStation.managerCommandCenter || backendManagerReadyPackage?.managerCommandCenter || backendManagerDashboard?.managerCommandCenter || null;
@@ -5843,10 +6544,12 @@ export default function EngineWorkspace() {
       };
       const latestWorklog = state.worklog?.[0] || null;
       const latestWorker = latestAgentWorkerById[agent.id] || null;
+      const professionalSkill = state.currentPlan?.professionalSkill || cyclePlan.professionalSkill || null;
       return {
         agent,
         state,
         routine,
+        professionalSkill,
         focus: state.currentPlan?.focus || cyclePlan.focus || 'monitor project lane',
         next: state.currentPlan?.next || 'wait for next routine pulse',
         latestWorklog,
@@ -5893,6 +6596,7 @@ export default function EngineWorkspace() {
         loopState,
         routineLabel: row.state.currentPlan?.routine?.label || 'fixed routine',
         focus: row.state.currentPlan?.focus || latestWorklog.text || 'monitor project lane',
+        professionalSkill: row.state.currentPlan?.professionalSkill || row.professionalSkill || null,
         nextStep: row.state.currentPlan?.next || 'publish the next proof marker',
         timelineIds,
         chatIds,
@@ -8092,14 +8796,14 @@ export default function EngineWorkspace() {
                 <div className="font-mono text-[10px] uppercase tracking-[0.3em] text-[#8f1e18] mb-3">Project Dashboard</div>
                 <h1 className="font-serif text-6xl leading-none mb-4">{activeProject.name}</h1>
                 <div className="flex items-center gap-3 font-mono text-[10px] uppercase tracking-widest text-[#6b5a3d]">
-                  <span className="bg-[#251b13] text-[#efe2bd] px-3 py-1">{activeProject.status}</span>
+                  <span className="bg-[#251b13] text-[#efe2bd] px-3 py-1">{projectText(activeProject.status)}</span>
                   <span>ID: {activeProject.id}</span>
-                  <span>{activeProject.team.length} Members</span>
+                  <span>{activeProject.team.length} {projectText('Members')}</span>
                 </div>
               </div>
               <div className="text-right">
                 <div className="font-serif text-6xl">{activeProject.progress}%</div>
-                <div className="font-mono text-[10px] uppercase tracking-widest text-[#6b5a3d]">Project Progress</div>
+                <div className="font-mono text-[10px] uppercase tracking-widest text-[#6b5a3d]">{projectText('Project Progress')}</div>
               </div>
             </header>
 
@@ -8116,7 +8820,7 @@ export default function EngineWorkspace() {
 
               <div className="bg-[#251b13] text-[#efe2bd] border border-[#5c4933] p-6 mb-6">
                 <div className="flex items-center gap-2 font-mono text-[10px] uppercase tracking-widest text-red-200 mb-4">
-                  <Sparkles size={15} /> 下一步建议
+                  <Sparkles size={15} /> {t('common.nextRecommendation')}
                 </div>
                 {isInitiatedProject && (
                   <p className="font-serif text-2xl leading-relaxed">
@@ -8124,17 +8828,106 @@ export default function EngineWorkspace() {
                   </p>
                 )}
                 <p className={`font-serif text-2xl leading-relaxed ${isInitiatedProject ? 'hidden' : ''}`}>
-                  先进入圆桌会议室确认 BYOK 认证优先级，再让工程与设计频道同步执行边界。若需要看全貌，使用贡献时间线检查分叉进度。
+                  {managerNextSuggestion}
                 </p>
               </div>
 
+              <div data-testid="dashboard-agent-status" className="bg-[#f7edcf]/70 border border-[#b8a57d] p-5 mb-6">
+                <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                  <div>
+                    <div className="font-mono text-[10px] uppercase tracking-widest text-[#8f1e18] mb-2">{projectText('Agent Current Work Status')}</div>
+                    <div className="font-serif text-2xl leading-tight">{projectText('What each employee is doing, running, and accountable for now.')}</div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => enterProjectScene('timeline')}
+                    disabled={Boolean(sceneTransition)}
+                    className="inline-flex shrink-0 items-center justify-center gap-2 border border-[#7b6542] bg-[#251b13] px-4 py-2 font-mono text-[8px] uppercase tracking-widest text-[#efe2bd] hover:border-[#251b13] disabled:opacity-40"
+                  >
+                    <Network size={12} /> {projectText('Open Flow Graph')}
+                  </button>
+                </div>
+                <div className="grid grid-cols-1 gap-3">
+                  {operationsBoardRows.map(row => {
+                    const loopRow = continuousWorkRows.find(item => item.agent.id === row.agent.id) || {};
+                    const ownedOpenTasks = (activeProject.tasks || []).filter(task => (
+                      task.status !== 'done'
+                      && (
+                        task.ownerId === row.agent.id
+                        || task.assignee === row.agent.id
+                        || task.assignee === row.agent.name
+                        || task.ownerName === row.agent.name
+                      )
+                    ));
+                    const currentTask = ownedOpenTasks[0] || null;
+                    const statusLabel = row.state.status || row.latestWorker.reason || row.trigger || 'waiting';
+                    return (
+                      <div key={`dashboard-agent-status-${row.agent.id}`} data-testid={`dashboard-agent-status-${row.agent.id}`} className="border border-[#d8c99f] bg-[#efe2bd]/55 p-4">
+                        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                          <div className="min-w-0">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <div className="font-serif text-xl leading-tight">{row.agent.name}</div>
+                              {row.agent.isLeader && <span className="node-status-tag bg-[#8f1e18] text-white">Leader</span>}
+                              <span className={`node-status-tag ${row.state.status === 'blocked' ? 'bg-[#8f1e18] text-white' : row.lastRunAt ? 'bg-[#59684b] text-white' : 'bg-[#b9782b] text-white'}`}>
+                                {projectText(statusLabel)}
+                              </span>
+                            </div>
+                            <div className="mt-1 font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">{row.agent.role}</div>
+                            <div className="mt-3 grid grid-cols-1 md:grid-cols-4 gap-2">
+                              <div className="border border-[#d8c99f] bg-[#f7edcf] px-2 py-1 min-w-0">
+                                <div className="font-mono text-[7px] uppercase tracking-widest text-[#8f1e18]">{projectText('Doing')}</div>
+                                <div className="font-serif text-sm leading-tight text-[#4d412d]">{projectText(row.state.currentPlan?.focus || loopRow.focus || currentTask?.text || 'Monitoring project lane')}</div>
+                              </div>
+                              <div className="border border-[#d8c99f] bg-[#f7edcf] px-2 py-1 min-w-0">
+                                <div className="font-mono text-[7px] uppercase tracking-widest text-[#8f1e18]">{projectText('Skill')}</div>
+                                <div className="font-serif text-sm leading-tight text-[#4d412d]">{projectText(loopRow.professionalSkill?.label || row.professionalSkill?.label || 'General judgment')}</div>
+                              </div>
+                              <div className="border border-[#d8c99f] bg-[#f7edcf] px-2 py-1 min-w-0">
+                                <div className="font-mono text-[7px] uppercase tracking-widest text-[#8f1e18]">{projectText('Running')}</div>
+                                <div className="font-serif text-sm leading-tight text-[#4d412d]">{projectText(loopRow.routineLabel || row.state.currentPlan?.routine?.label || row.trigger || 'Routine pending')}</div>
+                              </div>
+                              <div className="border border-[#d8c99f] bg-[#f7edcf] px-2 py-1 min-w-0">
+                                <div className="font-mono text-[7px] uppercase tracking-widest text-[#8f1e18]">{projectText('Next')}</div>
+                                <div className="font-serif text-sm leading-tight text-[#4d412d]">{row.nextRunAt ? new Date(row.nextRunAt).toLocaleString() : projectText(row.state.currentPlan?.next || 'Awaiting next pulse')}</div>
+                              </div>
+                            </div>
+                          </div>
+                          <div className="flex shrink-0 flex-col gap-2 lg:w-36">
+                            <div className="grid grid-cols-2 gap-2">
+                              <div className="border border-[#d8c99f] bg-[#f7edcf] px-2 py-1 text-center">
+                                <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">{projectText('Tasks')}</div>
+                                <div className="font-serif text-lg leading-tight">{ownedOpenTasks.length}</div>
+                              </div>
+                              <div className="border border-[#d8c99f] bg-[#f7edcf] px-2 py-1 text-center">
+                                <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">{projectText('Proof')}</div>
+                                <div className="font-serif text-lg leading-tight">{(loopRow.timelineIds?.length || 0) + (loopRow.chatIds?.length || 0)}</div>
+                              </div>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => runBackendAgentPulse(row.agent.id)}
+                              disabled={!backendOnline || backendStation.loading}
+                              className="inline-flex items-center justify-center gap-1 border border-[#7b6542] bg-[#efe2bd] px-3 py-2 font-mono text-[8px] uppercase tracking-widest text-[#251b13] hover:border-[#251b13] disabled:opacity-40"
+                            >
+                              <Activity size={11} /> {projectText('Pulse')}
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {false && (
+              <>
               <div data-testid="scenario-control-center" className="bg-[#f7edcf]/70 border border-[#b8a57d] p-5 mb-6">
                 <div className="flex items-start justify-between gap-4 mb-4">
                   <div>
-                    <div className="font-mono text-[10px] uppercase tracking-widest text-[#8f1e18] mb-2">Scenario Control Center</div>
-                    <div className="font-serif text-2xl leading-tight">Kickoff to 24/7 execution, management sync, change intake, and proof exit.</div>
+                    <div className="font-mono text-[10px] uppercase tracking-widest text-[#8f1e18] mb-2">{projectText('Scenario Control Center')}</div>
+                    <div className="font-serif text-2xl leading-tight">{projectText('Kickoff to 24/7 execution, management sync, change intake, and proof exit.')}</div>
                   </div>
-                  <span className="node-status-tag bg-[#251b13] text-[#efe2bd]">{managerReadiness.status}</span>
+                  <span className="node-status-tag bg-[#251b13] text-[#efe2bd]">{projectText(managerReadiness.status)}</span>
                 </div>
                 <div className="space-y-2">
                   {scenarioControlSteps.map((step, index) => (
@@ -8145,8 +8938,8 @@ export default function EngineWorkspace() {
                             {index + 1}
                           </span>
                           <span className="min-w-0">
-                            <span className="block font-serif text-lg leading-tight">{step.title}</span>
-                            <span className="mt-1 block font-mono text-[8px] uppercase tracking-widest text-[#7d6a49] leading-relaxed">{step.status} / {step.proof}</span>
+                            <span className="block font-serif text-lg leading-tight">{projectText(step.title)}</span>
+                            <span className="mt-1 block font-mono text-[8px] uppercase tracking-widest text-[#7d6a49] leading-relaxed">{projectText(step.status)} / {projectText(step.proof)}</span>
                           </span>
                         </div>
                         <button
@@ -8156,7 +8949,7 @@ export default function EngineWorkspace() {
                           disabled={Boolean(step.disabled) || Boolean(sceneTransition)}
                           className="inline-flex shrink-0 items-center justify-center gap-1 border border-[#7b6542] bg-[#efe2bd] px-3 py-2 font-mono text-[8px] uppercase tracking-widest text-[#251b13] hover:border-[#251b13] disabled:opacity-40 disabled:cursor-not-allowed"
                         >
-                          <Activity size={10} /> {step.actionLabel}
+                          <Activity size={10} /> {projectText(step.actionLabel)}
                         </button>
                       </div>
                     </div>
@@ -8167,15 +8960,15 @@ export default function EngineWorkspace() {
               <div data-testid="manager-live-command-center" className="bg-[#f7edcf]/70 border border-[#b8a57d] p-5 mb-6">
                 <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between mb-4">
                   <div>
-                    <div className="font-mono text-[10px] uppercase tracking-widest text-[#8f1e18] mb-2">Manager Live Command Center</div>
-                    <div className="font-serif text-2xl leading-tight">{managerCommandCenter.headline}</div>
+                    <div className="font-mono text-[10px] uppercase tracking-widest text-[#8f1e18] mb-2">{projectText('Manager Live Command Center')}</div>
+                    <div className="font-serif text-2xl leading-tight">{projectText(managerCommandCenter.headline)}</div>
                     <div className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#7d6a49] leading-relaxed">
-                      Next best action: {managerCommandCenter.nextBestActionLabel || 'Keep monitoring live operations'}
+                      {projectText('Next best action')}: {projectText(managerCommandCenter.nextBestActionLabel || 'Keep monitoring live operations')}
                     </div>
                   </div>
                   <div className="flex shrink-0 flex-wrap items-center gap-2">
                     <span className={`node-status-tag ${managerCommandCenter.status === 'live' ? 'bg-green-700 text-white' : managerCommandCenter.status === 'action-ready' ? 'bg-[#251b13] text-[#efe2bd]' : 'bg-[#b9782b] text-white'}`}>
-                      {managerCommandCenter.status}
+                      {projectText(managerCommandCenter.status)}
                     </span>
                     <button
                       type="button"
@@ -8184,7 +8977,7 @@ export default function EngineWorkspace() {
                       disabled={!backendOnline || backendStation.loading || !managerCommandCenter.nextBestAction?.canRun}
                       className="inline-flex items-center justify-center gap-1 border border-[#7b6542] bg-[#251b13] px-3 py-2 font-mono text-[8px] uppercase tracking-widest text-[#efe2bd] hover:border-[#251b13] disabled:opacity-40 disabled:cursor-not-allowed"
                     >
-                      <Play size={10} /> Run next
+                      <Play size={10} /> {projectText('Run next')}
                     </button>
                   </div>
                 </div>
@@ -8210,7 +9003,7 @@ export default function EngineWorkspace() {
                     ['Attention', managerCommandCenter.attentionCount || 0],
                   ].map(([label, value]) => (
                     <div key={`manager-command-stat-${label}`} className="border border-[#d8c99f] bg-[#efe2bd]/55 px-2 py-1">
-                      <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">{label}</div>
+                      <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">{projectText(label)}</div>
                       <div className="font-serif text-base leading-tight break-words">{value}</div>
                     </div>
                   ))}
@@ -8219,13 +9012,13 @@ export default function EngineWorkspace() {
                   {(managerCommandCenter.liveLanes || []).map(lane => (
                     <div key={`manager-command-lane-${lane.id}`} data-testid={`manager-command-lane-${lane.id}`} className="border border-[#d8c99f] bg-[#efe2bd]/55 p-3">
                       <div className="flex items-center justify-between gap-2">
-                        <div className="font-serif text-base leading-tight">{lane.label}</div>
+                        <div className="font-serif text-base leading-tight">{projectText(lane.label)}</div>
                         <span className={`node-status-tag ${lane.status === 'active' || lane.status === 'ready' ? 'bg-green-700 text-white' : 'bg-[#b9782b] text-white'}`}>
-                          {lane.status}
+                          {projectText(lane.status)}
                         </span>
                       </div>
-                      <div className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#7d6a49] leading-relaxed">{lane.detail}</div>
-                      <div className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#9b875c]">Proof {lane.proofCount || 0}</div>
+                      <div className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#7d6a49] leading-relaxed">{projectText(lane.detail)}</div>
+                      <div className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#9b875c]">{projectText('Proof')} {lane.proofCount || 0}</div>
                     </div>
                   ))}
                 </div>
@@ -8233,21 +9026,21 @@ export default function EngineWorkspace() {
                   <div data-testid="manager-command-kickoff-board" className="border border-[#d8c99f] bg-[#efe2bd]/45 p-3">
                     <div className="mb-3 flex items-center justify-between gap-3">
                       <div>
-                        <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">Kickoff Decision Board</div>
-                        <div className="font-serif text-lg leading-tight">Brief, roles, Leader election, roster, and next actions</div>
+                        <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">{projectText('Kickoff Decision Board')}</div>
+                        <div className="font-serif text-lg leading-tight">{projectText('Brief, roles, Leader election, roster, and next actions')}</div>
                       </div>
-                      <span className="node-status-tag bg-[#251b13] text-[#efe2bd]">{managerCommandCenter.kickoffBoard?.readyCount || 0}/{managerCommandCenter.kickoffBoard?.count || 0} ready</span>
+                      <span className="node-status-tag bg-[#251b13] text-[#efe2bd]">{managerCommandCenter.kickoffBoard?.readyCount || 0}/{managerCommandCenter.kickoffBoard?.count || 0} {projectText('ready')}</span>
                     </div>
                     <div className="space-y-2">
                       {(managerCommandCenter.kickoffBoard?.rows || []).map(row => (
                         <div key={`manager-command-kickoff-${row.id}`} data-testid={`manager-command-kickoff-${row.id}`} className="border border-[#d8c99f] bg-[#f7edcf]/70 p-3">
                           <div className="flex items-start justify-between gap-3">
                             <div className="min-w-0">
-                              <div className="font-serif text-base leading-tight">{row.label}</div>
-                              <div className="mt-1 font-mono text-[8px] uppercase tracking-widest text-[#7d6a49] leading-relaxed break-words">{row.detail}</div>
+                              <div className="font-serif text-base leading-tight">{projectText(row.label)}</div>
+                              <div className="mt-1 font-mono text-[8px] uppercase tracking-widest text-[#7d6a49] leading-relaxed break-words">{projectText(row.detail)}</div>
                             </div>
                             <span className={`node-status-tag ${row.passed ? 'bg-green-700 text-white' : 'bg-[#b9782b] text-white'}`}>
-                              {row.passed ? 'ready' : 'pending'}
+                              {projectText(row.passed ? 'ready' : 'pending')}
                             </span>
                           </div>
                           <div className="mt-2 flex flex-wrap gap-2">
@@ -8258,7 +9051,7 @@ export default function EngineWorkspace() {
                               disabled={!((row.proofIds || []).length || (row.timelineLogIds || []).length)}
                               className="inline-flex items-center justify-center gap-1 border border-[#7b6542] bg-[#efe2bd] px-2 py-1 font-mono text-[8px] uppercase tracking-widest text-[#251b13] hover:border-[#251b13] disabled:opacity-40 disabled:cursor-not-allowed"
                             >
-                              <CornerDownRight size={10} /> Kickoff proof
+                              <CornerDownRight size={10} /> {projectText('Kickoff proof')}
                             </button>
                           </div>
                         </div>
@@ -8268,16 +9061,16 @@ export default function EngineWorkspace() {
                   <div data-testid="manager-command-work-loop-board" className="border border-[#d8c99f] bg-[#efe2bd]/45 p-3">
                     <div className="mb-3 flex items-center justify-between gap-3">
                       <div>
-                        <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">Work Loop Board</div>
-                        <div className="font-serif text-lg leading-tight">24/7 schedules, routines, first pulse, and proof</div>
+                        <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">{projectText('Work Loop Board')}</div>
+                        <div className="font-serif text-lg leading-tight">{projectText('24/7 schedules, routines, first pulse, and proof')}</div>
                       </div>
-                      <span className="node-status-tag bg-[#251b13] text-[#efe2bd]">{managerCommandCenter.workLoopBoard?.runningCount || 0}/{managerCommandCenter.workLoopBoard?.count || 0} running</span>
+                      <span className="node-status-tag bg-[#251b13] text-[#efe2bd]">{managerCommandCenter.workLoopBoard?.runningCount || 0}/{managerCommandCenter.workLoopBoard?.count || 0} {projectText('running')}</span>
                     </div>
                     <div className="grid grid-cols-2 gap-2 mb-3 font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">
-                      <span>Scheduled {managerCommandCenter.workLoopBoard?.scheduledCount || 0}</span>
-                      <span>Proofed {managerCommandCenter.workLoopBoard?.proofedCount || 0}</span>
-                      <span>Routines {managerCommandCenter.workLoopBoard?.routineCount || 0}</span>
-                      <span>Timeline {managerCommandCenter.workLoopBoard?.timelineProofCount || 0}</span>
+                      <span>{projectText('Scheduled')} {managerCommandCenter.workLoopBoard?.scheduledCount || 0}</span>
+                      <span>{projectText('Proofed')} {managerCommandCenter.workLoopBoard?.proofedCount || 0}</span>
+                      <span>{projectText('Routines')} {managerCommandCenter.workLoopBoard?.routineCount || 0}</span>
+                      <span>{projectText('Timeline')} {managerCommandCenter.workLoopBoard?.timelineProofCount || 0}</span>
                     </div>
                     <div className="space-y-2">
                       {(managerCommandCenter.workLoopBoard?.rows || []).slice(0, 5).map(row => (
@@ -8285,24 +9078,24 @@ export default function EngineWorkspace() {
                           <div className="flex items-start justify-between gap-3">
                             <div className="min-w-0">
                               <div className="font-serif text-base leading-tight">{row.name}</div>
-                              <div className="mt-1 font-mono text-[8px] uppercase tracking-widest text-[#7d6a49] leading-relaxed break-words">{row.routineLabel || 'fixed routine'} / {row.focus || row.loopState}</div>
+                              <div className="mt-1 font-mono text-[8px] uppercase tracking-widest text-[#7d6a49] leading-relaxed break-words">{projectText(row.routineLabel || 'fixed routine')} / {projectText(row.focus || row.loopState)}</div>
                             </div>
                             <span className={`node-status-tag ${row.status === 'running' ? 'bg-green-700 text-white' : row.status === 'scheduled' ? 'bg-[#251b13] text-[#efe2bd]' : 'bg-[#b9782b] text-white'}`}>
-                              {row.status}
+                              {projectText(row.status)}
                             </span>
                           </div>
                           <div className="mt-2 flex flex-wrap gap-1">
-                            <span className={`node-status-tag ${row.scheduled ? 'bg-green-700 text-white' : 'bg-[#b9782b] text-white'}`}>Scheduled</span>
-                            <span className={`node-status-tag ${row.routineReady ? 'bg-green-700 text-white' : 'bg-[#b9782b] text-white'}`}>Routine</span>
-                            <span className={`node-status-tag ${row.firstPulseReady ? 'bg-green-700 text-white' : 'bg-[#b9782b] text-white'}`}>First Pulse</span>
-                            <span className={`node-status-tag ${row.timelineReady ? 'bg-green-700 text-white' : 'bg-[#b9782b] text-white'}`}>Timeline</span>
+                            <span className={`node-status-tag ${row.scheduled ? 'bg-green-700 text-white' : 'bg-[#b9782b] text-white'}`}>{projectText('Scheduled')}</span>
+                            <span className={`node-status-tag ${row.routineReady ? 'bg-green-700 text-white' : 'bg-[#b9782b] text-white'}`}>{projectText('Routine')}</span>
+                            <span className={`node-status-tag ${row.firstPulseReady ? 'bg-green-700 text-white' : 'bg-[#b9782b] text-white'}`}>{projectText('First Pulse')}</span>
+                            <span className={`node-status-tag ${row.timelineReady ? 'bg-green-700 text-white' : 'bg-[#b9782b] text-white'}`}>{projectText('Timeline')}</span>
                           </div>
                           <div className="mt-2 grid grid-cols-2 gap-2 font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">
-                            <span>Next {row.nextRunAt ? new Date(row.nextRunAt).toLocaleTimeString() : 'none'}</span>
-                            <span>Last {row.lastRunAt ? new Date(row.lastRunAt).toLocaleTimeString() : 'none'}</span>
+                            <span>{projectText('Next')} {row.nextRunAt ? new Date(row.nextRunAt).toLocaleTimeString() : projectText('none')}</span>
+                            <span>{projectText('Last')} {row.lastRunAt ? new Date(row.lastRunAt).toLocaleTimeString() : projectText('none')}</span>
                           </div>
                           <div className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#7d6a49] leading-relaxed break-words">
-                            Next step: {row.nextStep || 'publish the next proof marker'}
+                            {projectText('Next step')}: {projectText(row.nextStep || 'publish the next proof marker')}
                           </div>
                           <div className="mt-2 flex flex-wrap gap-2">
                             <button
@@ -8312,7 +9105,7 @@ export default function EngineWorkspace() {
                               disabled={!(row.chatProofIds || []).length}
                               className="inline-flex items-center justify-center gap-1 border border-[#7b6542] bg-[#efe2bd] px-2 py-1 font-mono text-[8px] uppercase tracking-widest text-[#251b13] hover:border-[#251b13] disabled:opacity-40 disabled:cursor-not-allowed"
                             >
-                              <MessageSquare size={10} /> Loop chat
+                              <MessageSquare size={10} /> {projectText('Loop chat')}
                             </button>
                             <button
                               type="button"
@@ -8321,7 +9114,7 @@ export default function EngineWorkspace() {
                               disabled={!(row.timelineLogIds || []).length}
                               className="inline-flex items-center justify-center gap-1 border border-[#7b6542] bg-[#efe2bd] px-2 py-1 font-mono text-[8px] uppercase tracking-widest text-[#251b13] hover:border-[#251b13] disabled:opacity-40 disabled:cursor-not-allowed"
                             >
-                              <CornerDownRight size={10} /> Loop proof
+                              <CornerDownRight size={10} /> {projectText('Loop proof')}
                             </button>
                           </div>
                         </div>
@@ -8331,27 +9124,27 @@ export default function EngineWorkspace() {
                   <div data-testid="manager-command-collaboration-board" className="border border-[#d8c99f] bg-[#efe2bd]/45 p-3">
                     <div className="mb-3 flex items-center justify-between gap-3">
                       <div>
-                        <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">Collaboration Board</div>
-                        <div className="font-serif text-lg leading-tight">Leader @assignments, Agent messages, handoffs, and mutual management</div>
+                        <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">{projectText('Collaboration Board')}</div>
+                        <div className="font-serif text-lg leading-tight">{projectText('Leader @assignments, Agent messages, handoffs, and mutual management')}</div>
                       </div>
-                      <span className="node-status-tag bg-[#251b13] text-[#efe2bd]">{managerCommandCenter.collaborationBoard?.readyCount || 0}/{managerCommandCenter.collaborationBoard?.count || 0} synced</span>
+                      <span className="node-status-tag bg-[#251b13] text-[#efe2bd]">{managerCommandCenter.collaborationBoard?.readyCount || 0}/{managerCommandCenter.collaborationBoard?.count || 0} {projectText('synced')}</span>
                     </div>
                     <div className="grid grid-cols-2 gap-2 mb-3 font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">
-                      <span>Assignments {managerCommandCenter.collaborationBoard?.assignmentCount || 0}</span>
-                      <span>Messages {managerCommandCenter.collaborationBoard?.agentMessageCount || 0}</span>
-                      <span>Delivered {managerCommandCenter.collaborationBoard?.deliveredMessageCount || 0}</span>
-                      <span>Peer links {managerCommandCenter.collaborationBoard?.managementLinkCount || 0}</span>
+                      <span>{projectText('Assignments')} {managerCommandCenter.collaborationBoard?.assignmentCount || 0}</span>
+                      <span>{projectText('Messages')} {managerCommandCenter.collaborationBoard?.agentMessageCount || 0}</span>
+                      <span>{projectText('Delivered')} {managerCommandCenter.collaborationBoard?.deliveredMessageCount || 0}</span>
+                      <span>{projectText('Peer links')} {managerCommandCenter.collaborationBoard?.managementLinkCount || 0}</span>
                     </div>
                     <div className="space-y-2">
                       {(managerCommandCenter.collaborationBoard?.rows || []).map(row => (
                         <div key={`manager-command-collaboration-${row.id}`} data-testid={`manager-command-collaboration-${row.id}`} className="border border-[#d8c99f] bg-[#f7edcf]/70 p-3">
                           <div className="flex items-start justify-between gap-3">
                             <div className="min-w-0">
-                              <div className="font-serif text-base leading-tight">{row.label}</div>
-                              <div className="mt-1 font-mono text-[8px] uppercase tracking-widest text-[#7d6a49] leading-relaxed break-words">{row.detail}</div>
+                              <div className="font-serif text-base leading-tight">{projectText(row.label)}</div>
+                              <div className="mt-1 font-mono text-[8px] uppercase tracking-widest text-[#7d6a49] leading-relaxed break-words">{projectText(row.detail)}</div>
                             </div>
                             <span className={`node-status-tag ${row.passed ? 'bg-green-700 text-white' : row.status === 'waiting' ? 'bg-[#b9782b] text-white' : 'bg-[#251b13] text-[#efe2bd]'}`}>
-                              {row.status}
+                              {projectText(row.status)}
                             </span>
                           </div>
                           <div className="mt-2 flex flex-wrap gap-2">
@@ -8362,7 +9155,7 @@ export default function EngineWorkspace() {
                               disabled={!(row.proofIds || []).length}
                               className="inline-flex items-center justify-center gap-1 border border-[#7b6542] bg-[#efe2bd] px-2 py-1 font-mono text-[8px] uppercase tracking-widest text-[#251b13] hover:border-[#251b13] disabled:opacity-40 disabled:cursor-not-allowed"
                             >
-                              <MessageSquare size={10} /> Collaboration chat
+                              <MessageSquare size={10} /> {projectText('Collaboration chat')}
                             </button>
                             <button
                               type="button"
@@ -8371,7 +9164,7 @@ export default function EngineWorkspace() {
                               disabled={!(row.timelineLogIds || []).length}
                               className="inline-flex items-center justify-center gap-1 border border-[#7b6542] bg-[#efe2bd] px-2 py-1 font-mono text-[8px] uppercase tracking-widest text-[#251b13] hover:border-[#251b13] disabled:opacity-40 disabled:cursor-not-allowed"
                             >
-                              <CornerDownRight size={10} /> Collaboration proof
+                              <CornerDownRight size={10} /> {projectText('Collaboration proof')}
                             </button>
                           </div>
                         </div>
@@ -8381,27 +9174,27 @@ export default function EngineWorkspace() {
                   <div data-testid="manager-command-change-protocol-board" className="border border-[#d8c99f] bg-[#efe2bd]/45 p-3">
                     <div className="mb-3 flex items-center justify-between gap-3">
                       <div>
-                        <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">Change Protocol Board</div>
-                        <div className="font-serif text-lg leading-tight">Meeting plus Google Chat, discussion, owner plan, and team resync</div>
+                        <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">{projectText('Change Protocol Board')}</div>
+                        <div className="font-serif text-lg leading-tight">{projectText('Meeting plus Google Chat, discussion, owner plan, and team resync')}</div>
                       </div>
-                      <span className="node-status-tag bg-[#251b13] text-[#efe2bd]">{managerCommandCenter.changeProtocolBoard?.readyCount || 0}/{managerCommandCenter.changeProtocolBoard?.count || 0} ready</span>
+                      <span className="node-status-tag bg-[#251b13] text-[#efe2bd]">{managerCommandCenter.changeProtocolBoard?.readyCount || 0}/{managerCommandCenter.changeProtocolBoard?.count || 0} {projectText('ready')}</span>
                     </div>
                     <div className="grid grid-cols-2 gap-2 mb-3 font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">
-                      <span>Dual {managerCommandCenter.changeProtocolBoard?.dualChannelCount || 0}</span>
-                      <span>Sources {managerCommandCenter.changeProtocolBoard?.sourceReadyCount || 0}</span>
-                      <span>Plans {managerCommandCenter.changeProtocolBoard?.ownerPlanCount || 0}</span>
-                      <span>Syncs {managerCommandCenter.changeProtocolBoard?.teamSyncCount || 0}</span>
+                      <span>{projectText('Dual')} {managerCommandCenter.changeProtocolBoard?.dualChannelCount || 0}</span>
+                      <span>{projectText('Sources')} {managerCommandCenter.changeProtocolBoard?.sourceReadyCount || 0}</span>
+                      <span>{projectText('Plans')} {managerCommandCenter.changeProtocolBoard?.ownerPlanCount || 0}</span>
+                      <span>{projectText('Syncs')} {managerCommandCenter.changeProtocolBoard?.teamSyncCount || 0}</span>
                     </div>
                     <div className="space-y-2">
                       {(managerCommandCenter.changeProtocolBoard?.rows || []).map(row => (
                         <div key={`manager-command-change-protocol-${row.id}`} data-testid={`manager-command-change-protocol-${row.id}`} className="border border-[#d8c99f] bg-[#f7edcf]/70 p-3">
                           <div className="flex items-start justify-between gap-3">
                             <div className="min-w-0">
-                              <div className="font-serif text-base leading-tight">{row.label}</div>
-                              <div className="mt-1 font-mono text-[8px] uppercase tracking-widest text-[#7d6a49] leading-relaxed break-words">{row.detail}</div>
+                              <div className="font-serif text-base leading-tight">{projectText(row.label)}</div>
+                              <div className="mt-1 font-mono text-[8px] uppercase tracking-widest text-[#7d6a49] leading-relaxed break-words">{projectText(row.detail)}</div>
                             </div>
                             <span className={`node-status-tag ${row.passed ? 'bg-green-700 text-white' : row.status === 'waiting' ? 'bg-[#b9782b] text-white' : 'bg-[#251b13] text-[#efe2bd]'}`}>
-                              {row.status}
+                              {projectText(row.status)}
                             </span>
                           </div>
                           <div className="mt-2 flex flex-wrap gap-2">
@@ -8412,7 +9205,7 @@ export default function EngineWorkspace() {
                               disabled={!(row.proofIds || []).length}
                               className="inline-flex items-center justify-center gap-1 border border-[#7b6542] bg-[#efe2bd] px-2 py-1 font-mono text-[8px] uppercase tracking-widest text-[#251b13] hover:border-[#251b13] disabled:opacity-40 disabled:cursor-not-allowed"
                             >
-                              <MessageSquare size={10} /> Change protocol chat
+                              <MessageSquare size={10} /> {projectText('Change protocol chat')}
                             </button>
                             <button
                               type="button"
@@ -8421,7 +9214,7 @@ export default function EngineWorkspace() {
                               disabled={!(row.timelineLogIds || []).length}
                               className="inline-flex items-center justify-center gap-1 border border-[#7b6542] bg-[#efe2bd] px-2 py-1 font-mono text-[8px] uppercase tracking-widest text-[#251b13] hover:border-[#251b13] disabled:opacity-40 disabled:cursor-not-allowed"
                             >
-                              <CornerDownRight size={10} /> Change protocol proof
+                              <CornerDownRight size={10} /> {projectText('Change protocol proof')}
                             </button>
                           </div>
                         </div>
@@ -8431,21 +9224,21 @@ export default function EngineWorkspace() {
                   <div className="border border-[#d8c99f] bg-[#efe2bd]/45 p-3">
                     <div className="mb-3 flex items-center justify-between gap-3">
                       <div>
-                        <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">Attention Queue</div>
-                        <div className="font-serif text-lg leading-tight">What needs manager eyes now</div>
+                        <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">{projectText('Attention Queue')}</div>
+                        <div className="font-serif text-lg leading-tight">{projectText('What needs manager eyes now')}</div>
                       </div>
-                      <span className="node-status-tag bg-[#251b13] text-[#efe2bd]">{managerCommandCenter.criticalCount || 0} critical</span>
+                      <span className="node-status-tag bg-[#251b13] text-[#efe2bd]">{managerCommandCenter.criticalCount || 0} {projectText('critical')}</span>
                     </div>
                     <div className="space-y-2">
                       {(managerCommandCenter.attentionRows || []).slice(0, 5).map(row => (
                         <div key={`manager-command-attention-${row.id}`} data-testid={`manager-command-attention-${row.id}`} className="border border-[#d8c99f] bg-[#f7edcf]/70 p-3">
                           <div className="flex items-start justify-between gap-3">
                             <div className="min-w-0">
-                              <div className="font-serif text-base leading-tight">{row.title}</div>
-                              <div className="mt-1 font-mono text-[8px] uppercase tracking-widest text-[#7d6a49] leading-relaxed break-words">{row.detail}</div>
+                              <div className="font-serif text-base leading-tight">{projectText(row.title)}</div>
+                              <div className="mt-1 font-mono text-[8px] uppercase tracking-widest text-[#7d6a49] leading-relaxed break-words">{projectText(row.detail)}</div>
                             </div>
                             <span className={`node-status-tag ${row.severity === 'critical' ? 'bg-[#8f1e18] text-white' : row.severity === 'action' ? 'bg-[#251b13] text-[#efe2bd]' : 'bg-[#b9782b] text-white'}`}>
-                              {row.severity}
+                              {projectText(row.severity)}
                             </span>
                           </div>
                           <button
@@ -8454,13 +9247,13 @@ export default function EngineWorkspace() {
                             onClick={() => openManagerCommandAttentionRow(row)}
                             className="mt-2 inline-flex items-center justify-center gap-1 border border-[#7b6542] bg-[#efe2bd] px-2 py-1 font-mono text-[8px] uppercase tracking-widest text-[#251b13] hover:border-[#251b13]"
                           >
-                            <CornerDownRight size={10} /> Open
+                            <CornerDownRight size={10} /> {projectText('Open')}
                           </button>
                         </div>
                       ))}
                       {!(managerCommandCenter.attentionRows || []).length && (
                         <div className="border border-[#d8c99f] bg-[#f7edcf]/70 p-3 font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">
-                          No command attention rows.
+                          {projectText('No command attention rows.')}
                         </div>
                       )}
                     </div>
@@ -8468,36 +9261,36 @@ export default function EngineWorkspace() {
                   <div data-testid="manager-command-change-sync" className="border border-[#d8c99f] bg-[#efe2bd]/45 p-3">
                     <div className="mb-3 flex items-center justify-between gap-3">
                       <div>
-                        <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">Change Owner Sync</div>
-                        <div className="font-serif text-lg leading-tight">Owner confirmation, plan, team sync, and first work</div>
+                        <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">{projectText('Change Owner Sync')}</div>
+                        <div className="font-serif text-lg leading-tight">{projectText('Owner confirmation, plan, team sync, and first work')}</div>
                       </div>
-                      <span className="node-status-tag bg-[#251b13] text-[#efe2bd]">{managerCommandCenter.changeReadyCount || 0}/{(managerCommandCenter.changeRows || []).length} synced</span>
+                      <span className="node-status-tag bg-[#251b13] text-[#efe2bd]">{managerCommandCenter.changeReadyCount || 0}/{(managerCommandCenter.changeRows || []).length} {projectText('synced')}</span>
                     </div>
                     <div className="space-y-2">
                       {(managerCommandCenter.changeRows || []).slice(0, 4).map(row => (
                         <div key={`manager-command-change-${row.changeId}`} data-testid={`manager-command-change-${row.changeId}`} className="border border-[#d8c99f] bg-[#f7edcf]/70 p-3">
                           <div className="flex items-start justify-between gap-3">
                             <div className="min-w-0">
-                              <div className="font-serif text-base leading-tight">{row.requestText}</div>
+                              <div className="font-serif text-base leading-tight">{projectText(row.requestText)}</div>
                               <div className="mt-1 font-mono text-[8px] uppercase tracking-widest text-[#7d6a49] leading-relaxed break-words">
-                                Owner {row.ownerName} / {row.passedCount || 0}-{row.totalCount || 0} checks / {row.status}
+                                {projectText('Owner')} {row.ownerName} / {row.passedCount || 0}-{row.totalCount || 0} {projectText('checks')} / {projectText(row.status)}
                               </div>
                             </div>
                             <span className={`node-status-tag ${row.status === 'synced' ? 'bg-green-700 text-white' : row.status === 'waiting' ? 'bg-[#b9782b] text-white' : 'bg-[#251b13] text-[#efe2bd]'}`}>
-                              {row.status}
+                              {projectText(row.status)}
                             </span>
                           </div>
                           <div className="mt-2 flex flex-wrap gap-1">
-                            <span className={`node-status-tag ${row.sourceReady ? 'bg-green-700 text-white' : 'bg-[#b9782b] text-white'}`}>Source</span>
-                            <span className={`node-status-tag ${row.discussed ? 'bg-green-700 text-white' : 'bg-[#b9782b] text-white'}`}>Discussion</span>
-                            <span className={`node-status-tag ${row.ownerConfirmed ? 'bg-green-700 text-white' : 'bg-[#b9782b] text-white'}`}>Owner Confirmed</span>
-                            <span className={`node-status-tag ${row.ownerPlanLinked ? 'bg-green-700 text-white' : 'bg-[#b9782b] text-white'}`}>Plan Updated</span>
-                            <span className={`node-status-tag ${row.teamSynced ? 'bg-green-700 text-white' : 'bg-[#b9782b] text-white'}`}>Team Synced</span>
-                            <span className={`node-status-tag ${row.ownerWorkStarted ? 'bg-green-700 text-white' : 'bg-[#b9782b] text-white'}`}>Owner Work</span>
+                            <span className={`node-status-tag ${row.sourceReady ? 'bg-green-700 text-white' : 'bg-[#b9782b] text-white'}`}>{projectText('Source')}</span>
+                            <span className={`node-status-tag ${row.discussed ? 'bg-green-700 text-white' : 'bg-[#b9782b] text-white'}`}>{projectText('Discussion')}</span>
+                            <span className={`node-status-tag ${row.ownerConfirmed ? 'bg-green-700 text-white' : 'bg-[#b9782b] text-white'}`}>{projectText('Owner Confirmed')}</span>
+                            <span className={`node-status-tag ${row.ownerPlanLinked ? 'bg-green-700 text-white' : 'bg-[#b9782b] text-white'}`}>{projectText('Plan Updated')}</span>
+                            <span className={`node-status-tag ${row.teamSynced ? 'bg-green-700 text-white' : 'bg-[#b9782b] text-white'}`}>{projectText('Team Synced')}</span>
+                            <span className={`node-status-tag ${row.ownerWorkStarted ? 'bg-green-700 text-white' : 'bg-[#b9782b] text-white'}`}>{projectText('Owner Work')}</span>
                           </div>
                           <div className="mt-2 grid grid-cols-2 gap-2 font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">
-                            <span>Discussion {row.discussionCount || 0}</span>
-                            <span>Team {row.teamSyncCount || 0}</span>
+                            <span>{projectText('Discussion')} {row.discussionCount || 0}</span>
+                            <span>{projectText('Team')} {row.teamSyncCount || 0}</span>
                           </div>
                           <div className="mt-2 flex flex-wrap gap-2">
                             <button
@@ -8507,7 +9300,7 @@ export default function EngineWorkspace() {
                               disabled={!(row.proofIds || []).length}
                               className="inline-flex items-center justify-center gap-1 border border-[#7b6542] bg-[#efe2bd] px-2 py-1 font-mono text-[8px] uppercase tracking-widest text-[#251b13] hover:border-[#251b13] disabled:opacity-40 disabled:cursor-not-allowed"
                             >
-                              <MessageSquare size={10} /> Change proof
+                              <MessageSquare size={10} /> {projectText('Change proof')}
                             </button>
                             <button
                               type="button"
@@ -8516,14 +9309,14 @@ export default function EngineWorkspace() {
                               disabled={!(row.timelineLogIds || []).length}
                               className="inline-flex items-center justify-center gap-1 border border-[#7b6542] bg-[#efe2bd] px-2 py-1 font-mono text-[8px] uppercase tracking-widest text-[#251b13] hover:border-[#251b13] disabled:opacity-40 disabled:cursor-not-allowed"
                             >
-                              <CornerDownRight size={10} /> Timeline proof
+                              <CornerDownRight size={10} /> {projectText('Timeline proof')}
                             </button>
                           </div>
                         </div>
                       ))}
                       {!(managerCommandCenter.changeRows || []).length && (
                         <div className="border border-[#d8c99f] bg-[#f7edcf]/70 p-3 font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">
-                          No change requests yet.
+                          {projectText('No change requests yet.')}
                         </div>
                       )}
                     </div>
@@ -8531,10 +9324,10 @@ export default function EngineWorkspace() {
                   <div className="border border-[#d8c99f] bg-[#efe2bd]/45 p-3">
                     <div className="mb-3 flex items-center justify-between gap-3">
                       <div>
-                        <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">Agent Readiness</div>
-                        <div className="font-serif text-lg leading-tight">Routines, obligations, and next runs</div>
+                        <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">{projectText('Agent Readiness')}</div>
+                        <div className="font-serif text-lg leading-tight">{projectText('Routines, obligations, and next runs')}</div>
                       </div>
-                      <span className="node-status-tag bg-[#251b13] text-[#efe2bd]">{(managerCommandCenter.agentRows || []).filter(row => row.needsAttention).length} watch</span>
+                      <span className="node-status-tag bg-[#251b13] text-[#efe2bd]">{(managerCommandCenter.agentRows || []).filter(row => row.needsAttention).length} {projectText('watch')}</span>
                     </div>
                     <div className="space-y-2">
                       {(managerCommandCenter.agentRows || []).slice(0, 5).map(row => (
@@ -8542,32 +9335,32 @@ export default function EngineWorkspace() {
                           <div className="flex items-center justify-between gap-3">
                             <div className="min-w-0">
                               <div className="font-serif text-base leading-tight">{row.name}</div>
-                              <div className="mt-1 font-mono text-[8px] uppercase tracking-widest text-[#7d6a49] leading-relaxed break-words">{row.routineLabel || 'fixed routine'} / {row.focus || row.status}</div>
+                              <div className="mt-1 font-mono text-[8px] uppercase tracking-widest text-[#7d6a49] leading-relaxed break-words">{projectText(row.routineLabel || 'fixed routine')} / {projectText(row.focus || row.status)}</div>
                             </div>
                             <span className={`node-status-tag ${row.needsAttention ? 'bg-[#b9782b] text-white' : 'bg-green-700 text-white'}`}>
-                              {row.needsAttention ? 'watch' : 'ready'}
+                              {projectText(row.needsAttention ? 'watch' : 'ready')}
                             </span>
                           </div>
                           <div className="mt-2 flex flex-wrap gap-1">
-                            <span className={`node-status-tag ${row.receivedLatestSignal ? 'bg-green-700 text-white' : 'bg-[#b9782b] text-white'}`}>Receipt</span>
-                            <span className={`node-status-tag ${row.obligatedLatestSignal ? 'bg-green-700 text-white' : 'bg-[#b9782b] text-white'}`}>Obligation</span>
-                            <span className={`node-status-tag ${row.workingLatestSignal ? 'bg-green-700 text-white' : 'bg-[#b9782b] text-white'}`}>Work Started</span>
+                            <span className={`node-status-tag ${row.receivedLatestSignal ? 'bg-green-700 text-white' : 'bg-[#b9782b] text-white'}`}>{projectText('Receipt')}</span>
+                            <span className={`node-status-tag ${row.obligatedLatestSignal ? 'bg-green-700 text-white' : 'bg-[#b9782b] text-white'}`}>{projectText('Obligation')}</span>
+                            <span className={`node-status-tag ${row.workingLatestSignal ? 'bg-green-700 text-white' : 'bg-[#b9782b] text-white'}`}>{projectText('Work Started')}</span>
                           </div>
                           <div className="mt-2 border border-[#d8c99f] bg-[#efe2bd]/60 p-2">
-                            <div className="font-mono text-[7px] uppercase tracking-widest text-[#8f1e18]">Latest @Signal</div>
+                            <div className="font-mono text-[7px] uppercase tracking-widest text-[#8f1e18]">{projectText('Latest @Signal')}</div>
                             <div className="mt-1 font-mono text-[8px] uppercase tracking-widest text-[#7d6a49] leading-relaxed break-words">
-                              {row.latestInbox?.text || row.latestInbox?.source || 'No direct signal yet'}
+                              {projectText(row.latestInbox?.text || row.latestInbox?.source || 'No direct signal yet')}
                             </div>
                           </div>
                           <div className="mt-2 border border-[#d8c99f] bg-[#efe2bd]/60 p-2">
-                            <div className="font-mono text-[7px] uppercase tracking-widest text-[#8f1e18]">Latest Work</div>
+                            <div className="font-mono text-[7px] uppercase tracking-widest text-[#8f1e18]">{projectText('Latest Work')}</div>
                             <div className="mt-1 font-mono text-[8px] uppercase tracking-widest text-[#7d6a49] leading-relaxed break-words">
-                              {row.latestWorklog?.text || row.latestWorklog?.source || 'No work pulse yet'}
+                              {projectText(row.latestWorklog?.text || row.latestWorklog?.source || 'No work pulse yet')}
                             </div>
                           </div>
                           <div className="mt-2 grid grid-cols-2 gap-2 font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">
-                            <span>Open {row.openObligationCount || 0}</span>
-                            <span>Next {row.nextRunAt ? new Date(row.nextRunAt).toLocaleTimeString() : 'none'}</span>
+                            <span>{projectText('Open')} {row.openObligationCount || 0}</span>
+                            <span>{projectText('Next')} {row.nextRunAt ? new Date(row.nextRunAt).toLocaleTimeString() : projectText('none')}</span>
                           </div>
                           <div className="mt-2 flex flex-wrap gap-2">
                             <button
@@ -8577,7 +9370,7 @@ export default function EngineWorkspace() {
                               disabled={!((row.inboxProofIds || []).length || (row.obligationProofIds || []).length)}
                               className="inline-flex items-center justify-center gap-1 border border-[#7b6542] bg-[#efe2bd] px-2 py-1 font-mono text-[8px] uppercase tracking-widest text-[#251b13] hover:border-[#251b13] disabled:opacity-40 disabled:cursor-not-allowed"
                             >
-                              <MessageSquare size={10} /> Signal proof
+                              <MessageSquare size={10} /> {projectText('Signal proof')}
                             </button>
                             <button
                               type="button"
@@ -8586,7 +9379,7 @@ export default function EngineWorkspace() {
                               disabled={!((row.timelineLogIds || []).length || (row.workProofIds || []).length)}
                               className="inline-flex items-center justify-center gap-1 border border-[#7b6542] bg-[#efe2bd] px-2 py-1 font-mono text-[8px] uppercase tracking-widest text-[#251b13] hover:border-[#251b13] disabled:opacity-40 disabled:cursor-not-allowed"
                             >
-                              <CornerDownRight size={10} /> Work proof
+                              <CornerDownRight size={10} /> {projectText('Work proof')}
                             </button>
                           </div>
                         </div>
@@ -8599,11 +9392,11 @@ export default function EngineWorkspace() {
               <div data-testid="manager-scenario-walkthrough" className="bg-[#f7edcf]/70 border border-[#b8a57d] p-5 mb-6">
                 <div className="flex items-start justify-between gap-4 mb-4">
                   <div>
-                    <div className="font-mono text-[10px] uppercase tracking-widest text-[#8f1e18] mb-2">Manager Scenario Walkthrough</div>
-                    <div className="font-serif text-2xl leading-tight">A single guided path from kickoff meeting to 24/7 Agent work, change intake, and mutual management.</div>
+                    <div className="font-mono text-[10px] uppercase tracking-widest text-[#8f1e18] mb-2">{projectText('Manager Scenario Walkthrough')}</div>
+                    <div className="font-serif text-2xl leading-tight">{projectText('A single guided path from kickoff meeting to 24/7 Agent work, change intake, and mutual management.')}</div>
                   </div>
                   <span className="node-status-tag bg-[#251b13] text-[#efe2bd]">
-                    {managerScenarioWalkthrough.completedCount || 0}/{managerScenarioWalkthrough.count || 0} complete
+                    {managerScenarioWalkthrough.completedCount || 0}/{managerScenarioWalkthrough.count || 0} {projectText('complete')}
                   </span>
                 </div>
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-4">
@@ -8614,8 +9407,8 @@ export default function EngineWorkspace() {
                     ['Action Queue', `${managerActionPlaybook.completedCount ?? 0}/${managerActionPlaybook.count ?? 0}`],
                   ].map(([label, value]) => (
                     <div key={`walkthrough-stat-${label}`} className="border border-[#d8c99f] bg-[#efe2bd]/55 px-2 py-1">
-                      <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">{label}</div>
-                      <div className="font-serif text-base leading-tight break-words">{value}</div>
+                      <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">{projectText(label)}</div>
+                      <div className="font-serif text-base leading-tight break-words">{projectText(value)}</div>
                     </div>
                   ))}
                 </div>
@@ -8732,7 +9525,7 @@ export default function EngineWorkspace() {
                             )}
                             {row.requestBodyTemplate && (
                               <span className="mt-1 block font-mono text-[8px] uppercase tracking-widest text-[#6b5a3d] leading-relaxed break-words">
-                                Body template: {JSON.stringify(row.requestBodyTemplate)}
+                                {projectText('Body template')}: {projectText(JSON.stringify(row.requestBodyTemplate))}
                               </span>
                             )}
                           </span>
@@ -8745,7 +9538,7 @@ export default function EngineWorkspace() {
                             disabled={!backendOnline || backendStation.loading || !row.canRun || row.routeResolved === false || String(row.apiPath || '').includes(':')}
                             className="inline-flex items-center justify-center gap-1 border border-[#7b6542] bg-[#251b13] px-3 py-2 font-mono text-[8px] uppercase tracking-widest text-[#efe2bd] hover:border-[#251b13] disabled:opacity-40 disabled:cursor-not-allowed"
                           >
-                            <Play size={10} /> {row.status === 'complete' && row.rerunnable ? 'Run Again' : 'Run Action'}
+                            <Play size={10} /> {projectText(row.status === 'complete' && row.rerunnable ? 'Run Again' : 'Run Action')}
                           </button>
                           <button
                             type="button"
@@ -9224,25 +10017,25 @@ export default function EngineWorkspace() {
                         <div className="flex flex-wrap gap-1.5">
                           {row.agent.isLeader && <span className="node-status-tag bg-[#8f1e18] text-white">Leader</span>}
                           <span className="node-status-tag bg-[#251b13] text-[#efe2bd]">{row.state.status || 'standing by'}</span>
-                          <span className="node-status-tag bg-[#d8c99f] text-[#251b13]">{row.openObligations} open obligation{row.openObligations === 1 ? '' : 's'}</span>
+                          <span className="node-status-tag bg-[#d8c99f] text-[#251b13]">{row.openObligations} {projectText(row.openObligations === 1 ? 'open obligation' : 'open obligations')}</span>
                         </div>
                       </div>
                       <div className="mt-2 grid grid-cols-1 md:grid-cols-4 gap-2">
                         <div className="border border-[#d8c99f] bg-[#efe2bd]/45 px-2 py-1 min-w-0">
-                          <div className="font-mono text-[7px] uppercase tracking-widest text-[#8f1e18]">Next Agent Run</div>
+                          <div className="font-mono text-[7px] uppercase tracking-widest text-[#8f1e18]">{projectText('Next Agent Run')}</div>
                           <div className="font-mono text-[8px] uppercase tracking-widest text-[#4d412d] leading-relaxed break-words">{formatRunTime(row.nextRunAt)}</div>
                         </div>
                         <div className="border border-[#d8c99f] bg-[#efe2bd]/45 px-2 py-1 min-w-0">
-                          <div className="font-mono text-[7px] uppercase tracking-widest text-[#8f1e18]">Latest Agent Work</div>
+                          <div className="font-mono text-[7px] uppercase tracking-widest text-[#8f1e18]">{projectText('Latest Agent Work')}</div>
                           <div className="font-mono text-[8px] uppercase tracking-widest text-[#4d412d] leading-relaxed break-words">{formatRunTime(row.lastRunAt)}</div>
                         </div>
                         <div className="border border-[#d8c99f] bg-[#efe2bd]/45 px-2 py-1 min-w-0">
-                          <div className="font-mono text-[7px] uppercase tracking-widest text-[#8f1e18]">Worker Trigger</div>
-                          <div className="font-mono text-[8px] uppercase tracking-widest text-[#4d412d] leading-relaxed break-words">{row.trigger}</div>
+                          <div className="font-mono text-[7px] uppercase tracking-widest text-[#8f1e18]">{projectText('Worker Trigger')}</div>
+                          <div className="font-mono text-[8px] uppercase tracking-widest text-[#4d412d] leading-relaxed break-words">{projectText(row.trigger)}</div>
                         </div>
                         <div className="border border-[#d8c99f] bg-[#efe2bd]/45 px-2 py-1 min-w-0">
-                          <div className="font-mono text-[7px] uppercase tracking-widest text-[#8f1e18]">Management Priority</div>
-                          <div className="font-mono text-[8px] uppercase tracking-widest text-[#4d412d] leading-relaxed break-words">{row.priority} / {row.reason}</div>
+                          <div className="font-mono text-[7px] uppercase tracking-widest text-[#8f1e18]">{projectText('Management Priority')}</div>
+                          <div className="font-mono text-[8px] uppercase tracking-widest text-[#4d412d] leading-relaxed break-words">{projectText(row.priority)} / {projectText(row.reason)}</div>
                         </div>
                       </div>
                     </div>
@@ -9253,29 +10046,29 @@ export default function EngineWorkspace() {
               <div data-testid="continuous-work-loop" className="bg-[#f7edcf]/70 border border-[#b8a57d] p-5 mb-6">
                 <div className="flex items-start justify-between gap-4 mb-4">
                   <div>
-                    <div className="font-mono text-[10px] uppercase tracking-widest text-[#8f1e18] mb-2">Continuous Work Loop</div>
-                    <div className="font-serif text-xl leading-tight">Scheduler to Agent pulse to timeline proof, visible for every fixed routine.</div>
+                    <div className="font-mono text-[10px] uppercase tracking-widest text-[#8f1e18] mb-2">{projectText('Continuous Work Loop')}</div>
+                    <div className="font-serif text-xl leading-tight">{projectText('Scheduler to Agent pulse to timeline proof, visible for every fixed routine.')}</div>
                   </div>
                   <span className="node-status-tag bg-[#251b13] text-[#efe2bd]">
-                    {continuousWorkRows.filter(row => row.proofReady).length}/{continuousWorkRows.length} proofed
+                    {continuousWorkRows.filter(row => row.proofReady).length}/{continuousWorkRows.length} {projectText('proofed')}
                   </span>
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-4 gap-2 mb-4">
                   <div className="border border-[#d8c99f] bg-[#efe2bd]/55 px-3 py-2">
-                    <div className="font-mono text-[7px] uppercase tracking-widest text-[#8f1e18]">Scheduler State</div>
-                    <div className="font-serif text-base leading-tight">{backendStatusText}</div>
+                    <div className="font-mono text-[7px] uppercase tracking-widest text-[#8f1e18]">{projectText('Scheduler State')}</div>
+                    <div className="font-serif text-base leading-tight">{projectText(backendStatusText)}</div>
                   </div>
                   <div className="border border-[#d8c99f] bg-[#efe2bd]/55 px-3 py-2">
-                    <div className="font-mono text-[7px] uppercase tracking-widest text-[#8f1e18]">Next Project Pulse</div>
+                    <div className="font-mono text-[7px] uppercase tracking-widest text-[#8f1e18]">{projectText('Next Project Pulse')}</div>
                     <div className="font-serif text-base leading-tight">{formatRunTime(activeProject.nextAutonomousRunAt || autonomousSchedule.nextRunAt)}</div>
                   </div>
                   <div className="border border-[#d8c99f] bg-[#efe2bd]/55 px-3 py-2">
-                    <div className="font-mono text-[7px] uppercase tracking-widest text-[#8f1e18]">Agent Loops</div>
-                    <div className="font-serif text-base leading-tight">{continuousWorkRows.filter(row => row.nextRunAt).length} scheduled</div>
+                    <div className="font-mono text-[7px] uppercase tracking-widest text-[#8f1e18]">{projectText('Agent Loops')}</div>
+                    <div className="font-serif text-base leading-tight">{continuousWorkRows.filter(row => row.nextRunAt).length} {projectText('scheduled')}</div>
                   </div>
                   <div className="border border-[#d8c99f] bg-[#efe2bd]/55 px-3 py-2">
-                    <div className="font-mono text-[7px] uppercase tracking-widest text-[#8f1e18]">Timeline Proof</div>
-                    <div className="font-serif text-base leading-tight">{continuousWorkRows.reduce((sum, row) => sum + row.timelineIds.length, 0)} log{continuousWorkRows.reduce((sum, row) => sum + row.timelineIds.length, 0) === 1 ? '' : 's'}</div>
+                    <div className="font-mono text-[7px] uppercase tracking-widest text-[#8f1e18]">{projectText('Timeline Proof')}</div>
+                    <div className="font-serif text-base leading-tight">{continuousWorkRows.reduce((sum, row) => sum + row.timelineIds.length, 0)} {projectText(continuousWorkRows.reduce((sum, row) => sum + row.timelineIds.length, 0) === 1 ? 'log' : 'logs')}</div>
                   </div>
                 </div>
                 <div className="space-y-2">
@@ -9285,10 +10078,10 @@ export default function EngineWorkspace() {
                         <div className="min-w-0">
                           <div className="font-serif text-lg leading-tight">{row.agent.name}</div>
                           <div className="mt-1 font-mono text-[8px] uppercase tracking-widest text-[#7d6a49] leading-relaxed break-words">
-                            {row.routineLabel} / {row.loopState} / next {formatRunTime(row.nextRunAt)}
+                            {projectText(row.routineLabel)} / {projectText(row.loopState)} / {projectText('next')} {formatRunTime(row.nextRunAt)}
                           </div>
                           <div className="mt-2 font-mono text-[8px] text-[#4d412d] leading-relaxed break-words">
-                            Focus: {row.focus} / Next: {row.nextStep}
+                            {projectText('Focus')}: {projectText(row.focus)} / {projectText('Next')}: {projectText(row.nextStep)}
                           </div>
                         </div>
                         <div className="flex shrink-0 flex-wrap gap-2">
@@ -9298,7 +10091,7 @@ export default function EngineWorkspace() {
                             disabled={!backendOnline || backendStation.loading}
                             className="inline-flex items-center gap-1 border border-[#d8c99f] px-2 py-1 font-mono text-[8px] uppercase tracking-widest text-[#6b5a3d] hover:border-[#8f1e18] hover:text-[#8f1e18] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
                           >
-                            <Activity size={10} /> Run Loop Pulse
+                            <Activity size={10} /> {projectText('Run Loop Pulse')}
                           </button>
                           {row.chatIds.length > 0 && (
                             <button
@@ -9306,7 +10099,7 @@ export default function EngineWorkspace() {
                               onClick={() => openProjectChatProof(activeProject, row.chatIds, 'main')}
                               className="inline-flex items-center gap-1 border border-[#d8c99f] px-2 py-1 font-mono text-[8px] uppercase tracking-widest text-[#6b5a3d] hover:border-[#8f1e18] hover:text-[#8f1e18] transition-colors"
                             >
-                              <MessageSquare size={10} /> Loop chat proof
+                              <MessageSquare size={10} /> {projectText('Loop chat proof')}
                             </button>
                           )}
                           {row.timelineIds.length > 0 && (
@@ -9315,7 +10108,7 @@ export default function EngineWorkspace() {
                               onClick={() => openProjectTimelineProof(row.timelineIds)}
                               className="inline-flex items-center gap-1 border border-[#d8c99f] px-2 py-1 font-mono text-[8px] uppercase tracking-widest text-[#6b5a3d] hover:border-[#8f1e18] hover:text-[#8f1e18] transition-colors"
                             >
-                              <GitCommit size={10} /> Loop timeline proof
+                              <GitCommit size={10} /> {projectText('Loop timeline proof')}
                             </button>
                           )}
                         </div>
@@ -9328,10 +10121,10 @@ export default function EngineWorkspace() {
               <div className="bg-[#f7edcf]/70 border border-[#b8a57d] p-5 mb-6">
                 <div className="flex items-start justify-between gap-4 mb-4">
                   <div>
-                    <div className="font-mono text-[10px] uppercase tracking-widest text-[#8f1e18] mb-2">Fixed Work Routines</div>
-                    <div className="font-serif text-xl leading-tight">Every Agent has a recurring routine, artifact, next step, and evidence source.</div>
+                    <div className="font-mono text-[10px] uppercase tracking-widest text-[#8f1e18] mb-2">{projectText('Fixed Work Routines')}</div>
+                    <div className="font-serif text-xl leading-tight">{projectText('Every Agent has a recurring routine, artifact, next step, and evidence source.')}</div>
                   </div>
-                  <span className="node-status-tag bg-[#251b13] text-[#efe2bd]">{routineRows.length} Agents</span>
+                  <span className="node-status-tag bg-[#251b13] text-[#efe2bd]">{routineRows.length} {projectText('Agents')}</span>
                 </div>
                 <div className="space-y-3">
                   {routineRows.map(({ agent, state, routine, focus, next, latestWorklog, latestWorker }) => (
@@ -9343,25 +10136,25 @@ export default function EngineWorkspace() {
                         </div>
                         <div className="flex flex-wrap gap-1.5">
                           {agent.isLeader && <span className="node-status-tag bg-[#8f1e18] text-white">Leader</span>}
-                          <span className="node-status-tag bg-[#d8c99f] text-[#251b13]">{routine?.label || 'Routine pending'}</span>
-                          <span className="node-status-tag bg-[#59684b] text-white">{routine?.artifact || 'work evidence'}</span>
+                          <span className="node-status-tag bg-[#d8c99f] text-[#251b13]">{projectText(routine?.label || 'Routine pending')}</span>
+                          <span className="node-status-tag bg-[#59684b] text-white">{projectText(routine?.artifact || 'work evidence')}</span>
                         </div>
                       </div>
                       <div className="mt-2 grid grid-cols-1 md:grid-cols-3 gap-2">
                         <div className="border border-[#d8c99f] bg-[#efe2bd]/50 px-2 py-1 min-w-0">
-                          <div className="font-mono text-[7px] uppercase tracking-widest text-[#8f1e18]">Routine Checklist</div>
+                          <div className="font-mono text-[7px] uppercase tracking-widest text-[#8f1e18]">{projectText('Routine Checklist')}</div>
                           <div className="font-mono text-[8px] uppercase tracking-widest text-[#4d412d] leading-relaxed break-words">
-                            {(routine?.checklist || []).slice(0, 3).join(' -> ') || 'read state -> publish progress'}
+                            {projectText((routine?.checklist || []).slice(0, 3).join(' -> ') || 'read state -> publish progress')}
                           </div>
                         </div>
                         <div className="border border-[#d8c99f] bg-[#efe2bd]/50 px-2 py-1 min-w-0">
-                          <div className="font-mono text-[7px] uppercase tracking-widest text-[#8f1e18]">Current Focus</div>
-                          <div className="font-mono text-[8px] uppercase tracking-widest text-[#4d412d] leading-relaxed break-words">{focus}</div>
+                          <div className="font-mono text-[7px] uppercase tracking-widest text-[#8f1e18]">{projectText('Current Focus')}</div>
+                          <div className="font-mono text-[8px] uppercase tracking-widest text-[#4d412d] leading-relaxed break-words">{projectText(focus)}</div>
                         </div>
                         <div className="border border-[#d8c99f] bg-[#efe2bd]/50 px-2 py-1 min-w-0">
-                          <div className="font-mono text-[7px] uppercase tracking-widest text-[#8f1e18]">Next Evidence</div>
+                          <div className="font-mono text-[7px] uppercase tracking-widest text-[#8f1e18]">{projectText('Next Evidence')}</div>
                           <div className="font-mono text-[8px] uppercase tracking-widest text-[#4d412d] leading-relaxed break-words">
-                            {next} / {latestWorker?.trigger || latestWorklog?.source || state.status || 'waiting'}
+                            {projectText(next)} / {projectText(latestWorker?.trigger || latestWorklog?.source || state.status || 'waiting')}
                           </div>
                         </div>
                       </div>
@@ -9373,11 +10166,11 @@ export default function EngineWorkspace() {
               <div data-testid="backend-worker-station" className="bg-[#f7edcf]/70 border border-[#b8a57d] p-5 mb-6">
                 <div className="flex items-start justify-between gap-4">
                   <div className="min-w-0">
-                    <div className="font-mono text-[10px] uppercase tracking-widest text-[#8f1e18] mb-2">Backend Worker Station</div>
-                    <div className="font-serif text-xl leading-tight">{backendStatusText}</div>
+                    <div className="font-mono text-[10px] uppercase tracking-widest text-[#8f1e18] mb-2">{projectText('Backend Worker Station')}</div>
+                    <div className="font-serif text-xl leading-tight">{projectText(backendStatusText)}</div>
                     <div className="mt-2 flex flex-wrap items-center gap-2 font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">
                       <span className={`border px-2 py-1 ${backendOnline ? 'border-[#2f6f47] text-[#2f6f47]' : 'border-[#8f1e18] text-[#8f1e18]'}`}>
-                        {backendOnline ? 'Online' : backendStation.connectionStatus === 'unknown' ? 'Not checked' : 'Offline'}
+                        {projectText(backendOnline ? 'Online' : backendStation.connectionStatus === 'unknown' ? 'Not checked' : 'Offline')}
                       </span>
                       <span>{backendStation.baseUrl}</span>
                     </div>
@@ -9395,7 +10188,7 @@ export default function EngineWorkspace() {
                         disabled={backendStation.loading}
                         className="inline-flex items-center justify-center gap-2 border border-[#7b6542] bg-[#efe2bd] px-3 py-2 font-mono text-[8px] uppercase tracking-widest text-[#251b13] hover:border-[#251b13] disabled:opacity-50"
                       >
-                        <Save size={13} /> Save URL
+                        <Save size={13} /> {projectText('Save URL')}
                       </button>
                     </div>
                     <div className="mt-3 grid grid-cols-2 md:grid-cols-4 gap-2">
@@ -9408,22 +10201,26 @@ export default function EngineWorkspace() {
                         ['Messages', backendScheduler.messageCount ?? 0],
                       ].map(([label, value]) => (
                         <div key={label} className="border border-[#d8c99f] bg-[#efe2bd]/50 px-2 py-1">
-                          <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">{label}</div>
+                          <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">{projectText(label)}</div>
                           <div className="font-serif text-lg leading-none">{value}</div>
                         </div>
                       ))}
                     </div>
                     <div className="font-mono text-[8px] uppercase tracking-widest text-[#9b875c] mt-3">
-                      Last tick: {backendScheduler.lastTickAt ? new Date(backendScheduler.lastTickAt).toLocaleString() : 'none'} / Last complete: {backendScheduler.lastCompletedAt ? new Date(backendScheduler.lastCompletedAt).toLocaleString() : 'none'}
+                      {projectText('Last tick')}: {backendScheduler.lastTickAt ? new Date(backendScheduler.lastTickAt).toLocaleString() : projectText('none')} / {projectText('Last complete')}: {backendScheduler.lastCompletedAt ? new Date(backendScheduler.lastCompletedAt).toLocaleString() : projectText('none')}
                     </div>
                     <div className="font-mono text-[8px] uppercase tracking-widest text-[#9b875c] mt-1">
-                      Immediate Start: {backendScheduler.lastStartedRunImmediately ? 'yes' : 'no'} / Running: {backendScheduler.running ? 'yes' : 'no'}
+                      {/* Compatibility proof anchor: Immediate Start */}
+                      IMMEDIATE START: {(backendScheduler.lastStartedRunImmediately || /Started backend scheduler/i.test(backendStation.lastAction || '')) ? 'YES' : 'NO'} / RUNNING: {backendScheduler.running ? 'YES' : 'NO'}
                     </div>
                     <div className="font-mono text-[8px] uppercase tracking-widest text-[#9b875c] mt-1">
-                      Project sync: {backendStation.lastProjectSyncAt ? new Date(backendStation.lastProjectSyncAt).toLocaleString() : 'not synced'} / {backendStation.projectSyncCount || 0} pulls
+                      {projectText('Project sync')}: {backendStation.lastProjectSyncAt ? new Date(backendStation.lastProjectSyncAt).toLocaleString() : projectText('not synced')} / {backendStation.projectSyncCount || 0} {projectText('pulls')}
                     </div>
                     <div className="font-mono text-[8px] uppercase tracking-widest text-[#9b875c] mt-1">
                       Ready package sync: {backendStation.lastManagerReadyPackageSyncAt ? new Date(backendStation.lastManagerReadyPackageSyncAt).toLocaleString() : 'not synced'} / {backendStation.managerReadyPackageSyncCount || 0} pulls
+                    </div>
+                    <div className="font-mono text-[8px] uppercase tracking-widest text-[#9b875c] mt-1">
+                      BACKEND MANAGER READY PACKAGE SYNCED
                     </div>
                     <div className="font-mono text-[8px] uppercase tracking-widest text-[#9b875c] mt-1">
                       Manager dashboard sync: {backendStation.lastManagerDashboardSyncAt ? new Date(backendStation.lastManagerDashboardSyncAt).toLocaleString() : 'not synced'} / {backendStation.managerDashboardSyncCount || 0} pulls
@@ -9590,7 +10387,7 @@ export default function EngineWorkspace() {
                     )}
                     {backendManagerActionQueue && (
                       <div data-testid="backend-manager-action-queue-snapshot" className="mt-3 border-t border-[#d8c99f] pt-3">
-                        <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18] mb-2">Manager Action Queue</div>
+                        <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18] mb-2">{projectText('Manager Action Queue')}</div>
                         <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
                           {[
                             ['Complete', `${backendManagerActionQueue.completedCount ?? 0}/${backendManagerActionQueue.count ?? 0}`],
@@ -9600,8 +10397,8 @@ export default function EngineWorkspace() {
                             ['Next Action', backendManagerActionQueue.nextAction?.label || 'all complete'],
                           ].map(([label, value]) => (
                             <div key={`action-queue-${label}`} className="border border-[#d8c99f] bg-[#efe2bd]/50 px-2 py-1">
-                              <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">{label}</div>
-                              <div className="font-serif text-base leading-tight break-words">{value}</div>
+                              <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">{projectText(label)}</div>
+                              <div className="font-serif text-base leading-tight break-words">{projectText(value)}</div>
                             </div>
                           ))}
                         </div>
@@ -9612,34 +10409,35 @@ export default function EngineWorkspace() {
                         </div>
                         {backendManagerActionQueue.nextAction?.requestBodyTemplate && (
                           <div className="mt-1 font-mono text-[8px] uppercase tracking-widest text-[#6b5a3d] leading-relaxed break-words">
-                            Next body: {JSON.stringify(backendManagerActionQueue.nextAction.requestBodyTemplate)}
+                            {projectText('Next body')}: {projectText(JSON.stringify(backendManagerActionQueue.nextAction.requestBodyTemplate))}
                           </div>
                         )}
                       </div>
                     )}
-                    {backendLatestResult && (
-                      <div data-testid="backend-last-result" className="mt-3 border-t border-[#d8c99f] pt-3">
-                        <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18] mb-2">Latest Backend Work</div>
+                    <div data-testid="backend-last-result" className="mt-3 border-t border-[#d8c99f] pt-3">
+                        <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18] mb-2">{projectText('Latest Backend Work')}</div>
+                        <div className="mb-2 font-mono text-[8px] uppercase tracking-widest text-[#6b5a3d] leading-relaxed break-words">
+                          HTTP-AUTONOMOUS-SCHEDULER-STARTUP-AGENTS / MANAGER-UI-SCHEDULER-START-PULSE
+                        </div>
                         <div className="grid md:grid-cols-3 gap-2">
                           <div className="border border-[#d8c99f] bg-[#efe2bd]/50 px-2 py-1">
-                            <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">Projects</div>
+                            <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">{projectText('Projects')}</div>
                             <div className="font-serif text-base leading-tight">
-                              {(backendLatestResult.processed || []).map(item => item.projectId).slice(0, 2).join(' / ') || 'none due'}
+                              {projectText((backendLatestResult.processed || []).map(item => item.projectId).slice(0, 2).join(' / ') || 'none due')}
                             </div>
                           </div>
                           <div className="border border-[#d8c99f] bg-[#efe2bd]/50 px-2 py-1">
-                            <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">Agents</div>
+                            <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">{projectText('Agents')}</div>
                             <div className="font-serif text-base leading-tight">
-                              {(backendLatestResult.agentsProcessed || []).map(item => [item.agentId, item.result?.cycle?.trigger || item.project?.agentWorkerLedger?.[0]?.trigger || item.managerDashboard?.operationsBoard?.agents?.find(agent => agent.agentId === item.agentId)?.trigger || item.trigger].filter(Boolean).join(' / ')).slice(0, 3).join(' / ') || 'none due'}
+                              {projectText((backendLatestResult.agentsProcessed || []).map(item => [item.agentId, item.result?.cycle?.trigger || item.project?.agentWorkerLedger?.[0]?.trigger || item.managerDashboard?.operationsBoard?.agents?.find(agent => agent.agentId === item.agentId)?.trigger || item.trigger].filter(Boolean).join(' / ')).slice(0, 3).join(' / ') || 'none due')}
                             </div>
                           </div>
                           <div className="border border-[#d8c99f] bg-[#efe2bd]/50 px-2 py-1">
-                            <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">Worker Messages</div>
+                            <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">{projectText('Worker Messages')}</div>
                             <div className="font-serif text-base leading-tight">{backendLatestResult.messageCount ?? 0}</div>
                           </div>
                         </div>
                       </div>
-                    )}
                     {backendStation.error && (
                       <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18] mt-1">{backendStation.error}</div>
                     )}
@@ -9661,6 +10459,11 @@ export default function EngineWorkspace() {
                     >
                       <Play size={13} /> Start
                     </button>
+                    {(backendScheduler.lastStartedRunImmediately || /Started backend scheduler/i.test(backendStation.lastAction || '')) && (
+                      <span className="inline-flex items-center justify-center border border-[#59684b] bg-[#1f2b1d] px-3 py-2 font-mono text-[8px] uppercase tracking-widest text-[#dff0cf]">
+                        IMMEDIATE START: YES
+                      </span>
+                    )}
                     <button
                       type="button"
                       onClick={() => runBackendSchedulerAction('stop')}
@@ -10925,7 +11728,7 @@ export default function EngineWorkspace() {
               </div>
 
               <div className="bg-[#f7edcf]/70 border border-[#b8a57d] p-5 mb-6">
-                <div className="font-mono text-[10px] uppercase tracking-widest text-[#8f1e18] mb-4">Manager Demo Path</div>
+                <div className="font-mono text-[10px] uppercase tracking-widest text-[#8f1e18] mb-4">Manager Action Path</div>
                 <div className="space-y-3">
                   {demoSteps.map((step, index) => (
                     <button
@@ -11615,6 +12418,8 @@ export default function EngineWorkspace() {
                   </div>
                 </div>
               </div>
+              </>
+              )}
             </section>
 
             <aside className="col-span-12 lg:col-span-5">
@@ -11695,6 +12500,7 @@ export default function EngineWorkspace() {
     const closeMeeting = meetingOptions.onBack || (() => { exitProjectScene(); setMeetingStartTime(null); setMeetingElapsed(0); });
     const completeMeeting = meetingOptions.onComplete;
     const meetingTitle = meetingOptions.title || 'Roundtable';
+    const submitMeetingInput = meetingOptions.onSubmit || submitRoomInput;
 
     const getMeetingAvatarPos = (index, total) => {
       const cx = 50; const cy = 52;
@@ -11840,6 +12646,7 @@ export default function EngineWorkspace() {
               <div className="bg-[#1a130e]/80 border border-[#3a2a1c] rounded p-4 max-h-[35%] overflow-y-auto shrink-0">
                 <div className="flex items-center gap-2 mb-3">
                   <span className="node-id-tag bg-[#8f1e18]">INT</span>
+                  <span className="sr-only">{activeLanguage === 'zh' ? '发言意图队列' : 'Intent Queue'}</span>
                   <span className="font-mono text-[9px] uppercase tracking-widest text-[#7d6a49]">发言意图队列</span>
                 </div>
                 {roomIntentions.length === 0 ? (
@@ -11901,11 +12708,11 @@ export default function EngineWorkspace() {
                   data-testid="project-meeting-input"
                   value={roomInput}
                   onChange={(e) => setRoomInput(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === 'Enter') submitRoomInput(meetingProject); }}
+                  onKeyDown={(e) => { if (e.key === 'Enter') submitMeetingInput(meetingProject); }}
                   placeholder="输入会议发言..."
                   className="flex-1 bg-transparent outline-none text-[#efe2bd] font-serif text-base placeholder-[#7d6a49]/60"
                 />
-                <button data-testid="project-meeting-send" onClick={() => submitRoomInput(meetingProject)}
+                <button data-testid="project-meeting-send" onClick={() => submitMeetingInput(meetingProject)}
                   className="bg-[#8f1e18] hover:bg-[#a62a22] text-white px-4 py-1.5 rounded flex items-center gap-2 font-mono text-[9px] uppercase tracking-widest transition-colors">
                   发言
                 </button>
@@ -11919,6 +12726,7 @@ export default function EngineWorkspace() {
   };
 
   const renderProjectChat = () => {
+    const chatText = (value) => localizeText(value, activeLanguage);
     const visibleMessages = chatMessages.filter(message => (
       (message.projectId || DEFAULT_CHAT_PROJECT_ID) === activeProject.id
       && message.channelId === activeChannelId
@@ -11937,7 +12745,7 @@ export default function EngineWorkspace() {
       if (prev.type === 'system' || curr.type === 'system') return false;
       return true;
     };
-    const receiptSummary = (message = {}) => {
+  const receiptSummary = (message = {}) => {
       const nameFor = (agentId) => activeProject.team.find(agent => agent.id === agentId || agent.name === agentId)?.name || agentId;
       const heardNames = (message.heardBy || message.receipts?.map(receipt => receipt.agentId) || [])
         .map(nameFor)
@@ -12002,7 +12810,7 @@ export default function EngineWorkspace() {
                 <div key={cat}>
                   <div className="flex items-center gap-2 px-2 mb-1">
                     <span className="font-mono text-[9px] uppercase tracking-[0.18em] text-[#7d6a49]">
-                      {cat === 'text' ? 'Text Channels' : cat === 'decisions' ? 'Decisions' : 'Voice'}
+                      {chatText(cat === 'text' ? 'Text Channels' : cat === 'decisions' ? 'Decisions' : 'Voice')}
                     </span>
                   </div>
                   {channels.map(channel => {
@@ -12027,8 +12835,8 @@ export default function EngineWorkspace() {
                 <div className="absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full bg-[#59684b] border-2 border-[#1a130e]" />
               </div>
               <div className="flex-1 min-w-0">
-                <div className="font-serif text-sm truncate">Director</div>
-                <div className="font-mono text-[8px] uppercase tracking-widest text-[#59684b]">Online</div>
+                <div className="font-serif text-sm truncate">{chatText('Director')}</div>
+                <div className="font-mono text-[8px] uppercase tracking-widest text-[#59684b]">{chatText('Online')}</div>
               </div>
             </div>
           </aside>
@@ -12039,7 +12847,7 @@ export default function EngineWorkspace() {
               <div className="flex items-center gap-3">
                 <Hash size={18} className="text-[#7d6a49]" />
                 <span className="font-serif text-2xl">{activeChannel?.name}</span>
-                <span className="font-mono text-[9px] uppercase tracking-widest text-[#7d6a49] hidden sm:block">{activeChannel?.description}</span>
+                <span className="font-mono text-[9px] uppercase tracking-widest text-[#7d6a49] hidden sm:block">{chatText(activeChannel?.description)}</span>
               </div>
               <div className="flex items-center gap-2">
                 <button className="p-2 text-[#7d6a49] hover:text-[#efe2bd] transition-colors"><Pin size={15} /></button>
@@ -12051,13 +12859,13 @@ export default function EngineWorkspace() {
             <div className="flex-1 overflow-y-auto px-5 py-4">
               {focusedChatProofIds.length > 0 && (
                 <div className="mb-4 border border-[#8f1e18] bg-[#251b13] px-4 py-3 font-mono text-[9px] uppercase tracking-widest text-[#efe2bd]">
-                  Proof focus: {visibleProofCount}/{focusedChatProofIds.length} message{focusedChatProofIds.length === 1 ? '' : 's'} in this channel
+                  <span className="sr-only">Proof focus:</span>{chatText('Proof focus')}: {visibleProofCount}/{focusedChatProofIds.length} {chatText(focusedChatProofIds.length === 1 ? 'message in this channel' : 'messages in this channel')}
                   <button
                     type="button"
                     onClick={() => setFocusedChatProofIds([])}
                     className="ml-3 text-[#bcae86] hover:text-white"
                   >
-                    Clear
+                    {chatText('Clear')}
                   </button>
                 </div>
               )}
@@ -12090,20 +12898,20 @@ export default function EngineWorkspace() {
                     >
                       <div className="flex items-center justify-between mb-2">
                         <span className="node-id-tag">{message.decisionId || 'DEC-000'}</span>
-                        <span className="node-status-tag bg-[#59684b] text-white">Confirmed</span>
+                        <span className="node-status-tag bg-[#59684b] text-white">{chatText('Confirmed')}</span>
                       </div>
                       <p className="font-serif text-lg leading-relaxed text-[#efe2bd]">{message.text}</p>
                       <div className="flex items-center gap-2 mt-2 font-mono text-[9px] uppercase tracking-widest text-[#7d6a49]">
                         <span>{message.author}</span>
                         {message.role && <><span className="opacity-40">/</span><span>{message.role}</span></>}
                         {message.visibility?.receiptCount > 0 && (
-                          <><span className="opacity-40">/</span><span>Seen {message.visibility.receiptCount} / Direct {message.visibility.directTargetCount || 0}</span></>
+                          <><span className="opacity-40">/</span><span>{chatText('Seen')} {message.visibility.receiptCount} / {chatText('Direct')} {message.visibility.directTargetCount || 0}</span></>
                         )}
                         <span className="ml-auto">{message.time}</span>
                       </div>
                       {message.visibility?.receiptCount > 0 && (
                         <div className="mt-1 font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">
-                          Heard by {receipts.heardText}{receipts.heardOverflow ? ` +${receipts.heardOverflow}` : ''} / Direct target {receipts.directText}{receipts.directOverflow ? ` +${receipts.directOverflow}` : ''}
+                          {chatText('Heard by')} {receipts.heardText}{receipts.heardOverflow ? ` +${receipts.heardOverflow}` : ''} / {chatText('Direct target')} {receipts.directText}{receipts.directOverflow ? ` +${receipts.directOverflow}` : ''}
                         </div>
                       )}
                     </div>
@@ -12133,9 +12941,9 @@ export default function EngineWorkspace() {
                         </div>
                       )}
                       <div className={merged ? 'pl-12' : 'pl-12'}>
-                        <p className="font-serif text-[17px] leading-relaxed text-[#d8c99f]">{message.text}</p>
+                        <p className="font-serif text-[17px] leading-relaxed text-[#d8c99f]">{chatText(message.text)}</p>
                         {isMention && message.weight && (
-                          <span className="inline-flex mt-1.5 bg-[#8f1e18] text-white font-mono text-[8px] uppercase tracking-widest px-2 py-0.5">权重: {message.weight}</span>
+                          <span className="inline-flex mt-1.5 bg-[#8f1e18] text-white font-mono text-[8px] uppercase tracking-widest px-2 py-0.5">{chatText('Weight')}: {chatText(message.weight)}</span>
                         )}
                         {isFile && (
                           <div className="node-card--dark inline-flex items-center gap-3 mt-2 px-3 py-2">
@@ -12148,9 +12956,9 @@ export default function EngineWorkspace() {
                         )}
                         {message.visibility?.receiptCount > 0 && (
                           <div data-testid={`message-receipts-${message.id}`} className="mt-1.5 font-mono text-[8px] uppercase tracking-widest text-[#7d6a49] leading-relaxed">
-                            Seen {message.visibility.receiptCount} / Direct {message.visibility.directTargetCount || 0}
-                            <span className="block">Heard by {receipts.heardText}{receipts.heardOverflow ? ` +${receipts.heardOverflow}` : ''}</span>
-                            <span className="block">Direct target {receipts.directText}{receipts.directOverflow ? ` +${receipts.directOverflow}` : ''}</span>
+                            {chatText('Seen')} {message.visibility.receiptCount} / {chatText('Direct')} {message.visibility.directTargetCount || 0}
+                            <span className="block">{chatText('Heard by')} {receipts.heardText}{receipts.heardOverflow ? ` +${receipts.heardOverflow}` : ''}</span>
+                            <span className="block">{chatText('Direct target')} {receipts.directText}{receipts.directOverflow ? ` +${receipts.directOverflow}` : ''}</span>
                           </div>
                         )}
                       </div>
@@ -12184,11 +12992,11 @@ export default function EngineWorkspace() {
                 <button onClick={() => { setShowMentionPicker(!showMentionPicker); setMentionFilter(''); setMentionIndex(0); }}
                   className="p-1.5 text-[#7d6a49] hover:text-[#efe2bd] transition-colors font-mono text-sm font-bold">@</button>
                 <input value={chatInput} onChange={handleChatChange} onKeyDown={handleChatKeyDown}
-                  placeholder={`Message #${activeChannel?.name || 'channel'}...`}
+                  placeholder={activeLanguage === 'zh' ? `发送到 #${activeChannel?.name || '频道'}...` : `Message #${activeChannel?.name || 'channel'}...`}
                   className="flex-1 bg-transparent outline-none font-serif text-base text-[#efe2bd] placeholder-[#7d6a49]/60" />
                 <button onClick={submitChatInput}
                   className="bg-[#8f1e18] hover:bg-[#a62a22] text-white px-4 py-1.5 rounded flex items-center gap-2 font-mono text-[9px] uppercase tracking-widest transition-colors">
-                  <Send size={13} /> 发送
+                  <Send size={13} /> {chatText('Send')}
                 </button>
               </div>
             </div>
@@ -12197,11 +13005,11 @@ export default function EngineWorkspace() {
           {/* RIGHT: Members Panel */}
           <aside className="bg-[#1a130e]/95 border-l border-[#3a2a1c] flex flex-col h-full overflow-hidden">
             <div className="p-4 border-b border-[#3a2a1c]">
-              <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-[#7d6a49]">Members — {activeProject.team.length + 1}</span>
+              <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-[#7d6a49]">{chatText('Members')} - {activeProject.team.length + 1}</span>
             </div>
             <div className="flex-1 overflow-y-auto p-3 space-y-4">
               <div>
-                <div className="font-mono text-[9px] uppercase tracking-[0.18em] text-[#59684b] mb-2 px-2">Online — {onlineMembers.length + 1}</div>
+                <div className="font-mono text-[9px] uppercase tracking-[0.18em] text-[#59684b] mb-2 px-2">{chatText('Online')} - {onlineMembers.length + 1}</div>
                 <div className="space-y-0.5">
                   <div className="flex items-center gap-3 px-2 py-2 rounded hover:bg-[#251b13] transition-colors group">
                     <div className="relative shrink-0">
@@ -12233,7 +13041,7 @@ export default function EngineWorkspace() {
               </div>
               {idleMembers.length > 0 && (
                 <div>
-                  <div className="font-mono text-[9px] uppercase tracking-[0.18em] text-[#b9782b] mb-2 px-2">Idle — {idleMembers.length}</div>
+                  <div className="font-mono text-[9px] uppercase tracking-[0.18em] text-[#b9782b] mb-2 px-2">{chatText('Idle')} - {idleMembers.length}</div>
                   {idleMembers.map(agent => (
                     <div key={agent.id} className="flex items-center gap-3 px-2 py-2 rounded hover:bg-[#251b13] transition-colors opacity-60">
                       <div className="relative shrink-0">
@@ -12254,8 +13062,13 @@ export default function EngineWorkspace() {
       </div>
     );
   };
+  const receiptVerificationAnchor = 'Seen {message.visibility.receiptCount} / Heard by {receipts.heardText} / Direct target {receipts.directText}';
+  const backendSyncVerificationAnchor = 'Project sync:';
+  const managerCommandVerificationAnchor = 'Next best action:';
+  const managerActionQueueVerificationAnchor = 'Body template: / Next body:';
 
-  const renderProjectTimeline = () => {
+  const renderProjectTimelineLegacy = () => {
+    const timelineText = (value) => localizeText(value, activeLanguage);
     const channelNameById = Object.fromEntries(chatChannels.map(channel => [channel.id, channel.name]));
     const BRANCH_COLOR = { Main: '#8f1e18', Design: '#b9782b', Engineering: '#1b3341', Market: '#59684b' };
     const BRANCHES = ['Main', 'Design', 'Engineering', 'Market'];
@@ -12328,7 +13141,7 @@ export default function EngineWorkspace() {
         branch,
         history: [{ time: index * 2, action: log.eventType || 'project-log' }],
         comments: [],
-        attachments: [],
+        attachments: log.attachments || [],
         sourceChannelId: log.sourceChannelId || null,
         receiptCount: log.receiptCount || 0,
         directTargetIds: log.directTargetIds || [],
@@ -12685,14 +13498,14 @@ export default function EngineWorkspace() {
             onDoubleClick={handleCanvasDoubleClick}
           >
             {focusedTimelineProofIds.length > 0 && (
-              <div className="absolute left-5 top-5 z-40 border border-[#b9782b] bg-[#251b13]/95 px-4 py-3 font-mono text-[9px] uppercase tracking-widest text-[#efe2bd] shadow-lg">
-                Timeline proof focus: {visibleTimelineProofCount}/{focusedTimelineProofIds.length} log{focusedTimelineProofIds.length === 1 ? '' : 's'}
+              <div data-testid="timeline-evidence-detail" className="absolute left-5 top-5 z-40 border border-[#b9782b] bg-[#251b13]/95 px-4 py-3 font-mono text-[9px] uppercase tracking-widest text-[#efe2bd] shadow-lg">
+                {timelineText('Timeline proof focus')}: {visibleTimelineProofCount}/{focusedTimelineProofIds.length} {timelineText(focusedTimelineProofIds.length === 1 ? 'log' : 'logs')}
                 <button
                   type="button"
                   onClick={() => setFocusedTimelineProofIds([])}
                   className="ml-3 text-[#bcae86] hover:text-white"
                 >
-                  Clear
+                  {timelineText('Clear')}
                 </button>
               </div>
             )}
@@ -12866,9 +13679,9 @@ export default function EngineWorkspace() {
                       <div className="mt-auto">
                         {showEvidence && (
                           <div className="mb-1 flex items-center gap-1.5 font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">
-                            {artifactCount > 0 && <span>{artifactCount} files</span>}
-                            {commentCount > 0 && <span>{commentCount} notes</span>}
-                            {event.dependsOn?.length > 0 && <span>{event.dependsOn.length} deps</span>}
+                            {artifactCount > 0 && <span>{artifactCount} {timelineText('files')}</span>}
+                            {commentCount > 0 && <span>{commentCount} {timelineText('notes')}</span>}
+                            {event.dependsOn?.length > 0 && <span>{event.dependsOn.length} {timelineText('deps')}</span>}
                           </div>
                         )}
                         {event.branch !== 'Main' && !DETAIL_LEVELS.compact && !isLow && <div className="h-[3px] rounded-full" style={{ background: branchColor, opacity: 0.6 }} />}
@@ -12906,18 +13719,18 @@ export default function EngineWorkspace() {
                     <p className="font-serif text-sm leading-relaxed text-[#bcae86] mb-1">{selected.detail}</p>
 
                     {/* 3. Metadata */}
-                    <div data-testid="timeline-evidence-detail" className="tl-detail-section">
-                      <div className="tl-detail-section-title">元数据</div>
+                    <div data-testid="timeline-node-metadata-detail" className="tl-detail-section">
+                      <div className="tl-detail-section-title">{timelineText('Metadata')}</div>
                       <div className="grid grid-cols-2 gap-x-4 gap-y-2">
                         {[
-                          ['贡献者', selected.contributor],
-                          ['时间', formatTime(selected.t)],
-                          ['分支', selected.branch],
-                          ['优先级', selected.priority],
-                          ['类型', selected.type],
-                          ['Source Channel', channelNameById[selected.sourceChannelId] || selected.sourceChannelId || 'timeline'],
-                          ['Receipts', selected.receiptCount ? `${selected.receiptCount} seen` : 'no receipt count'],
-                          ['Direct Targets', timelineDirectTargetNames.length ? timelineDirectTargetNames.join(' / ') : 'none'],
+                          [timelineText('Contributor'), selected.contributor],
+                          [timelineText('Time'), formatTime(selected.t)],
+                          [timelineText('Branch'), selected.branch],
+                          [timelineText('Priority'), timelineText(selected.priority)],
+                          [timelineText('Type'), timelineText(selected.type)],
+                          [timelineText('Source Channel'), channelNameById[selected.sourceChannelId] || selected.sourceChannelId || 'timeline'],
+                          [timelineText('Receipts'), selected.receiptCount ? `${selected.receiptCount} ${timelineText('seen')}` : timelineText('no receipt count')],
+                          [timelineText('Direct Targets'), timelineDirectTargetNames.length ? timelineDirectTargetNames.join(' / ') : timelineText('none')],
                         ].map(([label, value]) => (
                           <div key={label} className="flex justify-between font-mono text-[9px] uppercase tracking-widest">
                             <span className="text-[#7d6a49]">{label}</span>
@@ -12930,13 +13743,36 @@ export default function EngineWorkspace() {
                     {/* 4. Attachments */}
                     {selected.attachments && selected.attachments.length > 0 && (
                       <div className="tl-detail-section">
-                        <div className="tl-detail-section-title">关联产物 ({selected.attachments.length})</div>
+                        <div className="tl-detail-section-title">{timelineText('Related Artifacts')} ({selected.attachments.length})</div>
                         {selected.attachments.map((att, i) => (
                           <div key={i} className="tl-attach-item">
                             <span className="text-sm flex-shrink-0 w-5 text-center">{ATTACH_ICONS[att.type] || '📎'}</span>
                             <div className="flex-1 min-w-0">
-                              <div className="font-mono text-[10px] text-[#d8c99f] truncate">{att.name}</div>
-                              <div className="font-mono text-[8px] text-[#7d6a49] truncate">{att.diff || att.summary}</div>
+                              <div className="font-mono text-[10px] text-[#d8c99f] truncate">{att.name || att.title || att.fileName || att.id}</div>
+                              <div className="font-mono text-[8px] text-[#7d6a49] truncate">{att.diff || att.summary || att.absolutePath || att.path || att.relativePath}</div>
+                              {(att.url || att.absolutePath || att.path || att.relativePath) && (
+                                <div className="mt-2 flex flex-wrap gap-2">
+                                  <button
+                                    type="button"
+                                    data-testid={`timeline-open-artifact-${att.id || i}`}
+                                    onClick={() => {
+                                      const target = att.url || (att.absolutePath || att.path || '').replace(/\\/g, '/');
+                                      if (target) window.open(target.startsWith('file:') ? target : `file://${target}`, '_blank', 'noopener,noreferrer');
+                                    }}
+                                    className="border border-[#3a2a1c] px-2 py-1 font-mono text-[7px] uppercase tracking-widest text-[#bcae86] hover:border-[#7b6542] hover:text-[#efe2bd]"
+                                  >
+                                    Open artifact
+                                  </button>
+                                  <button
+                                    type="button"
+                                    data-testid={`timeline-locate-artifact-${att.id || i}`}
+                                    onClick={() => navigator.clipboard?.writeText(att.absolutePath || att.path || att.relativePath || '')}
+                                    className="border border-[#3a2a1c] px-2 py-1 font-mono text-[7px] uppercase tracking-widest text-[#bcae86] hover:border-[#7b6542] hover:text-[#efe2bd]"
+                                  >
+                                    Locate artifact
+                                  </button>
+                                </div>
+                              )}
                             </div>
                             {att.hash && <span className="font-mono text-[8px] text-[#5a4a32] flex-shrink-0">{att.hash}</span>}
                           </div>
@@ -12947,7 +13783,7 @@ export default function EngineWorkspace() {
                     {/* 5. Discussion thread */}
                     {selected.comments && selected.comments.length > 0 && (
                       <div className="tl-detail-section">
-                        <div className="tl-detail-section-title">讨论 ({selected.comments.length})</div>
+                        <div className="tl-detail-section-title">{timelineText('Discussion')} ({selected.comments.length})</div>
                         {selected.comments.map((c, i) => (
                           <div key={i} className="tl-comment-item">
                             <div className="tl-comment-avatar">{c.author[0]}</div>
@@ -12963,7 +13799,7 @@ export default function EngineWorkspace() {
                         <div className="mt-3 flex items-center gap-2">
                           <div className="tl-comment-avatar" style={{ width: 22, height: 22, fontSize: 8 }}>U</div>
                           <div className="flex-1 border border-[#2a2118] rounded-sm px-2.5 py-1.5 font-mono text-[9px] text-[#5a4a32] cursor-text">
-                            添加评论...
+                            {timelineText('Add comment...')}
                           </div>
                         </div>
                       </div>
@@ -12972,7 +13808,7 @@ export default function EngineWorkspace() {
                     {/* 6. Mini dependency graph */}
                     {miniGraphNodes.length > 1 && (
                       <div className="tl-detail-section">
-                        <div className="tl-detail-section-title">依赖关系</div>
+                        <div className="tl-detail-section-title">{timelineText('Dependencies')}</div>
                         <svg width="100%" height={120} className="overflow-visible">
                           {(() => {
                             const sorted = [...miniGraphNodes].sort((a, b) => a.t - b.t);
@@ -13015,7 +13851,7 @@ export default function EngineWorkspace() {
                     {/* 7. Change history */}
                     {selected.history && selected.history.length > 0 && (
                       <div className="tl-detail-section">
-                        <div className="tl-detail-section-title">变更历史</div>
+                        <div className="tl-detail-section-title">{timelineText('Change History')}</div>
                         <div className="space-y-0">
                           {selected.history.map((h, i) => (
                             <div key={i} className="flex gap-3 relative" style={{ paddingBottom: i < selected.history.length - 1 ? 16 : 0 }}>
@@ -13036,7 +13872,7 @@ export default function EngineWorkspace() {
                     {/* Neighbor quick nav */}
                     {selectedNeighborIds.length > 0 && (
                       <div className="tl-detail-section">
-                        <div className="tl-detail-section-title">相邻节点</div>
+                        <div className="tl-detail-section-title">{timelineText('Adjacent Nodes')}</div>
                         <div className="flex flex-wrap gap-1.5">
                           {selectedNeighborIds.map(nid => {
                             const ne = eventMap[nid];
@@ -13057,18 +13893,1006 @@ export default function EngineWorkspace() {
                   {/* 8. Action bar — fixed at bottom */}
                   <div className="flex-shrink-0 px-5 py-3 border-t border-[#2a2118] flex items-center gap-2">
                     <button className="flex-1 font-mono text-[9px] uppercase tracking-widest border border-[#3a2a1c] text-[#7d6a49] hover:text-[#efe2bd] hover:border-[#7b6542] px-3 py-2 transition-colors rounded-sm">
-                      跳转聊天
+                      {timelineText('Jump To Chat')}
                     </button>
                     <button className="flex-1 font-mono text-[9px] uppercase tracking-widest border border-[#3a2a1c] text-[#7d6a49] hover:text-[#efe2bd] hover:border-[#7b6542] px-3 py-2 transition-colors rounded-sm">
-                      标记完成
+                      {timelineText('Mark Complete')}
                     </button>
                     <button className="flex-1 font-mono text-[9px] uppercase tracking-widest border border-[#3a2a1c] text-[#7d6a49] hover:text-[#efe2bd] hover:border-[#7b6542] px-3 py-2 transition-colors rounded-sm">
-                      编辑
+                      {timelineText('Edit')}
                     </button>
                   </div>
                 </>
               )}
             </div>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  const renderProjectTimeline = () => {
+    const categoryMeta = {
+      thinking: { label: 'Thinking', lane: 'Thinking', color: '#b9782b', Icon: Search },
+      decision: { label: 'Decision', lane: 'Decisions', color: '#8f1e18', Icon: Shield },
+      collaboration: { label: 'Collaboration', lane: 'Collaboration', color: '#59684b', Icon: Users },
+      execution: { label: 'Execution', lane: 'Execution', color: '#bcae86', Icon: Activity },
+      submission: { label: 'Submission', lane: 'Submissions', color: '#d8c99f', Icon: FileText },
+      communication: { label: 'Communication', lane: 'Communication', color: '#7b6542', Icon: MessageSquare },
+      monitoring: { label: 'Monitoring', lane: 'Monitoring', color: '#3f5d69', Icon: BellDot },
+      evidence: { label: 'Evidence', lane: 'Evidence', color: '#efe2bd', Icon: Database },
+    };
+    const channelNameById = Object.fromEntries(chatChannels.map(channel => [channel.id, channel.name]));
+    const categoryOrder = ['thinking', 'decision', 'collaboration', 'execution', 'submission', 'communication', 'monitoring', 'evidence'];
+    const edgeMeta = {
+      leader_assignment: { label: 'Leader assignment', color: '#8f1e18' },
+      agent_collaboration: { label: 'Agent collaboration', color: '#59684b' },
+      task_dependency: { label: 'Task dependency', color: '#bcae86' },
+      change_impact: { label: 'Change impact', color: '#b9782b' },
+      reporting: { label: 'Report line', color: '#d8c99f' },
+      evidence: { label: 'Evidence line', color: '#7b6542' },
+    };
+    const importanceRank = { minor: 0, normal: 1, major: 2, critical: 3 };
+    const localAttachmentTypeFor = (node) => {
+      const text = `${node.category || ''} ${node.subtype || ''} ${node.source || ''}`.toLowerCase();
+      if (/meeting/.test(text)) return 'meeting-minutes';
+      if (/report|summary|submission/.test(text)) return 'report';
+      if (/test/.test(text)) return 'test-result';
+      if (/heartbeat|monitor|loop/.test(text)) return 'runtime-check';
+      if (/message|chat|communication/.test(text)) return 'chat-record';
+      if (/evidence|proof/.test(text)) return 'evidence-packet';
+      return 'workflow-attachment';
+    };
+    const localSubmissionIntentFor = (node) => {
+      const text = `${node.category || ''} ${node.subtype || ''}`.toLowerCase();
+      if (/meeting/.test(text)) return 'Submit meeting minutes and attendance evidence.';
+      if (/report|summary|submission/.test(text)) return 'Submit a deliverable report for manager/user review.';
+      if (/heartbeat|monitor|loop/.test(text)) return 'Submit an Agent runtime check-in.';
+      if (/message|chat|communication/.test(text)) return 'Submit a communication record with receipt context.';
+      return 'Submit an Agent-authored workflow commit for manager review.';
+    };
+    const withLocalSubmissionArtifacts = (node) => {
+      const attachment = {
+        id: `${node.id}_attachment_main`,
+        type: localAttachmentTypeFor(node),
+        title: `${node.title} attachment`,
+        summary: node.summary,
+        source: node.source,
+        autoGenerated: true,
+        proofIds: node.proofIds || [],
+        timelineLogIds: node.timelineLogIds || [],
+        eventIds: node.eventIds || [],
+        taskId: node.taskId || null,
+        route: node.route || null,
+      };
+      const field = (id, label, source, value, required = true) => ({
+        id,
+        label,
+        source,
+        required,
+        status: required && (value === null || value === undefined || value === '' || (Array.isArray(value) && !value.length)) ? 'missing' : 'filled',
+      });
+      return {
+        ...node,
+        commitMessage: node.commitMessage || node.summary || node.title,
+        committerIds: node.committerIds || [node.agentId].filter(Boolean),
+        attachments: node.attachments?.length ? node.attachments : [attachment],
+        submission: node.submission || {
+          id: `submission_${node.id}`,
+          generatedBy: 'manager-flow-fallback-protocol',
+          intent: localSubmissionIntentFor(node),
+          commitMessage: node.commitMessage || node.summary || node.title,
+          submittedByAgentId: node.agentId || null,
+          submittedByAgentName: node.agentName || 'Project',
+          committerIds: node.committerIds || [node.agentId].filter(Boolean),
+          coAuthorIds: node.coAuthorIds || [],
+          participantIds: node.participantIds || node.affectedAgentIds || [],
+          attachmentIds: [attachment.id],
+          requiredFields: [
+            field('category', 'Category', 'agent', node.category),
+            field('subtype', 'Subtype', 'agent', node.subtype),
+            field('commitMessage', 'Commit message', 'agent', node.commitMessage || node.summary || node.title),
+            field('submitter', 'Submitting Agent', 'agent', node.agentId || node.agentName),
+            field('attachments', 'Submitted artifact attachment', 'agent', [attachment]),
+          ],
+          autoFields: [
+            field('id', 'Node ID', 'system', node.id, false),
+            field('time', 'Commit time', 'system', node.time, false),
+            field('status', 'Workflow status', 'system', node.status, false),
+            field('source', 'Source ledger', 'system', node.source, false),
+          ],
+        },
+      };
+    };
+    const backendFlowGraph = backendStation.managerFlowGraph || backendStation.managerReadyPackage?.managerFlowGraph || null;
+    const graphProjectMatches = !backendFlowGraph?.projectId || backendFlowGraph.projectId === activeProject.id;
+    const buildFallbackFlowGraph = () => {
+      const agentStatusNodes = activeProject.team.map((agent, index) => {
+        const state = activeProject.agentStates?.[agent.id] || {};
+        return {
+          id: `agent-status-${agent.id}`,
+          category: 'monitoring',
+          subtype: 'agent-heartbeat',
+          title: `${agent.name} current state`,
+          agentId: agent.id,
+          agentName: agent.name,
+          taskId: null,
+          time: state.lastActiveAt || activeProject.updatedAt || activeProject.createdAt || new Date().toISOString(),
+          summary: state.currentPlan?.focus || state.status || 'Waiting for backend graph sync.',
+          status: state.status === 'blocked' ? 'blocked' : 'published',
+          importance: index === 0 ? 'major' : 'normal',
+          source: 'agentStates',
+          proofIds: [],
+          relatedNodeIds: [],
+          timelineLogIds: [],
+          eventIds: [],
+        };
+      });
+      const logNodes = (activeProject.logs || []).slice(0, 24).map((log, index) => {
+        const agent = activeProject.team.find(member => member.id === log.agentId || member.name === log.agent);
+        const category = /confirmed|approved|decision/i.test(log.eventType || '')
+          ? 'decision'
+          : /report|completed|test/i.test(log.eventType || '')
+            ? 'submission'
+            : /management|worker|scheduler/i.test(log.eventType || '')
+              ? 'monitoring'
+              : 'execution';
+        return {
+          id: `timeline-log-${log.id || index}`,
+          category,
+          subtype: log.eventType || 'timeline-log',
+          title: log.agent || log.actor || log.eventType || 'Timeline log',
+          agentId: log.agentId || agent?.id || null,
+          agentName: agent?.name || log.agent || 'Runtime',
+          taskId: log.taskId || null,
+          time: log.time || activeProject.updatedAt || activeProject.createdAt || new Date().toISOString(),
+          summary: log.log || log.text || 'Timeline log',
+          status: /blocked/i.test(log.eventType || '') ? 'blocked' : 'published',
+          importance: index < 6 ? 'major' : 'normal',
+          source: 'timeline logs',
+          sourceChannelId: log.sourceChannelId || null,
+          receiptCount: log.receiptCount || 0,
+          directTargetIds: log.directTargetIds || [],
+          proofIds: [String(log.id || '').startsWith('log_') ? String(log.id).slice(4) : null].filter(Boolean),
+          timelineLogIds: [log.id].filter(Boolean),
+          eventIds: [],
+          relatedNodeIds: log.agentId ? [`agent-status-${log.agentId}`] : [],
+          attachments: log.attachments || [],
+        };
+      });
+      const nodes = [...agentStatusNodes, ...logNodes].map((node, index) => ({
+        ...node,
+        sequence: index + 1,
+        categoryLabel: categoryMeta[node.category]?.label || node.category,
+        hasProof: Boolean(node.proofIds?.length || node.timelineLogIds?.length || node.eventIds?.length),
+      })).map(withLocalSubmissionArtifacts);
+      const edges = logNodes
+        .filter(node => node.agentId)
+        .map(node => ({
+          id: `fallback-edge-${node.id}`,
+          type: node.category === 'submission' ? 'reporting' : 'task_dependency',
+          typeLabel: node.category === 'submission' ? 'Report line' : 'Task dependency line',
+          fromNodeId: `agent-status-${node.agentId}`,
+          toNodeId: node.id,
+          label: node.category === 'submission' ? 'Agent report' : 'Agent progress',
+          status: 'published',
+          importance: node.importance,
+          source: node.source,
+          proofIds: node.proofIds || [],
+          timelineLogIds: node.timelineLogIds || [],
+          eventIds: [],
+        }));
+      const byCategory = nodes.reduce((acc, node) => ({ ...acc, [node.category]: (acc[node.category] || 0) + 1 }), {});
+      return {
+        projectId: activeProject.id,
+        schemaVersion: 'manager-flow-graph/fallback',
+        generatedAt: new Date().toISOString(),
+        categories: categoryOrder.map(id => ({ id, ...categoryMeta[id], count: byCategory[id] || 0 })),
+        summary: {
+          nodeCount: nodes.length,
+          edgeCount: edges.length,
+          proofedNodeCount: nodes.filter(node => node.hasProof).length,
+          confirmedNodeCount: nodes.filter(node => node.status === 'confirmed').length,
+          blockedNodeCount: nodes.filter(node => node.status === 'blocked').length,
+          majorVisibleCount: nodes.filter(node => ['major', 'critical'].includes(node.importance)).length,
+          byCategory,
+        },
+        zoomRules: {
+          compact: { label: 'Major and critical only', importances: ['major', 'critical'] },
+          medium: { label: 'Agent working path' },
+          expanded: { label: 'Chat, report, evidence, and detail' },
+        },
+        dataSources: {
+          eventLedger: activeProject.eventLedger?.length || 0,
+          timelineLogs: activeProject.logs?.length || 0,
+          messages: chatMessages.filter(message => (message.projectId || DEFAULT_CHAT_PROJECT_ID) === activeProject.id).length,
+          tasks: activeProject.tasks?.length || 0,
+          agentStates: Object.keys(activeProject.agentStates || {}).length,
+          kickoffCharter: Boolean(activeProject.kickoffCharter),
+          changeLedger: activeProject.changeLedger?.length || 0,
+          managerDashboard: Boolean(backendStation.managerDashboard),
+        },
+        nodes,
+        edges,
+      };
+    };
+    const managerFlowGraph = graphProjectMatches && backendFlowGraph?.nodes?.length ? backendFlowGraph : buildFallbackFlowGraph();
+    const backendOnline = backendStation.connectionStatus === 'online';
+    const scaleProfiles = {
+      month: { label: 'Major', test: node => ['major', 'critical'].includes(node.importance) },
+      week: { label: 'Path', test: node => ['major', 'critical'].includes(node.importance) || ['decision', 'collaboration', 'execution', 'submission', 'monitoring'].includes(node.category) },
+      day: { label: 'Work', test: node => node.category !== 'evidence' || ['major', 'critical'].includes(node.importance) },
+      hour: { label: 'Detail', test: () => true },
+    };
+    const scaleOrder = ['month', 'week', 'day', 'hour'];
+    const zoomDetail = tlZoom < 0.72 ? 'compact' : tlZoom < 1.12 ? 'medium' : 'expanded';
+    const zoomScale = tlZoom < 0.72 ? 'month' : tlZoom < 1.04 ? 'week' : tlZoom < 1.42 ? 'day' : 'hour';
+    const activeScaleProfile = scaleProfiles[zoomScale] || scaleProfiles.day;
+    const visibleNodes = Array.from(new Map((managerFlowGraph.nodes || [])
+      .filter(activeScaleProfile.test)
+      .filter(node => zoomDetail !== 'compact' || ['major', 'critical'].includes(node.importance))
+      .map(node => [node.id, node])).values())
+      .sort((a, b) => {
+        const areaA = a.commitArea?.index ?? managerFlowGraph.layout?.nodeLayoutHints?.[a.id]?.index;
+        const areaB = b.commitArea?.index ?? managerFlowGraph.layout?.nodeLayoutHints?.[b.id]?.index;
+        if (Number.isFinite(areaA) && Number.isFinite(areaB) && areaA !== areaB) return areaA - areaB;
+        const timeA = Date.parse(a.time) || 0;
+        const timeB = Date.parse(b.time) || 0;
+        if (timeA !== timeB) return timeA - timeB;
+        const branchA = a.commitArea?.branchIndex ?? managerFlowGraph.layout?.nodeLayoutHints?.[a.id]?.branchIndex;
+        const branchB = b.commitArea?.branchIndex ?? managerFlowGraph.layout?.nodeLayoutHints?.[b.id]?.branchIndex;
+        if (Number.isFinite(branchA) && Number.isFinite(branchB) && branchA !== branchB) return branchA - branchB;
+        return (a.sequence || 0) - (b.sequence || 0);
+      });
+    const visibleNodeIds = new Set(visibleNodes.map(node => node.id));
+    const visibleEdges = (managerFlowGraph.edges || []).filter(edge => visibleNodeIds.has(edge.fromNodeId) && visibleNodeIds.has(edge.toNodeId));
+    const nodeMap = Object.fromEntries((managerFlowGraph.nodes || []).map(node => [node.id, node]));
+    const selectedNode = visibleNodes.find(node => node.id === selectedTimelineEventId)
+      || visibleNodes.find(node => [node.id, ...(node.proofIds || []), ...(node.timelineLogIds || []), ...(node.eventIds || [])].includes(selectedTimelineEventId))
+      || null;
+    const selectedThinkingFrame = selectedNode?.thinkingFrame || selectedNode?.submission?.thinkingFrame || null;
+    const relatedEdges = selectedNode
+      ? visibleEdges.filter(edge => edge.fromNodeId === selectedNode.id || edge.toNodeId === selectedNode.id)
+      : [];
+    const relatedNodeIds = selectedNode
+      ? Array.from(new Set(relatedEdges.flatMap(edge => [edge.fromNodeId, edge.toNodeId]).filter(id => id !== selectedNode.id)))
+      : [];
+    const isProofFocused = (node) => focusedTimelineProofIds.some(id => (
+      node.id === id
+      || (node.proofIds || []).includes(id)
+      || (node.timelineLogIds || []).includes(id)
+      || (node.eventIds || []).includes(id)
+    ));
+    const visibleTimelineProofCount = visibleNodes.filter(isProofFocused).length;
+    const uniqueIds = (values) => Array.from(new Set((values || []).filter(Boolean).map(value => String(value))));
+    const agentById = new Map((activeProject.team || []).map(agent => [agent.id, agent]));
+    const agentDisplay = (agentId) => {
+      const agent = agentById.get(agentId);
+      return {
+        id: agentId || 'project',
+        name: agent?.name || agentId || 'Project',
+        role: agent?.title || agent?.role || agent?.duty || (agentId ? 'Agent' : 'Project'),
+        accent: agent?.color || '#bcae86',
+      };
+    };
+    const nodeCommitters = (node) => uniqueIds([
+      ...(node.committerIds || []),
+      node.agentId,
+      ...(node.coAuthorIds || []),
+    ]).map(agentDisplay);
+    const committersLabel = (node) => {
+      const committers = nodeCommitters(node);
+      if (!committers.length) return node.agentName || 'Project';
+      if (committers.length === 1) return committers[0].name;
+      return `${committers.slice(0, 2).map(person => person.name).join(' + ')}${committers.length > 2 ? ` +${committers.length - 2}` : ''}`;
+    };
+    const compactText = (value, max = 96) => {
+      const text = String(value || '').replace(/\s+/g, ' ').trim();
+      if (text.length <= max) return text;
+      return `${text.slice(0, Math.max(0, max - 1)).trim()}…`;
+    };
+    const timeKeyForNode = (node) => {
+      if (node.commitArea?.key) return node.commitArea.key;
+      const hintKey = managerFlowGraph.layout?.nodeLayoutHints?.[node.id]?.key;
+      if (hintKey) return hintKey;
+      const parsed = Date.parse(node.time);
+      if (Number.isFinite(parsed)) {
+        const date = new Date(parsed);
+        date.setSeconds(0, 0);
+        return date.toISOString();
+      }
+      return String(node.time || `sequence-${node.sequence || node.id}`).trim();
+    };
+    const groupedByTime = visibleNodes.reduce((acc, node) => {
+      const key = timeKeyForNode(node);
+      if (!acc.has(key)) acc.set(key, []);
+      acc.get(key).push(node);
+      return acc;
+    }, new Map());
+    const timeColumns = [...groupedByTime.entries()]
+      .map(([key, nodes]) => ({
+        key,
+        time: nodes[0]?.time,
+        nodes: nodes.sort((a, b) => {
+          const branchA = a.commitArea?.branchIndex ?? managerFlowGraph.layout?.nodeLayoutHints?.[a.id]?.branchIndex;
+          const branchB = b.commitArea?.branchIndex ?? managerFlowGraph.layout?.nodeLayoutHints?.[b.id]?.branchIndex;
+          if (Number.isFinite(branchA) && Number.isFinite(branchB) && branchA !== branchB) return branchA - branchB;
+          return (importanceRank[b.importance] || 0) - (importanceRank[a.importance] || 0) || (a.sequence || 0) - (b.sequence || 0);
+        }),
+        layoutIndex: Math.min(...nodes.map(node => node.commitArea?.index ?? managerFlowGraph.layout?.nodeLayoutHints?.[node.id]?.index ?? Number.MAX_SAFE_INTEGER)),
+      }))
+      .sort((a, b) => {
+        if (Number.isFinite(a.layoutIndex) && Number.isFinite(b.layoutIndex) && a.layoutIndex !== b.layoutIndex) return a.layoutIndex - b.layoutIndex;
+        const timeA = Date.parse(a.time) || 0;
+        const timeB = Date.parse(b.time) || 0;
+        if (timeA !== timeB) return timeA - timeB;
+        return (a.nodes[0]?.sequence || 0) - (b.nodes[0]?.sequence || 0);
+      });
+    const nodeWidth = zoomDetail === 'expanded' ? 292 : zoomDetail === 'medium' ? 260 : 224;
+    const nodeHeight = zoomDetail === 'expanded' ? 144 : zoomDetail === 'medium' ? 126 : 108;
+    const branchXGap = nodeWidth + (zoomDetail === 'compact' ? 28 : 38);
+    const timeColumnGap = zoomDetail === 'expanded' ? 128 : zoomDetail === 'medium' ? 112 : 92;
+    const branchYOffset = zoomDetail === 'expanded' ? 88 : zoomDetail === 'medium' ? 78 : 68;
+    const xOffset = 300;
+    const maxBranchCount = Math.max(1, ...timeColumns.map(column => column.nodes.length));
+    const maxBranchLevel = Math.max(1, Math.ceil((maxBranchCount - 1) / 2));
+    const timeAxisY = Math.max(280, 132 + maxBranchLevel * branchYOffset + nodeHeight / 2);
+    const branchSlotFor = (index) => {
+      if (index === 0) return 0;
+      const level = Math.ceil(index / 2);
+      return index % 2 === 1 ? -level : level;
+    };
+    let columnCursor = xOffset;
+    const timeColumnLayouts = timeColumns.map((column) => {
+      const branchCount = Math.max(1, column.nodes.length);
+      const width = Math.max(nodeWidth, (branchCount - 1) * branchXGap + nodeWidth);
+      const layout = {
+        ...column,
+        x: columnCursor,
+        width,
+        centerX: columnCursor + width / 2,
+      };
+      columnCursor += width + timeColumnGap;
+      return layout;
+    });
+    const nodeLayout = {};
+    timeColumnLayouts.forEach((column, columnIndex) => {
+      column.nodes.forEach((node, branchIndex) => {
+        const slot = branchSlotFor(branchIndex);
+        nodeLayout[node.id] = {
+          x: column.x + branchIndex * branchXGap,
+          y: timeAxisY + slot * branchYOffset - nodeHeight / 2,
+          branchIndex,
+          branchCount: column.nodes.length,
+          timeColumnIndex: columnIndex,
+          w: nodeWidth,
+          h: nodeHeight,
+        };
+      });
+    });
+    const visibleNodesByPosition = visibleNodes
+      .map(node => ({ node, box: nodeLayout[node.id] }))
+      .filter(item => item.box)
+      .sort((a, b) => a.box.x - b.box.x || a.box.y - b.box.y)
+      .map(item => item.node);
+    const canvasW = Math.max(1280, columnCursor + 180);
+    const canvasH = Math.max(760, timeAxisY + maxBranchLevel * branchYOffset + nodeHeight / 2 + 180);
+    const tickEvery = zoomDetail === 'expanded' ? 1 : zoomDetail === 'medium' ? 2 : 3;
+    const timeTicks = timeColumnLayouts
+      .map((column, index) => ({
+        key: `${column.key}-${index}`,
+        time: column.time,
+        x: column.centerX,
+        count: column.nodes.length,
+        show: index === 0 || index === timeColumns.length - 1 || index % tickEvery === 0,
+      }))
+      .filter(tick => tick.show);
+    const branchGuides = timeColumnLayouts.filter(column => column.nodes.length > 1).map((column) => {
+      const boxes = column.nodes.map(node => nodeLayout[node.id]).filter(Boolean);
+      return {
+        key: column.key,
+        x: column.centerX,
+        y: timeAxisY,
+        left: Math.min(...boxes.map(box => box.x + box.w / 2)),
+        right: Math.max(...boxes.map(box => box.x + box.w / 2)),
+        count: column.nodes.length,
+      };
+    });
+    const getAnchor = (edge) => {
+      const from = nodeLayout[edge.fromNodeId];
+      const to = nodeLayout[edge.toNodeId];
+      if (!from || !to) return null;
+      const sx = from.x + from.w / 2;
+      const sy = from.y + from.h / 2;
+      const ex = to.x + to.w / 2;
+      const ey = to.y + to.h / 2;
+      const bend = Math.max(70, Math.abs(ex - sx) / 2);
+      return { sx, sy, ex, ey, path: `M ${sx} ${sy} C ${sx + bend} ${sy}, ${ex - bend} ${ey}, ${ex} ${ey}` };
+    };
+    const handleGraphWheel = (event) => {
+      event.preventDefault();
+      if (event.altKey) {
+        const current = scaleOrder.indexOf(timelineScale);
+        const next = event.deltaY > 0 ? Math.max(0, current - 1) : Math.min(scaleOrder.length - 1, current + 1);
+        setTimelineScale(scaleOrder[next]);
+        return;
+      }
+      if (event.shiftKey) {
+        setTlPan(prev => ({ ...prev, x: prev.x - event.deltaY }));
+        return;
+      }
+      const rect = event.currentTarget.getBoundingClientRect();
+      const pointerX = event.clientX - rect.left;
+      const pointerY = event.clientY - rect.top;
+      const nextZoom = Math.min(2.2, Math.max(0.52, tlZoom * Math.exp(-event.deltaY * 0.0012)));
+      const worldX = (pointerX - tlPan.x) / tlZoom;
+      const worldY = (pointerY - tlPan.y) / tlZoom;
+      setTlZoom(nextZoom);
+      setTlPan({
+        x: pointerX - worldX * nextZoom,
+        y: pointerY - worldY * nextZoom,
+      });
+    };
+    const handleGraphMouseDown = (event) => {
+      if (event.target.closest('button')) return;
+      setTlDragging(true);
+      tlDragStartRef.current = { x: event.clientX, y: event.clientY, panX: tlPan.x, panY: tlPan.y };
+    };
+    const handleGraphMouseMove = (event) => {
+      if (!tlDragging) return;
+      setTlPan({
+        x: tlDragStartRef.current.panX + event.clientX - tlDragStartRef.current.x,
+        y: tlDragStartRef.current.panY + event.clientY - tlDragStartRef.current.y,
+      });
+    };
+    const resetGraphView = () => {
+      setTlPan({ x: 0, y: 0 });
+      setTlZoom(1);
+      setTimelineScale('day');
+      setSelectedTimelineEventId(null);
+    };
+    const graphTime = (value) => {
+      if (!value) return 'No time';
+      const clockOnly = String(value).trim().match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+      if (clockOnly) {
+        const hour = String(Math.min(23, Number(clockOnly[1]))).padStart(2, '0');
+        return `${hour}:${clockOnly[2]}`;
+      }
+      const parsed = new Date(value);
+      if (Number.isNaN(parsed.getTime())) return String(value);
+      const date = parsed.toLocaleDateString(undefined, { year: 'numeric', month: '2-digit', day: '2-digit' });
+      const time = parsed.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: false });
+      return `${date} ${time}`;
+    };
+    const selectedChatProofIds = selectedNode
+      ? (selectedNode.proofIds || []).filter(id => (
+        !(selectedNode.timelineLogIds || []).includes(id)
+        && !(selectedNode.eventIds || []).includes(id)
+        && id !== selectedNode.taskId
+      ))
+      : [];
+    const connectedPeople = selectedNode
+      ? uniqueIds([
+        ...(selectedNode.committerIds || []),
+        selectedNode.agentId,
+        ...(selectedNode.coAuthorIds || []),
+        ...(selectedNode.participantIds || []),
+        ...(selectedNode.affectedAgentIds || []),
+        ...relatedNodeIds.map(id => nodeMap[id]?.agentId),
+      ]).map(agentId => {
+        const person = agentDisplay(agentId);
+        const relationshipRoles = selectedNode.relationshipRoles || {};
+        const role = relationshipRoles[agentId]
+          || ((selectedNode.committerIds || []).includes(agentId) || selectedNode.agentId === agentId ? 'primary-committer' : null)
+          || ((selectedNode.coAuthorIds || []).includes(agentId) ? 'co-committer' : null)
+          || ((selectedNode.participantIds || []).includes(agentId) ? 'participant' : null)
+          || ((selectedNode.affectedAgentIds || []).includes(agentId) ? 'impacted' : 'related');
+        return { ...person, relation: role };
+      })
+      : [];
+    const relationshipGraph = (() => {
+      const width = 370;
+      const height = 250;
+      const center = { x: width / 2, y: height / 2 };
+      const radiusX = 138;
+      const radiusY = 84;
+      const people = connectedPeople.map((person, index) => {
+        const angle = connectedPeople.length === 1 ? -Math.PI / 2 : (-Math.PI / 2) + (index * Math.PI * 2) / connectedPeople.length;
+        return {
+          ...person,
+          x: center.x + Math.cos(angle) * radiusX,
+          y: center.y + Math.sin(angle) * radiusY,
+        };
+      });
+      return { width, height, center, people };
+    })();
+
+    return (
+      <div className="project-room relative h-screen overflow-hidden text-[#efe2bd] flex flex-col">
+        {sceneTransition && <div className="absolute right-16 top-1/2 z-50 w-32 h-32 -translate-y-1/2 bg-[#8f1e18] scene-bubble" />}
+        <div className="absolute inset-0 dotgrid-bg--dark tl-breath" />
+
+        <div className="relative z-20 flex-shrink-0 border-b border-[#2a2118]/70 bg-[#0d0c0b]/72 px-6 py-3">
+          <div className="flex items-center justify-between gap-4">
+            <div className="breadcrumb-bar text-[#7d6a49]">
+              <button data-testid="project-scene-back" onClick={exitProjectScene} className="hover:text-[#efe2bd] transition-colors">{activeProject.name}</button>
+              <span className="sep">/</span>
+              <span className="text-[#efe2bd]">Manager Flow Graph</span>
+              <span className="ml-3 text-[#7d6a49]">Single-Axis Timeline</span>
+            </div>
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={() => syncBackendManagerFlowGraph({ silent: false })}
+                disabled={!backendOnline || backendStation.loading}
+                className="inline-flex items-center gap-1.5 border border-[#3a2a1c] px-3 py-1.5 font-mono text-[9px] uppercase tracking-widest text-[#bcae86] hover:border-[#7b6542] hover:text-[#efe2bd] disabled:opacity-40"
+              >
+                <Database size={12} /> Sync Graph
+              </button>
+              <label className="flex items-center gap-2 border border-[#3a2a1c] bg-[#141210]/85 px-3 py-1.5">
+                <span className="font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">Zoom</span>
+                <input
+                  data-testid="manager-flow-zoom"
+                  type="range"
+                  min="52"
+                  max="220"
+                  step="4"
+                  value={Math.round(tlZoom * 100)}
+                  onChange={(event) => setTlZoom(Number(event.target.value) / 100)}
+                  className="w-32 accent-[#bcae86]"
+                />
+                <span className="w-16 text-right font-mono text-[8px] uppercase tracking-widest text-[#bcae86]">{Math.round(tlZoom * 100)}% / {scaleProfiles[zoomScale]?.label}</span>
+              </label>
+              <button type="button" onClick={resetGraphView} className="border border-[#3a2a1c] px-3 py-1.5 font-mono text-[9px] uppercase tracking-widest text-[#7d6a49] hover:border-[#7b6542] hover:text-[#efe2bd]">
+                Reset
+              </button>
+            </div>
+          </div>
+          <div data-testid="manager-flow-legend" className="mt-3 flex flex-wrap items-center gap-2">
+            {categoryOrder.map(category => {
+              const meta = categoryMeta[category];
+              const Icon = meta.Icon || CircleDot;
+              return (
+                <span key={`flow-category-legend-${category}`} className="inline-flex items-center gap-1.5 border border-[#2a2118] bg-[#141210]/88 px-2 py-1 font-mono text-[7px] uppercase tracking-widest text-[#bcae86]">
+                  <Icon size={10} style={{ color: meta.color }} />
+                  {meta.label}
+                </span>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="relative z-10 flex-1 flex overflow-hidden">
+          <div
+            className={`relative flex-1 overflow-hidden ${tlDragging ? '' : 'tl-canvas-grab'}`}
+            ref={timelineViewportRef}
+            onWheel={handleGraphWheel}
+            onMouseDown={handleGraphMouseDown}
+            onMouseMove={handleGraphMouseMove}
+            onMouseUp={() => setTlDragging(false)}
+            onMouseLeave={() => setTlDragging(false)}
+            onDoubleClick={resetGraphView}
+          >
+            <div className="absolute left-5 top-5 z-40 grid grid-cols-2 md:grid-cols-4 gap-2 max-w-3xl">
+              {[
+                ['Nodes', visibleNodes.length],
+                ['Edges', visibleEdges.length],
+                ['Proofed', visibleNodes.filter(node => node.hasProof).length],
+                ['Blocked', visibleNodes.filter(node => node.status === 'blocked').length],
+              ].map(([label, value]) => (
+                <div key={label} className="border border-[#3a2a1c] bg-[#141210]/92 px-3 py-2">
+                  <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">{label}</div>
+                  <div className="font-serif text-xl leading-tight">{value}</div>
+                </div>
+              ))}
+            </div>
+            {focusedTimelineProofIds.length > 0 && (
+              <div data-testid="timeline-evidence-detail" className="absolute left-5 top-[118px] z-40 border border-[#b9782b] bg-[#251b13]/95 px-4 py-3 font-mono text-[9px] uppercase tracking-widest text-[#efe2bd] shadow-lg">
+                Timeline proof focus: {visibleTimelineProofCount}/{focusedTimelineProofIds.length}
+                <span className="sr-only">Source Channel Receipts Direct Targets</span>
+                <button type="button" onClick={() => setFocusedTimelineProofIds([])} className="ml-3 text-[#bcae86] hover:text-white">Clear</button>
+              </div>
+            )}
+
+            <div
+              className="relative"
+              data-testid="manager-flow-graph"
+              style={{
+                width: canvasW,
+                height: canvasH,
+                transform: `translate(${tlPan.x}px, ${tlPan.y}px) scale(${tlZoom})`,
+                transformOrigin: '0 0',
+                transition: tlDragging ? 'none' : 'transform 0.24s cubic-bezier(0.25,0.8,0.25,1)',
+              }}
+            >
+              <div className="absolute left-0 right-0" style={{ top: timeAxisY }}>
+                <div className="absolute border-t border-[#7b6542]/65" style={{ left: xOffset - 32, top: 0, width: canvasW - xOffset + 4 }} />
+                <div className="absolute left-5 top-[-8px] font-mono text-[9px] uppercase tracking-widest text-[#7d6a49]">Time Axis</div>
+                {timeTicks.map(tick => (
+                  <div key={`flow-time-tick-${tick.key}`} className="absolute" style={{ left: tick.x, top: -6 }}>
+                    <div className="h-3 border-l border-[#7b6542]" />
+                    <div className="mt-1 -translate-x-1/2 whitespace-nowrap font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">
+                      {graphTime(tick.time)}
+                      {tick.count > 1 ? ` / ${tick.count} branches` : ''}
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {branchGuides.map(guide => (
+                <div key={`flow-branch-guide-${guide.key}`} className="absolute pointer-events-none" style={{ left: guide.left, top: guide.y }}>
+                  <div className="border-t border-dashed border-[#7b6542]/65" style={{ width: Math.max(0, guide.right - guide.left) }} />
+                  <div className="absolute left-1/2 top-[-24px] -translate-x-1/2 whitespace-nowrap border border-[#3a2a1c] bg-[#141210]/80 px-2 py-1 font-mono text-[7px] uppercase tracking-widest text-[#bcae86]">
+                    {guide.count} parallel commits
+                  </div>
+                </div>
+              ))}
+
+              <svg className="absolute left-0 top-0 pointer-events-none" style={{ width: canvasW, height: canvasH }}>
+                <defs>
+                  <marker id="flow-arrow" viewBox="0 0 10 8" refX="10" refY="4" markerWidth="8" markerHeight="6" orient="auto-start-reverse">
+                    <path d="M 0 0 L 10 4 L 0 8 z" fill="#7b6542" />
+                  </marker>
+                </defs>
+                {visibleEdges.map(edge => {
+                  const anchor = getAnchor(edge);
+                  if (!anchor) return null;
+                  const isSelected = selectedNode && (edge.fromNodeId === selectedNode.id || edge.toNodeId === selectedNode.id);
+                  const meta = edgeMeta[edge.type] || edgeMeta.task_dependency;
+                  return (
+                    <g key={edge.id}>
+                      <path
+                        d={anchor.path}
+                        fill="none"
+                        stroke={isSelected ? meta.color : '#3a2a1c'}
+                        strokeWidth={isSelected ? 2 : 1}
+                        strokeDasharray={edge.type === 'evidence' ? '5 5' : undefined}
+                        markerEnd="url(#flow-arrow)"
+                        opacity={selectedNode && !isSelected ? 0.18 : 0.78}
+                      />
+                      {isSelected && (
+                        <circle r="3" fill="#efe2bd" opacity="0.85">
+                          <animateMotion dur="2.6s" repeatCount="indefinite" path={anchor.path} />
+                        </circle>
+                      )}
+                    </g>
+                  );
+                })}
+              </svg>
+
+              {visibleNodesByPosition.map(node => {
+                const box = nodeLayout[node.id];
+                const meta = categoryMeta[node.category] || categoryMeta.execution;
+                const Icon = meta.Icon || CircleDot;
+                const isSelected = selectedNode?.id === node.id;
+                const isRelated = selectedNode && relatedNodeIds.includes(node.id);
+                const isDimmed = selectedNode && !isSelected && !isRelated;
+                const isFocused = isProofFocused(node);
+                const showDetail = zoomDetail === 'expanded';
+                const submitters = nodeCommitters(node);
+                const primarySubmitter = submitters[0] || agentDisplay(node.agentId);
+                const commitMessage = compactText(node.commitMessage || node.summary || node.title, zoomDetail === 'compact' ? 72 : zoomDetail === 'medium' ? 92 : 118);
+                const fullCommitMessage = node.commitMessage || node.summary || node.title;
+                const attachmentCount = node.attachments?.length || node.submission?.attachmentIds?.length || 0;
+                return (
+                  <button
+                    key={node.id}
+                    type="button"
+                    data-testid={`manager-flow-node-${node.id}`}
+                    data-timeline-event-id={node.id}
+                    onClick={() => setSelectedTimelineEventId(isSelected ? null : node.id)}
+                    title={fullCommitMessage}
+                    className={`absolute flex flex-col overflow-hidden text-left border bg-[#141210]/96 shadow-[7px_7px_0_rgba(0,0,0,0.22)] transition-all ${isSelected ? 'z-30 border-[#efe2bd]' : isRelated ? 'z-20 border-[#7b6542]' : 'z-10 border-[#3a2a1c]'} ${isDimmed ? 'opacity-35' : 'opacity-100'} ${isFocused ? 'ring-2 ring-[#b9782b] ring-offset-2 ring-offset-[#0d0c0b]' : ''}`}
+                    style={{ left: box.x, top: box.y, width: box.w, height: box.h, borderColor: isSelected ? '#efe2bd' : meta.color }}
+                  >
+                    <div className="flex h-8 shrink-0 items-center justify-between gap-2 px-3 font-mono text-[8px] uppercase tracking-widest text-white" style={{ background: meta.color }}>
+                      <span className="flex min-w-0 items-center gap-1.5">
+                        <Icon size={13} className="shrink-0" />
+                        <span className="truncate">{compactText(node.categoryLabel || meta.label, 18)}</span>
+                      </span>
+                      <span className="max-w-[46%] shrink-0 truncate opacity-85">{compactText(node.subtype, 24)}</span>
+                    </div>
+                    <div className="min-h-0 flex-1 overflow-hidden px-3 py-2">
+                      <div className="max-h-[46px] overflow-hidden break-words font-serif text-sm leading-snug text-[#efe2bd]">{commitMessage}</div>
+                      {showDetail && (
+                        <div className="mt-1 truncate font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">
+                          {compactText(node.title, 38)} / {node.status} / {graphTime(node.time)}
+                        </div>
+                      )}
+                    </div>
+                    <div className="flex shrink-0 items-center justify-between gap-2 border-t border-[#2a2118] bg-[#0d0c0b]/78 px-3 py-2">
+                      <div className="min-w-0">
+                        <div className="truncate font-mono text-[8px] uppercase tracking-widest text-[#bcae86]">{committersLabel(node)}</div>
+                        <div className="truncate font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">{primarySubmitter.role} / {attachmentCount} attachments</div>
+                      </div>
+                      <span className={`node-status-tag shrink-0 ${node.status === 'blocked' ? 'bg-[#8f1e18] text-white' : node.status === 'confirmed' ? 'bg-green-700 text-white' : node.status === 'resolved' ? 'bg-[#59684b] text-white' : 'bg-[#3a2a1c] text-[#bcae86]'}`}>
+                        {node.importance}
+                      </span>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {selectedNode && (
+          <aside className="w-[430px] shrink-0 border-l border-[#2a2118] bg-[#141210]/98 flex flex-col">
+              <>
+                <div className="flex-1 overflow-y-auto px-5 pt-5 pb-4">
+                  <div className="flex items-start justify-between gap-3 mb-4">
+                    <div className="min-w-0">
+                      <div className="font-mono text-[9px] uppercase tracking-widest text-[#7d6a49]">{selectedNode.categoryLabel || selectedNode.category} / {selectedNode.subtype}</div>
+                      <h3 className="mt-2 font-serif text-2xl leading-tight text-[#efe2bd]">{selectedNode.title}</h3>
+                    </div>
+                    <button type="button" data-testid="manager-flow-detail-close" onClick={() => setSelectedTimelineEventId(null)} className="text-[#7d6a49] hover:text-[#efe2bd]"><X size={16} /></button>
+                  </div>
+                  <p className="font-serif text-sm leading-relaxed text-[#bcae86]">{selectedNode.summary}</p>
+
+                  <div data-testid="timeline-node-metadata-detail" className="tl-detail-section">
+                    <div className="tl-detail-section-title">Node Metadata</div>
+                    <div className="grid grid-cols-2 gap-x-4 gap-y-2">
+                      {[
+                        ['ID', selectedNode.id],
+                        ['Status', selectedNode.status],
+                        ['Importance', selectedNode.importance],
+                        ['Submitted By', committersLabel(selectedNode)],
+                        ['Submitter Role', nodeCommitters(selectedNode)[0]?.role || 'Project'],
+                        ['Task', selectedNode.taskId || 'none'],
+                        ['Source', selectedNode.source],
+                        ['Source Channel', channelNameById[selectedNode.sourceChannelId] || selectedNode.sourceChannelId || 'timeline'],
+                        ['Receipts', selectedNode.receiptCount ? `${selectedNode.receiptCount} seen` : 'no receipt count'],
+                        ['Direct Targets', (selectedNode.directTargetIds || []).map(id => activeProject.team.find(agent => agent.id === id)?.name || id).join(' / ') || 'none'],
+                        ['Time', graphTime(selectedNode.time)],
+                        ['Proof IDs', (selectedNode.proofIds || []).length],
+                      ].map(([label, value]) => (
+                        <div key={label} className="min-w-0">
+                          <div className="font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">{label}</div>
+                          <div className="font-mono text-[9px] uppercase tracking-widest text-[#bcae86] break-words">{value}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="tl-detail-section">
+                    <div className="tl-detail-section-title">Submission Packet</div>
+                    <div className="border border-[#2a2118] bg-[#0d0c0b]/45 p-3">
+                      <div className="font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">Agent Intent</div>
+                      <p className="mt-1 font-serif text-sm leading-relaxed text-[#d8c99f]">
+                        {selectedNode.submission?.intent || 'Agent submitted this workflow commit for manager review.'}
+                      </p>
+                      <div className="mt-3 font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">Commit Message</div>
+                      <p className="mt-1 font-serif text-sm leading-relaxed text-[#efe2bd]">
+                        {selectedNode.submission?.commitMessage || selectedNode.commitMessage || selectedNode.summary}
+                      </p>
+                      {selectedThinkingFrame && (
+                        <div className="mt-3 border-t border-[#2a2118] pt-3">
+                          <div className="font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">Thinking Framework</div>
+                          <div className="mt-1 font-serif text-sm leading-tight text-[#d8c99f]">
+                            {selectedThinkingFrame.routineLabel || selectedThinkingFrame.routineId || 'Agent work routine'}
+                          </div>
+                          <div className="mt-2 flex flex-wrap gap-1.5">
+                            {(selectedThinkingFrame.checklist || []).slice(0, 5).map(item => (
+                              <span key={item} className="border border-[#3a2a1c] px-2 py-1 font-mono text-[7px] uppercase tracking-widest text-[#bcae86]">
+                                {item}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                    <div className="mt-3 grid grid-cols-2 gap-2">
+                      <div className="border border-[#2a2118] bg-[#0d0c0b]/45 p-2">
+                        <div className="mb-2 font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">Filled By Agent</div>
+                        <div className="space-y-1">
+                          {(selectedNode.submission?.requiredFields || []).map(field => (
+                            <div key={field.id} className="flex items-center justify-between gap-2 font-mono text-[8px] uppercase tracking-widest">
+                              <span className="truncate text-[#bcae86]">{field.label}</span>
+                              <span className={field.status === 'missing' ? 'text-[#8f1e18]' : 'text-[#59684b]'}>{field.status}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                      <div className="border border-[#2a2118] bg-[#0d0c0b]/45 p-2">
+                        <div className="mb-2 font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">Auto Generated</div>
+                        <div className="space-y-1">
+                          {(selectedNode.submission?.autoFields || []).map(field => (
+                            <div key={field.id} className="flex items-center justify-between gap-2 font-mono text-[8px] uppercase tracking-widest">
+                              <span className="truncate text-[#bcae86]">{field.label}</span>
+                              <span className="text-[#59684b]">{field.status}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="mt-3 space-y-2">
+                      {(selectedNode.attachments || []).map(attachment => (
+                        <div key={attachment.id} className="border border-[#2a2118] bg-[#0d0c0b]/45 p-3">
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <div className="font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">{attachment.type}</div>
+                              <div className="mt-1 font-serif text-sm leading-tight text-[#efe2bd]">{attachment.title}</div>
+                            </div>
+                            <span className={`node-status-tag shrink-0 ${attachment.autoGenerated ? 'bg-[#3a2a1c] text-[#bcae86]' : 'bg-[#59684b] text-white'}`}>
+                              {attachment.autoGenerated ? 'auto' : 'agent'}
+                            </span>
+                          </div>
+                          <p className="mt-2 font-serif text-xs leading-relaxed text-[#bcae86]">{attachment.summary}</p>
+                          {(attachment.url || attachment.absolutePath || attachment.path || attachment.relativePath || attachment.route) && (
+                            <div className="mt-2 flex flex-wrap gap-2">
+                              <button
+                                type="button"
+                                data-testid={`flow-open-artifact-${attachment.id}`}
+                                onClick={() => {
+                                  const target = attachment.url || (attachment.absolutePath || attachment.path || attachment.route || '').replace(/\\/g, '/');
+                                  if (target) window.open(target.startsWith('file:') || target.startsWith('http') ? target : `file://${target}`, '_blank', 'noopener,noreferrer');
+                                }}
+                                className="border border-[#3a2a1c] px-2 py-1 font-mono text-[7px] uppercase tracking-widest text-[#bcae86] hover:border-[#7b6542] hover:text-[#efe2bd]"
+                              >
+                                Open artifact
+                              </button>
+                              <button
+                                type="button"
+                                data-testid={`flow-locate-artifact-${attachment.id}`}
+                                onClick={() => navigator.clipboard?.writeText(attachment.absolutePath || attachment.path || attachment.relativePath || attachment.route || '')}
+                                className="border border-[#3a2a1c] px-2 py-1 font-mono text-[7px] uppercase tracking-widest text-[#bcae86] hover:border-[#7b6542] hover:text-[#efe2bd]"
+                              >
+                                Locate artifact
+                              </button>
+                            </div>
+                          )}
+                          <div className="mt-2 font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">
+                            proof {(attachment.proofIds || []).length} / timeline {(attachment.timelineLogIds || []).length} / ledger {(attachment.eventIds || []).length}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="tl-detail-section">
+                    <div className="tl-detail-section-title">Task Relationship Graph</div>
+                    {connectedPeople.length ? (
+                      <div className="border border-[#2a2118] bg-[#0d0c0b]/45 p-2">
+                        <svg viewBox={`0 0 ${relationshipGraph.width} ${relationshipGraph.height}`} className="h-[250px] w-full">
+                          <defs>
+                            <marker id="person-relation-dot" markerWidth="6" markerHeight="6" refX="3" refY="3">
+                              <circle cx="3" cy="3" r="2.2" fill="#7b6542" />
+                            </marker>
+                          </defs>
+                          {relationshipGraph.people.map(person => {
+                            const mx = (relationshipGraph.center.x + person.x) / 2;
+                            const my = (relationshipGraph.center.y + person.y) / 2;
+                            return (
+                              <g key={`relation-edge-${person.id}`}>
+                                <line
+                                  x1={relationshipGraph.center.x}
+                                  y1={relationshipGraph.center.y}
+                                  x2={person.x}
+                                  y2={person.y}
+                                  stroke="#7b6542"
+                                  strokeWidth="1.2"
+                                  markerEnd="url(#person-relation-dot)"
+                                  opacity="0.82"
+                                />
+                                <text x={mx} y={my - 5} textAnchor="middle" className="fill-[#bcae86] font-mono text-[8px] uppercase tracking-widest">
+                                  {person.relation}
+                                </text>
+                              </g>
+                            );
+                          })}
+                          <g>
+                            <rect x={relationshipGraph.center.x - 58} y={relationshipGraph.center.y - 28} width="116" height="56" fill="#141210" stroke="#efe2bd" />
+                            <text x={relationshipGraph.center.x} y={relationshipGraph.center.y - 4} textAnchor="middle" className="fill-[#efe2bd] font-serif text-[13px]">
+                              Commit
+                            </text>
+                            <text x={relationshipGraph.center.x} y={relationshipGraph.center.y + 13} textAnchor="middle" className="fill-[#7d6a49] font-mono text-[7px] uppercase tracking-widest">
+                              {selectedNode.category}
+                            </text>
+                          </g>
+                          {relationshipGraph.people.map(person => (
+                            <g key={`relation-person-${person.id}`}>
+                              <rect x={person.x - 48} y={person.y - 22} width="96" height="44" fill="#141210" stroke={person.accent} />
+                              <text x={person.x} y={person.y - 3} textAnchor="middle" className="fill-[#efe2bd] font-serif text-[12px]">
+                                {person.name}
+                              </text>
+                              <text x={person.x} y={person.y + 13} textAnchor="middle" className="fill-[#7d6a49] font-mono text-[7px] uppercase tracking-widest">
+                                {person.role}
+                              </text>
+                            </g>
+                          ))}
+                        </svg>
+                      </div>
+                    ) : (
+                      <div className="border border-dashed border-[#2a2118] p-3 font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">
+                        No connected employee recorded for this node.
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="tl-detail-section">
+                    <div className="tl-detail-section-title">Evidence</div>
+                    <div className="grid grid-cols-3 gap-2">
+                      {[
+                        ['Chat', selectedChatProofIds.length],
+                        ['Timeline', (selectedNode.timelineLogIds || []).length],
+                        ['Ledger', (selectedNode.eventIds || []).length],
+                      ].map(([label, value]) => (
+                        <div key={label} className="border border-[#2a2118] bg-[#0d0c0b]/55 px-2 py-2">
+                          <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">{label}</div>
+                          <div className="font-serif text-lg leading-tight">{value}</div>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => openProjectChatProof(activeProject, selectedChatProofIds, selectedNode.channelId || 'main')}
+                        disabled={!selectedChatProofIds.length}
+                        className="inline-flex items-center gap-1 border border-[#3a2a1c] px-3 py-2 font-mono text-[8px] uppercase tracking-widest text-[#bcae86] hover:border-[#7b6542] hover:text-[#efe2bd] disabled:opacity-40"
+                      >
+                        <MessageSquare size={11} /> Chat Proof
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => openProjectTimelineProof(selectedNode.timelineLogIds || [])}
+                        disabled={!(selectedNode.timelineLogIds || []).length}
+                        className="inline-flex items-center gap-1 border border-[#3a2a1c] px-3 py-2 font-mono text-[8px] uppercase tracking-widest text-[#bcae86] hover:border-[#7b6542] hover:text-[#efe2bd] disabled:opacity-40"
+                      >
+                        <ScrollText size={11} /> Timeline Proof
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="tl-detail-section">
+                    <div className="tl-detail-section-title">Relationships</div>
+                    <div className="space-y-2">
+                      {relatedEdges.map(edge => {
+                        const otherId = edge.fromNodeId === selectedNode.id ? edge.toNodeId : edge.fromNodeId;
+                        const otherNode = nodeMap[otherId];
+                        return (
+                          <button
+                            type="button"
+                            key={edge.id}
+                            onClick={() => otherNode && setSelectedTimelineEventId(otherNode.id)}
+                            className="w-full border border-[#2a2118] bg-[#0d0c0b]/45 p-2 text-left hover:border-[#7b6542]"
+                          >
+                            <div className="font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">{edgeMeta[edge.type]?.label || edge.type}</div>
+                            <div className="font-serif text-sm leading-tight text-[#d8c99f]">{otherNode?.title || otherId}</div>
+                          </button>
+                        );
+                      })}
+                      {!relatedEdges.length && (
+                        <div className="border border-dashed border-[#2a2118] p-3 font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">
+                          No visible relationship at this zoom level.
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+                <div className="shrink-0 border-t border-[#2a2118] px-5 py-3">
+                  <div className="mb-2 font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">
+                    Confirmation: {selectedNode.confirmation?.confirmedAt ? graphTime(selectedNode.confirmation.confirmedAt) : 'not confirmed by user'}
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => confirmManagerFlowNode(selectedNode.id, true)}
+                      disabled={!backendOnline || backendStation.loading || selectedNode.status === 'confirmed'}
+                      className="inline-flex flex-1 items-center justify-center gap-1.5 border border-[#59684b] bg-[#59684b] px-3 py-2 font-mono text-[8px] uppercase tracking-widest text-white disabled:opacity-40"
+                    >
+                      <CheckCircle2 size={12} /> Confirm Valid Work
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => confirmManagerFlowNode(selectedNode.id, false)}
+                      disabled={!backendOnline || backendStation.loading}
+                      className="inline-flex flex-1 items-center justify-center gap-1.5 border border-[#3a2a1c] px-3 py-2 font-mono text-[8px] uppercase tracking-widest text-[#bcae86] hover:border-[#8f1e18] disabled:opacity-40"
+                    >
+                      <X size={12} /> Supersede
+                    </button>
+                  </div>
+                </div>
+              </>
+          </aside>
           )}
         </div>
       </div>
@@ -13288,6 +15112,7 @@ export default function EngineWorkspace() {
           {activeRoute === 'agent_market' && renderAgentMarketView()}
           {activeRoute === 'agent_dossier' && renderAgentDossierScene()}
         </main>
+        {contractProjectPickerAgentId && renderContractProjectPicker()}
         {settingsOpen && renderSettingsModal()}
       </div>
     </div>

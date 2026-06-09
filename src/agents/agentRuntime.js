@@ -1,9 +1,11 @@
 import {
+  buildPersonaSkillBlend,
   buildSkillRoomReply,
   createRoundtablePlan,
   describeSkillIntent,
   getPersonSkill,
 } from '../skills/personSkillSystem.js';
+import { createTranslator, localizeText, normalizeLanguage } from '../i18n/runtime.js';
 
 export const DIRECTOR_AGENT_ID = 'director';
 const EVENT_LEDGER_RETAINED_LIMIT = 1000;
@@ -126,6 +128,33 @@ function compactObject(value = {}) {
     && item !== undefined
     && (!(Array.isArray(item)) || item.length > 0)
   )));
+}
+
+const GENERATED_TEXT_KEYS = new Set([
+  'text',
+  'log',
+  'summary',
+  'label',
+  'description',
+  'weight',
+  'focus',
+  'next',
+  'due',
+]);
+
+function localizeGeneratedObject(value, language = 'en') {
+  const normalizedLanguage = normalizeLanguage(language);
+  if (normalizedLanguage === 'en') return value;
+  if (Array.isArray(value)) {
+    return value.map((item) => localizeGeneratedObject(item, normalizedLanguage));
+  }
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => {
+    if (typeof item === 'string' && GENERATED_TEXT_KEYS.has(key)) {
+      return [key, localizeText(item, normalizedLanguage)];
+    }
+    return [key, localizeGeneratedObject(item, normalizedLanguage)];
+  }));
 }
 
 export function createProjectLedgerEvent({
@@ -484,8 +513,10 @@ function unique(values) {
   return [...new Set(values.filter(Boolean))];
 }
 
-function getMeetingProtocol(type = DEFAULT_PROTOCOL_ID) {
-  return MEETING_PROTOCOLS[type] || MEETING_PROTOCOLS[DEFAULT_PROTOCOL_ID];
+function getMeetingProtocol(type = DEFAULT_PROTOCOL_ID, language = 'en') {
+  const protocol = MEETING_PROTOCOLS[type] || MEETING_PROTOCOLS[DEFAULT_PROTOCOL_ID];
+  const translated = createTranslator(language)(`protocols.${protocol.id}`);
+  return translated && typeof translated === 'object' ? { ...protocol, ...translated } : protocol;
 }
 
 function getCadence(cadence = 'hourly') {
@@ -655,6 +686,7 @@ export function createAgentNetwork(team = [], context = {}) {
   return {
     id: context.projectId || `network_${Date.now()}`,
     topic: context.topic || '',
+    context,
     agents: agents.map((agent) => ({
       ...agent,
       managerId: managedBy.get(agent.id) || null,
@@ -683,40 +715,61 @@ function fallbackIntent(agent, index = 0) {
   return FALLBACK_INTENTS[capability] || (index === 0 ? 'first response' : 'peer contribution');
 }
 
-function workRoutineForAgent(agent = {}) {
+function workRoutineForAgent(agent = {}, language = 'en') {
   const capability = (agent.capabilities || []).find((item) => WORK_ROUTINES[item]) || 'generalist';
   const routine = WORK_ROUTINES[capability] || WORK_ROUTINES.generalist;
+  const translated = createTranslator(language)(`routines.${capability}`);
   return {
     ...routine,
+    ...(translated && typeof translated === 'object' ? translated : {}),
     capability,
-    checklist: [...routine.checklist],
+    checklist: [...((translated && typeof translated === 'object' ? translated.checklist : routine.checklist) || routine.checklist)],
   };
 }
 
 function buildFallbackReply(agent, directive = '', context = {}) {
-  const leadName = context.lead?.id === agent.id ? 'I will coordinate the board' : `I will sync through ${context.lead?.name || 'the lead'}`;
-  const reviewerName = context.reviewer?.id === agent.id ? 'and I will run the review loop' : `with ${context.reviewer?.name || 'the reviewer'} checking risk`;
-  const focus = context.intent?.target || fallbackIntent(agent);
-  const directiveText = directive ? ` On "${directive.slice(0, 96)}",` : '';
-  const protocol = getMeetingProtocol(context.meetingType);
+  const t = createTranslator(context.language);
+  const leadName = context.lead?.id === agent.id
+    ? t('agent.fallbackLead')
+    : t('agent.fallbackSync', { lead: context.lead?.name || t('common.manager') });
+  const reviewerName = context.reviewer?.id === agent.id
+    ? t('agent.fallbackReviewerSelf')
+    : t('agent.fallbackReviewer', { reviewer: context.reviewer?.name || t('common.manager') });
+  const rawFocus = context.intent?.target || fallbackIntent(agent);
+  const focus = normalizeLanguage(context.language) === 'en' && /[\u4e00-\u9fff]/.test(rawFocus)
+    ? fallbackIntent(agent)
+    : rawFocus;
+  const directiveText = directive ? t('agent.fallbackDirective', { directive: directive.slice(0, 96) }) : '';
+  const protocol = getMeetingProtocol(context.meetingType, context.language);
   const frame = context.isLead ? protocol.leadFrame : protocol.memberFrame;
-  return `${leadName}; ${reviewerName}.${directiveText} my lane is ${focus}. Frame: ${frameSentence(frame)}. Next I will turn this into one owner, one artifact, and one decision checkpoint.`;
+  return t('agent.fallbackReply', {
+    leadLine: leadName,
+    reviewerLine: reviewerName,
+    directiveLine: directiveText,
+    focus,
+    frame: frameSentence(frame),
+  });
 }
 
 function buildAgentReply(agent, directive = '', context = {}) {
   const skill = getPersonSkill(agent.id);
+  if (normalizeLanguage(context.language) === 'en') return buildFallbackReply(agent, directive, context);
   if (!skill) return buildFallbackReply(agent, directive, context);
   const reply = buildSkillRoomReply(agent.id, directive, context.intent || {});
   if (!reply) return buildFallbackReply(agent, directive, context);
-  const protocol = getMeetingProtocol(context.meetingType);
+  const protocol = getMeetingProtocol(context.meetingType, context.language);
   const frame = context.isLead ? protocol.leadFrame : protocol.memberFrame;
   const managedNames = (agent.managedIds || [])
     .map((id) => getAgent(context.network, id)?.name)
     .filter(Boolean);
   const managementLine = managedNames.length
-    ? ` I will coordinate ${managedNames.join(', ')} and keep the decision path explicit.`
+    ? (normalizeLanguage(context.language) === 'zh'
+      ? ` 我会协调 ${managedNames.join('、')}，并保持决策路径清晰。`
+      : ` I will coordinate ${managedNames.join(', ')} and keep the decision path explicit.`)
     : '';
-  return `${reply}${managementLine} Frame: ${frameSentence(frame)}.`;
+  return normalizeLanguage(context.language) === 'zh'
+    ? `${reply}${managementLine} 框架：${frameSentence(frame)}。`
+    : `${reply}${managementLine} Frame: ${frameSentence(frame)}.`;
 }
 
 function buildIntentions(network, directive = '') {
@@ -760,31 +813,40 @@ function selectTargets(network, targetIds = [], directive = '') {
 }
 
 export function startAgentSession(team = [], context = {}) {
+  const language = normalizeLanguage(context.language);
+  const t = createTranslator(language);
   const network = createAgentNetwork(team, context);
   const facilitator = getLead(network);
   const reviewer = getReviewer(network);
-  const protocol = getMeetingProtocol(context.meetingType || 'kickoff');
+  const protocol = getMeetingProtocol(context.meetingType || 'kickoff', language);
   const openingText = facilitator
-    ? `${facilitator.name} is coordinating this ${protocol.label}. ${reviewer ? `${reviewer.name} is assigned as reviewer. ` : ''}Every agent will speak through this frame: ${frameSentence(protocol.memberFrame)}. What is the primary directive?`
-    : 'Agent network is online. What is the primary directive?';
+    ? t('agent.opening', {
+      facilitator: facilitator.name,
+      protocol: protocol.label,
+      reviewerLine: reviewer ? t('agent.reviewerLine', { reviewer: reviewer.name }) : '',
+      frame: frameSentence(protocol.memberFrame),
+    })
+    : t('agent.networkOnlinePrompt');
 
-  return {
+  return localizeGeneratedObject({
     network,
     protocol,
     events: [
-      { kind: 'system', text: `AGENT NETWORK ONLINE: ${context.projectName || 'Untitled Project'}` },
+      { kind: 'system', text: t('agent.networkOnline', { projectName: context.projectName || 'Untitled Project' }) },
       facilitator ? { kind: 'agent', agent: facilitator, text: openingText } : null,
     ].filter(Boolean),
-  };
+  }, language);
 }
 
 export function routeDirectorDirective({ team = [], directive = '', targetIds = [], context = {} }) {
+  const language = normalizeLanguage(context.language);
+  const t = createTranslator(language);
   const network = createAgentNetwork(team, { ...context, directive, topic: directive });
   const targets = selectTargets(network, targetIds, directive);
   const targetNames = targets.length ? targets.map((agent) => agent.name.toUpperCase()) : ['ALL'];
   const intentions = buildIntentions(network, directive);
   const intentById = new Map(intentions.map((intent) => [intent.id, intent]));
-  const protocol = getMeetingProtocol(context.meetingType);
+  const protocol = getMeetingProtocol(context.meetingType, language);
   const lead = getLead(network);
   const reviewer = getReviewer(network);
 
@@ -798,6 +860,7 @@ export function routeDirectorDirective({ team = [], directive = '', targetIds = 
       intent: intentById.get(agent.id),
       isLead: lead?.id === agent.id,
       meetingType: protocol.id,
+      language,
     }),
     delayMs: 1300 + index * 900,
   }));
@@ -806,7 +869,7 @@ export function routeDirectorDirective({ team = [], directive = '', targetIds = 
     ? [{
       kind: 'agent',
       agent: lead,
-      text: `${reviewer.name}, please review the risk surface after the first pass. I will keep ownership, deadlines, and the ${protocol.output} visible.`,
+      text: t('agent.coordination', { reviewer: reviewer.name, output: protocol.output }),
       delayMs: 1300 + replies.length * 900,
       relation: { to: reviewer.id, type: 'delegates-review' },
     }]
@@ -825,11 +888,12 @@ export function routeDirectorDirective({ team = [], directive = '', targetIds = 
 }
 
 export function runRoundtableExchange(team = [], directive = '', context = {}) {
+  const language = normalizeLanguage(context.language);
   const network = createAgentNetwork(team, { ...context, directive, topic: directive });
   const intentions = buildIntentions(network, directive);
   const intentById = new Map(intentions.map((intent) => [intent.id, intent]));
   const speakers = intentions.slice(0, Math.min(3, intentions.length));
-  const protocol = getMeetingProtocol(context.meetingType || 'sync');
+  const protocol = getMeetingProtocol(context.meetingType || 'sync', language);
   const lead = getLead(network);
   const reviewer = getReviewer(network);
 
@@ -853,6 +917,7 @@ export function runRoundtableExchange(team = [], directive = '', context = {}) {
           intent: intentById.get(intent.id),
           isLead: lead?.id === agent.id,
           meetingType: protocol.id,
+          language,
         }),
       };
     }),
@@ -860,6 +925,8 @@ export function runRoundtableExchange(team = [], directive = '', context = {}) {
 }
 
 export function buildAgentChatReplies({ team = [], text = '', targets = [], channelId = 'main', context = {} }) {
+  const language = normalizeLanguage(context.language);
+  const t = createTranslator(language);
   const normalizedTargets = targets.map((target) => target.toLowerCase());
   const explicitAll = normalizedTargets.includes('all');
   const targetIds = explicitAll
@@ -879,11 +946,12 @@ export function buildAgentChatReplies({ team = [], text = '', targets = [], chan
     context: {
       ...context,
       meetingType: 'working',
+      language,
       maxSpeakers: explicitAll ? 3 : Math.max(1, targetIds.length || 2),
     },
   });
 
-  return attachReceiptsToMessages(processed.utterances.map((utterance, index) => {
+  const replies = attachReceiptsToMessages(processed.utterances.map((utterance, index) => {
     const agent = processed.network.agents.find((item) => item.id === utterance.agentId);
     const reading = processed.readings.find((item) => item.agentId === utterance.agentId);
     return {
@@ -891,11 +959,11 @@ export function buildAgentChatReplies({ team = [], text = '', targets = [], chan
       channelId,
       type: utterance.obligationCount ? 'mention' : 'text',
       author: agent?.name || utterance.agentId,
-      role: agent?.role || 'Agent',
-      time: 'Now',
+      role: agent?.role || t('common.agent'),
+      time: t('agent.timeNow'),
       text: utterance.text,
       targets: utterance.obligationCount ? [DIRECTOR_AGENT_ID] : [],
-      weight: utterance.obligationCount ? 'Obligation' : null,
+      weight: utterance.obligationCount ? t('agent.obligation') : null,
       diagnostics: reading ? {
         attentionScore: reading.score,
         reasons: reasonLabels(reading.reasons),
@@ -904,6 +972,7 @@ export function buildAgentChatReplies({ team = [], text = '', targets = [], chan
       } : null,
     };
   }), team, { seenAt: context.now || null });
+  return localizeGeneratedObject(replies, language);
 }
 
 export function readCommunication(agent, message = {}, network = null) {
@@ -959,7 +1028,7 @@ export function readCommunication(agent, message = {}, network = null) {
       fromLead: Boolean(fromLead),
       fromManagedPeer: Boolean(fromManagedPeer),
       capabilityMatch,
-    }).join(', ') || 'ambient low-priority signal',
+    }).join(', ') || createTranslator(message.language || network?.context?.language)('agent.ambientSignal'),
     reasons: {
       directMention,
       fromLead: Boolean(fromLead),
@@ -1037,8 +1106,10 @@ export function applyChatMessagesToAgentStates({
   messages = [],
   now = nowIso(),
   source = 'group-chat',
+  language = project.language || 'en',
 } = {}) {
   if (!messages.length) return project;
+  const t = createTranslator(language);
   const network = createAgentNetwork(team, {
     projectId: project.id,
     projectName: project.name,
@@ -1080,7 +1151,7 @@ export function applyChatMessagesToAgentStates({
       text: item.text,
       status: 'open',
       openedAt: now,
-      due: 'next visible response',
+      due: t('agent.nextVisibleResponse'),
     }));
     const worklogItems = authoredMessages.map((message) => ({
       id: `chat_worklog_${message.id}_${agent.id}`,
@@ -1104,9 +1175,9 @@ export function applyChatMessagesToAgentStates({
       peerIds: previous.peerIds || agent.peerIds || [],
       status: inboxItems.length ? 'reading-chat' : previous.status || (authoredMessages.length ? 'responding-chat' : 'monitoring'),
       currentPlan: previous.currentPlan || {
-        focus: 'monitor group chat and respond to direct obligations',
-        next: 'answer direct mentions or keep watching project channel',
-        routine: workRoutineForAgent(agent),
+        focus: t('agent.currentPlanFocus'),
+        next: t('agent.currentPlanNext'),
+        routine: workRoutineForAgent(agent, language),
       },
       taskIds: previous.taskIds || [],
       inbox: [...inboxItems, ...(previous.inbox || [])].slice(0, 80),
@@ -1142,12 +1213,18 @@ export function applyChatMessagesToAgentStates({
 }
 
 export function planAgentUtterance(agent, reading, context = {}) {
-  const protocol = getMeetingProtocol(context.meetingType);
+  const language = normalizeLanguage(context.language);
+  const t = createTranslator(language);
+  const protocol = getMeetingProtocol(context.meetingType, language);
   const cadence = context.cadence ? getCadence(context.cadence) : null;
   const frame = cadence?.frame || (context.isLead ? protocol.leadFrame : protocol.memberFrame);
   const text = reading?.shouldSpeak
-    ? `${agent.name}: I read this as ${frameSentence(frame)}. I will ${reading.obligations?.length ? 'take the open obligation and report back with evidence' : 'respond only where my lane changes the plan'}.`
-    : `${agent.name}: noted; no interruption unless the owner or deadline changes.`;
+    ? t('agent.readReply', {
+      agent: agent.name,
+      frame: frameSentence(frame),
+      action: reading.obligations?.length ? t('agent.readActionObligation') : t('agent.readActionLane'),
+    })
+    : t('agent.silentRead', { agent: agent.name });
 
   return {
     agentId: agent.id,
@@ -1209,9 +1286,11 @@ function taskBelongsToAgent(task = {}, agent = {}) {
     || task.assignee === agent.name;
 }
 
-function buildManagementEvents({ network, project = {}, cadence = 'hourly' } = {}) {
+function buildManagementEvents({ network, project = {}, cadence = 'hourly', language = project.language || network?.context?.language } = {}) {
+  const currentLanguage = normalizeLanguage(language);
   const lead = getLead(network);
   const reviewer = getReviewer(network);
+  const t = createTranslator(currentLanguage);
   const openTasks = (project.tasks || []).filter((task) => task.status !== 'done');
   const events = [];
 
@@ -1230,7 +1309,9 @@ function buildManagementEvents({ network, project = {}, cadence = 'hourly' } = {
           targetName: managedAgent.name,
           taskIds: ownedTasks.map((task) => task.id).filter(Boolean).slice(0, 3),
           channel: 'team-management',
-          text: `${lead.name}: @${managedAgent.name} management check-in for ${ownedTasks.length} open task${ownedTasks.length === 1 ? '' : 's'}. ${blockedCount ? `${blockedCount} blocker${blockedCount === 1 ? '' : 's'} need escalation; ` : ''}confirm next artifact and timeline proof before the next ${cadence} pulse.`,
+          text: currentLanguage === 'zh'
+            ? `${lead.name}：@${managedAgent.name} 管理检查：当前有 ${ownedTasks.length} 个开放任务。${blockedCount ? `${blockedCount} 个阻塞需要升级；` : ''}请在下一次 ${cadence} 脉冲前确认下一项产物和时间线证据。`
+            : `${lead.name}: @${managedAgent.name} management check-in for ${ownedTasks.length} open task${ownedTasks.length === 1 ? '' : 's'}. ${blockedCount ? `${blockedCount} blocker${blockedCount === 1 ? '' : 's'} need escalation; ` : ''}confirm next artifact and timeline proof before the next ${cadence} pulse.`,
         });
       });
   }
@@ -1246,7 +1327,9 @@ function buildManagementEvents({ network, project = {}, cadence = 'hourly' } = {
       targetName: lead.name,
       taskIds: evidencedTasks.map((task) => task.id).filter(Boolean),
       channel: 'evidence-review',
-      text: `${reviewer.name}: @${lead.name} review sweep is active. I am checking ${evidencedTasks.length || 'the current'} evidence thread${evidencedTasks.length === 1 ? '' : 's'} for assignment proof, owner acknowledgement, and timeline continuity.`,
+      text: currentLanguage === 'zh'
+        ? `${reviewer.name}：@${lead.name} 复核扫描已启动。我正在检查 ${evidencedTasks.length || '当前'} 条证据线，确认分配证据、负责人确认和时间线连续性。`
+        : `${reviewer.name}: @${lead.name} review sweep is active. I am checking ${evidencedTasks.length || 'the current'} evidence thread${evidencedTasks.length === 1 ? '' : 's'} for assignment proof, owner acknowledgement, and timeline continuity.`,
     });
   }
 
@@ -1264,7 +1347,12 @@ function buildManagementEvents({ network, project = {}, cadence = 'hourly' } = {
         targetName: target.name,
         taskIds: ownedTasks.map((task) => task.id).filter(Boolean).slice(0, 2),
         channel: 'peer-management',
-        text: `${requester.name}: @${target.name} peer-management check-in on our dependency. Please publish the next evidence update and call out any blocker before I integrate it.`,
+        text: t('agent.managementCheckIn', {
+          agent: requester.name,
+          target: target.name,
+          kind: t('agent.peerManagement'),
+          focus: currentLanguage === 'zh' ? '我们的依赖' : 'our dependency',
+        }),
       });
     });
   });
@@ -1272,18 +1360,28 @@ function buildManagementEvents({ network, project = {}, cadence = 'hourly' } = {
   return events.slice(0, 6);
 }
 
-export function planAutonomousWorkCycle({ team = [], project = {}, cadence = 'hourly', messages = [], now = nowIso() }) {
+export function planAutonomousWorkCycle({ team = [], project = {}, cadence = 'hourly', messages = [], now = nowIso(), language = project.language || 'en' }) {
+  const currentLanguage = normalizeLanguage(language);
   const cadenceProfile = getCadence(cadence);
   const network = createAgentNetwork(team, {
     projectId: project.id,
     projectName: project.name,
     topic: project.objective || project.name || '',
+    language: currentLanguage,
   });
   const lead = getLead(network);
   const reviewer = getReviewer(network);
 
   const agentPlans = network.agents.map((agent) => {
-    const routine = workRoutineForAgent(agent);
+    const routine = workRoutineForAgent(agent, currentLanguage);
+    const blend = buildPersonaSkillBlend(agent.id, project.currentObjective || project.objective || project.name || '');
+    const professionalSkill = {
+      id: blend.selectedSkill.id,
+      label: currentLanguage === 'zh' ? blend.selectedSkill.zh || blend.selectedSkill.label : blend.selectedSkill.label,
+      method: blend.selectedProcess,
+      personaEdge: blend.edge,
+      affinity: blend.selectedAffinity,
+    };
     const readings = messages.map((message) => readCommunication(agent, message, network));
     const obligations = readings.flatMap((reading) => reading.obligations);
     const priority = agentWorkPriority(agent, {
@@ -1309,10 +1407,11 @@ export function planAutonomousWorkCycle({ team = [], project = {}, cadence = 'ho
       reads: readings.filter((reading) => reading.shouldRead).length,
       obligations,
       privateWork: {
-        focus: fallbackIntent(agent),
+        focus: professionalSkill.label,
         horizonHours: cadenceProfile.horizonHours,
         evidenceRequired: agent.capabilities.includes('review') || reviewer?.id === agent.id,
         routine,
+        professionalSkill,
       },
       publish: shouldPublish
         ? {
@@ -1320,12 +1419,15 @@ export function planAutonomousWorkCycle({ team = [], project = {}, cadence = 'ho
           frame: cadenceProfile.frame,
           channel: lead?.id === agent.id ? 'project-ledger' : 'team-worklog',
           routine,
-          text: `${agent.name}: ${routine.label}; ${routine.checklist.join(' -> ')}. Owner=${agent.name}; manager=${agent.managerId ? getAgent(network, agent.managerId)?.name : 'self'}; artifact=${routine.artifact}; next horizon=${cadenceProfile.horizonHours}h.`,
+          professionalSkill,
+          text: currentLanguage === 'zh'
+            ? `${agent.name}：${routine.label}；${routine.checklist.join(' → ')}。负责人=${agent.name}；管理者=${agent.managerId ? getAgent(network, agent.managerId)?.name : '自己'}；产物=${routine.artifact}；下一周期=${cadenceProfile.horizonHours} 小时。`
+            : `${agent.name}: ${routine.label}; ${routine.checklist.join(' -> ')}. Owner=${agent.name}; manager=${agent.managerId ? getAgent(network, agent.managerId)?.name : 'self'}; artifact=${routine.artifact}; next horizon=${cadenceProfile.horizonHours}h.`,
         }
         : null,
     };
   });
-  const managementEvents = buildManagementEvents({ network, project, cadence });
+  const managementEvents = buildManagementEvents({ network, project, cadence, language: currentLanguage });
   const communicationDiagnostics = messages.flatMap((message) => (
     network.agents.map((agent) => {
       const reading = readCommunication(agent, message, network);
@@ -1344,7 +1446,9 @@ export function planAutonomousWorkCycle({ team = [], project = {}, cadence = 'ho
     ? {
       agentId: lead.id,
       kind: 'coordination',
-      text: `${lead.name}: consolidate work pulses, resolve cross-agent dependencies, and escalate only decisions that need Director judgment.`,
+      text: currentLanguage === 'zh'
+        ? `${lead.name}：汇总工作脉冲，解决跨 Agent 依赖，只升级需要总监判断的决策。`
+        : `${lead.name}: consolidate work pulses, resolve cross-agent dependencies, and escalate only decisions that need Director judgment.`,
       watches: network.agents.filter((agent) => agent.id !== lead.id).map((agent) => agent.id),
     }
     : null;
@@ -1365,7 +1469,7 @@ export function planAutonomousWorkCycle({ team = [], project = {}, cadence = 'ho
   };
 }
 
-function updateAgentStates({ project = {}, cycle, messages = [], tasks = [], logs = [], now = nowIso(), cadence = 'hourly', cycleId = '', scheduledNextRunAt = null }) {
+function updateAgentStates({ project = {}, cycle, messages = [], tasks = [], logs = [], now = nowIso(), cadence = 'hourly', cycleId = '', scheduledNextRunAt = null, language = project.language || cycle?.network?.context?.language || 'en' }) {
   const previousStates = project.agentStates || {};
   return Object.fromEntries(cycle.network.agents.map((agent) => {
     const previous = previousStates[agent.id] || {};
@@ -1446,7 +1550,8 @@ function updateAgentStates({ project = {}, cycle, messages = [], tasks = [], log
         horizonHours: plan?.privateWork?.horizonHours || getCadence(cadence).horizonHours,
         publishChannel: plan?.publish?.channel || null,
         evidenceRequired: Boolean(plan?.privateWork?.evidenceRequired),
-        routine: plan?.privateWork?.routine || workRoutineForAgent(agent),
+        routine: plan?.privateWork?.routine || workRoutineForAgent(agent, language),
+        professionalSkill: plan?.privateWork?.professionalSkill || null,
       },
       taskIds: assignedTasks.map((task) => task.id).filter(Boolean),
       inbox: [...managementInboxItems, ...inboxItems, ...(previous.inbox || [])].slice(0, 80),
@@ -1467,8 +1572,11 @@ export function advanceAutonomousProjectCycle({
   trigger = 'manual',
   schedulerReason = null,
   dueAt = null,
+  language = project.language || 'en',
 }) {
-  const cycle = planAutonomousWorkCycle({ team, project, cadence, messages, now });
+  const currentLanguage = normalizeLanguage(language);
+  const t = createTranslator(currentLanguage);
+  const cycle = planAutonomousWorkCycle({ team, project, cadence, messages, now, language: currentLanguage });
   const progressDelta = cadence === 'daily' ? 4 : 1;
   const publishEvents = cycle.events.filter((event) => event.text);
   const cycleId = `cycle_${cadence}_${Date.parse(now) || Date.now()}`;
@@ -1500,6 +1608,7 @@ export function advanceAutonomousProjectCycle({
       targetName: event.targetName || null,
       taskIds: event.taskIds || [],
       sourceChannelId: 'main',
+      professionalSkill: event.professionalSkill || null,
     };
   });
   const completedTaskLogs = [];
@@ -1522,7 +1631,9 @@ export function advanceAutonomousProjectCycle({
         time: now,
         agent: ownerPlan.name,
         agentId: ownerPlan.agentId,
-        log: `${ownerPlan.name} completed "${task.text}" and published the result to the project timeline.`,
+        log: currentLanguage === 'zh'
+          ? `${ownerPlan.name} 完成了“${task.text}”，并把结果发布到项目时间线。`
+          : `${ownerPlan.name} completed "${task.text}" and published the result to the project timeline.`,
         cadence,
         eventType: 'task-completed',
         taskId: task.id || null,
@@ -1547,6 +1658,7 @@ export function advanceAutonomousProjectCycle({
     cadence,
     cycleId,
     scheduledNextRunAt: nextRunAt,
+    language: currentLanguage,
   });
   const nextProjectState = {
     ...project,
@@ -1584,6 +1696,7 @@ export function advanceAutonomousProjectCycle({
           routineLabel: plan.privateWork?.routine?.label || null,
           routineArtifact: plan.privateWork?.routine?.artifact || null,
           routineChecklist: plan.privateWork?.routine?.checklist || [],
+          professionalSkill: plan.privateWork?.professionalSkill || null,
         })),
         communicationDiagnostics: (cycle.communicationDiagnostics || [])
           .filter((item) => item.decision !== 'ignore' || item.obligationCount > 0)
@@ -1605,7 +1718,9 @@ export function advanceAutonomousProjectCycle({
       type: 'autonomous-scheduler',
       time: now,
       actor: 'Agent Runtime',
-      summary: `${trigger} ${cadence} cycle ran; next run ${nextRunAt}.`,
+      summary: currentLanguage === 'zh'
+        ? `${trigger} ${cadence} 循环已运行；下一次运行 ${nextRunAt}。`
+        : `${trigger} ${cadence} cycle ran; next run ${nextRunAt}.`,
       source: 'autonomous-scheduler',
       evidenceIds: [schedulerRecord.id, cycleId],
       entityIds: { cycleId },
@@ -1624,7 +1739,9 @@ export function advanceAutonomousProjectCycle({
   };
 }
 
-export function createAutonomousCycleChatMessages({ project = {}, cycle = {}, cadence = cycle.cadence || 'hourly', projectId = project.id } = {}) {
+export function createAutonomousCycleChatMessages({ project = {}, cycle = {}, cadence = cycle.cadence || 'hourly', projectId = project.id, language = project.language || cycle.network?.context?.language || 'en' } = {}) {
+  const currentLanguage = normalizeLanguage(language);
+  const t = createTranslator(currentLanguage);
   const team = project.team || cycle.network?.agents || [];
   const cycleTime = cycle.now || cycle.ranAt || nowIso();
   const timestamp = Date.parse(cycleTime) || Date.now();
@@ -1646,16 +1763,23 @@ export function createAutonomousCycleChatMessages({ project = {}, cycle = {}, ca
       channelId: 'main',
       type: event.kind === 'coordination' ? 'decision' : isManagementEvent ? 'mention' : 'progress',
       author: agent?.name || event.agent || 'Agent Runtime',
-      role: agent?.role || 'Autonomy',
-      time: event.kind === 'task-completed' ? 'Completed' : isManagementEvent ? 'Check-in' : cadence === 'daily' ? 'Daily' : 'Hourly',
+      role: agent?.role || (currentLanguage === 'zh' ? '自治' : 'Autonomy'),
+      time: event.kind === 'task-completed'
+        ? t('agent.completedWeight')
+        : isManagementEvent
+          ? (currentLanguage === 'zh' ? '检查' : 'Check-in')
+          : cadence === 'daily'
+            ? (currentLanguage === 'zh' ? '每日' : 'Daily')
+            : (currentLanguage === 'zh' ? '每小时' : 'Hourly'),
       text: event.text,
       targets: event.targetName ? [event.targetName] : [],
-      weight: isManagementEvent ? 'Management' : undefined,
+      weight: isManagementEvent ? t('agent.management') : undefined,
       decisionId: event.kind === 'coordination' ? `AUTO-${String(timestamp).slice(-4)}` : undefined,
       autonomous: {
         cadence,
         kind: event.kind || 'work-cycle',
         cycleId: cycle.id || null,
+        professionalSkill: event.professionalSkill || null,
       },
     };
   }), team, { seenAt: cycleTime });
@@ -1668,12 +1792,14 @@ export function publishAutonomousCycleChat({
   projectId = project.id,
   now = cycle.now || cycle.ranAt || nowIso(),
   source = 'autonomous-cycle-chat',
+  language = project.language || cycle.network?.context?.language || 'en',
 } = {}) {
   const messages = createAutonomousCycleChatMessages({
     project,
     cycle,
     cadence,
     projectId,
+    language,
   }).map((message) => ({
     ...message,
     source,
@@ -1688,6 +1814,7 @@ export function publishAutonomousCycleChat({
       messages,
       now,
       source,
+      language,
     }),
     messages,
   };
@@ -2003,6 +2130,7 @@ export function evaluateManagerScenarioReadiness({ project = {}, team = project.
 }
 
 export function createLeaderElection(team = [], projectBrief = '', context = {}) {
+  const currentLanguage = normalizeLanguage(context.language || 'en');
   const network = createAgentNetwork(team, {
     ...context,
     topic: projectBrief,
@@ -2010,13 +2138,15 @@ export function createLeaderElection(team = [], projectBrief = '', context = {})
   const candidates = [...network.agents]
     .map((agent) => {
       const score = Math.round(managementScore(agent) + (hasCapabilitySignal(agent, projectBrief) ? 18 : 0));
-      const managedLane = fallbackIntent(agent);
+      const managedLane = localizeText(fallbackIntent(agent), currentLanguage);
       return {
         agentId: agent.id,
         name: agent.name,
         role: agent.role,
         score,
-        claim: `${agent.name}: I want to lead this project because my lane is ${managedLane}. I will turn the brief into owners, deadlines, and a visible project ledger.`,
+        claim: currentLanguage === 'zh'
+          ? `${agent.name}：我申请负责这个项目，因为我的职责线是${managedLane}。我会把简报转成负责人、期限和可见项目账本。`
+          : `${agent.name}: I want to lead this project because my lane is ${managedLane}. I will turn the brief into owners, deadlines, and a visible project ledger.`,
         hearsOthers: network.agents.filter((peer) => peer.id !== agent.id).map((peer) => peer.id),
       };
     })
@@ -2039,6 +2169,7 @@ export function createLeaderElection(team = [], projectBrief = '', context = {})
 }
 
 export function createKickoffRoleNegotiation(team = [], projectBrief = '', context = {}) {
+  const currentLanguage = normalizeLanguage(context.language || 'en');
   const network = createAgentNetwork(team, {
     ...context,
     topic: projectBrief,
@@ -2050,6 +2181,8 @@ export function createKickoffRoleNegotiation(team = [], projectBrief = '', conte
     transcript: ranked.map((intent, index) => {
       const agent = getAgent(network, intent.id);
       const wantsClarification = index % 3 === 1;
+      const target = localizeText(intent.target, currentLanguage);
+      const peerName = network.agents.filter((peer) => peer.id !== intent.id)[0]?.name || (currentLanguage === 'zh' ? '团队' : 'the team');
       return {
         id: `role_negotiation_${intent.id}`,
         speakerId: intent.id,
@@ -2057,8 +2190,12 @@ export function createKickoffRoleNegotiation(team = [], projectBrief = '', conte
         role: intent.role,
         type: wantsClarification ? 'role-question' : 'role-volunteer',
         text: wantsClarification
-          ? `${intent.name}: I understand the project direction. What should I own here so my work does not overlap with ${network.agents.filter((peer) => peer.id !== intent.id)[0]?.name || 'the team'}?`
-          : `${intent.name}: I recommend myself for ${intent.target}. I can take the first artifact and expose progress in the project timeline.`,
+          ? currentLanguage === 'zh'
+            ? `${intent.name}：我理解项目方向。这里应该由我负责哪一块，才能避免和 ${peerName} 的工作重叠？`
+            : `${intent.name}: I understand the project direction. What should I own here so my work does not overlap with ${peerName}?`
+          : currentLanguage === 'zh'
+            ? `${intent.name}：我建议自己负责${target}。我可以接下第一项产物，并把进展暴露到项目时间线。`
+            : `${intent.name}: I recommend myself for ${target}. I can take the first artifact and expose progress in the project timeline.`,
         hears: agent?.peerIds || [],
       };
     }),
@@ -2214,7 +2351,7 @@ function findMentionedAssignmentTarget(team = [], text = '', leaderId = null) {
   return nonLeaderTeam[0] || team.find((agent) => agent.id !== leaderId) || team[0] || null;
 }
 
-function extractAssignedWorkText(text = '', target = null) {
+function extractAssignedWorkText(text = '', target = null, language = 'en') {
   const targetName = target?.name || '';
   const targetId = target?.id || '';
   let workText = text
@@ -2225,11 +2362,12 @@ function extractAssignedWorkText(text = '', target = null) {
     .replace(/[:;,.-]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
-  if (!workText) workText = 'Follow up on the new assigned work and publish progress evidence';
+  if (!workText) workText = normalizeLanguage(language) === 'zh' ? '跟进新的分配工作并发布进展证据' : 'Follow up on the new assigned work and publish progress evidence';
   return workText;
 }
 
-function createAgentStateFromAssignment(agent, { leader, task, now, existingState = {} }) {
+function createAgentStateFromAssignment(agent, { leader, task, now, existingState = {}, language = 'en' }) {
+  const currentLanguage = normalizeLanguage(language);
   const isLeader = agent.id === leader?.id;
   const assignmentInbox = isLeader
     ? existingState.inbox || []
@@ -2247,19 +2385,23 @@ function createAgentStateFromAssignment(agent, { leader, task, now, existingStat
     id: `worklog_${task.id}_${agent.id}`,
     at: now,
     text: isLeader
-      ? `Assigned "${task.text}" to ${task.assignee}.`
-      : `Accepted "${task.text}" from ${leader?.name || 'Leader'}.`,
+      ? (currentLanguage === 'zh' ? `已将“${task.text}”分配给 ${task.assignee}。` : `Assigned "${task.text}" to ${task.assignee}.`)
+      : (currentLanguage === 'zh' ? `已接受来自 ${leader?.name || 'Leader'} 的“${task.text}”。` : `Accepted "${task.text}" from ${leader?.name || 'Leader'}.`),
   };
   const previousPlan = existingState.currentPlan || {};
   const nextPlan = isLeader
     ? previousPlan.focus
       ? previousPlan
-      : { focus: 'coordinate assigned work', next: 'watch acknowledgements and timeline proof', routine: workRoutineForAgent(agent) }
+      : {
+        focus: currentLanguage === 'zh' ? '协调已分配工作' : 'coordinate assigned work',
+        next: currentLanguage === 'zh' ? '观察确认回执和时间线证据' : 'watch acknowledgements and timeline proof',
+        routine: workRoutineForAgent(agent, currentLanguage),
+      }
     : {
       ...previousPlan,
       focus: task.text,
-      next: 'publish progress to the timeline',
-      routine: previousPlan.routine || workRoutineForAgent(agent),
+      next: currentLanguage === 'zh' ? '把进展发布到时间线' : 'publish progress to the timeline',
+      routine: previousPlan.routine || workRoutineForAgent(agent, currentLanguage),
     };
   return {
     ...existingState,
@@ -2279,7 +2421,7 @@ function createAgentStateFromAssignment(agent, { leader, task, now, existingStat
           taskId: task.id,
           text: task.text,
           source: 'leader-chat-assignment',
-          due: 'next visible work pulse',
+          due: currentLanguage === 'zh' ? '下一次可见工作脉冲' : 'next visible work pulse',
         },
         ...(existingState.obligations || []),
       ],
@@ -2297,14 +2439,17 @@ export function handleLeaderChatAssignment({
   leaderId,
   channelId = 'main',
   now = nowIso(),
+  language = project.language || 'en',
 } = {}) {
+  const currentLanguage = normalizeLanguage(language);
+  const t = createTranslator(currentLanguage);
   const team = project.team || [];
   const leader = team.find((agent) => agent.id === leaderId || agent.name === leaderId)
     || team.find((agent) => agent.isLeader)
     || team[0]
     || null;
   const assignee = findMentionedAssignmentTarget(team, text, leader?.id);
-  const workText = extractAssignedWorkText(text, assignee);
+  const workText = extractAssignedWorkText(text, assignee, currentLanguage);
   const timestamp = Date.parse(now) || Date.now();
   const task = {
     id: `leader_task_${timestamp}`,
@@ -2325,10 +2470,12 @@ export function handleLeaderChatAssignment({
     type: 'mention',
     author: leader?.name || 'Leader',
     role: leader?.role || 'Leader',
-    time: 'Now',
-    text: `@${assignee?.name || 'team'} please own "${task.text}". Start now, keep the group updated, and publish progress to the timeline.`,
+    time: t('agent.timeNow'),
+    text: currentLanguage === 'zh'
+      ? `@${assignee?.name || '团队'} 请负责“${task.text}”。现在开始，持续同步团队，并把进展发布到时间线。`
+      : `@${assignee?.name || 'team'} please own "${task.text}". Start now, keep the group updated, and publish progress to the timeline.`,
     targets: [assignee?.name || assignee?.id].filter(Boolean),
-    weight: 'Assigned',
+    weight: currentLanguage === 'zh' ? '已分配' : 'Assigned',
     assignment: {
       taskId: task.id,
       ownerId: task.ownerId,
@@ -2344,10 +2491,12 @@ export function handleLeaderChatAssignment({
     type: 'progress',
     author: assignee?.name || 'Assigned Agent',
     role: assignee?.role || 'Agent',
-    time: 'Now',
-    text: `Received @${assignmentMessage.author}. I own "${task.text}" and I am starting work now. I will publish progress to the timeline.`,
+    time: t('agent.timeNow'),
+    text: currentLanguage === 'zh'
+      ? `收到 @${assignmentMessage.author}。我负责“${task.text}”，现在开始工作。我会把进展发布到时间线。`
+      : `Received @${assignmentMessage.author}. I own "${task.text}" and I am starting work now. I will publish progress to the timeline.`,
     targets: [assignmentMessage.author].filter(Boolean),
-    weight: 'Acknowledged',
+    weight: currentLanguage === 'zh' ? '已确认' : 'Acknowledged',
     assignmentReceipt: {
       taskId: task.id,
       ownerId: task.ownerId,
@@ -2393,6 +2542,7 @@ export function handleLeaderChatAssignment({
       task: evidencedTask,
       now,
       existingState: previousStates[agent.id] || {},
+      language: currentLanguage,
     });
   });
   const projectWithLedger = appendProjectEvents({
@@ -2437,16 +2587,16 @@ function findRequesterAgent(team = [], text = '', targetId = null, explicitReque
     || null;
 }
 
-function extractPeerHandoffText(text = '', requester = null, target = null) {
+function extractPeerHandoffText(text = '', requester = null, target = null, language = 'en') {
   const requesterName = requester?.name || '';
   const requesterId = requester?.id || '';
-  let workText = extractAssignedWorkText(text, target)
+  let workText = extractAssignedWorkText(text, target, language)
     .replace(new RegExp(requesterName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'ig'), '')
     .replace(new RegExp(requesterId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'ig'), '')
     .replace(/\b(asks|ask|needs|need|handoff|dependency|depend|help|review|unblock|coordinate|support|from|for|with)\b/ig, '')
     .replace(/\s+/g, ' ')
     .trim();
-  if (!workText) workText = 'Support the open dependency and publish evidence';
+  if (!workText) workText = normalizeLanguage(language) === 'zh' ? '支持当前开放依赖并发布证据' : 'Support the open dependency and publish evidence';
   return workText;
 }
 
@@ -2456,12 +2606,15 @@ export function handlePeerHandoff({
   requesterId,
   channelId = 'main',
   now = nowIso(),
+  language = project.language || 'en',
 } = {}) {
+  const currentLanguage = normalizeLanguage(language);
+  const t = createTranslator(currentLanguage);
   const team = project.team || [];
   const preliminaryTarget = findMentionedAssignmentTarget(team, text, requesterId);
   const requester = findRequesterAgent(team, text, preliminaryTarget?.id, requesterId);
   const target = findMentionedAssignmentTarget(team, text, requester?.id);
-  const workText = extractPeerHandoffText(text, requester, target);
+  const workText = extractPeerHandoffText(text, requester, target, currentLanguage);
   const timestamp = Date.parse(now) || Date.now();
   const dependencyTask = {
     id: `peer_handoff_task_${timestamp}`,
@@ -2483,10 +2636,12 @@ export function handlePeerHandoff({
     type: 'mention',
     author: requester?.name || 'Requesting Agent',
     role: requester?.role || 'Agent',
-    time: 'Now',
-    text: `@${target?.name || 'team'} I need your help with "${dependencyTask.text}". This is a dependency for my current plan; please confirm ownership and publish progress to the timeline.`,
+    time: t('agent.timeNow'),
+    text: currentLanguage === 'zh'
+      ? `@${target?.name || '团队'} 我需要你协助“${dependencyTask.text}”。这是我当前计划的依赖；请确认负责人，并把进展发布到时间线。`
+      : `@${target?.name || 'team'} I need your help with "${dependencyTask.text}". This is a dependency for my current plan; please confirm ownership and publish progress to the timeline.`,
     targets: [target?.name || target?.id].filter(Boolean),
-    weight: 'Peer Handoff',
+    weight: currentLanguage === 'zh' ? '同级交接' : 'Peer Handoff',
     handoff: {
       taskId: dependencyTask.id,
       requesterId: requester?.id || null,
@@ -2502,10 +2657,12 @@ export function handlePeerHandoff({
     type: 'progress',
     author: target?.name || 'Peer Agent',
     role: target?.role || 'Agent',
-    time: 'Now',
-    text: `Received @${requestMessage.author}. I own the dependency "${dependencyTask.text}" and I am starting work now. I will sync progress back to the group and timeline.`,
+    time: t('agent.timeNow'),
+    text: currentLanguage === 'zh'
+      ? `收到 @${requestMessage.author}。我负责依赖“${dependencyTask.text}”，现在开始工作。我会把进展同步回群组和时间线。`
+      : `Received @${requestMessage.author}. I own the dependency "${dependencyTask.text}" and I am starting work now. I will sync progress back to the group and timeline.`,
     targets: [requestMessage.author].filter(Boolean),
-    weight: 'Dependency Accepted',
+    weight: currentLanguage === 'zh' ? '依赖已接受' : 'Dependency Accepted',
     handoffReceipt: {
       taskId: dependencyTask.id,
       requesterId: requester?.id || null,
@@ -2569,13 +2726,18 @@ export function handlePeerHandoff({
       peerManagedIds: Array.from(new Set([...(requesterState.peerManagedIds || []), target?.id].filter(Boolean))),
       inbox: requesterState.inbox || [],
       obligations: requesterState.obligations || [],
-      currentPlan: requesterState.currentPlan || { focus: 'coordinate dependency handoffs', next: 'watch peer acknowledgement and timeline proof' },
+      currentPlan: requesterState.currentPlan || {
+        focus: currentLanguage === 'zh' ? '协调依赖交接' : 'coordinate dependency handoffs',
+        next: currentLanguage === 'zh' ? '观察同级确认和时间线证据' : 'watch peer acknowledgement and timeline proof',
+      },
       taskIds: requesterState.taskIds || [],
       worklog: [
         {
           id: `worklog_${dependencyTask.id}_${requester.id}`,
           at: now,
-          text: `Requested peer handoff "${dependencyTask.text}" from ${target?.name || 'peer'}.`,
+          text: currentLanguage === 'zh'
+            ? `已向 ${target?.name || '同级'} 请求交接“${dependencyTask.text}”。`
+            : `Requested peer handoff "${dependencyTask.text}" from ${target?.name || 'peer'}.`,
         },
         ...(requesterState.worklog || []),
       ],
@@ -2607,17 +2769,22 @@ export function handlePeerHandoff({
           taskId: dependencyTask.id,
           text: dependencyTask.text,
           source: 'peer-handoff',
-          due: 'next visible work pulse',
+          due: currentLanguage === 'zh' ? '下一次可见工作脉冲' : 'next visible work pulse',
         },
         ...(targetState.obligations || []),
       ],
-      currentPlan: { focus: dependencyTask.text, next: 'sync dependency progress to requester and timeline' },
+      currentPlan: {
+        focus: dependencyTask.text,
+        next: currentLanguage === 'zh' ? '把依赖进展同步给请求方和时间线' : 'sync dependency progress to requester and timeline',
+      },
       taskIds: Array.from(new Set([...(targetState.taskIds || []), dependencyTask.id])),
       worklog: [
         {
           id: `worklog_${dependencyTask.id}_${target.id}`,
           at: now,
-          text: `Accepted peer dependency "${dependencyTask.text}" from ${requester?.name || 'peer'}.`,
+          text: currentLanguage === 'zh'
+            ? `已接受来自 ${requester?.name || '同级'} 的同级依赖“${dependencyTask.text}”。`
+            : `Accepted peer dependency "${dependencyTask.text}" from ${requester?.name || 'peer'}.`,
         },
         ...(targetState.worklog || []),
       ],
@@ -2637,7 +2804,9 @@ export function handlePeerHandoff({
       type: 'peer-handoff-accepted',
       time: now,
       actor: requester?.name || 'Requesting Agent',
-      summary: `${requester?.name || 'Requester'} handed "${dependencyTask.text}" to ${target?.name || 'peer'} and received acknowledgement.`,
+      summary: currentLanguage === 'zh'
+        ? `${requester?.name || '请求方'} 将“${dependencyTask.text}”交接给 ${target?.name || '同级'}，并收到了确认。`
+        : `${requester?.name || 'Requester'} handed "${dependencyTask.text}" to ${target?.name || 'peer'} and received acknowledgement.`,
       source: 'peer-handoff',
       channelId,
       evidenceIds: [requestMessage.id, acknowledgementMessage.id, handoffRecord.id],
@@ -2824,13 +2993,17 @@ export function handleFeatureChangeRequest({
   channelId = 'main',
   source = 'group-chat-change-request',
   requestMessageId = null,
+  language = project.language || 'en',
 } = {}) {
+  const currentLanguage = normalizeLanguage(language);
+  const t = createTranslator(currentLanguage);
   const team = project.team || [];
   const timestamp = Date.parse(now) || Date.now();
   const network = createAgentNetwork(team, {
     projectId: project.id,
     projectName: project.name,
     topic: text,
+    language: currentLanguage,
   });
   const lead = getLead(network);
   const reviewer = getReviewer(network);
@@ -2847,7 +3020,7 @@ export function handleFeatureChangeRequest({
   const owner = getAgent(network, responsible?.agentId) || lead || network.agents[0];
   const changeTask = {
     id: `change_${timestamp}`,
-    text: `Feature change: ${text}`,
+    text: currentLanguage === 'zh' ? `功能变更：${text}` : `Feature change: ${text}`,
     assignee: owner?.name || lead?.name || 'Leader',
     ownerId: owner?.id || lead?.id || null,
     status: 'pending',
@@ -2863,10 +3036,12 @@ export function handleFeatureChangeRequest({
       type: 'mention',
       author: lead?.name || 'Leader',
       role: lead?.role || 'Leader',
-      time: 'Now',
-      text: `I see the change request: "${text}". Team, discuss impact first; ${owner?.name || 'the owner'} will confirm scope before it enters the plan.`,
+      time: t('agent.timeNow'),
+      text: currentLanguage === 'zh'
+        ? `我看到变更请求：“${text}”。团队先讨论影响；${owner?.name || '负责人'} 会在进入计划前确认范围。`
+        : `I see the change request: "${text}". Team, discuss impact first; ${owner?.name || 'the owner'} will confirm scope before it enters the plan.`,
       targets: network.agents.map((agent) => agent.name),
-      weight: 'Change Review',
+      weight: currentLanguage === 'zh' ? '变更复核' : 'Change Review',
     },
     ...(reviewer ? [{
       id: `change_discuss_${timestamp}_reviewer`,
@@ -2874,8 +3049,10 @@ export function handleFeatureChangeRequest({
       type: 'text',
       author: reviewer.name,
       role: reviewer.role,
-      time: 'Now',
-      text: `Before accepting it, I need the risk and verification path attached to the change. No silent scope drift.`,
+      time: t('agent.timeNow'),
+      text: currentLanguage === 'zh'
+        ? '在接受之前，我需要把风险和验证路径附到这次变更上。不能静默扩大范围。'
+        : 'Before accepting it, I need the risk and verification path attached to the change. No silent scope drift.',
       targets: [],
       weight: null,
     }] : []),
@@ -2885,10 +3062,12 @@ export function handleFeatureChangeRequest({
       type: 'decision',
       author: owner?.name || lead?.name || 'Responsible Agent',
       role: owner?.role || lead?.role || 'Owner',
-      time: 'Now',
-      text: `Confirmed. I am adding "${text}" to my plan, will sync dependencies with the team, and will report progress on the timeline.`,
+      time: t('agent.timeNow'),
+      text: currentLanguage === 'zh'
+        ? `已确认。我会把“${text}”加入我的计划，与团队同步依赖，并在时间线上汇报进展。`
+        : `Confirmed. I am adding "${text}" to my plan, will sync dependencies with the team, and will report progress on the timeline.`,
       targets: [],
-      weight: 'Confirmed',
+      weight: currentLanguage === 'zh' ? '已确认' : 'Confirmed',
       decisionId: `CHG-${String(timestamp).slice(-5)}`,
     },
     {
@@ -2897,17 +3076,19 @@ export function handleFeatureChangeRequest({
       type: 'mention',
       author: owner?.name || lead?.name || 'Responsible Agent',
       role: owner?.role || lead?.role || 'Owner',
-      time: 'Now',
-      text: `@all Plan updated: I own "${text}" now. I will publish the next progress pulse to the timeline and call out any dependency in this channel.`,
+      time: t('agent.timeNow'),
+      text: currentLanguage === 'zh'
+        ? `@all 计划已更新：现在由我负责“${text}”。我会把下一次进展脉冲发布到时间线，并在此频道说明任何依赖。`
+        : `@all Plan updated: I own "${text}" now. I will publish the next progress pulse to the timeline and call out any dependency in this channel.`,
       targets: network.agents.map((agent) => agent.name),
-      weight: 'Plan Sync',
+      weight: currentLanguage === 'zh' ? '计划同步' : 'Plan Sync',
     },
   ], team, { seenAt: now });
   const confirmationMessage = discussionMessages.find((message) => message.type === 'decision');
   const syncMessage = discussionMessages.find((message) => message.id.includes('change_sync'));
   const previousStates = project.agentStates || {};
   const ownerState = previousStates[owner?.id] || {};
-  const ownerRoutine = owner ? workRoutineForAgent(owner) : null;
+  const ownerRoutine = owner ? workRoutineForAgent(owner, currentLanguage) : null;
   const ownerStateUpdate = owner ? {
     agentId: owner.id,
     name: owner.name,
@@ -2921,8 +3102,8 @@ export function handleFeatureChangeRequest({
     status: 'working-change-request',
     currentPlan: {
       ...(ownerState.currentPlan || {}),
-      focus: `Feature change: ${text}`,
-      next: 'publish the next progress pulse and sync dependencies',
+      focus: currentLanguage === 'zh' ? `功能变更：${text}` : `Feature change: ${text}`,
+      next: currentLanguage === 'zh' ? '发布下一次进展脉冲并同步依赖' : 'publish the next progress pulse and sync dependencies',
       source,
       sourceChannelId: channelId,
       changeRecordId: `change_record_${timestamp}`,
@@ -2946,9 +3127,9 @@ export function handleFeatureChangeRequest({
       {
         id: `obligation_${changeTask.id}`,
         taskId: changeTask.id,
-        text: `Own confirmed feature change: ${text}`,
+        text: currentLanguage === 'zh' ? `负责已确认的功能变更：${text}` : `Own confirmed feature change: ${text}`,
         source,
-        due: 'next visible work pulse',
+        due: currentLanguage === 'zh' ? '下一次可见工作脉冲' : 'next visible work pulse',
         status: 'open',
         openedAt: now,
       },
@@ -2959,7 +3140,7 @@ export function handleFeatureChangeRequest({
         id: `worklog_${changeTask.id}_${owner.id}`,
         at: now,
         kind: 'change-plan-sync',
-        text: syncMessage?.text || `Plan updated for "${text}".`,
+        text: syncMessage?.text || (currentLanguage === 'zh' ? `“${text}”的计划已更新。` : `Plan updated for "${text}".`),
       },
       ...(ownerState.worklog || []),
     ].slice(0, 80),
@@ -2983,9 +3164,9 @@ export function handleFeatureChangeRequest({
       peerIds: previous.peerIds || agent?.peerIds || [],
       status: previous.status || 'synced-change',
       currentPlan: previous.currentPlan || {
-        focus: 'track accepted change sync',
-        next: 'watch owner progress pulse',
-        routine: agent ? workRoutineForAgent(agent) : null,
+        focus: currentLanguage === 'zh' ? '跟踪已接受的变更同步' : 'track accepted change sync',
+        next: currentLanguage === 'zh' ? '观察负责人的进展脉冲' : 'watch owner progress pulse',
+        routine: agent ? workRoutineForAgent(agent, currentLanguage) : null,
       },
       taskIds: previous.taskIds || [],
       inbox: [
@@ -2993,7 +3174,7 @@ export function handleFeatureChangeRequest({
           id: `sync_inbox_${changeTask.id}_${agentId}`,
           from: owner?.id || lead?.id || null,
           taskId: changeTask.id,
-          text: syncMessage?.text || `Plan updated for "${text}".`,
+          text: syncMessage?.text || (currentLanguage === 'zh' ? `“${text}”的计划已更新。` : `Plan updated for "${text}".`),
           source: 'change-sync',
           sourceChannelId: channelId,
           sourceMessageId: syncMessage?.id || null,
@@ -3007,7 +3188,7 @@ export function handleFeatureChangeRequest({
           id: `sync_worklog_${changeTask.id}_${agentId}`,
           at: now,
           kind: 'change-sync-received',
-          text: `Received owner sync for "${text}".`,
+          text: currentLanguage === 'zh' ? `已收到“${text}”的负责人同步。` : `Received owner sync for "${text}".`,
         },
         ...(previous.worklog || []),
       ].slice(0, 80),
@@ -3076,7 +3257,9 @@ export function handleFeatureChangeRequest({
       type: 'change-confirmed-and-synced',
       time: now,
       actor: owner?.name || lead?.name || 'Responsible Agent',
-      summary: `${owner?.name || 'Owner'} accepted "${text}" from ${source} and synced ${teamSyncAgentIds.length} Agent(s).`,
+      summary: currentLanguage === 'zh'
+        ? `${owner?.name || '负责人'} 接受了来自 ${source} 的“${text}”，并同步了 ${teamSyncAgentIds.length} 个 Agent。`
+        : `${owner?.name || 'Owner'} accepted "${text}" from ${source} and synced ${teamSyncAgentIds.length} Agent(s).`,
       source,
       channelId,
       evidenceIds: [
@@ -3097,9 +3280,10 @@ export function handleFeatureChangeRequest({
     messages: discussionMessages,
     now,
     source: 'change-discussion-chat',
+    language: currentLanguage,
   });
 
-  return {
+  return localizeGeneratedObject({
     network,
     owner,
     changeTask: evidencedChangeTask,
@@ -3116,5 +3300,5 @@ export function handleFeatureChangeRequest({
       explanation: reading.explanation,
       obligationCount: reading.obligations.length,
     })),
-  };
+  }, currentLanguage);
 }

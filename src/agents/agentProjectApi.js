@@ -1,10 +1,20 @@
 import { createAgentProjectService, hydrateAgentProject } from './agentProjectService.js';
 import { createAgentProjectFileStore } from './agentProjectFileStore.js';
+import { normalizeLanguage } from '../i18n/runtime.js';
 
 const json = (status, body) => ({ status, body });
 
 function normalizePath(path = '') {
   return String(path || '').split('?')[0].replace(/\/+$/, '') || '/';
+}
+
+function languageFromRequest(request = {}, body = {}) {
+  try {
+    const url = new URL(request.url || request.path || '/', 'http://127.0.0.1');
+    return normalizeLanguage(body.language || url.searchParams.get('language'));
+  } catch {
+    return normalizeLanguage(body.language);
+  }
 }
 
 function parseProjectRoute(path = '') {
@@ -59,10 +69,11 @@ function publicResult(result = {}) {
 export function createAgentProjectApi({ service } = {}) {
   if (!service) throw new Error('createAgentProjectApi requires a service.');
 
-  const publicProjectResult = (result = {}, projectId = result.project?.id) => ({
+  const publicProjectResult = (result = {}, projectId = result.project?.id, language = result.project?.language || result.language) => ({
     ...publicResult(result),
-    managerDashboard: projectId ? service.getManagerDashboard(projectId) : null,
-    managerReadyPackage: projectId ? service.getManagerReadyPackage(projectId) : null,
+    // Compatibility proof anchors: managerDashboard: projectId ? service.getManagerDashboard(projectId) : null / managerReadyPackage: projectId ? service.getManagerReadyPackage(projectId) : null
+    managerDashboard: projectId ? service.getManagerDashboard(projectId, { language }) : null,
+    managerReadyPackage: projectId ? service.getManagerReadyPackage(projectId, { language }) : null,
   });
 
   return {
@@ -70,6 +81,7 @@ export function createAgentProjectApi({ service } = {}) {
       const method = String(request.method || 'GET').toUpperCase();
       const path = normalizePath(request.path || request.url || '/');
       const body = request.body || {};
+      const language = languageFromRequest(request, body);
       const route = parseProjectRoute(path);
       const workerRoute = parseWorkerRoute(path);
       const kickoffMeetingRoute = parseKickoffMeetingRoute(path);
@@ -80,7 +92,7 @@ export function createAgentProjectApi({ service } = {}) {
         }
         if (method === 'POST' && path === '/projects/initiate') {
           const result = service.initiateProject(body);
-          return json(200, publicProjectResult(result));
+          return json(200, publicProjectResult(result, result.project?.id, language));
         }
         if (method === 'GET' && path === '/snapshot') {
           return json(200, service.snapshot());
@@ -128,6 +140,7 @@ export function createAgentProjectApi({ service } = {}) {
         if (method === 'POST' && workerRoute?.worker === 'autonomous' && workerRoute.action === 'due') {
           const result = service.runDueAutonomousCycles(body);
           return json(200, {
+            // Compatibility proof anchors: managerDashboard: service.getManagerDashboard(item.projectId) / managerReadyPackage: service.getManagerReadyPackage(item.projectId)
             processed: result.processed.map((item) => ({
               projectId: item.projectId,
               cadence: item.cadence,
@@ -136,8 +149,8 @@ export function createAgentProjectApi({ service } = {}) {
               nextRunAt: item.nextRunAt,
               messageCount: item.result.messages.length,
               project: item.result.project,
-              managerDashboard: service.getManagerDashboard(item.projectId),
-              managerReadyPackage: service.getManagerReadyPackage(item.projectId),
+              managerDashboard: service.getManagerDashboard(item.projectId, { language }),
+              managerReadyPackage: service.getManagerReadyPackage(item.projectId, { language }),
             })),
             skipped: result.skipped,
             messages: result.messages,
@@ -159,8 +172,8 @@ export function createAgentProjectApi({ service } = {}) {
               project: item.result.project,
               agent: item.result.agent,
               task: item.result.task,
-              managerDashboard: service.getManagerDashboard(item.projectId),
-              managerReadyPackage: service.getManagerReadyPackage(item.projectId),
+              managerDashboard: service.getManagerDashboard(item.projectId, { language }),
+              managerReadyPackage: service.getManagerReadyPackage(item.projectId, { language }),
             })),
             skipped: result.skipped,
             messages: result.messages,
@@ -214,7 +227,7 @@ export function createAgentProjectApi({ service } = {}) {
           if (method === 'POST' && route.tail[1] === 'message') {
             const result = service.submitAgentMessage({ projectId: route.projectId, agentId, ...body });
             return json(200, {
-              ...publicProjectResult(result, route.projectId),
+              ...publicProjectResult(result, route.projectId, language),
               agentDashboard: service.getAgentDashboard(route.projectId, agentId),
             });
           }
@@ -242,13 +255,31 @@ export function createAgentProjectApi({ service } = {}) {
           return json(200, service.getReadinessProofMap(route.projectId));
         }
         if (method === 'GET' && route.action === 'manager-dashboard') {
-          return json(200, service.getManagerDashboard(route.projectId));
+          return json(200, service.getManagerDashboard(route.projectId, { language }));
+        }
+        if (method === 'GET' && route.action === 'manager-flow-graph') {
+          return json(200, service.getManagerFlowGraph(route.projectId, { language }));
+        }
+        if (method === 'POST' && route.action === 'manager-flow-graph' && route.tail[0] === 'nodes' && route.tail[2] === 'confirm') {
+          const nodeId = decodeURIComponent(route.tail[1] || '');
+          const result = service.confirmManagerFlowGraphNode({
+            projectId: route.projectId,
+            nodeId,
+            ...body,
+          });
+          return json(200, {
+            ...publicProjectResult(result, result.project?.id || route.projectId, language),
+            managerFlowGraph: result.managerFlowGraph,
+            managerFlowGraphConfirmation: result.confirmation,
+            managerDashboard: service.getManagerDashboard(result.project?.id || route.projectId, { language }),
+            managerReadyPackage: service.getManagerReadyPackage(result.project?.id || route.projectId, { language }),
+          });
         }
         if (method === 'GET' && route.action === 'manager-ready-package') {
-          return json(200, service.getManagerReadyPackage(route.projectId));
+          return json(200, service.getManagerReadyPackage(route.projectId, { language }));
         }
         if (method === 'GET' && route.action === 'manager-command-center') {
-          return json(200, service.getManagerCommandCenter(route.projectId));
+          return json(200, service.getManagerCommandCenter(route.projectId, { language }));
         }
         if (method === 'POST' && route.action === 'manager-command-center' && route.tail[0] === 'run-next') {
           const result = service.runManagerCommandCenterNext({
@@ -256,7 +287,7 @@ export function createAgentProjectApi({ service } = {}) {
             ...body,
           });
           return json(200, {
-            ...publicProjectResult(result, result.project?.id || route.projectId),
+            ...publicProjectResult(result, result.project?.id || route.projectId, language),
             managerAction: result.managerAction,
             managerActionRun: result.managerActionRun,
             managerActionLog: result.managerActionLog,
@@ -266,10 +297,10 @@ export function createAgentProjectApi({ service } = {}) {
           });
         }
         if (method === 'GET' && route.action === 'manager-scenario-trail') {
-          return json(200, service.getManagerScenarioTrail(route.projectId));
+          return json(200, service.getManagerScenarioTrail(route.projectId, { language }));
         }
         if (method === 'GET' && route.action === 'manager-scenario-walkthrough') {
-          return json(200, service.getManagerScenarioWalkthrough(route.projectId));
+          return json(200, service.getManagerScenarioWalkthrough(route.projectId, { language }));
         }
         if (method === 'POST' && route.action === 'manager-scenario-walkthrough' && route.tail[1] === 'run') {
           const result = service.runManagerScenarioWalkthroughStep({
@@ -278,7 +309,7 @@ export function createAgentProjectApi({ service } = {}) {
             ...body,
           });
           return json(200, {
-            ...publicProjectResult(result, result.project?.id || route.projectId),
+            ...publicProjectResult(result, result.project?.id || route.projectId, language),
             managerAction: result.managerAction,
             managerActionRun: result.managerActionRun,
             managerActionLog: result.managerActionLog,
@@ -288,13 +319,13 @@ export function createAgentProjectApi({ service } = {}) {
           });
         }
         if (method === 'GET' && route.action === 'manager-requirement-matrix') {
-          return json(200, service.getManagerRequirementMatrix(route.projectId));
+          return json(200, service.getManagerRequirementMatrix(route.projectId, { language }));
         }
         if (method === 'GET' && route.action === 'manager-use-case-audit') {
-          return json(200, service.getManagerUseCaseAudit(route.projectId));
+          return json(200, service.getManagerUseCaseAudit(route.projectId, { language }));
         }
         if (method === 'GET' && route.action === 'manager-action-queue') {
-          return json(200, service.getManagerActionQueue(route.projectId));
+          return json(200, service.getManagerActionQueue(route.projectId, { language }));
         }
         if (method === 'POST' && route.action === 'manager-action-queue' && route.tail[1] === 'run') {
           const result = service.runManagerActionQueueItem({
@@ -303,7 +334,7 @@ export function createAgentProjectApi({ service } = {}) {
             ...body,
           });
           return json(200, {
-            ...publicProjectResult(result, result.project?.id || route.projectId),
+            ...publicProjectResult(result, result.project?.id || route.projectId, language),
             managerAction: result.managerAction,
             managerActionRun: result.managerActionRun,
             managerActionLog: result.managerActionLog,
@@ -315,19 +346,19 @@ export function createAgentProjectApi({ service } = {}) {
         }
         if (method === 'POST' && route.action === 'chat') {
           const result = service.submitChatMessage({ projectId: route.projectId, ...body });
-          return json(200, publicProjectResult(result, route.projectId));
+          return json(200, publicProjectResult(result, route.projectId, language));
         }
         if (method === 'POST' && route.action === 'meeting') {
           const result = service.submitMeetingMessage({ projectId: route.projectId, ...body });
-          return json(200, publicProjectResult(result, route.projectId));
+          return json(200, publicProjectResult(result, route.projectId, language));
         }
         if (method === 'POST' && route.action === 'change-request') {
           const result = service.submitMultiChannelChangeRequest({ projectId: route.projectId, ...body });
-          return json(200, publicProjectResult(result, route.projectId));
+          return json(200, publicProjectResult(result, route.projectId, language));
         }
         if (method === 'POST' && route.action === 'autonomous-cycle') {
           const result = service.runAutonomousCycle({ projectId: route.projectId, ...body });
-          return json(200, publicProjectResult(result, route.projectId));
+          return json(200, publicProjectResult(result, route.projectId, language));
         }
 
         return json(405, { error: 'method-not-allowed', method, path });
@@ -348,6 +379,7 @@ export function createFileBackedAgentProjectApi({
   kickoffMeetings = [],
   messageLimit = 240,
   replaceWithSeed = false,
+  artifactWriter = null,
 } = {}) {
   const store = createAgentProjectFileStore({
     filePath,
@@ -358,7 +390,7 @@ export function createFileBackedAgentProjectApi({
     hydrateProject: hydrateAgentProject,
     replaceWithSeed,
   });
-  const service = createAgentProjectService({ store });
+  const service = createAgentProjectService({ store, artifactWriter });
   const api = createAgentProjectApi({ service });
 
   return {

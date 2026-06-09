@@ -9,6 +9,7 @@ const DEFAULT_PORTS = [4173, 4174, 4175, 4176, 4180];
 const VIEWPORT = { width: 1440, height: 1100 };
 const ROOT_DIR = fileURLToPath(new URL('..', import.meta.url));
 const DIST_DIR = join(ROOT_DIR, 'dist');
+const LANGUAGE_STORAGE_KEY = 'hall_of_fame_studio.language.v1';
 
 const MIME_TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -171,6 +172,9 @@ const pageErrors = [];
 
 try {
   const context = await browser.newContext({ viewport: VIEWPORT });
+  await context.addInitScript(([key, value]) => {
+    window.localStorage.setItem(key, value);
+  }, [LANGUAGE_STORAGE_KEY, 'en']);
   const page = await context.newPage();
   page.on('console', (message) => {
     if (['error', 'warning'].includes(message.type())) {

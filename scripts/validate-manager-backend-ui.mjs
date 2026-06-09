@@ -11,6 +11,7 @@ const STATIC_PORTS = [4181, 4182, 4183, 4184, 4185];
 const VIEWPORT = { width: 1440, height: 1100 };
 const BACKEND_STORE = new URL('../.tmp/agent-manager-backend-ui-store.json', import.meta.url);
 const BACKEND_STORAGE_KEY = 'hall_of_fame_studio.agent_backend_url.v1';
+const LANGUAGE_STORAGE_KEY = 'hall_of_fame_studio.language.v1';
 
 const MIME_TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -202,12 +203,14 @@ const walkthroughRequests = [];
 try {
   browser = await launchBrowserWithRetry();
   const context = await browser.newContext({ viewport: VIEWPORT });
-  await context.addInitScript(({ backendUrl, storageKey }) => {
+  await context.addInitScript(({ backendUrl, storageKey, languageStorageKey }) => {
     window.__AGENT_BACKEND_URL__ = backendUrl;
     window.localStorage.setItem(storageKey, JSON.stringify(backendUrl));
+    window.localStorage.setItem(languageStorageKey, 'en');
   }, {
     backendUrl: backendRuntime.url,
     storageKey: BACKEND_STORAGE_KEY,
+    languageStorageKey: LANGUAGE_STORAGE_KEY,
   });
   const page = await context.newPage();
   page.on('console', (message) => {

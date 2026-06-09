@@ -76,6 +76,9 @@ function createAutonomousSchedulerController({
           now: tickAt,
           trigger: input.trigger || state.trigger,
           source: input.source || state.source,
+          forceDue: Boolean(input.forceProjectRun),
+          forceReason: input.forceProjectRun ? (input.forceReason || 'scheduler-start-project-sweep') : undefined,
+          forceProjectIds: input.forceProjectIds || [],
         },
       });
       if (projectResult.status >= 400) {
@@ -89,8 +92,10 @@ function createAutonomousSchedulerController({
           trigger: input.agentTrigger || `${input.trigger || state.trigger}-agents`,
           intervalMs: input.agentIntervalMs,
           maxAgentsPerProject: input.maxAgentsPerProject,
+          maxProjects: input.maxAgentProjects,
           forceDue: Boolean(input.forceAgentRun),
           forceReason: input.forceAgentRun ? 'scheduler-start-agent-sweep' : undefined,
+          forceProjectIds: input.forceAgentProjectIds || [],
         },
       });
       if (agentResult.status >= 400) {
@@ -130,7 +135,7 @@ function createAutonomousSchedulerController({
     }
   };
 
-  const start = ({ runImmediately = false } = {}) => {
+  const start = ({ runImmediately = false, projectId = null } = {}) => {
     if (timer) return status();
     state.enabled = true;
     state.startedAt = now();
@@ -142,9 +147,15 @@ function createAutonomousSchedulerController({
     if (typeof timer.unref === 'function') timer.unref();
     if (runImmediately) {
       tick({
+        forceProjectRun: Boolean(projectId),
+        forceProjectIds: projectId ? [projectId] : [],
         forceAgentRun: true,
-        trigger: state.trigger,
-        agentTrigger: `${state.trigger}-startup-agents`,
+        forceAgentProjectIds: projectId ? [projectId] : [],
+        maxAgentProjects: projectId ? Infinity : 1,
+        trigger: 'manager-ui-scheduler-start-pulse',
+        source: 'manager-ui-scheduler-start-chat',
+        forceReason: 'backend-scheduler-start-first-work',
+        agentTrigger: 'http-autonomous-scheduler-startup-agents',
       }).catch(() => {});
     }
     return status();
@@ -177,6 +188,7 @@ export function createAgentProjectHttpServer({
   messageLimit = 240,
   replaceWithSeed = false,
   autonomousScheduler = {},
+  artifactWriter = null,
 } = {}) {
   const resolvedApi = api || createFileBackedAgentProjectApi({
     filePath,
@@ -185,6 +197,7 @@ export function createAgentProjectHttpServer({
     kickoffMeetings,
     messageLimit,
     replaceWithSeed,
+    artifactWriter,
   });
   const scheduler = createAutonomousSchedulerController({
     api: resolvedApi,
@@ -209,7 +222,7 @@ export function createAgentProjectHttpServer({
         return;
       }
       if (url.pathname === '/workers/autonomous/start' && request.method === 'POST') {
-        writeJson(response, 200, { scheduler: scheduler.start({ runImmediately: Boolean(body.runImmediately) }) });
+        writeJson(response, 200, { scheduler: scheduler.start({ runImmediately: Boolean(body.runImmediately), projectId: body.projectId || null }) });
         return;
       }
       if (url.pathname === '/workers/autonomous/stop' && request.method === 'POST') {

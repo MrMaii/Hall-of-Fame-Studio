@@ -12,6 +12,8 @@
     "preview": "vite preview",
     "ui:manager-demo": "npm run build && node scripts/validate-manager-demo-ui.mjs",
     "ui:manager-backend": "npm run build && node scripts/validate-manager-backend-ui.mjs",
+    "ui:language": "npm run build && node scripts/validate-language-system.mjs",
+    "skills:blend": "node scripts/validate-persona-skill-blends.mjs",
     "skills:validate": "python skills/hall-of-fame-personas/scripts/validate_personas.py",
     "skills:regression": "python skills/hall-of-fame-personas/scripts/regression_check.py",
     "skills:check": "npm run skills:validate && npm run skills:regression",
