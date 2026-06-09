@@ -63,6 +63,7 @@ function publicResult(result = {}) {
     agent: result.agent,
     log: result.log,
     task: result.task,
+    modelKickoffMeeting: result.modelKickoffMeeting,
   };
 }
 
@@ -77,6 +78,65 @@ export function createAgentProjectApi({ service } = {}) {
   });
 
   return {
+    async handleAsync(request = {}) {
+      const method = String(request.method || 'GET').toUpperCase();
+      const path = normalizePath(request.path || request.url || '/');
+      const body = request.body || {};
+      const language = languageFromRequest(request, body);
+      const kickoffMeetingRoute = parseKickoffMeetingRoute(path);
+
+      if (method === 'POST' && path === '/llm/test') {
+        if (typeof service.testModelProvider !== 'function') {
+          return json(400, { error: 'model-provider-not-configured' });
+        }
+        const testResult = await service.testModelProvider(body);
+        return json(testResult.ok ? 200 : 400, testResult);
+      }
+
+      if (method === 'POST' && kickoffMeetingRoute && !kickoffMeetingRoute.meetingId) {
+        if (typeof service.createKickoffMeetingAsync !== 'function') {
+          return json(400, { error: 'model-kickoff-meeting-not-supported' });
+        }
+        try {
+          return json(200, publicResult(await service.createKickoffMeetingAsync({
+            ...body,
+            language,
+          })));
+        } catch (error) {
+          return json(400, {
+            error: 'model-kickoff-meeting-failed',
+            message: error.message || String(error),
+            modelProvider: service.getModelProviderStatus ? service.getModelProviderStatus() : { enabled: false },
+          });
+        }
+      }
+
+      const result = this.handle(request);
+      if (
+        result.status >= 400
+        || typeof service.enrichCommandResultWithModelIntent !== 'function'
+        || method !== 'POST'
+        || !result.body?.project?.id
+      ) {
+        return result;
+      }
+
+      const route = parseProjectRoute(path);
+      const enrichedBody = await service.enrichCommandResultWithModelIntent({
+        projectId: result.body.project.id || route?.projectId,
+        result: result.body,
+        command: `${method} ${path}`,
+        input: body,
+        now: body.now || new Date().toISOString(),
+      });
+      if (!enrichedBody?.project?.id) return result;
+      return json(result.status, {
+        ...result.body,
+        ...enrichedBody,
+        managerDashboard: service.getManagerDashboard(enrichedBody.project.id, { language }),
+        managerReadyPackage: service.getManagerReadyPackage(enrichedBody.project.id, { language }),
+      });
+    },
     handle(request = {}) {
       const method = String(request.method || 'GET').toUpperCase();
       const path = normalizePath(request.path || request.url || '/');
@@ -97,11 +157,22 @@ export function createAgentProjectApi({ service } = {}) {
         if (method === 'GET' && path === '/snapshot') {
           return json(200, service.snapshot());
         }
+        if (method === 'GET' && path === '/llm/status') {
+          return json(200, {
+            modelProvider: service.getModelProviderStatus ? service.getModelProviderStatus() : { enabled: false },
+          });
+        }
         if (kickoffMeetingRoute) {
           if (method === 'GET' && !kickoffMeetingRoute.meetingId) {
             return json(200, { kickoffMeetings: service.listKickoffMeetings() });
           }
           if (method === 'POST' && !kickoffMeetingRoute.meetingId) {
+            if (!body.allowDeterministicFallback) {
+              return json(400, {
+                error: 'kickoff-meeting-requires-async-model-path',
+                message: 'Use handleAsync/HTTP with a configured model provider to create a real kickoff meeting.',
+              });
+            }
             return json(200, publicResult(service.createKickoffMeeting(body)));
           }
           if (!kickoffMeetingRoute.meetingId) {
@@ -205,6 +276,43 @@ export function createAgentProjectApi({ service } = {}) {
         }
         if (method === 'GET' && route.action === 'events') {
           return json(200, service.getEventLedger(route.projectId));
+        }
+        if (method === 'GET' && route.action === 'local-runtime') {
+          return json(200, service.getLocalRuntime(route.projectId));
+        }
+        if (method === 'POST' && route.action === 'local-runtime' && route.tail[0] === 'archive') {
+          const result = service.archiveProject({ projectId: route.projectId, ...body });
+          return json(200, {
+            route: 'project-archived',
+            project: result.project,
+            localRuntime: result.localRuntime,
+          });
+        }
+        if (route.action === 'workspace') {
+          if (method === 'POST' && route.tail[0] === 'bind') {
+            const result = service.bindProjectWorkspace({ projectId: route.projectId, ...body });
+            return json(200, {
+              route: 'workspace-bound',
+              project: result.project,
+              localRuntime: result.localRuntime,
+            });
+          }
+          if (method === 'POST' && route.tail[0] === 'list') {
+            return json(200, service.listWorkspaceFiles({ projectId: route.projectId, ...body }));
+          }
+          if (method === 'POST' && route.tail[0] === 'read') {
+            return json(200, service.readWorkspaceFile({ projectId: route.projectId, ...body }));
+          }
+          if (method === 'POST' && route.tail[0] === 'write') {
+            return json(200, service.writeWorkspaceFile({ projectId: route.projectId, ...body }));
+          }
+          if (method === 'POST' && route.tail[0] === 'delete') {
+            return json(200, service.deleteWorkspacePath({ projectId: route.projectId, ...body }));
+          }
+          if (method === 'POST' && route.tail[0] === 'exec') {
+            return json(200, service.executeWorkspaceCommand({ projectId: route.projectId, ...body }));
+          }
+          return json(404, { error: 'workspace-route-not-found', path });
         }
         if (method === 'GET' && route.action === 'tasks') {
           if (!route.tail.length) {
@@ -380,6 +488,8 @@ export function createFileBackedAgentProjectApi({
   messageLimit = 240,
   replaceWithSeed = false,
   artifactWriter = null,
+  projectRuntime = null,
+  llmProvider = null,
 } = {}) {
   const store = createAgentProjectFileStore({
     filePath,
@@ -390,7 +500,7 @@ export function createFileBackedAgentProjectApi({
     hydrateProject: hydrateAgentProject,
     replaceWithSeed,
   });
-  const service = createAgentProjectService({ store, artifactWriter });
+  const service = createAgentProjectService({ store, artifactWriter, projectRuntime, llmProvider });
   const api = createAgentProjectApi({ service });
 
   return {

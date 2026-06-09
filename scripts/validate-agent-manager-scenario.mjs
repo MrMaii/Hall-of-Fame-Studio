@@ -43,7 +43,9 @@ import { createFileBackedAgentProjectApi } from '../src/agents/agentProjectApi.j
 import { createAgentProjectFileStore } from '../src/agents/agentProjectFileStore.js';
 import { createAgentProjectHttpServer } from '../src/agents/agentProjectHttpServer.js';
 import { createAgentProjectMemoryStore } from '../src/agents/agentProjectStore.js';
-import { existsSync, readFileSync } from 'node:fs';
+import { createLocalProjectRuntime } from '../src/agents/localProjectRuntime.js';
+import { existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 const team = [
   { id: 'jobs', name: 'Steve Jobs', title: 'Product Visionary' },
@@ -1418,11 +1420,20 @@ assert(restartedFileService.evaluateReadiness(projectId).status === 'manager-rea
 persistedSnapshot = JSON.parse(readFileSync(fileStorePath, 'utf8'));
 assert(persistedSnapshot.projects[0]?.autonomousSchedulerLedger?.[0]?.trigger === 'file-store-worker-after-restart', 'File-backed project store must persist post-restart worker state.');
 const apiStorePath = new URL('../.tmp/agent-manager-api-store.json', import.meta.url);
+const apiRuntimeRoot = fileURLToPath(new URL('../.tmp/agent-manager-api-runtime', import.meta.url));
+const apiWorkspaceRoot = fileURLToPath(new URL('../.tmp/agent-manager-api-workspace', import.meta.url));
+mkdirSync(apiWorkspaceRoot, { recursive: true });
+const apiProjectRuntime = createLocalProjectRuntime({
+  rootPath: apiRuntimeRoot,
+  enableCommandExecution: true,
+  allowedCommands: ['node'],
+});
 const projectApi = createFileBackedAgentProjectApi({
   filePath: apiStorePath,
   projects: [filePostRestartCycle.project],
   messages: restartedFileService.getMessages(projectId),
   replaceWithSeed: true,
+  projectRuntime: apiProjectRuntime,
 });
 let apiResponse = projectApi.handle({
   method: 'GET',
@@ -1440,6 +1451,56 @@ apiResponse = projectApi.handle({
 });
 assert(apiResponse.status === 200 && apiResponse.body.readiness.status === 'manager-ready' && apiResponse.body.operationsBoard.agents.length === confirmedTeam.length, 'Agent project API must expose aggregated manager dashboard readiness and operations rows.');
 assert(apiResponse.body.assignmentFlow.rows.some((row) => row.timelineSeen) && apiResponse.body.changeFlow.rows.some((row) => row.teamSyncCount > 0), 'Agent project API manager dashboard must include assignment and change flow read models.');
+apiResponse = projectApi.handle({
+  method: 'GET',
+  path: `/projects/${projectId}/local-runtime`,
+});
+assert(apiResponse.status === 200 && existsSync(apiResponse.body.localRuntime.memoryPath), 'Agent project API must create a project-scoped local memory folder.');
+apiResponse = projectApi.handle({
+  method: 'POST',
+  path: `/projects/${projectId}/workspace/bind`,
+  body: {
+    workspacePath: apiWorkspaceRoot,
+    now: '2026-05-28T16:01:00.000Z',
+  },
+});
+assert(apiResponse.status === 200 && apiResponse.body.localRuntime.workspacePath === apiWorkspaceRoot, 'Agent project API must bind a local workspace folder to one project.');
+apiResponse = projectApi.handle({
+  method: 'POST',
+  path: `/projects/${projectId}/workspace/write`,
+  body: {
+    path: 'notes/local-edit-proof.md',
+    content: '# Local Edit Proof\n\nThis file was written through the Agent project workspace API.\n',
+  },
+});
+assert(apiResponse.status === 200 && apiResponse.body.file.path === 'notes/local-edit-proof.md', 'Agent project API must write files inside the bound workspace.');
+apiResponse = projectApi.handle({
+  method: 'POST',
+  path: `/projects/${projectId}/workspace/read`,
+  body: { path: 'notes/local-edit-proof.md' },
+});
+assert(apiResponse.status === 200 && /workspace API/.test(apiResponse.body.content), 'Agent project API must read files from the bound workspace.');
+apiResponse = projectApi.handle({
+  method: 'POST',
+  path: `/projects/${projectId}/workspace/list`,
+  body: { path: '.', recursive: true },
+});
+assert(apiResponse.status === 200 && apiResponse.body.files.some((file) => file.path === 'notes/local-edit-proof.md'), 'Agent project API must list files from the bound workspace.');
+apiResponse = projectApi.handle({
+  method: 'POST',
+  path: `/projects/${projectId}/workspace/read`,
+  body: { path: '../outside.md' },
+});
+assert(apiResponse.status === 400 && /escapes allowed root/.test(apiResponse.body.message), 'Agent project API must reject workspace path traversal.');
+apiResponse = projectApi.handle({
+  method: 'POST',
+  path: `/projects/${projectId}/workspace/exec`,
+  body: {
+    command: 'node',
+    args: ['-e', 'console.log("workspace-exec-ok")'],
+  },
+});
+assert(apiResponse.status === 200 && apiResponse.body.status === 0 && /workspace-exec-ok/.test(apiResponse.body.stdout), 'Agent project API must execute allowed local workspace commands when explicitly enabled.');
 apiResponse = projectApi.handle({
   method: 'GET',
   path: `/projects/${projectId}/manager-ready-package`,
@@ -1674,6 +1735,15 @@ apiResponse = projectApi.handle({
   path: `/projects/${projectId}/transcripts/main`,
 });
 assert(apiResponse.status === 200 && apiResponse.body.messages.length > 0 && apiResponse.body.archivedProofMessages.length > 0, 'Agent project API must expose a per-channel transcript with archived proof messages.');
+apiResponse = projectApi.handle({
+  method: 'POST',
+  path: `/projects/${projectId}/local-runtime/archive`,
+  body: {
+    reason: 'scenario-validation-archive',
+    now: '2026-05-28T17:09:00.000Z',
+  },
+});
+assert(apiResponse.status === 200 && apiResponse.body.project.status === 'archived' && existsSync(apiResponse.body.localRuntime.latestArchivePath), 'Agent project API must create a project-scoped archive snapshot.');
 persistedSnapshot = JSON.parse(readFileSync(apiStorePath, 'utf8'));
 assert(persistedSnapshot.messages.some((message) => message.id === 'api_google_source'), 'Agent project API must persist chat requests through its file-backed store.');
 assert(persistedSnapshot.projects[0]?.autonomousSchedulerLedger?.[0]?.trigger === 'api-worker', 'Agent project API must persist worker-cycle state.');
@@ -2022,9 +2092,17 @@ try {
   await restartedHttpServer.close();
 }
 const kickoffHttpStorePath = new URL('../.tmp/agent-manager-kickoff-http-store.json', import.meta.url);
+const kickoffHttpRuntimeRoot = fileURLToPath(new URL('../.tmp/agent-manager-kickoff-http-runtime', import.meta.url));
+const kickoffHttpWorkspaceRoot = fileURLToPath(new URL('../.tmp/agent-manager-kickoff-http-workspace', import.meta.url));
+mkdirSync(kickoffHttpWorkspaceRoot, { recursive: true });
 const kickoffHttpServer = createAgentProjectHttpServer({
   filePath: kickoffHttpStorePath,
   replaceWithSeed: true,
+  projectRuntime: createLocalProjectRuntime({
+    rootPath: kickoffHttpRuntimeRoot,
+    enableCommandExecution: true,
+    allowedCommands: ['node'],
+  }),
 });
 const kickoffHttpRuntime = await kickoffHttpServer.listen();
 const kickoffProjectId = 'http_kickoff_project';
@@ -2130,6 +2208,46 @@ try {
   const kickoffGetResponse = await fetch(`${kickoffHttpRuntime.url}/projects/${kickoffProjectId}`);
   const kickoffGetBody = await kickoffGetResponse.json();
   assert(kickoffGetResponse.status === 200 && kickoffGetBody.messages.some((message) => message.time === 'First Pulse'), 'Backend kickoff project must be retrievable with its kickoff chat evidence.');
+  const kickoffRuntimeResponse = await fetch(`${kickoffHttpRuntime.url}/projects/${kickoffProjectId}/local-runtime`);
+  const kickoffRuntimeBody = await kickoffRuntimeResponse.json();
+  assert(kickoffRuntimeResponse.status === 200 && existsSync(kickoffRuntimeBody.localRuntime.memoryPath), 'HTTP backend must create a project-scoped local memory folder.');
+  const kickoffBindResponse = await fetch(`${kickoffHttpRuntime.url}/projects/${kickoffProjectId}/workspace/bind`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      workspacePath: kickoffHttpWorkspaceRoot,
+      now: '2026-05-28T19:01:00.000Z',
+    }),
+  });
+  const kickoffBindBody = await kickoffBindResponse.json();
+  assert(kickoffBindResponse.status === 200 && kickoffBindBody.localRuntime.workspacePath === kickoffHttpWorkspaceRoot, 'HTTP backend must bind a local workspace folder.');
+  const kickoffWriteResponse = await fetch(`${kickoffHttpRuntime.url}/projects/${kickoffProjectId}/workspace/write`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      path: 'proof/http-local-edit.md',
+      content: 'HTTP local workspace edit proof',
+    }),
+  });
+  const kickoffWriteBody = await kickoffWriteResponse.json();
+  assert(kickoffWriteResponse.status === 200 && kickoffWriteBody.file.path === 'proof/http-local-edit.md', 'HTTP backend must write files inside a bound local workspace.');
+  const kickoffReadResponse = await fetch(`${kickoffHttpRuntime.url}/projects/${kickoffProjectId}/workspace/read`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ path: 'proof/http-local-edit.md' }),
+  });
+  const kickoffReadBody = await kickoffReadResponse.json();
+  assert(kickoffReadResponse.status === 200 && /workspace edit proof/.test(kickoffReadBody.content), 'HTTP backend must read files from a bound local workspace.');
+  const kickoffExecResponse = await fetch(`${kickoffHttpRuntime.url}/projects/${kickoffProjectId}/workspace/exec`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      command: 'node',
+      args: ['-e', 'console.log("http-workspace-exec-ok")'],
+    }),
+  });
+  const kickoffExecBody = await kickoffExecResponse.json();
+  assert(kickoffExecResponse.status === 200 && kickoffExecBody.status === 0 && /http-workspace-exec-ok/.test(kickoffExecBody.stdout), 'HTTP backend must execute allowed workspace commands when explicitly enabled.');
   const kickoffTranscriptIndexResponse = await fetch(`${kickoffHttpRuntime.url}/projects/${kickoffProjectId}/transcripts`);
   const kickoffTranscriptIndexBody = await kickoffTranscriptIndexResponse.json();
   assert(kickoffTranscriptIndexResponse.status === 200 && kickoffTranscriptIndexBody.recoverableProofCount > 0 && kickoffTranscriptIndexBody.channels.some((channel) => channel.channelId === 'main' && channel.messageCount > 0 && channel.totalProofCount >= channel.messageCount), 'Backend API must expose transcript index with current and recoverable main-channel proof.');
@@ -2252,6 +2370,16 @@ try {
   const httpAgentTaskEvidenceBody = await httpAgentTaskEvidenceResponse.json();
   assert(httpAgentTaskEvidenceResponse.status === 200 && httpAgentTaskEvidenceBody.messages.some((message) => message.agentWorker?.agentId === 'turing'), 'HTTP task evidence must include per-Agent worker chat proof.');
   assert(httpAgentTaskEvidenceBody.events.some((event) => event.type === 'agent-task-completed'), 'HTTP task evidence must include per-Agent worker completion events.');
+  const kickoffArchiveResponse = await fetch(`${kickoffHttpRuntime.url}/projects/${kickoffProjectId}/local-runtime/archive`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      reason: 'http-kickoff-validation-archive',
+      now: '2026-05-28T19:28:00.000Z',
+    }),
+  });
+  const kickoffArchiveBody = await kickoffArchiveResponse.json();
+  assert(kickoffArchiveResponse.status === 200 && kickoffArchiveBody.project.status === 'archived' && existsSync(kickoffArchiveBody.localRuntime.latestArchivePath), 'HTTP backend must create a project-scoped archive snapshot.');
 } finally {
   await kickoffHttpServer.close();
 }

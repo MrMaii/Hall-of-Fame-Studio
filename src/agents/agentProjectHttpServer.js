@@ -189,6 +189,8 @@ export function createAgentProjectHttpServer({
   replaceWithSeed = false,
   autonomousScheduler = {},
   artifactWriter = null,
+  projectRuntime = null,
+  llmProvider = null,
 } = {}) {
   const resolvedApi = api || createFileBackedAgentProjectApi({
     filePath,
@@ -198,6 +200,8 @@ export function createAgentProjectHttpServer({
     messageLimit,
     replaceWithSeed,
     artifactWriter,
+    projectRuntime,
+    llmProvider,
   });
   const scheduler = createAutonomousSchedulerController({
     api: resolvedApi,
@@ -234,7 +238,7 @@ export function createAgentProjectHttpServer({
         writeJson(response, 200, tickResult);
         return;
       }
-      const result = resolvedApi.handle({
+      const result = await (resolvedApi.handleAsync || resolvedApi.handle).call(resolvedApi, {
         method: request.method,
         path: url.pathname,
         body,

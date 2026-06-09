@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+﻿import { useState, useEffect, useRef } from 'react';
 import { 
   Settings, Grid, LayoutPanelLeft, Box,
   MessageSquare, Plus, Network, Cpu, Clock, 
@@ -43,15 +43,9 @@ import {
   summarizeProjectEventLedger,
 } from './agents/agentRuntime.js';
 import {
-  addKickoffMeetingClarification,
   applyPeerManagementMatrix,
-  approveKickoffMeetingSession,
   buildNextActionResolution,
   buildPeerManagementMatrix,
-  confirmKickoffMeetingLeader,
-  confirmKickoffMeetingNextActions,
-  createKickoffMeetingSession,
-  createKickoffProjectFromMeeting,
   runAgentWorkCycle,
   submitProjectMultiChannelChangeRequest,
   submitProjectChatMessage,
@@ -105,7 +99,7 @@ const globalStyles = `
   
   .warroom-scrollbar::-webkit-scrollbar-thumb { background: #333; }
 
-  /* 彻底重写的连线数据流动画，取消透明度频闪，改为平滑的虚线流动 */
+  /* 褰诲簳閲嶅啓鐨勮繛绾挎暟鎹祦鍔ㄧ敾锛屽彇娑堥€忔槑搴﹂闂紝鏀逛负骞虫粦鐨勮櫄绾挎祦鍔?*/
   @keyframes link-flow {
     to { stroke-dashoffset: -12; }
   }
@@ -720,7 +714,7 @@ const globalStyles = `
 
 const BRAND_LOGO_SRC = '/hall-of-fame-studio-logo.png';
 
-// --- Mock Architecture Data ---
+// --- Agent/Project Runtime Data ---
 const AGENTS = [
   { id: 'pm_1', name: 'Alan', role: 'Project Manager', skill: 'Agile' },
   { id: 'rd_1', name: 'Linus', role: 'Tech Lead', skill: 'Architecture' },
@@ -728,41 +722,7 @@ const AGENTS = [
   { id: 'mk_1', name: 'Don', role: 'Strategy', skill: 'Market' },
 ];
 
-const INITIAL_PROJECTS = [
-  {
-    id: 'p_1001',
-    name: 'Hall of Fame Studio V1',
-    status: 'executing',
-    progress: 68,
-    autonomy: { enabled: true, cadence: 'hourly' },
-    lastAutonomousRunAt: null,
-    team: [AGENTS[0], AGENTS[1], AGENTS[2]],
-    tasks: [
-      { id: 1, text: 'Define minimalist color palette', assignee: 'Dieter', status: 'done' },
-      { id: 2, text: 'Setup BYOK Auth Middleware', assignee: 'Linus', status: 'in-progress' },
-    ],
-    logs: [
-      { time: '14:22 PM', agent: 'Dieter', log: 'Updated layout grid. Reduced margin by 4px globally.' },
-      { time: '09:00 AM', agent: 'Alan', log: 'Initiated daily sprint. Assigned micro-tasks.' }
-    ]
-  },
-  {
-    id: 'p_1002',
-    name: 'Apollo Neural API',
-    status: 'drafting',
-    progress: 12,
-    autonomy: { enabled: false, cadence: 'daily' },
-    lastAutonomousRunAt: null,
-    team: [AGENTS[1], AGENTS[3]],
-    tasks: [
-      { id: 3, text: 'Analyze competitor pricing', assignee: 'Don', status: 'in-progress' },
-      { id: 4, text: 'Design DB schema', assignee: 'Linus', status: 'pending' },
-    ],
-    logs: [
-      { time: 'Yesterday', agent: 'Don', log: 'Market research document generated and attached.' }
-    ]
-  }
-];
+const INITIAL_PROJECTS = [];
 
 const STORAGE_KEYS = {
   projects: 'hall_of_fame_studio.projects.v1',
@@ -772,15 +732,18 @@ const STORAGE_KEYS = {
 
 const MANAGER_DEMO_PROJECT_ID = 'p_manager_demo_001';
 const MANAGER_DEMO_PROJECT_NAME = 'Manager Demo: Autonomous Agent Studio';
+const LEGACY_SEED_PROJECT_IDS = new Set(['p_1001', 'p_1002', 'p_roundtable_001']);
 
 const isManagerDemoProject = (project = {}) => (
   project.id === MANAGER_DEMO_PROJECT_ID
+  || LEGACY_SEED_PROJECT_IDS.has(project.id)
   || project.name === MANAGER_DEMO_PROJECT_NAME
   || project.initiation?.source === 'manager_demo_seed'
 );
 
 const isManagerDemoMessage = (message = {}) => (
   (message.projectId || DEFAULT_CHAT_PROJECT_ID) === MANAGER_DEMO_PROJECT_ID
+  || LEGACY_SEED_PROJECT_IDS.has(message.projectId)
   || String(message.id || '').startsWith('manager_demo_')
 );
 
@@ -937,12 +900,12 @@ const buildInitiationMeetingSkillBrief = ({ draft, output, language }) => {
 
   return isZh
     ? [
-      '立项会 Skill：本次圆桌不是普通同步会，而是项目能否进入 dashboard 的立项确认会。',
-      `项目：${projectName}`,
-      `意图：${projectIntent}`,
-      `目标产出：${expectedOutput}`,
-      '每个 Agent 都需要在自己的发言中确认：是否支持立项、自己适合承担什么职责、是否竞选或支持某位 Leader、第一步应该交付什么、有哪些依赖/风险/截止点。',
-      '这些确认必须通过自然会议发言完成，不需要额外 UI 面板。'
+      'Initiation Meeting Skill: this roundtable is the approval gate for dashboard entry.',
+      `Project: ${projectName}`,
+      `Intent: ${projectIntent}`,
+      `Expected output: ${expectedOutput}`,
+      'Each Agent should confirm responsibility, Leader support, first action, dependencies, risks, and deadlines in normal meeting speech.',
+      'These confirmations must come from the meeting transcript, not from local mock UI panels.'
     ].join('\n')
     : [
       'Initiation Meeting Skill: this roundtable is the gate for whether the project enters the dashboard.',
@@ -959,26 +922,20 @@ const loadInitialProjects = () => {
   const storedProjects = Array.isArray(stored)
     ? stored.filter(project => !isManagerDemoProject(project))
     : [];
-  return storedProjects.length
-    ? storedProjects.map(hydrateProject)
-    : INITIAL_PROJECTS.map(hydrateProject);
+  return storedProjects.map(hydrateProject);
 };
 
 const INITIATION_MEMBERS = [
-  { id: 'founder', name: 'You', title: 'Founder', duty: '提出项目方向，裁定是否进入正式项目' },
-  { id: 'jobs', name: 'Steve Jobs', title: 'Product Visionary', duty: '判断产品是否足够锋利，收敛体验与发布叙事' },
-  { id: 'turing', name: 'Alan Turing', title: 'System Architect', duty: '拆解系统边界、技术路径、边界情况和可证明性' },
-  { id: 'curie', name: 'Marie Curie', title: 'Evidence Reviewer', duty: '检查证据链、验证路径、实验设计与不确定性' },
-  { id: 'confucius', name: 'Confucius', title: 'Consensus Steward', duty: '校准角色、共识、责任秩序和长期组织影响' },
-  { id: 'musk', name: 'Elon Musk', title: 'Execution Driver', duty: '压缩复杂度，推动原型、成本、速度和发布节奏' },
+  { id: 'founder', name: 'You', title: 'Founder', duty: 'Define the project direction and approve whether it enters execution.' },
+  { id: 'jobs', name: 'Steve Jobs', title: 'Product Visionary', duty: 'Pressure-test product clarity, experience, and launch narrative.' },
+  { id: 'turing', name: 'Alan Turing', title: 'System Architect', duty: 'Decompose system boundaries, technical path, edge cases, and verifiability.' },
+  { id: 'curie', name: 'Marie Curie', title: 'Evidence Reviewer', duty: 'Review evidence chains, validation paths, experiments, and uncertainty.' },
+  { id: 'confucius', name: 'Confucius', title: 'Consensus Steward', duty: 'Calibrate roles, consensus, responsibility order, and long-term organization impact.' },
+  { id: 'musk', name: 'Elon Musk', title: 'Execution Driver', duty: 'Compress complexity and push prototype, cost, speed, and release cadence.' },
 ];
 
 const INITIATION_LOGS = [
-  { who: 'You', tone: 'PROPOSAL', text: '我想做一个创作者名人堂工作台。它不是普通项目管理，而是让一个想法先经过圆桌会议，再变成真正的项目。' },
-  { who: 'Steve Jobs', tone: 'PRODUCT', text: '先别急着堆功能。这个流程要让用户感觉项目是被认真批准的，不是又多了一个表单。' },
-  { who: 'Alan Turing', tone: 'SYSTEM', text: '我会把它拆成状态机：brief、invite、lobby、meeting、result。每一步都要有明确出口。' },
-  { who: 'Marie Curie', tone: 'EVIDENCE', text: '批准项目之前必须留下验证口径：为什么做、谁负责、第一份产出如何判定有效。' },
-  { who: 'Elon Musk', tone: 'EXECUTION', text: '把会议压缩成能推进的机制。72 小时内必须能从一个意图生成可执行项目。' },
+  { who: 'Director', tone: 'WAITING', text: 'No model-generated kickoff transcript has been created yet.' },
 ];
 
 const INITIATION_CONSENSUS = [
@@ -986,11 +943,10 @@ const INITIATION_CONSENSUS = [
   { label: 'First Lead', value: 'Steve Jobs' },
   { label: 'Reviewer', value: 'Marie Curie' },
   { label: 'Working Group', value: 'Turing / Confucius / Musk / You' },
-  { label: 'Output', value: 'Clickable product mock + initiation record' },
+  { label: 'Output', value: 'Backend-created project and first execution artifact' },
   { label: 'Decision', value: 'Approved for dashboard entry' },
 ];
 
-// knownName：默认 before + last（last 标红）；诸葛为姓在前，用 family + given（family 标红）
 const renderKnownName = (kn) =>
   kn.family != null ? (
     <>
@@ -1008,121 +964,24 @@ const agentCardInitial = (agent) => {
   const kn = agent.knownName;
   if (kn.family != null) return kn.family.charAt(0);
   const red = kn.last || '';
-  const c = red.replace(/[^A-Za-zÀ-ÿ]/g, '').charAt(0) || agent.name.charAt(0);
+  const c = red.replace(/[^A-Za-z]/g, '').charAt(0) || agent.name.charAt(0);
   return c;
 };
 
-// 殿堂级人才库 (The Pantheon) — 与人物市场.md Top40 对齐；id 为平台 slug
-// primaryIdentity：第一被认知身份（大众一眼能对上号的那张「名片」）
+// 娈垮爞绾т汉鎵嶅簱 (The Pantheon) 鈥?涓庝汉鐗╁競鍦?md Top40 瀵归綈锛沬d 涓哄钩鍙?slug
+// primaryIdentity锛氱涓€琚鐭ヨ韩浠斤紙澶т紬涓€鐪艰兘瀵逛笂鍙风殑閭ｅ紶銆屽悕鐗囥€嶏級
 const LEGENDARY_AGENTS = [
-  { id: 'einstein', name: 'Albert Einstein', knownName: { before: 'Albert ', last: 'Einstein' }, primaryIdentity: '相对论之父', role: 'Paradigm Shifter', category: 'Science', desc: '思想实验与相对论式直觉。从最高抽象层重构问题边界。' },
-  { id: 'newton', name: 'Isaac Newton', knownName: { before: 'Isaac ', last: 'Newton' }, primaryIdentity: '经典力学与万有引力之父', role: 'Fundamentalist', category: 'Analytical', desc: '公理化与万有引力式底层洞察。建立不可动摇的逻辑与数学基础。' },
-  { id: 'shakespeare', name: 'William Shakespeare', knownName: { before: 'William ', last: 'Shakespeare' }, primaryIdentity: '莎翁、《哈姆雷特》背后的名字', role: 'Dramaturg', category: 'Creative', desc: '人性冲突与多声部叙事。把复杂利害写成高密度、可执行的「剧本结构」。' },
-  { id: 'musk', name: 'Elon Musk', knownName: { before: 'Elon ', last: 'Musk' }, primaryIdentity: 'Tesla / SpaceX 掌门人', role: 'Chief Disruptor', category: 'Visionary', desc: '第一性原理与极端目标。多线并行、工程降本、叙事融资；高风险高回报。' },
-  { id: 'jobs', name: 'Steve Jobs', knownName: { before: 'Steve ', last: 'Jobs' }, primaryIdentity: '苹果灵魂人物、iPhone 之父', role: 'Product Visionary', category: 'Visionary', desc: '科技与人文交叉口。对细节偏执、极简至境；把产品做成文化符号。' },
-  { id: 'disney', name: 'Walt Disney', knownName: { before: 'Walt ', last: 'Disney' }, primaryIdentity: '米老鼠之父、迪士尼乐园缔造者', role: 'Experience Creator', category: 'Visionary', desc: '世界观级体验。把功能交付升格为可沉浸的故事与情感旅程。' },
-  { id: 'churchill', name: 'Winston Churchill', knownName: { before: 'Winston ', last: 'Churchill' }, primaryIdentity: '二战英国首相、「V」字演说', role: 'Morale Booster', category: 'Strategy', desc: '逆境叙事与绝不妥协的韧性。团队濒临崩溃时锚定方向与士气。' },
-  { id: 'da_vinci', name: 'Leonardo da Vinci', knownName: { before: 'Leonardo ', last: 'da Vinci' }, primaryIdentity: '《蒙娜丽莎》、文艺复兴全才', role: 'Creative Polymath', category: 'Creative', desc: '艺术与工程一体。解剖级观察 + 系统草图，产出美且可落地的方案。' },
-  { id: 'picasso', name: 'Pablo Picasso', knownName: { before: 'Pablo ', last: 'Picasso' }, primaryIdentity: '立体主义大师', role: 'Visual Disruptor', category: 'Creative', desc: '打破视觉规则。反常规的品牌与交互张力，一击即中的符号化表达。' },
-  { id: 'marx', name: 'Karl Marx', knownName: { before: 'Karl ', last: 'Marx' }, primaryIdentity: '马克思主义、《资本论》作者', role: 'Structural Critic', category: 'Analytical', desc: '长程结构与剩余视角。看清权力与分配链条，适合根因级复盘。' },
-  { id: 'freud', name: 'Sigmund Freud', knownName: { before: 'Sigmund ', last: 'Freud' }, primaryIdentity: '精神分析之父', role: 'User Psychologist', category: 'Psychology', desc: '无意识与防御机制。把用户「说不出口」的动机翻译成可设计触点。' },
-  { id: 'turing', name: 'Alan Turing', knownName: { before: 'Alan ', last: 'Turing' }, primaryIdentity: '计算机科学之父、图灵机', role: 'System Architect', category: 'Science', desc: '计算与密码学式严密。最底层架构、边界情况与可证明的安全感。' },
-  { id: 'buffett', name: 'Warren Buffett', knownName: { before: 'Warren ', last: 'Buffett' }, primaryIdentity: '股神、奥马哈先知', role: 'Capital Strategist', category: 'Finance', desc: '价值投资与护城河。少而精、复利思维，厌恶无谓复杂度。' },
-  { id: 'confucius', name: 'Confucius', knownName: { before: '', last: 'Confucius' }, primaryIdentity: '孔子、至圣先师', role: 'Ethos Architect', category: 'Strategy', desc: '仁礼与正名。教化式对齐目标、角色与措辞，适合共识与规范起草。' },
-  { id: 'napoleon', name: 'Napoleon', knownName: { before: '', last: 'Napoleon' }, primaryIdentity: '拿破仑皇帝、滑铁卢之前的欧洲主宰', role: 'Logistics Master', category: 'Operations', desc: '在硬约束下集中优势资源。精密调度、快迭代、赢局部再赢全局。' },
-  { id: 'julius_caesar', name: 'Julius Caesar', knownName: { before: 'Julius ', last: 'Caesar' }, primaryIdentity: '凯撒大帝、儒略历', role: 'Field Commander', category: 'Operations', desc: '关键节点果断拍板。跨越卢比孔河式决策，执行不留退路。' },
-  { id: 'alexander', name: 'Alexander the Great', knownName: { before: '', last: 'Alexander the Great' }, primaryIdentity: '亚历山大大帝', role: 'Expansion Lead', category: 'Strategy', desc: '高速扩张与纵深突破。把版图思维用于市场抢占与多区域 rollout。' },
-  { id: 'genghis_khan', name: 'Genghis Khan', knownName: { before: 'Genghis ', last: 'Khan' }, primaryIdentity: '成吉思汗、蒙古帝国', role: 'Global Scaler', category: 'Strategy', desc: '扁平指挥链与极限机动。无视边界感，追求最短路径的规模化复制。' },
-  { id: 'edison', name: 'Thomas Edison', knownName: { before: 'Thomas ', last: 'Edison' }, primaryIdentity: '发明大王、灯泡与留声机', role: 'Commercializer', category: 'Operations', desc: '试错量产与专利墙。实验室到货架的最短闭环，厌恶不可交付的炫技。' },
-  { id: 'tesla', name: 'Nikola Tesla', knownName: { before: 'Nikola ', last: 'Tesla' }, primaryIdentity: '交流电天才、无线输电狂人', role: 'Innovation Engineer', category: 'Science', desc: '电气直觉与单点极致。敢押前沿，但需工程伙伴收口可制造性。' },
-  { id: 'carnegie', name: 'Andrew Carnegie', knownName: { before: 'Andrew ', last: 'Carnegie' }, primaryIdentity: '钢铁大王、慈善散财范本', role: 'Supply Chain Lead', category: 'Operations', desc: '垂直整合与成本壁垒。从上游到下游控节奏，规模换利润。' },
-  { id: 'oppenheimer', name: 'J. Robert Oppenheimer', knownName: { before: 'J. Robert ', last: 'Oppenheimer' }, primaryIdentity: '「原子弹之父」、曼哈顿计划', role: 'Program Director', category: 'Science', desc: '曼哈顿式大科学统筹。顶尖人才密度、风险与里程碑对齐。' },
-  { id: 'curie', name: 'Marie Curie', knownName: { before: 'Marie ', last: 'Curie' }, primaryIdentity: '镭之母、两获诺贝尔奖的女科学家', role: 'Deep Researcher', category: 'Science', desc: '实验坚忍与双重严谨。枯燥数据里榨结论，适合底层验证与复现。' },
-  { id: 'sun_tzu', name: 'Sun Tzu', knownName: { before: 'Sun ', last: 'Tzu' }, primaryIdentity: '《孙子兵法》、「知己知彼」', role: 'Market Tactician', category: 'Strategy', desc: '知己知彼与奇正。红海中的信息差与不战而屈人之兵的博弈结构。' },
-  { id: 'darwin', name: 'Charles Darwin', knownName: { before: 'Charles ', last: 'Darwin' }, primaryIdentity: '演化论、《物种起源》', role: 'Evidence Synthesist', category: 'Science', desc: '长期证据链与自然选择式论证。审慎发表、大量例证、可证伪路径。' },
-  { id: 'aristotle', name: 'Aristotle', knownName: { before: '', last: 'Aristotle' }, primaryIdentity: '古希腊百科全书式哲学家', role: 'Knowledge Architect', category: 'Analytical', desc: '分类学与三段论。把碎片信息变成本体清晰、可教学的体系。' },
-  { id: 'plato', name: 'Plato', knownName: { before: '', last: 'Plato' }, primaryIdentity: '《理想国》、理念论', role: 'Dialectician', category: 'Analytical', desc: '理念论式层层追问。洞穴寓言般的定义战，直到「到底在解决什么」被说清。' },
-  { id: 'nietzsche', name: 'Friedrich Nietzsche', knownName: { before: 'Friedrich ', last: 'Nietzsche' }, primaryIdentity: '「上帝已死」、超人哲学', role: 'Cultural Philosopher', category: 'Psychology', desc: '价值重估与警句强度。适合品牌叙事需要锋利立场与反偶像张力时。' },
-  { id: 'machiavelli', name: 'Niccolò Machiavelli', knownName: { before: 'Niccolò ', last: 'Machiavelli' }, primaryIdentity: '《君主论》、权谋现实主义', role: 'Power Realist', category: 'Strategy', desc: '君主论式结构看权术。剥离道德修辞看激励与制衡，偏极限推演。' },
-  { id: 'smith', name: 'Adam Smith', knownName: { before: 'Adam ', last: 'Smith' }, primaryIdentity: '古典经济学之父、《国富论》', role: 'Ecosystem Designer', category: 'Finance', desc: '分工与看不见的手。设计去中心化规则，让生态自发繁荣。' },
-  { id: 'morgan', name: 'J. P. Morgan', knownName: { before: 'J. P. ', last: 'Morgan' }, primaryIdentity: '华尔街之王、摩根大通前身', role: 'M&A Specialist', category: 'Finance', desc: '危机重组与资本市场秩序。一言九鼎式协调资源与交易结构。' },
-  { id: 'rockefeller', name: 'John D. Rockefeller', knownName: { before: 'John D. ', last: 'Rockefeller' }, primaryIdentity: '石油大王、标准石油', role: 'Integration Baron', category: 'Finance', desc: '产业垂直整合与成本纪律。规模壁垒 + 冷静谈判，崇尚效率。' },
-  { id: 'henry_ford', name: 'Henry Ford', knownName: { before: 'Henry ', last: 'Ford' }, primaryIdentity: 'T 型车与流水线之父', role: 'Operations Optimizer', category: 'Operations', desc: '流水线思维。流程极限压缩、可重复节拍与良率文化。' },
-  { id: 'zhuge_liang', name: 'Zhuge Liang', knownName: { family: 'Zhuge', given: 'Liang' }, primaryIdentity: '卧龙军师、三国丞相（文化符号）', role: 'Grand Strategist', category: 'Strategy', desc: '弱势开局下的结盟与借力。谨慎多谋，鞠躬尽瘁式责任压强。' },
-  { id: 'li_bai', name: 'Li Bai', knownName: { family: 'Li', given: 'Bai' }, primaryIdentity: '诗仙', role: 'Poet Provocateur', category: 'Creative', desc: '乐府与歌行式浪漫意象。文案与品牌语调需要飘逸、即兴、记忆点时。' },
-  { id: 'keynes', name: 'John Maynard Keynes', knownName: { before: 'John Maynard ', last: 'Keynes' }, primaryIdentity: '凯恩斯主义、《通论》', role: 'Macro Economist', category: 'Finance', desc: '总需求与逆周期杠杆。不确定性下的政策式叙事与预期管理。' },
-  { id: 'soros', name: 'George Soros', knownName: { before: 'George ', last: 'Soros' }, primaryIdentity: '量子基金、狙击英镑的金融大鳄', role: 'Macro Contrarian', category: 'Finance', desc: '反身性与拐点猎手。趋势与叙事反转时敢于认错反手。' },
-  { id: 'holmes', name: 'Sherlock Holmes', knownName: { before: 'Sherlock ', last: 'Holmes' }, primaryIdentity: '世界第一侦探（虚构）', role: 'Lead Investigator', category: 'Analytical', desc: '演绎与排除法（文学侧）。观察细节、还原链路漏洞；冷静毒舌式质询。' },
-  { id: 'tony_stark', name: 'Tony Stark', knownName: { before: 'Tony ', last: 'Stark' }, primaryIdentity: '钢铁侠（漫威）', role: 'Iron Engineer', category: 'Visionary', desc: '尖端硬件迭代 + 演示叙事 + 危机临场拍板。上限想象，勿当现实对标。' },
-  { id: 'light_yagami', name: 'Light Yagami', knownName: { before: 'Light ', last: 'Yagami' }, primaryIdentity: '《死亡笔记》基拉、智斗反派天花板', role: 'Red Team Strategist', category: 'Strategy', desc: '长期布局与规则漏洞。反派视角压力测试；勿默认作正面协作人格。' },
+  { id: 'jobs', name: 'Steve Jobs', knownName: { before: 'Steve ', last: 'Jobs' }, primaryIdentity: 'Apple product leader', role: 'Product Visionary', category: 'Visionary', desc: 'Turns fuzzy product ideas into sharp user-facing direction.' },
+  { id: 'turing', name: 'Alan Turing', knownName: { before: 'Alan ', last: 'Turing' }, primaryIdentity: 'Computing pioneer', role: 'System Architect', category: 'Science', desc: 'Decomposes systems, protocols, and proof boundaries.' },
+  { id: 'curie', name: 'Marie Curie', knownName: { before: 'Marie ', last: 'Curie' }, primaryIdentity: 'Experimental scientist', role: 'Evidence Reviewer', category: 'Science', desc: 'Tests claims against evidence, repeatability, and uncertainty.' },
+  { id: 'confucius', name: 'Confucius', knownName: { before: '', last: 'Confucius' }, primaryIdentity: 'Ethics and governance thinker', role: 'Consensus Steward', category: 'Strategy', desc: 'Clarifies responsibility, governance, and durable cooperation.' },
+  { id: 'musk', name: 'Elon Musk', knownName: { before: 'Elon ', last: 'Musk' }, primaryIdentity: 'Technology founder', role: 'Execution Driver', category: 'Operations', desc: 'Compresses complexity into fast prototype and delivery loops.' },
+  { id: 'einstein', name: 'Albert Einstein', knownName: { before: 'Albert ', last: 'Einstein' }, primaryIdentity: 'Theoretical physicist', role: 'Paradigm Shifter', category: 'Science', desc: 'Reframes problems from first principles and thought experiments.' },
+  { id: 'newton', name: 'Isaac Newton', knownName: { before: 'Isaac ', last: 'Newton' }, primaryIdentity: 'Classical mechanics founder', role: 'Fundamentalist', category: 'Analytical', desc: 'Builds rigorous foundations and mathematical structure.' },
+  { id: 'shakespeare', name: 'William Shakespeare', knownName: { before: 'William ', last: 'Shakespeare' }, primaryIdentity: 'Playwright', role: 'Dramaturg', category: 'Creative', desc: 'Finds conflict, narrative rhythm, and memorable language.' },
+  { id: 'da_vinci', name: 'Leonardo da Vinci', knownName: { before: 'Leonardo ', last: 'da Vinci' }, primaryIdentity: 'Artist and inventor', role: 'Polymath Designer', category: 'Creative', desc: 'Connects visual, mechanical, and scientific intuition.' },
+  { id: 'lincoln', name: 'Abraham Lincoln', knownName: { before: 'Abraham ', last: 'Lincoln' }, primaryIdentity: 'Statesman', role: 'Crisis Leader', category: 'Strategy', desc: 'Balances moral clarity, coalition management, and timing.' },
 ];
-
-const generateBarcode = (id) => {
-  const widths = [1, 2, 1, 3, 1, 1, 2, 1, 2, 3, 1, 1, 2, 1, 2];
-  return widths.map((w, i) => <div key={i} className="barcode-line" style={{ width: `${w * 2}px` }} />);
-};
-
-const commonsFilePath = (file, width = 180) =>
-  `https://commons.wikimedia.org/wiki/Special:FilePath/${encodeURIComponent(file)}?width=${width}`;
-
-const commonsFilePage = (file) =>
-  `https://commons.wikimedia.org/wiki/File:${encodeURIComponent(file).replace(/%20/g, '_')}`;
-
-// Open-source safe avatar policy:
-// - Prefer Wikimedia Commons files with public-domain or free-culture licenses.
-// - Keep source/license metadata visible from the market cards.
-// - Do not use copyrighted character stills for protected fictional characters.
-// - For protected fictional characters, use a free-licensed actor portrait as a
-//   real-person visual proxy and keep attribution clear.
-const PANTHEON_AVATARS = {
-  einstein: { file: 'Einstein 1921 by F Schmutzer - restoration.jpg', license: 'PD', credit: 'Ferdinand Schmutzer / Wikimedia Commons' },
-  newton: { file: 'GodfreyKneller-IsaacNewton-1689.jpg', license: 'PD', credit: 'Godfrey Kneller / Wikimedia Commons' },
-  shakespeare: { file: 'Chandos portrait of William Shakespeare.jpg', license: 'PD', credit: 'National Portrait Gallery / Wikimedia Commons' },
-  musk: { file: 'Elon Musk Royal Society (crop2).jpg', license: 'CC BY-SA', credit: 'Duncan.Hull / Wikimedia Commons' },
-  jobs: { file: 'Steve Jobs Headshot 2010-CROP.jpg', license: 'CC BY-SA 3.0', credit: 'Matthew Yohe / Wikimedia Commons' },
-  disney: { file: 'Walt Disney 1946.JPG', license: 'PD', credit: 'NASA / Wikimedia Commons' },
-  churchill: { file: 'Winston Churchill 1941 photo by Yousuf Karsh.jpg', license: 'PD/Commons', credit: 'Yousuf Karsh / Wikimedia Commons' },
-  da_vinci: { file: 'Leonardo da Vinci - presumed self-portrait - WGA12798.jpg', license: 'PD', credit: 'Wikimedia Commons' },
-  picasso: { file: 'Portrait de Picasso, 1908.jpg', license: 'PD', credit: 'Wikimedia Commons' },
-  marx: { file: 'Karl Marx 001.jpg', license: 'PD', credit: 'John Jabez Edwin Mayall / Wikimedia Commons' },
-  freud: { file: 'Sigmund Freud, by Max Halberstadt (cropped).jpg', license: 'PD', credit: 'Max Halberstadt / Wikimedia Commons' },
-  turing: { file: 'Alan Turing Aged 16.jpg', license: 'PD/Commons', credit: 'Wikimedia Commons' },
-  buffett: { file: 'Warren Buffett at the 2015 SelectUSA Investment Summit (cropped).jpg', license: 'PD-USGov', credit: 'U.S. Department of Commerce / Wikimedia Commons' },
-  confucius: { file: 'Confucius Tang Dynasty.jpg', license: 'PD', credit: 'Wikimedia Commons' },
-  napoleon: { file: 'Jacques-Louis David - The Emperor Napoleon in His Study at the Tuileries - Google Art Project.jpg', license: 'PD', credit: 'Jacques-Louis David / Wikimedia Commons' },
-  julius_caesar: { file: 'Gaius Julius Caesar (100-44 BC).JPG', license: 'CC/Commons', credit: 'Wikimedia Commons' },
-  alexander: { file: 'Alexander the Great mosaic.jpg', license: 'PD', credit: 'Wikimedia Commons' },
-  genghis_khan: { file: 'YuanEmperorAlbumGenghisPortrait.jpg', license: 'PD', credit: 'National Palace Museum / Wikimedia Commons' },
-  edison: { file: 'Thomas Edison2.jpg', license: 'PD', credit: 'Wikimedia Commons' },
-  tesla: { file: 'Tesla circa 1890.jpeg', license: 'PD', credit: 'Wikimedia Commons' },
-  carnegie: { file: 'Andrew Carnegie, three-quarter length portrait, seated, facing slightly left, 1913.jpg', license: 'PD', credit: 'Library of Congress / Wikimedia Commons' },
-  oppenheimer: { file: 'J Robert Oppenheimer (cropped).jpg', license: 'PD-USGov', credit: 'U.S. Department of Energy / Wikimedia Commons' },
-  curie: { file: 'Marie Curie c1920.jpg', license: 'PD', credit: 'Wikimedia Commons' },
-  sun_tzu: { file: 'Sun Tzu portrait.jpg', license: 'PD', credit: 'Wikimedia Commons' },
-  darwin: { file: 'Charles Darwin aged 51.jpg', license: 'PD', credit: 'Wikimedia Commons' },
-  aristotle: { file: 'Aristotle Altemps Inv8575.jpg', license: 'CC/Commons', credit: 'Jastrow / Wikimedia Commons' },
-  plato: { file: 'Plato Silanion Musei Capitolini MC1377.jpg', license: 'CC/Commons', credit: 'Marie-Lan Nguyen / Wikimedia Commons' },
-  nietzsche: { file: 'Nietzsche187a.jpg', license: 'PD', credit: 'Gustav Schultze / Wikimedia Commons' },
-  machiavelli: { file: 'Portrait of Niccolò Machiavelli by Santi di Tito.jpg', license: 'PD', credit: 'Santi di Tito / Wikimedia Commons' },
-  smith: { file: 'Adam Smith The Muir portrait.jpg', license: 'PD', credit: 'Wikimedia Commons' },
-  morgan: { file: 'J. P. Morgan, 1902.jpg', license: 'PD', credit: 'Edward Steichen / Wikimedia Commons' },
-  rockefeller: { file: 'John D. Rockefeller 1885.jpg', license: 'PD', credit: 'Wikimedia Commons' },
-  henry_ford: { file: 'Henry ford 1919.jpg', license: 'PD', credit: 'Hartsook / Wikimedia Commons' },
-  zhuge_liang: { file: 'Zhuge Liang (Chinese portrait).jpg', license: 'PD', credit: 'Wikimedia Commons' },
-  li_bai: { file: 'Li Bai.jpg', license: 'PD', credit: 'Wikimedia Commons' },
-  keynes: { file: 'John Maynard Keynes.jpg', license: 'PD', credit: 'Wikimedia Commons' },
-  soros: { file: 'George Soros - Festival Economia 2012.jpg', license: 'CC BY-SA', credit: 'Niccolo Caranti / Wikimedia Commons' },
-  holmes: { file: 'Sherlock Holmes Portrait Paget.jpg', license: 'PD', credit: 'Sidney Paget / Wikimedia Commons' },
-  tony_stark: { file: 'Robert Downey Jr 2014 Comic Con (cropped).jpg', license: 'CC BY-SA 2.0', credit: 'Gage Skidmore / Wikimedia Commons (actor portrait proxy)' },
-  light_yagami: { file: 'Tatsuya Fujiwara 2014.jpg', license: 'CC BY 2.0', credit: 'Dick Thomas Johnson / Wikimedia Commons (actor portrait proxy)' },
-};
-
-const pantheonAvatarMeta = (agentId) => PANTHEON_AVATARS[agentId];
-
-const pantheonAvatarSrc = (agentId) => {
-  const avatar = pantheonAvatarMeta(agentId);
-  return avatar?.file ? commonsFilePath(avatar.file) : null;
-};
 
 const DOSSIER_DIMENSIONS = ['Vision', 'Analysis', 'Execution', 'Influence', 'Volatility'];
 
@@ -1254,14 +1113,14 @@ const getAgentDeploymentWindow = (agent, profile, language = 'zh') => {
   const summary = profile.advice || profile.realWorldEdge || profile.strength || agent.desc;
 
   return {
-    title: isZh ? `${localizeText(agent.category, language)}使用窗口` : `${agent.category} Use Window`,
+    title: isZh ? `${localizeText(agent.category, language)}浣跨敤绐楀彛` : `${agent.category} Use Window`,
     summary,
     shortLabel: firstOutput,
     strongestAxis: topAxis ? `${topAxis.label} ${topAxis.value}` : agent.category,
     starterSteps: starterSteps.length ? starterSteps : [
-      isZh ? '明确目标与约束' : 'Clarify goal and constraints',
+      isZh ? 'Clarify goal and constraints' : 'Clarify goal and constraints',
       profile.strength || agent.desc,
-      isZh ? '输出可执行下一步' : 'Produce an executable next step',
+      isZh ? 'Produce an executable next step' : 'Produce an executable next step',
     ],
   };
 };
@@ -1311,25 +1170,14 @@ function RadarChart({ points, language = 'zh' }) {
 }
 
 const PROJECT_CHANNELS = [
-  { id: 'main', name: 'Main', description: '项目默认公开频道，所有成员固定可见。', category: 'text', unread: 3 },
+  { id: 'main', name: 'Main', description: 'Default public project channel visible to the whole team.', category: 'text', unread: 3 },
   { id: 'google_chat', name: 'Google Chat', description: 'External @mention bridge; change requests stay visible to the full project team.', category: 'text', unread: 0 },
-  { id: 'decisions', name: 'Decisions', description: '关键决策、确认事项与变更记录。', category: 'decisions', unread: 1 },
-  { id: 'design', name: 'Design', description: '设计讨论与资产共享。', category: 'text', unread: 0 },
-  { id: 'standup', name: 'Standup', description: '语音站会频道。', category: 'voice', unread: 0 },
+  { id: 'decisions', name: 'Decisions', description: 'Key decisions, confirmations, and change records.', category: 'decisions', unread: 1 },
+  { id: 'design', name: 'Design', description: 'Design discussion and asset sharing.', category: 'text', unread: 0 },
+  { id: 'standup', name: 'Standup', description: 'Voice standup channel.', category: 'voice', unread: 0 },
 ];
 
-const PROJECT_CHAT_MESSAGES = [
-  { id: 'c1', channelId: 'main', type: 'system', author: 'System', time: '09:00', text: '项目频道已开放。所有成员默认在 Main 频道。' },
-  { id: 'c2', channelId: 'main', type: 'progress', author: 'Alan', role: 'Project Manager', time: '09:18', text: '今日目标已拆成 3 个执行块，优先处理 BYOK Auth Middleware。' },
-  { id: 'c3', channelId: 'main', type: 'question', author: 'Linus', role: 'Tech Lead', time: '09:34', text: '需要确认是否优先支持本地密钥缓存，否则认证层会多一个异步边界。' },
-  { id: 'c4', channelId: 'main', type: 'mention', author: 'Director', time: '09:41', text: '@all 先按安全优先处理，体验问题留到第二轮。', targets: ['all'], weight: 'High' },
-  { id: 'c5', channelId: 'main', type: 'file', author: 'Dieter', role: 'UX Designer', time: '10:12', text: '上传了信息架构草图 v0.2。', meta: 'fig-mint-ia-v02.md', fileId: 'FILE-014' },
-  { id: 'c6', channelId: 'decisions', type: 'decision', author: 'Alan', role: 'Project Manager', time: '11:05', text: '决策确认：认证中间件优先支持 BYOK，OAuth 作为后续兼容层。', decisionId: 'DEC-001' },
-  { id: 'c7', channelId: 'main', type: 'text', author: 'Alan', role: 'Project Manager', time: '10:45', text: '各位注意，中间件骨架 PR 已经 ready，Linus 会 review。' },
-  { id: 'c8', channelId: 'main', type: 'text', author: 'Alan', role: 'Project Manager', time: '10:46', text: 'Review 完成后我们对齐一次下午的工作。' },
-];
-
-const DEFAULT_CHAT_PROJECT_ID = 'p_1001';
+const DEFAULT_CHAT_PROJECT_ID = '__unscoped__';
 const hydrateChatMessage = (message) => ({
   ...message,
   projectId: message.projectId || DEFAULT_CHAT_PROJECT_ID,
@@ -1337,94 +1185,26 @@ const hydrateChatMessage = (message) => ({
 
 const loadInitialChatMessages = () => {
   const stored = readStoredJson(STORAGE_KEYS.chatMessages, null);
-  return (Array.isArray(stored) && stored.length ? stored : PROJECT_CHAT_MESSAGES)
+  return (Array.isArray(stored) ? stored : [])
     .map(hydrateChatMessage)
     .filter(message => !isManagerDemoMessage(message));
 };
 
-const PROJECT_TIMELINE_EVENTS = [
-  { id: 't1',  eventId: 'T-01', t: 0,     type: '创建',     contributor: 'Alan',     title: '项目立项',               detail: '初始化项目目标、成员与第一批任务。',               priority: 'core',   branch: 'Main',
-    attachments: [{ type: 'doc', name: 'project-charter.md', summary: '项目章程：目标、范围、成员与里程碑' }],
-    comments: [{ author: 'Director', time: 0.5, text: '目标清晰，批准立项。注意控制第一冲刺范围。' }],
-    history: [{ time: 0, action: '项目创建' }, { time: 0.3, action: 'Director 批准立项' }] },
-  { id: 't2',  eventId: 'T-02', t: 2.5,   type: '分析',     contributor: 'Don',      title: '竞品定价分析',            detail: '读取用户指令并整理三类定价假设。',                 priority: 'normal', branch: 'Market',       dependsOn: ['t1'],
-    attachments: [{ type: 'doc', name: 'pricing-analysis-v0.xlsx', summary: '三类定价假设对比表' }, { type: 'link', name: '竞品 A 公开定价页', summary: 'https://competitor-a.com/pricing' }],
-    comments: [{ author: 'Alan', time: 3, text: '免费版和企业版的差异化还需要更多数据支撑。' }],
-    history: [{ time: 2.5, action: '创建分析草稿' }, { time: 4, action: '补充竞品 B 数据' }] },
-  { id: 't8',  eventId: 'T-08', t: 3,     type: '内部沟通', contributor: 'Alan',     title: '频道初始化通知',           detail: '在 Main 频道发布项目 kick-off 通知。',            priority: 'low',    branch: 'Main' },
-  { id: 't9',  eventId: 'T-09', t: 5,     type: '内部沟通', contributor: 'Dieter',   title: '设计方向讨论',             detail: '和 Alan 讨论了信息架构偏好和竞品视觉参考。',       priority: 'low',    branch: 'Design' },
-  { id: 't10', eventId: 'T-10', t: 7,     type: '内部沟通', contributor: 'Linus',    title: '技术栈确认',               detail: '确认 Vite + React + Tailwind 技术选型。',        priority: 'low',    branch: 'Engineering' },
-  { id: 't3',  eventId: 'T-03', t: 25.3,  type: '文档更新', contributor: 'Dieter',   title: '体验原则草案',             detail: '补充界面密度、留白和控件优先级。',                 priority: 'normal', branch: 'Design',       dependsOn: ['t1'],
-    attachments: [{ type: 'doc', name: 'ux-principles-v0.md', summary: '界面密度、留白策略、控件优先级文档' }, { type: 'design', name: 'wireframe-density.fig', summary: 'Figma 线框：三种密度对比' }],
-    comments: [{ author: 'Alan', time: 26, text: '留白策略很好，但移动端适配还需要考虑。' }, { author: 'Dieter', time: 26.5, text: '会在 v1 补充响应式断点规则。' }],
-    history: [{ time: 25.3, action: '创建草案' }, { time: 26.5, action: '根据反馈标记待补充项' }] },
-  { id: 't11', eventId: 'T-11', t: 27,    type: '内部沟通', contributor: 'Don',      title: '定价模型 review',          detail: '在 Market 频道贴出定价对比表，请求反馈。',         priority: 'low',    branch: 'Market' },
-  { id: 't4',  eventId: 'T-04', t: 30.7,  type: '代码上传', contributor: 'Linus',    title: 'Auth Middleware Skeleton', detail: '提交认证中间件骨架和错误处理边界。',               priority: 'core',   branch: 'Engineering',  dependsOn: ['t1'],
-    attachments: [{ type: 'code', name: 'auth-middleware.ts', diff: '+142 -23', hash: 'a3f2c91' }, { type: 'code', name: 'error-boundary.ts', diff: '+67 -0', hash: 'a3f2c91' }],
-    comments: [{ author: 'Alan', time: 31, text: '骨架结构清晰，请补充 token 过期场景的边界处理。' }, { author: 'Linus', time: 31.5, text: '已在 T-13 中补充，JWT 三件套一并提交。' }],
-    history: [{ time: 30.7, action: '创建 PR #12' }, { time: 31.2, action: 'Alan 完成 Code Review' }, { time: 32, action: 'PR 合并到 main' }] },
-  { id: 't12', eventId: 'T-12', t: 32,    type: '内部沟通', contributor: 'Dieter',   title: '设计稿 v0.1 预览',         detail: '上传了首版 Figma 链接供团队评审。',                priority: 'low',    branch: 'Design',
-    attachments: [{ type: 'design', name: 'ui-v0.1.fig', summary: 'Figma 首版全局布局' }] },
-  { id: 't13', eventId: 'T-13', t: 34,    type: '代码上传', contributor: 'Linus',    title: 'JWT Token 工具函数',       detail: '补充了 token 签发/验证/刷新三件套。',              priority: 'normal', branch: 'Engineering',
-    attachments: [{ type: 'code', name: 'jwt-utils.ts', diff: '+98 -4', hash: 'b7e1d03' }],
-    comments: [{ author: 'Alan', time: 35, text: '刷新逻辑需要考虑并发请求场景。' }],
-    history: [{ time: 34, action: '创建 PR #14' }, { time: 35.5, action: 'PR 合并' }] },
-  { id: 't5',  eventId: 'T-05', t: 48.8,  type: '内部沟通', contributor: 'All',      title: '风险同步',                 detail: '团队同步了密钥存储、日志脱敏和调试体验的冲突。',   priority: 'low',    branch: 'Main' },
-  { id: 't14', eventId: 'T-14', t: 50,    type: '内部沟通', contributor: 'Alan',     title: '站会记录 Day3',            detail: '各成员简要汇报昨日进展和今日计划。',               priority: 'low',    branch: 'Main' },
-  { id: 't6',  eventId: 'T-06', t: 53.2,  type: '重要决策', contributor: 'Director', title: 'BYOK 优先级确认',          detail: '会议纪要归档：先安全，再体验，再兼容。',           priority: 'core',   branch: 'Main',         dependsOn: ['t4', 't5'],
-    attachments: [{ type: 'doc', name: 'meeting-minutes-day3.md', summary: '会议纪要：BYOK 优先级决策全文' }, { type: 'link', name: '决策投票记录', summary: '4/4 一致通过安全优先' }],
-    comments: [{ author: 'Linus', time: 54, text: '收到，密钥存储模块今天开工。' }, { author: 'Don', time: 54.2, text: '定价方案会配合安全卖点调整。' }, { author: 'Dieter', time: 54.5, text: '体验层可以延后但需要预留接口。' }],
-    history: [{ time: 53.2, action: '会议召开' }, { time: 53.5, action: '投票通过决策' }, { time: 54, action: '归档纪要文档' }] },
-  { id: 't15', eventId: 'T-15', t: 55,    type: '文档更新', contributor: 'Don',      title: '市场分析报告 v1',           detail: '整合竞品数据、用户调研和定价建议。',               priority: 'normal', branch: 'Market',       dependsOn: ['t2'],
-    attachments: [{ type: 'doc', name: 'market-report-v1.pdf', summary: '28 页完整市场分析报告' }],
-    comments: [{ author: 'Director', time: 56, text: '定价建议部分很扎实，可以作为投资人材料的附件。' }],
-    history: [{ time: 55, action: '发布 v1' }, { time: 56, action: 'Director 审阅通过' }] },
-  { id: 't16', eventId: 'T-16', t: 56,    type: '代码上传', contributor: 'Linus',    title: 'BYOK 密钥存储模块',         detail: '本地加密密钥缓存 + 异步同步边界。',               priority: 'core',   branch: 'Engineering',  dependsOn: ['t6'],
-    attachments: [{ type: 'code', name: 'keystore.ts', diff: '+234 -12', hash: 'c9d4e56' }, { type: 'code', name: 'keystore.test.ts', diff: '+187 -0', hash: 'c9d4e56' }],
-    comments: [{ author: 'Alan', time: 57, text: '测试覆盖率不错，加密算法选型是否需要安全审计？' }, { author: 'Linus', time: 57.5, text: '用的 AES-256-GCM，业界标准，审计可以后续安排。' }],
-    history: [{ time: 56, action: '创建 PR #18' }, { time: 57, action: 'Code Review 通过' }, { time: 58, action: 'PR 合并' }] },
-  { id: 't17', eventId: 'T-17', t: 58,    type: '内部沟通', contributor: 'Dieter',   title: 'UI 细节微调讨论',           detail: '字号、行高、卡片圆角等细节对齐。',                 priority: 'low',    branch: 'Design' },
-  { id: 't18', eventId: 'T-18', t: 70,    type: '文档更新', contributor: 'Dieter',   title: '设计规范 v1.0',             detail: '完成色板、字体、间距、组件库基础文档。',           priority: 'normal', branch: 'Design',       dependsOn: ['t3'],
-    attachments: [{ type: 'doc', name: 'design-system-v1.md', summary: '色板、字体、间距、组件库规范' }, { type: 'design', name: 'component-library.fig', summary: 'Figma 组件库文件' }],
-    comments: [{ author: 'Alan', time: 71, text: '规范很完整，建议补充暗色模式变量。' }],
-    history: [{ time: 70, action: '发布 v1.0' }, { time: 71, action: '标记暗色模式为待办' }] },
-  { id: 't7',  eventId: 'T-07', t: 75.6,  type: '汇报记录', contributor: 'Alan',     title: '阶段汇报 v0.1',            detail: '汇总进度、风险、下一步和需要用户决策的事项。',     priority: 'core',   branch: 'Main',         dependsOn: ['t6', 't16'],
-    attachments: [{ type: 'doc', name: 'sprint-report-v0.1.md', summary: '阶段汇报：进度 72%、3 项风险、5 项待决策' }, { type: 'link', name: '进度仪表盘', summary: '实时项目进度看板链接' }],
-    comments: [{ author: 'Director', time: 76, text: '报告清晰。风险 #2 密钥轮换需要在下个冲刺优先处理。' }, { author: 'Alan', time: 76.5, text: '已标记为下阶段 P0，Linus 会跟进。' }],
-    history: [{ time: 75.6, action: '提交汇报' }, { time: 76, action: 'Director 审阅' }, { time: 76.5, action: '标记后续行动项' }] },
-  { id: 't19', eventId: 'T-19', t: 78,    type: '内部沟通', contributor: 'All',      title: '项目回顾 & 庆祝',           detail: '全员频道分享阶段成果，规划下一冲刺。',             priority: 'low',    branch: 'Main' },
-];
+const createStableIdPart = (value = '') => String(value || 'project')
+  .toLowerCase()
+  .replace(/[^a-z0-9]+/g, '_')
+  .replace(/^_+|_+$/g, '')
+  .slice(0, 36) || 'project';
 
-const PROJECT_BRANCHES = [
-  { id: 'Design', owner: 'Dieter', top: 34, color: '#b9782b', progress: 64 },
-  { id: 'Engineering', owner: 'Linus', top: 58, color: '#8f1e18', progress: 72 },
-  { id: 'Market', owner: 'Don', top: 82, color: '#59684b', progress: 46 },
-];
-
-const EVENT_TYPE_STYLES = {
-  创建: 'bg-[#251b13] text-[#efe2bd]',
-  分析: 'bg-[#59684b] text-white',
-  代码上传: 'bg-[#1b3341] text-white',
-  文档更新: 'bg-[#b9782b] text-white',
-  重要决策: 'bg-[#8f1e18] text-white',
-  汇报记录: 'bg-[#6b4f87] text-white',
-  内部沟通: 'bg-[#d8c99f] text-[#251b13]',
+const createProjectId = (name = 'project') => {
+  const slug = createStableIdPart(name);
+  const randomPart = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID().slice(0, 8)
+    : `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+  return `project_${slug}_${randomPart}`;
 };
 
-Object.assign(EVENT_TYPE_STYLES, {
-  'Project Approved': 'bg-[#251b13] text-[#efe2bd]',
-  'Leader Confirmed': 'bg-[#8f1e18] text-white',
-  'Leader Assignment': 'bg-[#1b3341] text-white',
-  'Assignment Ack': 'bg-[#59684b] text-white',
-  'Peer Handoff': 'bg-[#b9782b] text-white',
-  'Peer Handoff Ack': 'bg-[#59684b] text-white',
-  'Change Discussion': 'bg-[#d8c99f] text-[#251b13]',
-  'Change Confirmed': 'bg-[#8f1e18] text-white',
-  'Change Sync': 'bg-[#59684b] text-white',
-  'Work Pulse': 'bg-[#6b4f87] text-white',
-  'Daily Report': 'bg-[#6b4f87] text-white',
-  'Task Completed': 'bg-green-700 text-white',
-});
+const PROJECT_TIMELINE_EVENTS = [];
 
 function PantheonAvatar({ agent }) {
   const [broken, setBroken] = useState(false);
@@ -1486,6 +1266,14 @@ export default function EngineWorkspace() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState('deployment');
   const [showPrimaryKey, setShowPrimaryKey] = useState(false);
+  const [healthCheck, setHealthCheck] = useState({
+    running: false,
+    lastRunAt: null,
+    baseUrl: loadBackendBaseUrl(),
+    rows: [],
+    summary: null,
+    error: null,
+  });
 
   const [marketSearch, setMarketSearch] = useState('');
   const [marketCategory, setMarketCategory] = useState('All');
@@ -1505,18 +1293,19 @@ export default function EngineWorkspace() {
   const [initiationPhase, setInitiationPhase] = useState('discussion');
   const [initiationStep, setInitiationStep] = useState('brief');
   const [selectedInitiationMemberId, setSelectedInitiationMemberId] = useState('mira');
+  const [initiationProjectId, setInitiationProjectId] = useState(() => createProjectId('Roundtable Initiation System'));
   const [selectedLeaderCandidateId, setSelectedLeaderCandidateId] = useState(null);
   const [initiationMeetingSession, setInitiationMeetingSession] = useState(null);
-  const [initiationActionDrafts, setInitiationActionDrafts] = useState(() => defaultInitiationActionDrafts('Clickable product mock + initiation record'));
+  const [initiationActionDrafts, setInitiationActionDrafts] = useState(() => defaultInitiationActionDrafts('the first execution artifact'));
   const [initiationConfirmedTeamIds, setInitiationConfirmedTeamIds] = useState(['jobs', 'turing', 'curie', 'confucius']);
   const [selectedInitiationClarificationQuestionId, setSelectedInitiationClarificationQuestionId] = useState(null);
   const [initiationClarificationDraft, setInitiationClarificationDraft] = useState('I will clarify ownership during this meeting: each Agent should state the first artifact they can own, and I will confirm the final assignment before approval.');
   const [initiationDraft, setInitiationDraft] = useState({
-    name: 'Roundtable Initiation System',
-    summary: '让项目必须经过立项圆桌，讨论清楚人、事、产出之后才进入 dashboard。',
-    intent: '做一个真实的项目发起流程：先描述项目，再邀请参会人，然后召开强制立项会议。',
-    output: 'Clickable product mock + initiation record',
-    reason: '现在 dashboard 的加号需要有真正的立项路径，而不是直接生成项目。',
+    name: '',
+    summary: '',
+    intent: '',
+    output: 'the first execution artifact',
+    reason: '',
     visibility: 'invite',
   });
   const [initiationInviteIds, setInitiationInviteIds] = useState(['jobs', 'turing', 'curie', 'confucius']);
@@ -1528,7 +1317,7 @@ export default function EngineWorkspace() {
   const [roomIntentions, setRoomIntentions] = useState([]);
   const [roomSpeaker, setRoomSpeaker] = useState(null);
   const [roomTranscript, setRoomTranscript] = useState([
-    { id: 'r0', speaker: 'System', role: 'System', text: '会议室已准备好。当前议题：确认下一轮项目推进方式。', score: 0 },
+    { id: 'r0', speaker: 'System', role: 'System', text: 'Meeting room ready.', score: 0 },
   ]);
   const [meetingStartTime, setMeetingStartTime] = useState(null);
   const [meetingElapsed, setMeetingElapsed] = useState(0);
@@ -1537,12 +1326,12 @@ export default function EngineWorkspace() {
   const [chatMessages, setChatMessages] = useState(loadInitialChatMessages);
   const [chatInput, setChatInput] = useState('');
   const [managerChangeDraft, setManagerChangeDraft] = useState({
-    text: '@all add manager-facing release notes packet before the next evidence review',
+    text: '',
     mode: 'dual',
   });
   const [managerAssignmentDraft, setManagerAssignmentDraft] = useState({
-    targetAgentId: 'turing',
-    text: 'prepare the next manager-review evidence packet',
+    targetAgentId: '',
+    text: '',
   });
   const [showMentionPicker, setShowMentionPicker] = useState(false);
   const [mentionFilter, setMentionFilter] = useState('');
@@ -1724,17 +1513,8 @@ export default function EngineWorkspace() {
     setTlVisibleNodes(new Set());
     setTlVisibleLines(new Set());
 
-    const eventTypes = ['创建', '分析', '内部沟通', '文档更新', '代码上传', '重要决策', '汇报记录'];
-    const scaleProfiles = {
-      hour:  { priorities: ['core', 'normal', 'low'], types: eventTypes },
-      day:   { priorities: ['core', 'normal'], types: ['创建', '分析', '文档更新', '代码上传', '重要决策', '汇报记录'] },
-      week:  { priorities: ['core', 'normal'], types: ['创建', '文档更新', '代码上传', '重要决策', '汇报记录'] },
-      month: { priorities: ['core'], types: ['创建', '重要决策', '汇报记录'] },
-    };
-    const scaleProfile = scaleProfiles[timelineScale] || scaleProfiles.day;
-    const visible = PROJECT_TIMELINE_EVENTS.filter(e => scaleProfile.priorities.includes(e.priority) && scaleProfile.types.includes(e.type));
+    const visible = [];
     const eMap = {};
-    PROJECT_TIMELINE_EVENTS.forEach(e => { eMap[e.id] = e; });
 
     const conns = [];
     const byBranch = {};
@@ -1888,6 +1668,177 @@ export default function EngineWorkspace() {
       return payload;
     } finally {
       clearTimeout(timeout);
+    }
+  };
+
+  const runSettingsHealthCheck = async ({ workflow = false } = {}) => {
+    if (healthCheck.running) return;
+    const baseUrl = (backendStation.draftBaseUrl || backendStation.baseUrl || DEFAULT_AGENT_BACKEND_URL).trim().replace(/\/+$/, '');
+    const now = new Date().toISOString();
+    const rows = [
+      { id: 'backend', label: 'Backend worker station', status: 'pending', detail: 'Waiting for /workers/autonomous/status.' },
+      { id: 'provider', label: 'Model provider config', status: 'pending', detail: 'Waiting for /llm/status.' },
+      { id: 'request', label: 'Model request loop', status: 'pending', detail: 'Waiting for /llm/test.' },
+      ...(workflow ? [
+        { id: 'workflow', label: 'Workflow smoke', status: 'pending', detail: 'Waiting to create a probe project and run one agent pulse.' },
+      ] : []),
+    ];
+    const updateRow = (id, patch) => {
+      setHealthCheck(prev => ({
+        ...prev,
+        rows: prev.rows.map(row => row.id === id ? { ...row, ...patch } : row),
+      }));
+    };
+    const failRun = (id, error) => {
+      const detail = error?.name === 'AbortError'
+        ? 'Request timed out.'
+        : error?.message || String(error);
+      updateRow(id, { status: 'fail', detail });
+      setHealthCheck(prev => ({
+        ...prev,
+        running: false,
+        summary: 'failed',
+        error: detail,
+      }));
+    };
+
+    setHealthCheck({
+      running: true,
+      lastRunAt: now,
+      baseUrl,
+      rows,
+      summary: null,
+      error: null,
+    });
+
+    let currentHealthStep = 'backend';
+    try {
+      currentHealthStep = 'backend';
+      updateRow('backend', { status: 'running', detail: `GET ${baseUrl}/workers/autonomous/status` });
+      const backendStatus = await requestAgentBackend('/workers/autonomous/status', { baseUrl, timeoutMs: 2200 });
+      updateRow('backend', {
+        status: 'pass',
+        detail: backendStatus?.scheduler?.enabled === false
+          ? 'Backend reachable. Autonomous scheduler is stopped.'
+          : 'Backend reachable. Autonomous worker status returned.',
+      });
+
+      currentHealthStep = 'provider';
+      updateRow('provider', { status: 'running', detail: `GET ${baseUrl}/llm/status` });
+      const llmStatus = await requestAgentBackend('/llm/status', { baseUrl, timeoutMs: 2200 });
+      const provider = llmStatus?.modelProvider || {};
+      updateRow('provider', {
+        status: provider.enabled && provider.configured ? 'pass' : 'fail',
+        detail: provider.enabled && provider.configured
+          ? `${provider.provider || 'provider'} / ${provider.model || 'model'} / concurrency ${provider.maxConcurrency || 'n/a'}`
+          : 'Model provider is disabled or missing configuration.',
+      });
+      if (!(provider.enabled && provider.configured)) {
+        throw new Error('Model provider is disabled or missing configuration.');
+      }
+
+      currentHealthStep = 'request';
+      updateRow('request', { status: 'running', detail: `POST ${baseUrl}/llm/test` });
+      const llmTest = await requestAgentBackend('/llm/test', {
+        method: 'POST',
+        baseUrl,
+        timeoutMs: 60000,
+        body: {
+          prompt: 'Return compact JSON only: {"ok":true,"message":"ui health loop ready"}',
+        },
+      });
+      updateRow('request', {
+        status: llmTest?.ok ? 'pass' : 'fail',
+        detail: llmTest?.ok
+          ? `Model request succeeded${llmTest.usage?.total_tokens ? `, ${llmTest.usage.total_tokens} tokens.` : '.'}`
+          : llmTest?.error || 'Model request failed.',
+      });
+      if (!llmTest?.ok) throw new Error(llmTest?.error || 'Model request failed.');
+
+      if (workflow) {
+        currentHealthStep = 'workflow';
+        updateRow('workflow', { status: 'running', detail: 'Creating probe project.' });
+        const probeId = `ui_health_${Date.now()}`;
+        const team = [
+          { id: 'turing', name: 'Alan Turing', role: 'Leader', skill: 'systems decomposition' },
+          { id: 'curie', name: 'Marie Curie', role: 'Researcher', skill: 'evidence review' },
+          { id: 'jobs', name: 'Steve Jobs', role: 'Reviewer', skill: 'product framing' },
+        ];
+        const initiate = await requestAgentBackend('/projects/initiate', {
+          method: 'POST',
+          baseUrl,
+          timeoutMs: 70000,
+          body: {
+            projectId: probeId,
+            name: 'UI Health Research Probe',
+            brief: 'Smoke-test whether the Harness backend can drive a compact research project through model intent, group chat, and timeline evidence.',
+            team,
+            selectedLeaderId: 'turing',
+            reviewerId: 'jobs',
+            tasks: [
+              {
+                id: `${probeId}_brief`,
+                text: 'Draft the first-page research brief and list evidence gaps.',
+                assignee: 'Marie Curie',
+                status: 'pending',
+              },
+            ],
+            autonomy: { enabled: false, cadence: 'manual' },
+          },
+        });
+        updateRow('workflow', { status: 'running', detail: 'Submitting leader assignment into group chat.' });
+        await requestAgentBackend(`/projects/${encodeURIComponent(probeId)}/chat`, {
+          method: 'POST',
+          baseUrl,
+          timeoutMs: 70000,
+          body: {
+            text: '@Alan Turing assign Marie Curie to produce the first research timeline artifact, then ask Steve Jobs to review framing.',
+            author: 'Director',
+            authorId: 'director',
+            channelId: 'main',
+          },
+        });
+        updateRow('workflow', { status: 'running', detail: 'Running one agent work-cycle and loading manager flow graph.' });
+        const work = await requestAgentBackend(`/projects/${encodeURIComponent(probeId)}/agents/${encodeURIComponent('curie')}/work-cycle`, {
+          method: 'POST',
+          baseUrl,
+          timeoutMs: 70000,
+          body: {
+            trigger: 'ui-health-smoke',
+            cadence: 'manual',
+            source: 'settings-health-check',
+          },
+        });
+        const graph = await requestAgentBackend(`/projects/${encodeURIComponent(probeId)}/manager-flow-graph`, {
+          baseUrl,
+          timeoutMs: 6000,
+        });
+        const project = work?.project || initiate?.project || {};
+        const modelIntentCount = project.modelIntentLedger?.length || 0;
+        const workLedgerCount = project.agentWorkerLedger?.length || 0;
+        const latestTimelineTool = project.logs?.[0]?.timelineSubmission?.tool || null;
+        const graphNodeCount = graph?.nodes?.length || graph?.summary?.nodeCount || 0;
+        const workflowOk = modelIntentCount > 0
+          && workLedgerCount > 0
+          && latestTimelineTool === 'manager-flow-timeline'
+          && graphNodeCount > 0;
+        updateRow('workflow', {
+          status: workflowOk ? 'pass' : 'fail',
+          detail: workflowOk
+            ? `Intent ${modelIntentCount}, agent work ${workLedgerCount}, flow nodes ${graphNodeCount}.`
+            : 'Workflow ran but did not produce the expected intent/work/timeline evidence.',
+        });
+        if (!workflowOk) throw new Error('Workflow smoke did not produce expected evidence.');
+      }
+
+      setHealthCheck(prev => ({
+        ...prev,
+        running: false,
+        summary: workflow ? 'workflow-pass' : 'quick-pass',
+        error: null,
+      }));
+    } catch (error) {
+      failRun(currentHealthStep || (workflow ? 'workflow' : 'request'), error);
     }
   };
 
@@ -3089,9 +3040,11 @@ export default function EngineWorkspace() {
     setActiveRoute('project_detail');
   };
   const navToInitiation = () => {
+    const nextProjectId = createProjectId(initiationDraft.name || 'project');
     setMarketMode('initiation');
     setContractProjectPickerAgentId(null);
     setSelectedProjectId(null);
+    setInitiationProjectId(nextProjectId);
     setInitiationStep('brief');
     setInitiationPhase('discussion');
     setSelectedInitiationMemberId('jobs');
@@ -3554,7 +3507,7 @@ export default function EngineWorkspace() {
     setActiveRoute('project_detail');
   };
   const buildInitiationKickoffPayload = (now = new Date().toISOString()) => {
-    const projectId = 'p_roundtable_001';
+    const projectId = initiationProjectId;
     const invitedMembers = initiationRosterMembers;
     const taskText = `${initiationDraft.name} ${initiationDraft.summary} ${initiationDraft.intent} ${initiationDraft.output} ${initiationDraft.reason}`;
     const skillPlan = createRoundtablePlan(invitedMembers.map(member => member.id), taskText);
@@ -3596,32 +3549,29 @@ export default function EngineWorkspace() {
     };
     let meeting = null;
 
-    if (backendStation.connectionStatus === 'online') {
-      try {
-        const payload = await requestAgentBackend('/kickoff-meetings', {
-          method: 'POST',
-          body: meetingPayload,
-          timeoutMs: 1800,
-        });
-        meeting = payload.meeting;
-        setBackendStation(prev => ({
-          ...prev,
-          connectionStatus: 'online',
-          lastAction: 'Kickoff meeting session created through backend',
-          error: null,
-        }));
-      } catch (error) {
-        setBackendStation(prev => ({
-          ...prev,
-          connectionStatus: 'offline',
-          lastAction: 'Backend kickoff meeting failed, used local session',
-          error: error.name === 'AbortError' ? 'Backend kickoff meeting command timed out.' : error.message || String(error),
-        }));
-      }
-    }
-
-    if (!meeting) {
-      meeting = createKickoffMeetingSession(meetingPayload);
+    try {
+      const payload = await requestAgentBackend('/kickoff-meetings', {
+        method: 'POST',
+        body: meetingPayload,
+        timeoutMs: 60_000,
+      });
+      meeting = payload.meeting;
+      setBackendStation(prev => ({
+        ...prev,
+        connectionStatus: 'online',
+        lastAction: 'Kickoff meeting session created through backend',
+        error: null,
+      }));
+    } catch (error) {
+      setBackendStation(prev => ({
+        ...prev,
+        connectionStatus: 'offline',
+        lastAction: 'Kickoff meeting failed',
+        error: error.name === 'AbortError'
+          ? 'Backend or model provider timed out. No local mock meeting was created.'
+          : `${error.message || String(error)} No local mock meeting was created.`,
+      }));
+      return;
     }
 
     setInitiationMeetingSession(meeting);
@@ -3667,41 +3617,33 @@ export default function EngineWorkspace() {
     const now = new Date().toISOString();
     let meeting = null;
 
-    if (backendStation.connectionStatus === 'online') {
-      try {
-        const payload = await requestAgentBackend(`/kickoff-meetings/${encodeURIComponent(initiationMeetingSession.id)}/clarify`, {
-          method: 'POST',
-          body: {
-            questionId: roleQuestion?.id,
-            text,
-            now,
-          },
-          timeoutMs: 1800,
-        });
-        meeting = payload.meeting;
-        setBackendStation(prev => ({
-          ...prev,
-          connectionStatus: 'online',
-          lastAction: 'Kickoff meeting clarification saved through backend',
-          error: null,
-        }));
-      } catch (error) {
-        setBackendStation(prev => ({
-          ...prev,
-          connectionStatus: 'offline',
-          lastAction: 'Backend kickoff clarification failed, used local session',
-          error: error.name === 'AbortError' ? 'Backend kickoff clarification timed out.' : error.message || String(error),
-        }));
-      }
-    }
-
-    if (!meeting) {
-      meeting = addKickoffMeetingClarification({
-        meeting: initiationMeetingSession,
-        questionId: roleQuestion?.id,
-        text,
-        now,
+    try {
+      const payload = await requestAgentBackend(`/kickoff-meetings/${encodeURIComponent(initiationMeetingSession.id)}/clarify`, {
+        method: 'POST',
+        body: {
+          questionId: roleQuestion?.id,
+          text,
+          now,
+        },
+        timeoutMs: 20_000,
       });
+      meeting = payload.meeting;
+      setBackendStation(prev => ({
+        ...prev,
+        connectionStatus: 'online',
+        lastAction: 'Kickoff meeting clarification saved through backend',
+        error: null,
+      }));
+    } catch (error) {
+      setBackendStation(prev => ({
+        ...prev,
+        connectionStatus: 'offline',
+        lastAction: 'Kickoff clarification failed',
+        error: error.name === 'AbortError'
+          ? 'Backend clarification timed out. No local mock clarification was saved.'
+          : `${error.message || String(error)} No local mock clarification was saved.`,
+      }));
+      return;
     }
 
     setInitiationMeetingSession(meeting);
@@ -3713,7 +3655,6 @@ export default function EngineWorkspace() {
   };
 
   const approveInitiationProject = async () => {
-    const projectId = 'p_roundtable_001';
     const approvedAt = new Date().toISOString();
     const kickoffPayload = buildInitiationKickoffPayload(approvedAt);
     const selectedTeamIds = Array.from(new Set([
@@ -3728,80 +3669,67 @@ export default function EngineWorkspace() {
     };
     let kickoffResult = null;
 
-    if (backendStation.connectionStatus === 'online') {
-      try {
-        const sessionId = initiationMeetingSession?.id;
-        kickoffResult = sessionId ? await requestAgentBackend(`/kickoff-meetings/${encodeURIComponent(sessionId)}/approve`, {
-          method: 'POST',
-          body: {
-            selectedLeaderId: selectedLeaderCandidateId || initiationMeetingSession.recommendedLeaderId || undefined,
-            selectedTeamIds,
-            reviewerId: kickoffPayload.reviewerId,
-            tasks: kickoffPayload.tasks,
-            now: approvedAt,
-            language: activeLanguage,
-          },
-          timeoutMs: 2400,
-        }) : await requestAgentBackend('/projects/initiate', {
-          method: 'POST',
-          body: confirmedKickoffPayload,
-          timeoutMs: 2200,
-        });
-        if (kickoffResult.meeting) {
-          setInitiationMeetingSession(kickoffResult.meeting);
-        }
-        setBackendStation(prev => ({
-          ...prev,
-          connectionStatus: 'online',
-          lastAction: sessionId ? 'Kickoff meeting approved through backend' : 'Initiation created through backend',
-          lastProjectSyncAt: new Date().toISOString(),
-          projectSyncCount: (prev.projectSyncCount || 0) + 1,
-          error: null,
-        }));
-        applyBackendManagerDashboardPayload(kickoffResult);
-      } catch (error) {
-        setBackendStation(prev => ({
-          ...prev,
-          connectionStatus: 'offline',
-          lastAction: 'Backend initiation failed, used local runtime',
-          error: error.name === 'AbortError' ? 'Backend initiation command timed out.' : error.message || String(error),
-        }));
-      }
-    }
-
-    if (!kickoffResult) {
-      kickoffResult = initiationMeetingSession ? approveKickoffMeetingSession({
-        meeting: initiationMeetingSession,
-        selectedLeaderId: selectedLeaderCandidateId || initiationMeetingSession.recommendedLeaderId || undefined,
-        selectedTeamIds,
-        reviewerId: kickoffPayload.reviewerId,
-        tasks: kickoffPayload.tasks,
-        now: approvedAt,
-        language: activeLanguage,
-      }) : createKickoffProjectFromMeeting(confirmedKickoffPayload);
+    try {
+      const sessionId = initiationMeetingSession?.id;
+      kickoffResult = sessionId ? await requestAgentBackend(`/kickoff-meetings/${encodeURIComponent(sessionId)}/approve`, {
+        method: 'POST',
+        body: {
+          selectedLeaderId: selectedLeaderCandidateId || initiationMeetingSession.recommendedLeaderId || undefined,
+          selectedTeamIds,
+          reviewerId: kickoffPayload.reviewerId,
+          tasks: kickoffPayload.tasks,
+          now: approvedAt,
+          language: activeLanguage,
+        },
+        timeoutMs: 60_000,
+      }) : await requestAgentBackend('/projects/initiate', {
+        method: 'POST',
+        body: confirmedKickoffPayload,
+        timeoutMs: 60_000,
+      });
       if (kickoffResult.meeting) {
         setInitiationMeetingSession(kickoffResult.meeting);
       }
+      setBackendStation(prev => ({
+        ...prev,
+        connectionStatus: 'online',
+        lastAction: sessionId ? 'Kickoff meeting approved through backend' : 'Initiation created through backend',
+        lastProjectSyncAt: new Date().toISOString(),
+        projectSyncCount: (prev.projectSyncCount || 0) + 1,
+        error: null,
+      }));
+      applyBackendManagerDashboardPayload(kickoffResult);
+    } catch (error) {
+      setBackendStation(prev => ({
+        ...prev,
+        connectionStatus: 'offline',
+        lastAction: 'Project approval failed',
+        error: error.name === 'AbortError'
+          ? 'Backend or model provider timed out. No local mock project was created.'
+          : `${error.message || String(error)} No local mock project was created.`,
+      }));
+      return;
     }
 
     const projectReadyForWork = {
       ...kickoffResult.project,
       language: kickoffResult.project?.language || activeLanguage,
     };
+    const createdProjectId = projectReadyForWork.id || kickoffPayload.projectId;
 
     setProjects(prev => {
-      const exists = prev.some(p => p.id === projectId);
+      const exists = prev.some(p => p.id === createdProjectId);
       return exists
-        ? prev.map(p => (p.id === projectId ? projectReadyForWork : p))
+        ? prev.map(p => (p.id === createdProjectId ? projectReadyForWork : p))
         : [projectReadyForWork, ...prev];
     });
     setChatMessages(prev => mergeProjectMessages(
-      prev.filter(message => (message.projectId || DEFAULT_CHAT_PROJECT_ID) !== projectId),
+      prev.filter(message => (message.projectId || DEFAULT_CHAT_PROJECT_ID) !== createdProjectId),
       kickoffResult.messages,
     ));
 
     setInitiationPhase('approved');
-    setSelectedProjectId(projectId);
+    setSelectedProjectId(createdProjectId);
     setProjectMode('dashboard');
     setMeetingStartTime(null);
     setMeetingElapsed(0);
@@ -3813,9 +3741,7 @@ export default function EngineWorkspace() {
         id: `approved_project_open_${Date.now()}`,
         speaker: 'System',
         role: 'System',
-        text: activeLanguage === 'zh'
-          ? `${projectReadyForWork.name} 已批准。项目圆桌已开放，可开始第一次执行讨论。`
-          : `${projectReadyForWork.name} is approved. The project roundtable is open for the first execution discussion.`,
+        text: `${projectReadyForWork.name} is approved. The project roundtable is open for the first execution discussion.`,
         score: 0,
       },
       ...(kickoffResult.messages || []).slice(0, 8).map((message, index) => ({
@@ -3987,8 +3913,8 @@ export default function EngineWorkspace() {
         id: agent.id,
         name: agent.name,
         role: agent.role,
-        target: skill ? describeSkillIntent(agent.id, text, skillPlan) : (index === 0 ? '项目推进' : index === 1 ? '技术风险' : '体验判断'),
-        origin: text.slice(0, 28) || '用户会议发言',
+        target: skill ? describeSkillIntent(agent.id, text, skillPlan) : (index === 0 ? 'Project progress' : index === 1 ? 'Technical risk' : 'Experience judgment'),
+        origin: text.slice(0, 28) || 'User meeting input',
         score,
         rank: match?.index ?? 99,
         speakerRank,
@@ -4006,13 +3932,13 @@ export default function EngineWorkspace() {
         const speakerSkill = getPersonSkill(intent.id);
         const skillReply = speakerSkill ? buildSkillRoomReply(intent.id, text, intent) : '';
         const replyLead = speakerSkill?.motto || intent.target;
-        const replyBody = speakerSkill?.principles?.[0] || '先把问题拆成可验证的事实，再谈方案。';
+        const replyBody = speakerSkill?.principles?.[0] || 'Break the issue into verifiable facts before proposing a solution.';
         setRoomTranscript(prev => [...prev, {
           id: `${intent.id}_${Date.now()}_${index}`,
           speaker: intent.name,
           role: intent.role,
           score: intent.score,
-          text: skillReply || `「${replyLead}」——${intent.target}已到发言阈值。针对「${intent.origin}」：${replyBody}`,
+          text: skillReply || `${replyLead}: ${intent.target} is ready to respond. For "${intent.origin}": ${replyBody}`,
         }]);
         const yieldTimer = setTimeout(() => {
           setRoomIntentions(prev => prev.map(i => i.id === intent.id ? { ...i, status: 'yielded' } : i));
@@ -4173,7 +4099,7 @@ export default function EngineWorkspace() {
   const createMockChannel = () => {
     const nextIndex = chatChannels.length + 1;
     const id = `room_${nextIndex}`;
-    setChatChannels(prev => [...prev, { id, name: `Room ${nextIndex}`, description: '公开频道，项目成员固定可见。', category: 'text', unread: 0 }]);
+    setChatChannels(prev => [...prev, { id, name: `Room ${nextIndex}`, description: 'Public project channel visible to project members.', category: 'text', unread: 0 }]);
     setActiveChannelId(id);
   };
 
@@ -4403,6 +4329,7 @@ export default function EngineWorkspace() {
       { id: 'privacy', label: t('settings.privacy'), icon: Shield },
       { id: 'workspace', label: t('settings.workspace'), icon: SlidersHorizontal },
       { id: 'integrations', label: t('settings.integrations'), icon: PlugZap },
+      { id: 'health', label: 'Health', icon: Activity },
     ];
 
     const fieldClass = 'w-full border border-[#d1d0c9] bg-[#f8f6ee] px-3 py-2 font-mono text-xs text-[#1a1a1a] outline-none transition-colors focus:border-[#1a1a1a]';
@@ -4426,13 +4353,38 @@ export default function EngineWorkspace() {
       </label>
     );
 
-    const SmallButton = ({ children }) => (
-      <button className="border border-[#1a1a1a] bg-[#1a1a1a] px-3 py-2 font-mono text-[10px] uppercase tracking-widest text-[#f5f4f0] hover:bg-[#3a3429] transition-colors">
+    const SmallButton = ({ children, onClick, disabled = false }) => (
+      <button
+        type="button"
+        onClick={onClick}
+        disabled={disabled}
+        className={`border border-[#1a1a1a] bg-[#1a1a1a] px-3 py-2 font-mono text-[10px] uppercase tracking-widest text-[#f5f4f0] transition-colors ${disabled ? 'cursor-not-allowed opacity-50' : 'hover:bg-[#3a3429]'}`}
+      >
         {children}
       </button>
     );
 
     const tabTitle = navItems.find(item => item.id === settingsTab)?.label;
+    const healthRows = healthCheck.rows.length ? healthCheck.rows : [
+      { id: 'backend', label: 'Backend worker station', status: 'idle', detail: 'Not checked yet.' },
+      { id: 'provider', label: 'Model provider config', status: 'idle', detail: 'Not checked yet.' },
+      { id: 'request', label: 'Model request loop', status: 'idle', detail: 'Not checked yet.' },
+      { id: 'workflow', label: 'Workflow smoke', status: 'idle', detail: 'Run workflow smoke when you want to validate autonomous collaboration.' },
+    ];
+    const healthStatusClass = {
+      pass: 'border-green-700 bg-green-50 text-green-800',
+      fail: 'border-red-800 bg-red-50 text-red-800',
+      running: 'border-[#8f1e18] bg-[#f7edcf] text-[#8f1e18]',
+      pending: 'border-[#d1d0c9] bg-[#f8f6ee] text-[#7d786b]',
+      idle: 'border-[#d1d0c9] bg-[#f8f6ee] text-[#7d786b]',
+    };
+    const healthStatusLabel = {
+      pass: 'Pass',
+      fail: 'Fail',
+      running: 'Running',
+      pending: 'Queued',
+      idle: 'Idle',
+    };
 
     return (
       <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/45 px-6 py-6">
@@ -4481,16 +4433,16 @@ export default function EngineWorkspace() {
               {settingsTab === 'deployment' && (
                 <div className="space-y-6">
                   <div className="grid grid-cols-2 gap-5">
-                    <SettingField label="部署模式" hint="用于切换云端 API、企业网关、本地模型服务或混合回退。">
+                    <SettingField label="Deployment Mode" hint="Choose cloud API, enterprise gateway, local model service, or hybrid fallback.">
                       <select className={fieldClass} defaultValue="gateway">
-                        <option value="gateway">统一 API Gateway</option>
+                        <option value="gateway">Unified API Gateway</option>
                         <option value="openai-compatible">OpenAI Compatible Endpoint</option>
                         <option value="azure">Azure OpenAI</option>
                         <option value="gemini">Google Gemini API</option>
                         <option value="local">Local Runtime / Ollama</option>
                       </select>
                     </SettingField>
-                    <SettingField label="环境" hint="Mock 阶段先预留开发、预发和生产环境切换。">
+                    <SettingField label="Environment" hint="Switch between development, staging, and production.">
                       <select className={fieldClass} defaultValue="dev">
                         <option value="dev">Development</option>
                         <option value="staging">Staging</option>
@@ -4498,30 +4450,30 @@ export default function EngineWorkspace() {
                       </select>
                     </SettingField>
                   </div>
-                  <SettingField label="API Base URL" hint="可填写自建网关、反向代理或云厂商 endpoint。">
+                  <SettingField label="API Base URL" hint="Use a self-hosted gateway, reverse proxy, or model provider endpoint.">
                     <input className={fieldClass} defaultValue="https://api.halloffame.studio/v1" />
                   </SettingField>
                   <div className="grid grid-cols-3 gap-5">
-                    <SettingField label="请求超时">
+                    <SettingField label="Request Timeout">
                       <input className={fieldClass} defaultValue="60s" />
                     </SettingField>
-                    <SettingField label="并发上限">
+                    <SettingField label="Concurrency Limit">
                       <input className={fieldClass} defaultValue="8" />
                     </SettingField>
-                    <SettingField label="失败重试">
+                    <SettingField label="Retry Limit">
                       <input className={fieldClass} defaultValue="2" />
                     </SettingField>
                   </div>
-                  <ToggleField label="启用健康检查" hint="在进入会议室、市场检索、长任务运行前检查 API 可用性。" defaultChecked />
-                  <ToggleField label="启用流式输出" hint="Roundtable、Chat 与 Agent 回复按 token 流式展示。" defaultChecked />
+                  <ToggleField label="Enable Health Checks" hint="Check backend and model availability before meetings, search, and long-running tasks." defaultChecked />
+                  <ToggleField label="Enable Streaming Output" hint="Display Agent replies progressively when supported." defaultChecked />
                 </div>
               )}
 
               {settingsTab === 'keys' && (
                 <div className="space-y-6">
                   <div className="grid grid-cols-[1fr_auto] gap-3">
-                    <SettingField label="Primary API Key" hint="用于默认模型请求。真实版本应写入安全存储，不进入前端 bundle。">
-                      <input className={fieldClass} type={showPrimaryKey ? 'text' : 'password'} defaultValue="sk-hofs_live_demo_xxxxxxxxxxxx" />
+                    <SettingField label="Primary API Key" hint="Used by the local backend for model requests; never bundle secrets into the frontend.">
+                      <input className={fieldClass} type={showPrimaryKey ? 'text' : 'password'} placeholder="Configured on the local backend" />
                     </SettingField>
                     <button onClick={() => setShowPrimaryKey(!showPrimaryKey)} className="mt-6 h-[34px] border border-[#d1d0c9] bg-[#f8f6ee] px-3 text-[#555047] hover:border-[#1a1a1a] hover:text-black" aria-label="Toggle API key visibility">
                       {showPrimaryKey ? <EyeOff size={16} /> : <Eye size={16} />}
@@ -4529,21 +4481,21 @@ export default function EngineWorkspace() {
                   </div>
                   <div className="grid grid-cols-2 gap-5">
                     <SettingField label="Gemini API Key">
-                      <input className={fieldClass} type="password" defaultValue="AIzaSy_demo_xxxxxxxxxxxxx" />
+                      <input className={fieldClass} type="password" placeholder="Configured on the local backend" />
                     </SettingField>
                     <SettingField label="Azure / Enterprise Token">
                       <input className={fieldClass} type="password" placeholder="Paste token..." />
                     </SettingField>
                   </div>
                   <div className="grid grid-cols-2 gap-5">
-                    <SettingField label="Key 作用域">
+                    <SettingField label="Key Scope">
                       <select className={fieldClass} defaultValue="workspace">
                         <option value="personal">Personal</option>
                         <option value="workspace">Workspace</option>
                         <option value="project">Project Only</option>
                       </select>
                     </SettingField>
-                    <SettingField label="轮换提醒">
+                    <SettingField label="Rotation Reminder">
                       <select className={fieldClass} defaultValue="30">
                         <option value="14">Every 14 days</option>
                         <option value="30">Every 30 days</option>
@@ -4551,15 +4503,15 @@ export default function EngineWorkspace() {
                       </select>
                     </SettingField>
                   </div>
-                  <ToggleField label="从环境变量读取 Key" hint="支持 HOF_API_KEY、GEMINI_API_KEY、AZURE_OPENAI_API_KEY。" defaultChecked />
-                  <ToggleField label="保存前验证凭证" hint="保存 Key 前自动发起轻量 ping 请求。" defaultChecked />
+                  <ToggleField label="Read Keys From Environment" hint="Supports HOF_API_KEY, GEMINI_API_KEY, and AZURE_OPENAI_API_KEY." defaultChecked />
+                  <ToggleField label="Validate Before Saving" hint="Run a lightweight ping before saving credentials." defaultChecked />
                 </div>
               )}
 
               {settingsTab === 'models' && (
                 <div className="space-y-6">
                   <div className="grid grid-cols-2 gap-5">
-                    <SettingField label="默认对话模型">
+                    <SettingField label="Default Chat Model">
                       <select className={fieldClass} defaultValue="gpt-4.1">
                         <option value="gpt-4.1">GPT-4.1</option>
                         <option value="gemini-2.5-pro">Gemini 2.5 Pro</option>
@@ -4567,7 +4519,7 @@ export default function EngineWorkspace() {
                         <option value="local">Local Model</option>
                       </select>
                     </SettingField>
-                    <SettingField label="深度推理模型">
+                    <SettingField label="Deep Reasoning Model">
                       <select className={fieldClass} defaultValue="gpt-4.1">
                         <option value="gpt-4.1">GPT-4.1</option>
                         <option value="gemini-2.5-pro">Gemini 2.5 Pro</option>
@@ -4586,25 +4538,25 @@ export default function EngineWorkspace() {
                       <input className={fieldClass} defaultValue="128k" />
                     </SettingField>
                   </div>
-                  <SettingField label="模型路由规则" hint="借鉴 Cursor 的模型选择、Gemini 的长上下文入口，按任务类型自动选择模型。">
+                  <SettingField label="Model Routing Rules" hint="Choose models by task type, context length, and reasoning depth.">
                     <textarea className={`${fieldClass} min-h-[96px] resize-none`} defaultValue={'agent_market: fast\nroundtable: reasoning\nproject_chat: default\ntimeline_analysis: long-context'} />
                   </SettingField>
-                  <ToggleField label="成本优先回退" hint="高峰或余额不足时优先切换到更低成本模型。" />
-                  <ToggleField label="为 Agent 保留独立系统提示词" hint="每个历史人物 Agent 可拥有独立 persona、rules、memory。" defaultChecked />
+                  <ToggleField label="Cost-First Fallback" hint="Switch to lower-cost models when quota or peak load requires it." />
+                  <ToggleField label="Per-Agent System Prompt" hint="Each Agent can keep an independent persona, rules, and memory." defaultChecked />
                 </div>
               )}
 
               {settingsTab === 'privacy' && (
                 <div className="space-y-6">
                   <div className="grid grid-cols-2 gap-5">
-                    <SettingField label="数据保留">
+                    <SettingField label="Data Retention">
                       <select className={fieldClass} defaultValue="30">
                         <option value="session">Session Only</option>
                         <option value="30">30 Days</option>
                         <option value="forever">Until Manual Delete</option>
                       </select>
                     </SettingField>
-                    <SettingField label="日志级别">
+                    <SettingField label="Log Level">
                       <select className={fieldClass} defaultValue="metadata">
                         <option value="off">Off</option>
                         <option value="metadata">Metadata Only</option>
@@ -4612,10 +4564,10 @@ export default function EngineWorkspace() {
                       </select>
                     </SettingField>
                   </div>
-                  <ToggleField label="关闭训练数据共享" hint="企业部署默认不把用户内容用于第三方模型训练。" defaultChecked />
-                  <ToggleField label="敏感信息自动遮罩" hint="自动遮罩 Key、邮箱、手机号、财务编号等内容。" defaultChecked />
-                  <ToggleField label="项目级访问控制" hint="项目、会议记录、Timeline 节点按成员权限隔离。" defaultChecked />
-                  <ToggleField label="导出前二次确认" hint="导出聊天记录、Agent dossier 或项目材料前确认权限。" defaultChecked />
+                  <ToggleField label="Disable Training Data Sharing" hint="Enterprise deployments should not send user content for third-party model training." defaultChecked />
+                  <ToggleField label="Redact Sensitive Information" hint="Automatically redact keys, emails, phone numbers, and financial identifiers." defaultChecked />
+                  <ToggleField label="Project-Level Access Control" hint="Isolate projects, meeting records, and timeline nodes by member permissions." defaultChecked />
+                  <ToggleField label="Confirm Before Export" hint="Confirm permissions before exporting chat logs, Agent dossiers, or project materials." defaultChecked />
                 </div>
               )}
 
@@ -4657,14 +4609,14 @@ export default function EngineWorkspace() {
                     </SettingField>
                   </div>
                   <div className="grid grid-cols-2 gap-5">
-                    <SettingField label="默认项目可见性">
+                    <SettingField label="Default Project Visibility">
                       <select className={fieldClass} defaultValue="invite">
                         <option value="private">Private</option>
                         <option value="invite">Invite Only</option>
                         <option value="workspace">Workspace</option>
                       </select>
                     </SettingField>
-                    <SettingField label="自动保存间隔">
+                    <SettingField label="Autosave Interval">
                       <select className={fieldClass} defaultValue="15">
                         <option value="5">5 seconds</option>
                         <option value="15">15 seconds</option>
@@ -4672,16 +4624,16 @@ export default function EngineWorkspace() {
                       </select>
                     </SettingField>
                   </div>
-                  <ToggleField label="启用项目 Rules" hint="类似 Cursor rules，为每个项目保存写作口径、品牌约束、输出格式。" defaultChecked />
-                  <ToggleField label="启用长期记忆" hint="类似 Gemini saved info，用于记住用户偏好、常用人设和项目背景。" />
-                  <ToggleField label="会议结束自动生成纪要" hint="Roundtable 结束后生成决策、待办、风险和分歧记录。" defaultChecked />
+                  <ToggleField label="Enable Project Rules" hint="Store writing patterns, brand constraints, and output formats per project." defaultChecked />
+                  <ToggleField label="Enable Long-Term Memory" hint="Remember user preferences, common personas, and project background." />
+                  <ToggleField label="Auto-Summarize Meetings" hint="Create decisions, tasks, risks, and blockers after a roundtable ends." defaultChecked />
                 </div>
               )}
 
               {settingsTab === 'integrations' && (
                 <div className="space-y-6">
                   <div className="grid grid-cols-2 gap-5">
-                    <SettingField label="代理 / 网络">
+                    <SettingField label="Proxy / Network">
                       <input className={fieldClass} placeholder="https://proxy.company.com:8080" />
                     </SettingField>
                     <SettingField label="Webhook URL">
@@ -4705,9 +4657,77 @@ export default function EngineWorkspace() {
                       <div className="mt-1 font-mono text-[10px] text-[#7d786b]">$120 / month</div>
                     </div>
                   </div>
-                  <ToggleField label="启用 MCP / 外部工具调用" hint="为后续文件系统、浏览器、数据库、设计工具接入预留。" defaultChecked />
-                  <ToggleField label="预算接近上限时提醒" hint="到达 80% 预算时在侧边栏和项目页提醒。" defaultChecked />
-                  <ToggleField label="错误自动上报" hint="只上报错误类型、请求 ID 和运行环境，不上报正文内容。" />
+                  <ToggleField label="Enable MCP / External Tools" hint="Reserve integration points for filesystems, browser, database, and design tools." defaultChecked />
+                  <ToggleField label="Warn Near Budget Limit" hint="Show a sidebar and project warning when usage reaches 80% of budget." defaultChecked />
+                  <ToggleField label="Automatic Error Reporting" hint="Report error type, request id, and runtime environment without message content." />
+                </div>
+              )}
+
+              {settingsTab === 'health' && (
+                <div className="space-y-6">
+                  <div className="grid gap-5 lg:grid-cols-[1.2fr_0.8fr]">
+                    <div className="border border-[#d1d0c9] bg-[#f5f4f0] p-5">
+                      <div className="flex items-start justify-between gap-4">
+                        <div>
+                          <div className={labelClass}>Loop Test</div>
+                          <h3 className="mt-2 font-serif text-2xl leading-none text-[#1a1a1a]">Backend health check</h3>
+                          <p className="mt-3 max-w-xl font-mono text-[11px] leading-relaxed text-[#5f5a50]">
+                            Runs the real backend request loop against the configured worker station without exposing API keys.
+                          </p>
+                        </div>
+                        <Activity size={22} className={healthCheck.running ? 'animate-pulse text-[#8f1e18]' : 'text-[#555047]'} />
+                      </div>
+                      <div className="mt-5 flex flex-wrap gap-3">
+                        <SmallButton onClick={() => runSettingsHealthCheck({ workflow: false })} disabled={healthCheck.running}>
+                          <Play size={12} className="inline-block mr-2" />Quick check
+                        </SmallButton>
+                        <button
+                          type="button"
+                          onClick={() => runSettingsHealthCheck({ workflow: true })}
+                          disabled={healthCheck.running}
+                          className={`border border-[#1a1a1a] px-3 py-2 font-mono text-[10px] uppercase tracking-widest transition-colors ${healthCheck.running ? 'cursor-not-allowed opacity-50' : 'hover:bg-[#d1d0c9] hover:text-black'}`}
+                        >
+                          <Network size={12} className="inline-block mr-2" />Workflow smoke
+                        </button>
+                      </div>
+                    </div>
+                    <div className="border border-[#d1d0c9] bg-[#f8f6ee] p-5">
+                      <div className={labelClass}>Target</div>
+                      <div className="mt-2 break-all font-mono text-xs text-[#1a1a1a]">{healthCheck.baseUrl || backendStation.baseUrl}</div>
+                      <div className="mt-4 grid grid-cols-2 gap-3">
+                        <div>
+                          <div className={labelClass}>Last Run</div>
+                          <div className="mt-1 font-mono text-xs text-[#1a1a1a]">
+                            {healthCheck.lastRunAt ? new Date(healthCheck.lastRunAt).toLocaleTimeString() : 'Never'}
+                          </div>
+                        </div>
+                        <div>
+                          <div className={labelClass}>Summary</div>
+                          <div className="mt-1 font-mono text-xs text-[#1a1a1a]">{healthCheck.summary || (healthCheck.running ? 'running' : 'ready')}</div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="overflow-hidden border border-[#d1d0c9] bg-[#f5f4f0]">
+                    {healthRows.map(row => (
+                      <div key={row.id} className="grid gap-3 border-b border-[#d1d0c9] px-4 py-3 last:border-b-0 md:grid-cols-[180px_90px_1fr]">
+                        <div className="font-mono text-xs text-[#1a1a1a]">{row.label}</div>
+                        <div>
+                          <span className={`inline-flex min-w-[74px] justify-center border px-2 py-1 font-mono text-[9px] uppercase tracking-[0.14em] ${healthStatusClass[row.status] || healthStatusClass.idle}`}>
+                            {healthStatusLabel[row.status] || row.status}
+                          </span>
+                        </div>
+                        <div className="break-words font-mono text-[11px] leading-relaxed text-[#5f5a50]">{row.detail}</div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {healthCheck.error && (
+                    <div className="border border-red-800 bg-red-50 px-4 py-3 font-mono text-[11px] leading-relaxed text-red-800">
+                      {healthCheck.error}
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -4718,7 +4738,14 @@ export default function EngineWorkspace() {
                 {t('settings.saved')}
               </div>
               <div className="flex items-center gap-2">
-                <button className="border border-[#d1d0c9] px-3 py-2 font-mono text-[10px] uppercase tracking-widest text-[#555047] hover:border-[#1a1a1a] hover:text-black transition-colors">{t('settings.testConnection')}</button>
+                <button
+                  type="button"
+                  onClick={() => runSettingsHealthCheck({ workflow: false })}
+                  disabled={healthCheck.running}
+                  className={`border border-[#d1d0c9] px-3 py-2 font-mono text-[10px] uppercase tracking-widest text-[#555047] transition-colors ${healthCheck.running ? 'cursor-not-allowed opacity-50' : 'hover:border-[#1a1a1a] hover:text-black'}`}
+                >
+                  {t('settings.testConnection')}
+                </button>
                 <SmallButton><Save size={12} className="inline-block mr-2" />{t('settings.save')}</SmallButton>
               </div>
             </footer>
@@ -4930,9 +4957,7 @@ export default function EngineWorkspace() {
             const isRecruited = signedMarketIds.includes(agent.id);
             const cardProfile = getDossierProfile(agent, activeLanguage);
             const deploymentWindow = getAgentDeploymentWindow(agent, cardProfile, activeLanguage);
-            const marketCardText = activeLanguage === 'zh'
-              ? { bestWindow: '最佳窗口' }
-              : { bestWindow: 'Best Window' };
+            const marketCardText = { bestWindow: 'Best Window' };
             return (
               <div
                 key={agent.id}
@@ -4961,7 +4986,7 @@ export default function EngineWorkspace() {
                       {renderKnownName(agent.knownName)}
                     </h3>
                     <div className="mb-2 border-l-[3px] border-red-600/35 pl-2.5">
-                      <span className="font-mono text-[8px] uppercase tracking-widest text-gray-400 block mb-0.5">第一被认知身份</span>
+                      <span className="font-mono text-[8px] uppercase tracking-widest text-gray-400 block mb-0.5">Primary identity</span>
                       <p className="font-serif text-[13px] text-gray-800 leading-snug line-clamp-2">
                         {agent.primaryIdentity}
                       </p>
@@ -5037,21 +5062,13 @@ export default function EngineWorkspace() {
     const profile = getDossierProfile(agent, activeLanguage);
     const deploymentWindow = getAgentDeploymentWindow(agent, profile, activeLanguage);
     const dossierText = (value) => localizeText(value, activeLanguage);
-    const windowText = activeLanguage === 'zh'
-      ? {
-        title: '部署窗口',
-        useWhen: '适合介入',
-        strongestAxis: '最强轴',
-        firstOutput: '首个产出',
-        starterBrief: '启动简报',
-      }
-      : {
-        title: 'Deployment Window',
-        useWhen: 'Use When',
-        strongestAxis: 'Strongest Axis',
-        firstOutput: 'First Output',
-        starterBrief: 'Starter Brief',
-      };
+    const windowText = {
+      title: 'Deployment Window',
+      useWhen: 'Use When',
+      strongestAxis: 'Strongest Axis',
+      firstOutput: 'First Output',
+      starterBrief: 'Starter Brief',
+    };
     const skill = profile.skill || null;
     const avatar = pantheonAvatarMeta(agent.id);
     const imageSrc = pantheonAvatarSrc(agent.id);
@@ -5320,10 +5337,10 @@ export default function EngineWorkspace() {
   const renderProjectInitiationView = () => {
     const selectedMember = INITIATION_MEMBERS.find(member => member.id === selectedInitiationMemberId) || INITIATION_MEMBERS[1];
     const phaseCopy = {
-      briefing: '发起人说明项目意图',
-      discussion: '圆桌正在确认组织方式',
-      decision: '等待会议结论',
-      approved: '已批准进入 dashboard',
+      briefing: 'Founder explains project intent',
+      discussion: 'Roundtable confirms operating structure',
+      decision: 'Waiting for meeting decision',
+      approved: 'Approved for dashboard',
     };
 
     return (
@@ -5341,8 +5358,7 @@ export default function EngineWorkspace() {
                 </div>
                 <h1 className="font-serif text-6xl leading-none max-w-4xl">Project Birth Room</h1>
                 <p className="font-serif text-2xl leading-relaxed text-[#d8c99f] mt-4 max-w-3xl">
-                  发起人先讲清楚想做什么。项目成员在圆桌中自然商讨领导、汇报、执行、产出形式。通过后才生成正式项目。
-                </p>
+                  鍙戣捣浜哄厛璁叉竻妤氭兂鍋氫粈涔堛€傞」鐩垚鍛樺湪鍦嗘涓嚜鐒跺晢璁ㄩ瀵笺€佹眹鎶ャ€佹墽琛屻€佷骇鍑哄舰寮忋€傞€氳繃鍚庢墠鐢熸垚姝ｅ紡椤圭洰銆?                </p>
               </div>
               <button
                 onClick={navToDashboard}
@@ -5360,8 +5376,7 @@ export default function EngineWorkspace() {
                   <div className="font-mono text-[8px] uppercase tracking-[0.22em] text-[#8f1e18] mb-2">Founder Brief</div>
                   <h2 className="font-serif text-2xl leading-none mb-2">Roundtable Initiation System</h2>
                   <p className="font-serif text-base leading-relaxed text-[#4d3c28]">
-                    先描述想法，再由圆桌商讨谁推进、谁汇报、谁执行、最终交付什么。通过后进入 dashboard。
-                  </p>
+                    鍏堟弿杩版兂娉曪紝鍐嶇敱鍦嗘鍟嗚璋佹帹杩涖€佽皝姹囨姤銆佽皝鎵ц銆佹渶缁堜氦浠樹粈涔堛€傞€氳繃鍚庤繘鍏?dashboard銆?                  </p>
                   <div className="mt-3 grid grid-cols-3 gap-2 font-mono text-[8px] uppercase tracking-widest">
                     {['Idea', 'Debate', 'Approve'].map((step, index) => (
                       <div key={step} className={`border px-2 py-2 text-center ${index < 2 ? 'border-[#8f1e18] text-[#8f1e18]' : 'border-[#b8a57d] text-[#7d6a49]'}`}>{step}</div>
@@ -5437,8 +5452,7 @@ export default function EngineWorkspace() {
                       ))}
                     </div>
                     <p className="font-serif text-lg leading-relaxed text-[#d8c99f]">
-                      这不是表单。控制台只记录会议阶段和最终结论，结构由讨论自然产生。
-                    </p>
+                      杩欎笉鏄〃鍗曘€傛帶鍒跺彴鍙褰曚細璁樁娈靛拰鏈€缁堢粨璁猴紝缁撴瀯鐢辫璁鸿嚜鐒朵骇鐢熴€?                    </p>
                   </div>
                   <button
                     onClick={approveInitiationProject}
@@ -5454,7 +5468,7 @@ export default function EngineWorkspace() {
 
           <aside className="hidden">
             <div className="font-mono text-[10px] uppercase tracking-[0.3em] text-[#8f1e18] mb-4">Consensus Record</div>
-            <h2 className="font-serif text-4xl leading-none mb-6">立项共识</h2>
+            <h2 className="font-serif text-4xl leading-none mb-6">绔嬮」鍏辫瘑</h2>
             <div className="border border-[#251b13] bg-[#251b13] text-[#efe2bd] p-4 mb-5">
               <div className="font-mono text-[8px] uppercase tracking-[0.24em] text-[#bcae86] mb-2">Selected Speaker</div>
               <div className="font-serif text-2xl leading-none mb-1">{selectedMember.name}</div>
@@ -5473,7 +5487,7 @@ export default function EngineWorkspace() {
             <div className="border-2 border-[#8f1e18] p-5 rotate-[-1deg]">
               <div className="font-mono text-[9px] uppercase tracking-[0.26em] text-[#8f1e18] mb-3">Project Gate</div>
               <p className="font-serif text-2xl leading-snug">
-                只有这场立项圆桌通过，项目才会进入 dashboard。否则它只是一场会议记录。
+                A project enters the dashboard only after the kickoff roundtable is approved.
               </p>
             </div>
 
@@ -5495,17 +5509,7 @@ export default function EngineWorkspace() {
     const invitedMembers = initiationRosterMembers;
     const selectedMember = INITIATION_MEMBERS.find(member => member.id === selectedInitiationMemberId) || invitedMembers[0] || INITIATION_MEMBERS[1];
     const taskText = `${initiationDraft.name} ${initiationDraft.summary} ${initiationDraft.intent} ${initiationDraft.output} ${initiationDraft.reason}`;
-    const roleNegotiation = createKickoffRoleNegotiation(invitedMembers, taskText, {
-      projectId: 'initiation_roundtable_draft',
-      projectName: initiationDraft.name,
-      language: activeLanguage,
-    });
-    const leaderElection = createLeaderElection(invitedMembers, taskText, {
-      projectId: 'initiation_roundtable_draft',
-      projectName: initiationDraft.name,
-      language: activeLanguage,
-    });
-    const meetingLeaderElection = initiationMeetingSession?.leaderElection || leaderElection;
+    const meetingLeaderElection = initiationMeetingSession?.leaderElection || { transcript: [], candidates: [], recommendedLeaderId: null };
     const confirmedLeaderId = selectedLeaderCandidateId || meetingLeaderElection.recommendedLeaderId;
     const skillPlan = createRoundtablePlan(invitedMembers.map(member => member.id), taskText);
     const firstLead = invitedMembers.find(member => member.id === confirmedLeaderId)
@@ -5536,11 +5540,11 @@ export default function EngineWorkspace() {
       })),
     };
     const steps = [
-      { id: 'brief', label: '项目意图' },
-      { id: 'invite', label: '选择参会人' },
-      { id: 'lobby', label: '会议准备' },
-      { id: 'meeting', label: '立项圆桌' },
-      { id: 'result', label: '生成项目' },
+      { id: 'brief', label: 'Project Intent' },
+      { id: 'invite', label: 'Invite Agents' },
+      { id: 'lobby', label: 'Meeting Lobby' },
+      { id: 'meeting', label: 'Kickoff Roundtable' },
+      { id: 'result', label: 'Create Project' },
     ];
     const managerSteps = [
       { id: 'brief', label: 'Project Brief' },
@@ -5561,28 +5565,16 @@ export default function EngineWorkspace() {
       {
         who: 'Director',
         speakerId: 'founder',
-        tone: 'brief',
-        text: `${initiationDraft.name}: ${initiationDraft.intent || initiationDraft.summary}`,
+        tone: initiationMeetingSession ? 'brief' : 'waiting for backend meeting',
+        text: initiationDraft.name || initiationDraft.intent || initiationDraft.summary
+          ? `${initiationDraft.name || 'Untitled project'}: ${initiationDraft.intent || initiationDraft.summary || 'Waiting for the model-generated kickoff meeting.'}`
+          : 'Waiting for the model-generated kickoff meeting.',
         hears: invitedMembers.map(member => member.id),
       },
-      ...roleNegotiation.transcript.map(item => ({
-        who: item.speaker,
-        speakerId: item.speakerId,
-        tone: item.type === 'role-question' ? 'role question' : 'self nomination',
-        text: item.text,
-        hears: item.hears || [],
-      })),
-      ...meetingLeaderElection.transcript.map(item => ({
-        who: item.speaker,
-        speakerId: item.agentId,
-        tone: 'leader campaign',
-        text: item.text,
-        hears: item.hearsOthers || [],
-      })),
     ];
     const meetingRoleQuestions = (initiationMeetingSession?.roleQuestionResolutions?.length
       ? initiationMeetingSession.roleQuestionResolutions
-      : (sessionTranscript.length ? sessionTranscript : roleNegotiation.transcript)
+      : sessionTranscript
         .filter(item => item.stage === 'role-clarification' || item.type === 'role-question')
         .map(item => {
           const answers = (initiationMeetingSession?.managerClarifications || []).filter(answer => answer.repliesTo === item.id);
@@ -5611,39 +5603,34 @@ export default function EngineWorkspace() {
       if (!initiationMeetingSession || !agentId) return;
       const now = new Date().toISOString();
       let meeting = null;
-      if (backendStation.connectionStatus === 'online') {
-        try {
-          const payload = await requestAgentBackend(`/kickoff-meetings/${encodeURIComponent(initiationMeetingSession.id)}/leader`, {
-            method: 'POST',
-            body: {
-              selectedLeaderId: agentId,
-              now,
-            },
-            timeoutMs: 1800,
-          });
-          meeting = payload.meeting;
-          setBackendStation(prev => ({
-            ...prev,
-            connectionStatus: 'online',
-            lastAction: 'Kickoff meeting Leader confirmed through backend',
-            error: null,
-          }));
-        } catch (error) {
-          setBackendStation(prev => ({
-            ...prev,
-            connectionStatus: 'offline',
-            lastAction: 'Backend Leader confirmation failed, used local session',
-            error: error.name === 'AbortError' ? 'Backend Leader confirmation timed out.' : error.message || String(error),
-          }));
-        }
-      }
-      if (!meeting) {
-        meeting = confirmKickoffMeetingLeader({
-          meeting: initiationMeetingSession,
-          selectedLeaderId: agentId,
-          now,
+      try {
+        const payload = await requestAgentBackend(`/kickoff-meetings/${encodeURIComponent(initiationMeetingSession.id)}/leader`, {
+          method: 'POST',
+          body: {
+            selectedLeaderId: agentId,
+            now,
+          },
+          timeoutMs: 20_000,
         });
+        meeting = payload.meeting;
+        setBackendStation(prev => ({
+          ...prev,
+          connectionStatus: 'online',
+          lastAction: 'Kickoff meeting Leader confirmed through backend',
+          error: null,
+        }));
+      } catch (error) {
+        setBackendStation(prev => ({
+          ...prev,
+          connectionStatus: 'offline',
+          lastAction: 'Leader confirmation failed',
+          error: error.name === 'AbortError'
+            ? 'Backend Leader confirmation timed out. No local mock Leader resolution was saved.'
+            : `${error.message || String(error)} No local mock Leader resolution was saved.`,
+        }));
+        return;
       }
+      if (!meeting) return;
       setInitiationMeetingSession(meeting);
     };
     const updateActionDraft = (index, value) => setInitiationActionDrafts(prev => prev.map((action, actionIndex) => (
@@ -5654,39 +5641,34 @@ export default function EngineWorkspace() {
       const now = new Date().toISOString();
       const tasks = buildInitiationKickoffPayload(now).tasks;
       let meeting = null;
-      if (backendStation.connectionStatus === 'online') {
-        try {
-          const payload = await requestAgentBackend(`/kickoff-meetings/${encodeURIComponent(initiationMeetingSession.id)}/next-actions`, {
-            method: 'POST',
-            body: {
-              tasks,
-              now,
-            },
-            timeoutMs: 1800,
-          });
-          meeting = payload.meeting;
-          setBackendStation(prev => ({
-            ...prev,
-            connectionStatus: 'online',
-            lastAction: 'Kickoff meeting next actions confirmed through backend',
-            error: null,
-          }));
-        } catch (error) {
-          setBackendStation(prev => ({
-            ...prev,
-            connectionStatus: 'offline',
-            lastAction: 'Backend next-action confirmation failed, used local session',
-            error: error.name === 'AbortError' ? 'Backend next-action confirmation timed out.' : error.message || String(error),
-          }));
-        }
-      }
-      if (!meeting) {
-        meeting = confirmKickoffMeetingNextActions({
-          meeting: initiationMeetingSession,
-          tasks,
-          now,
+      try {
+        const payload = await requestAgentBackend(`/kickoff-meetings/${encodeURIComponent(initiationMeetingSession.id)}/next-actions`, {
+          method: 'POST',
+          body: {
+            tasks,
+            now,
+          },
+          timeoutMs: 20_000,
         });
+        meeting = payload.meeting;
+        setBackendStation(prev => ({
+          ...prev,
+          connectionStatus: 'online',
+          lastAction: 'Kickoff meeting next actions confirmed through backend',
+          error: null,
+        }));
+      } catch (error) {
+        setBackendStation(prev => ({
+          ...prev,
+          connectionStatus: 'offline',
+          lastAction: 'Next-action confirmation failed',
+          error: error.name === 'AbortError'
+            ? 'Backend next-action confirmation timed out. No local mock next actions were saved.'
+            : `${error.message || String(error)} No local mock next actions were saved.`,
+        }));
+        return;
       }
+      if (!meeting) return;
       setInitiationMeetingSession(meeting);
     };
     const toggleConfirmedTeamMember = (id) => {
@@ -5739,7 +5721,7 @@ export default function EngineWorkspace() {
                     <FileSignature size={15} className="text-[#8f1e18]" />
                     Project Initiation Flow
                   </div>
-                  <h1 className="font-serif text-5xl leading-none">发起立项</h1>
+                  <h1 className="font-serif text-5xl leading-none">鍙戣捣绔嬮」</h1>
                 </div>
                 <button onClick={navToDashboard} className="font-mono text-[10px] uppercase tracking-widest border border-[#3a2a1c] px-4 py-2 text-[#bcae86] hover:text-[#efe2bd] hover:border-[#7b6542] transition-colors">
                   Back
@@ -5766,42 +5748,42 @@ export default function EngineWorkspace() {
                     <div className="font-mono text-[10px] uppercase tracking-[0.28em] text-[#8f1e18] mb-5">Step 01 / Project Brief</div>
                     <div className="space-y-5">
                       <label className="block">
-                        <span className="font-mono text-[9px] uppercase tracking-widest text-[#7d6a49]">项目名</span>
+                        <span className="font-mono text-[9px] uppercase tracking-widest text-[#7d6a49]">Project Name</span>
                         <input value={initiationDraft.name} onChange={(e) => updateDraft('name', e.target.value)} className="mt-2 w-full bg-[#f7edcf] border border-[#b8a57d] px-4 py-3 font-serif text-3xl outline-none focus:border-[#8f1e18]" />
                       </label>
                       <label className="block">
-                        <span className="font-mono text-[9px] uppercase tracking-widest text-[#7d6a49]">一句话描述</span>
+                        <span className="font-mono text-[9px] uppercase tracking-widest text-[#7d6a49]">One-Line Summary</span>
                         <input value={initiationDraft.summary} onChange={(e) => updateDraft('summary', e.target.value)} className="mt-2 w-full bg-[#f7edcf] border border-[#b8a57d] px-4 py-3 font-serif text-xl outline-none focus:border-[#8f1e18]" />
                       </label>
                       <label className="block">
-                        <span className="font-mono text-[9px] uppercase tracking-widest text-[#7d6a49]">你想做什么</span>
+                        <span className="font-mono text-[9px] uppercase tracking-widest text-[#7d6a49]">What do you want to build?</span>
                         <textarea value={initiationDraft.intent} onChange={(e) => updateDraft('intent', e.target.value)} className="mt-2 w-full min-h-[92px] resize-none bg-[#f7edcf] border border-[#b8a57d] px-4 py-3 font-serif text-xl leading-relaxed outline-none focus:border-[#8f1e18]" />
                       </label>
                       <div className="hidden">
                         <label className="block">
-                          <span className="font-mono text-[9px] uppercase tracking-widest text-[#7d6a49]">预期产出</span>
+                          <span className="font-mono text-[9px] uppercase tracking-widest text-[#7d6a49]">Expected Output</span>
                           <input value={initiationDraft.output} onChange={(e) => updateDraft('output', e.target.value)} className="mt-2 w-full bg-[#f7edcf] border border-[#b8a57d] px-4 py-3 font-serif text-lg outline-none focus:border-[#8f1e18]" />
                         </label>
                         <label className="block">
-                          <span className="font-mono text-[9px] uppercase tracking-widest text-[#7d6a49]">为什么现在做</span>
+                          <span className="font-mono text-[9px] uppercase tracking-widest text-[#7d6a49]">Why now?</span>
                           <input value={initiationDraft.reason} onChange={(e) => updateDraft('reason', e.target.value)} className="mt-2 w-full bg-[#f7edcf] border border-[#b8a57d] px-4 py-3 font-serif text-lg outline-none focus:border-[#8f1e18]" />
                         </label>
                       </div>
                     </div>
                     <button data-testid="initiation-next-invite" onClick={() => { goStep('invite'); openInitiationTalentMarket(); }} className="mt-7 w-full bg-[#8f1e18] hover:bg-[#a62a22] text-white px-5 py-4 flex items-center justify-center gap-3 font-mono text-[10px] uppercase tracking-widest transition-colors">
-                      选择参会人 <ChevronRight size={15} />
+                      Invite Agents <ChevronRight size={15} />
                     </button>
                   </div>
 
                   <aside className="hidden">
                     <div className="font-mono text-[10px] uppercase tracking-[0.26em] text-[#8f1e18] mb-5">Draft Status</div>
-                    <h2 className="font-serif text-4xl leading-none mb-4">{initiationDraft.name || '未命名项目'}</h2>
+                    <h2 className="font-serif text-4xl leading-none mb-4">{initiationDraft.name || 'Untitled Project'}</h2>
                     <p className="font-serif text-xl leading-relaxed text-[#d8c99f] mb-6">{initiationDraft.summary}</p>
                     <div className="border-t border-[#3a2a1c] pt-5 font-serif text-lg leading-relaxed text-[#bcae86]">
-                      当前只是在创建立项草案，还不会进入 dashboard。下一步才是邀请参会人。
+                      This is only a project draft. It will not enter the dashboard until the kickoff meeting is approved.
                     </div>
                     <button onClick={() => goStep('invite')} className="mt-7 w-full bg-[#8f1e18] hover:bg-[#a62a22] text-white px-5 py-4 flex items-center justify-center gap-3 font-mono text-[10px] uppercase tracking-widest transition-colors">
-                      选择参会人 <ChevronRight size={15} />
+                      Invite Agents <ChevronRight size={15} />
                     </button>
                   </aside>
                 </div>
@@ -5811,17 +5793,15 @@ export default function EngineWorkspace() {
                 <div className="max-w-5xl mx-auto">
                   <section>
                     <div className="font-mono text-[10px] uppercase tracking-[0.28em] text-[#bcae86] mb-4">
-                      {activeLanguage === 'zh' ? '步骤 02 / 去同一个 Talent Market 签约' : 'Step 02 / Sign from the same Talent Market'}
+                      Step 02 / Sign from the same Talent Market
                     </div>
                     <div className="border border-[#7b6542] bg-[#1a130e]/88 p-8">
-                      <h2 className="font-serif text-5xl leading-none mb-5">{activeLanguage === 'zh' ? '从 Talent Market 选择参会人' : 'Choose kickoff participants from Talent Market'}</h2>
+                      <h2 className="font-serif text-5xl leading-none mb-5">Choose kickoff participants from Talent Market</h2>
                       <p className="font-serif text-xl leading-relaxed text-[#d8c99f] mb-6">
-                        {activeLanguage === 'zh'
-                          ? '这里不再使用单独的人才列表。点击下面按钮会进入和主页完全一致的 Talent Market；区别只在签约按钮会直接把人才加入本次立项团队。'
-                          : 'This uses the exact same Talent Market as the homepage. The only difference is contract behavior: signing adds the talent directly to this initiation team.'}
+                        This uses the same Talent Market as the homepage. Signing adds the talent directly to this initiation team.
                       </p>
                       <div data-testid="initiation-signed-team" className="mb-5 border-t border-[#3a2a1c] pt-4 font-serif text-xl">
-                        {activeLanguage === 'zh' ? '已签团队' : 'Signed team'}: {invitedMembers.map(member => member.name).join(' / ') || (activeLanguage === 'zh' ? '暂无' : 'None yet')}
+                        Signed team: {invitedMembers.map(member => member.name).join(' / ') || 'None yet'}
                       </div>
                       <button
                         type="button"
@@ -5829,11 +5809,11 @@ export default function EngineWorkspace() {
                         onClick={openInitiationTalentMarket}
                         className="w-full bg-[#efe2bd] px-5 py-4 font-mono text-[10px] uppercase tracking-widest text-[#251b13] hover:bg-white"
                       >
-                        {activeLanguage === 'zh' ? '打开 Talent Market' : 'Open Talent Market'} <ChevronRight size={15} className="inline-block ml-2" />
+                        Open Talent Market <ChevronRight size={15} className="inline-block ml-2" />
                       </button>
                     </div>
                     <button data-testid="initiation-next-lobby" onClick={() => goStep('lobby')} disabled={invitedMembers.length === 0} className="mt-7 w-full bg-[#8f1e18] disabled:bg-[#3a2a1c] disabled:text-[#7d6a49] hover:bg-[#a62a22] text-white px-5 py-4 flex items-center justify-center gap-3 font-mono text-[10px] uppercase tracking-widest transition-colors">
-                      {activeLanguage === 'zh' ? '进入会议准备页' : 'Enter Meeting Prep'} <ChevronRight size={15} />
+                      Enter Meeting Prep <ChevronRight size={15} />
                     </button>
                   </section>
                   <aside className="hidden">
@@ -5847,7 +5827,7 @@ export default function EngineWorkspace() {
                       ))}
                     </div>
                     <button onClick={() => goStep('lobby')} disabled={invitedMembers.length === 0} className="w-full bg-[#251b13] disabled:bg-[#b8a57d] disabled:text-[#7d6a49] text-[#efe2bd] px-5 py-4 flex items-center justify-center gap-3 font-mono text-[10px] uppercase tracking-widest transition-colors">
-                      进入会议准备页 <ChevronRight size={15} />
+                      Enter Meeting Prep <ChevronRight size={15} />
                     </button>
                   </aside>
                 </div>
@@ -5861,9 +5841,9 @@ export default function EngineWorkspace() {
                     <p className="font-serif text-2xl leading-relaxed text-[#4d3c28] mb-8">{initiationDraft.intent}</p>
                     <div className="grid md:grid-cols-3 gap-4">
                       {[
-                        ['会议目标', '确认是否立项，以及谁负责什么'],
-                        ['参会人数', activeLanguage === 'zh' ? `${invitedMembers.length + 1} 人` : `${invitedMembers.length + 1} people`],
-                        ['进入条件', '必须开完立项圆桌'],
+                        ['Meeting Goal', 'Confirm whether the project should proceed and who owns what.'],
+                        ['Participants', `${invitedMembers.length + 1} people`],
+                        ['Entry Condition', 'A model-generated kickoff meeting must complete.'],
                       ].map(([label, value]) => (
                         <div key={label} className="border border-[#b8a57d] p-4 bg-[#f7edcf]">
                           <div className="font-mono text-[8px] uppercase tracking-widest text-[#7d6a49] mb-2">{label}</div>
@@ -5872,7 +5852,7 @@ export default function EngineWorkspace() {
                       ))}
                     </div>
                     <button data-testid="initiation-start-meeting" onClick={startInitiationMeetingSession} className="mt-7 w-full bg-[#8f1e18] hover:bg-[#a62a22] text-white px-5 py-4 flex items-center justify-center gap-3 font-mono text-[10px] uppercase tracking-widest transition-colors">
-                      开始立项圆桌 <Users size={15} />
+                      Start Kickoff Roundtable <Users size={15} />
                     </button>
                   </section>
                   <aside className="hidden">
@@ -5889,7 +5869,7 @@ export default function EngineWorkspace() {
                       ))}
                     </div>
                     <button onClick={startInitiationMeetingSession} className="w-full bg-[#8f1e18] hover:bg-[#a62a22] text-white px-5 py-4 flex items-center justify-center gap-3 font-mono text-[10px] uppercase tracking-widest transition-colors">
-                      开始立项圆桌 <Users size={15} />
+                      寮€濮嬬珛椤瑰渾妗?<Users size={15} />
                     </button>
                   </aside>
                 </div>
@@ -5912,7 +5892,7 @@ export default function EngineWorkspace() {
                 onSubmit: submitInitiationMeetingInput,
               })}
 
-              {false && initiationStep === 'meeting' && (
+              {initiationStep === 'meeting' && (
                 <div className="pointer-events-none absolute inset-0 z-50">
                   <section className="contents">
                     <div className="hidden absolute inset-0 dotgrid-bg--dark opacity-80" />
@@ -5921,122 +5901,6 @@ export default function EngineWorkspace() {
                       <div className="font-mono text-[8px] uppercase tracking-[0.22em] text-[#8f1e18] mb-2">Founder Brief</div>
                       <h2 className="font-serif text-2xl leading-none mb-3">{initiationDraft.name}</h2>
                       <p className="font-serif text-base leading-relaxed text-[#4d3c28]">{initiationDraft.summary}</p>
-                    </div>
-                    <div data-testid="initiation-meeting-leader-slate" className="pointer-events-auto absolute right-[360px] top-20 z-30 max-h-[calc(100vh-160px)] w-[280px] overflow-y-auto border border-[#7b6542] bg-[#0d0c0b]/92 p-3 shadow-[0_18px_42px_rgba(0,0,0,0.32)]">
-                      <div className="font-mono text-[8px] uppercase tracking-widest text-[#bcae86] mb-3">Leader Campaign Slate</div>
-                      <div className="space-y-2">
-                        {meetingLeaderElection.candidates.map(candidate => {
-                          const selected = confirmedLeaderId === candidate.agentId;
-                          return (
-                            <button
-                              key={candidate.agentId}
-                              type="button"
-                              data-testid={`initiation-meeting-leader-candidate-${candidate.agentId}`}
-                              onClick={() => selectMeetingLeaderCandidate(candidate.agentId)}
-                              className={`w-full border px-3 py-2 text-left transition-colors ${selected ? 'border-[#efe2bd] bg-[#efe2bd] text-[#251b13]' : 'border-[#3a2a1c] bg-[#1a130e] text-[#efe2bd] hover:border-[#7b6542]'}`}
-                            >
-                              <div className="flex items-center justify-between gap-3">
-                                <span className="font-serif text-base leading-tight">{candidate.name}</span>
-                                <span className="font-mono text-[8px] uppercase tracking-widest">{candidate.score}</span>
-                              </div>
-                              <div className={`mt-1 font-mono text-[8px] uppercase tracking-widest ${selected ? 'text-[#8f1e18]' : 'text-[#7d6a49]'}`}>
-                                {selected ? (initiationMeetingSession?.leaderElectionResolution?.managerConfirmed ? 'Manager confirmed in meeting' : 'Manager selected, saving') : 'Campaign heard by peers'}
-                              </div>
-                            </button>
-                          );
-                        })}
-                      </div>
-                      <div data-testid="initiation-meeting-leader-resolution" className="mt-3 border-t border-[#3a2a1c] pt-2 font-mono text-[8px] uppercase tracking-widest text-[#7d6a49] leading-relaxed">
-                        Leader resolution: {initiationMeetingSession?.leaderElectionResolution?.selectedLeaderName || firstLead.name} / {initiationMeetingSession?.leaderElectionResolution?.managerConfirmed ? 'manager-confirmed' : 'awaiting manager confirmation'}
-                      </div>
-                    </div>
-                    <div data-testid="initiation-meeting-next-actions" className="pointer-events-auto absolute left-8 top-20 z-30 max-h-[calc(100vh-160px)] w-[300px] overflow-y-auto border border-[#7b6542] bg-[#0d0c0b]/92 p-3 shadow-[0_18px_42px_rgba(0,0,0,0.32)]">
-                      <div className="font-mono text-[8px] uppercase tracking-widest text-[#bcae86] mb-3">Meeting Next Actions</div>
-                      <div className="space-y-2">
-                        {initiationActionDrafts.slice(0, 3).map((action, index) => (
-                          <input
-                            key={`meeting-next-action-${index}`}
-                            data-testid={`initiation-meeting-next-action-${index}`}
-                            value={action}
-                            onChange={(event) => updateActionDraft(index, event.target.value)}
-                            className="w-full border border-[#3a2a1c] bg-[#1a130e] px-3 py-2 font-mono text-[8px] uppercase tracking-widest leading-relaxed text-[#efe2bd] outline-none focus:border-[#efe2bd]"
-                          />
-                        ))}
-                      </div>
-                      <div className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">
-                        These become the first Leader assignments after approval.
-                      </div>
-                      <button
-                        type="button"
-                        data-testid="initiation-meeting-save-next-actions"
-                        onClick={saveInitiationNextActionsToMeeting}
-                        className="mt-2 w-full border border-[#7b6542] bg-[#efe2bd] px-3 py-2 font-mono text-[8px] uppercase tracking-widest text-[#251b13] hover:border-[#efe2bd] transition-colors"
-                      >
-                        Save next actions to meeting
-                      </button>
-                      <div data-testid="initiation-meeting-next-action-resolution" className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#7d6a49] leading-relaxed">
-                        Next action resolution: {initiationMeetingSession?.nextActionResolution?.taskCount || initiationActionDrafts.filter(action => action.trim()).length} action{(initiationMeetingSession?.nextActionResolution?.taskCount || initiationActionDrafts.filter(action => action.trim()).length) === 1 ? '' : 's'} / {initiationMeetingSession?.nextActionResolution?.managerConfirmed ? 'manager-confirmed' : 'awaiting manager confirmation'}
-                      </div>
-                      <div data-testid="initiation-meeting-director-clarification" className="mt-4 border-t border-[#3a2a1c] pt-3">
-                        <div className="font-mono text-[8px] uppercase tracking-widest text-[#bcae86] mb-2">Director Clarification</div>
-                        <div data-testid="initiation-meeting-role-question-list" className="mb-2 space-y-1.5">
-                          {meetingRoleQuestions.map(row => (
-                            <button
-                              key={row.questionId}
-                              type="button"
-                              data-testid={`initiation-meeting-role-question-${row.questionId}`}
-                              onClick={() => setSelectedInitiationClarificationQuestionId(row.questionId)}
-                              className={`w-full border px-2 py-1.5 text-left transition-colors ${selectedClarificationQuestion?.questionId === row.questionId ? 'border-[#efe2bd] bg-[#efe2bd] text-[#251b13]' : 'border-[#3a2a1c] bg-[#1a130e] text-[#efe2bd] hover:border-[#7b6542]'}`}
-                            >
-                              <div className="flex items-center justify-between gap-2">
-                                <span className="font-serif text-sm leading-tight">{row.speakerName}</span>
-                                <span className={`font-mono text-[7px] uppercase tracking-widest ${row.answered ? 'text-green-700' : 'text-[#b9782b]'}`}>
-                                  {row.answered ? 'answered' : 'waiting'}
-                                </span>
-                              </div>
-                              <div className="mt-1 font-mono text-[7px] uppercase tracking-widest leading-relaxed opacity-80">
-                                {row.answered ? row.answerText : row.questionText}
-                              </div>
-                            </button>
-                          ))}
-                        </div>
-                        <textarea
-                          data-testid="initiation-meeting-clarification-input"
-                          value={initiationClarificationDraft}
-                          onChange={(event) => setInitiationClarificationDraft(event.target.value)}
-                          className="h-16 w-full resize-none border border-[#3a2a1c] bg-[#1a130e] px-3 py-2 font-mono text-[8px] uppercase tracking-widest leading-relaxed text-[#efe2bd] outline-none focus:border-[#efe2bd]"
-                        />
-                        <button
-                          type="button"
-                          data-testid="initiation-meeting-save-clarification"
-                          onClick={submitInitiationClarification}
-                          className="mt-2 w-full border border-[#7b6542] bg-[#efe2bd] px-3 py-2 font-mono text-[8px] uppercase tracking-widest text-[#251b13] hover:border-[#efe2bd] transition-colors"
-                        >
-                          Save clarification to meeting
-                        </button>
-                        <div data-testid="initiation-meeting-clarification-count" className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">
-                          {initiationMeetingSession?.managerClarifications?.length || 0} Director clarification{(initiationMeetingSession?.managerClarifications?.length || 0) === 1 ? '' : 's'} / {meetingRoleQuestions.filter(row => row.answered).length}-{meetingRoleQuestions.length} role questions answered
-                        </div>
-                      </div>
-                      <div data-testid="initiation-meeting-confirmed-team" className="mt-4 border-t border-[#3a2a1c] pt-3">
-                        <div className="font-mono text-[8px] uppercase tracking-widest text-[#bcae86] mb-2">Confirmed Team</div>
-                        <div className="space-y-1.5">
-                          {invitedMembers.map(member => (
-                            <button
-                              key={member.id}
-                              type="button"
-                              data-testid={`initiation-meeting-confirmed-team-${member.id}`}
-                              onClick={() => toggleConfirmedTeamMember(member.id)}
-                              className={`w-full border px-2 py-1.5 text-left font-mono text-[8px] uppercase tracking-widest transition-colors ${confirmedMemberIds.includes(member.id) ? 'border-[#7b6542] bg-[#1a130e] text-[#efe2bd]' : 'border-[#3a2a1c] bg-[#0d0c0b] text-[#7d6a49]'} ${member.id === firstLead.id ? 'cursor-default' : 'hover:border-[#efe2bd] hover:text-[#efe2bd]'}`}
-                            >
-                              {member.name} / {member.id === firstLead.id ? 'Leader required' : confirmedMemberIds.includes(member.id) ? 'Confirmed' : 'Removed after meeting'}
-                            </button>
-                          ))}
-                        </div>
-                        <div data-testid="initiation-meeting-confirmed-team-count" className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">
-                          {confirmedMembers.length} confirmed Agent{confirmedMembers.length === 1 ? '' : 's'}
-                        </div>
-                      </div>
                     </div>
                     {false && [INITIATION_MEMBERS[0], ...invitedMembers].map((member, index) => {
                       const count = invitedMembers.length + 1;
@@ -6079,20 +5943,121 @@ export default function EngineWorkspace() {
                         </div>
                       </div>
                     )}
+                    <div className="pointer-events-auto absolute right-8 top-8 z-30 max-h-[calc(100vh-120px)] w-[330px] overflow-y-auto border border-[#7b6542] bg-[#0d0c0b]/95 p-4 text-[#efe2bd] shadow-[10px_10px_0_rgba(0,0,0,0.25)]">
+                      <div className="font-mono text-[8px] uppercase tracking-widest text-[#bcae86]">Meeting Director Controls</div>
+                      <section data-testid="initiation-meeting-leader-slate" className="mt-4 border border-[#3a2a1c] bg-[#1a120d] p-3">
+                        <div className="font-mono text-[8px] uppercase tracking-widest text-[#d8c99f] mb-2">Leader slate</div>
+                        <div className="space-y-2">
+                          {meetingLeaderElection.candidates.slice(0, 4).map(candidate => {
+                            const selected = confirmedLeaderId === candidate.agentId;
+                            return (
+                              <button
+                                key={candidate.agentId}
+                                type="button"
+                                data-testid={`initiation-meeting-leader-candidate-${candidate.agentId}`}
+                                onClick={() => selectMeetingLeaderCandidate(candidate.agentId)}
+                                className={`w-full border px-3 py-2 text-left transition-colors ${selected ? 'border-[#efe2bd] bg-[#251b13] text-[#efe2bd]' : 'border-[#7b6542] bg-[#0d0c0b] text-[#bcae86] hover:border-[#efe2bd]'}`}
+                              >
+                                <div className="font-serif text-base leading-tight">{candidate.name}</div>
+                                <div className="font-mono text-[7px] uppercase tracking-widest opacity-70">{candidate.score} / {candidate.role}</div>
+                              </button>
+                            );
+                          })}
+                        </div>
+                        <div data-testid="initiation-meeting-leader-resolution" className="mt-3 border-t border-[#3a2a1c] pt-3 font-mono text-[8px] uppercase tracking-widest text-[#d8c99f]">
+                          Manager confirmed in meeting: {meetingLeaderElection.candidates.find(candidate => candidate.agentId === confirmedLeaderId)?.name || confirmedLeaderId || 'pending'}
+                        </div>
+                      </section>
+                      <section className="mt-3 border border-[#3a2a1c] bg-[#1a120d] p-3">
+                        <div className="font-mono text-[8px] uppercase tracking-widest text-[#d8c99f] mb-2">Role clarification</div>
+                        <div data-testid="initiation-meeting-role-question-list" className="max-h-28 space-y-2 overflow-y-auto pr-1">
+                          {meetingRoleQuestions.map(row => (
+                            <button
+                              key={row.questionId}
+                              type="button"
+                              onClick={() => setSelectedInitiationClarificationQuestionId(row.questionId)}
+                              className={`w-full border px-2 py-1.5 text-left font-mono text-[7px] uppercase tracking-widest leading-relaxed ${row.questionId === selectedClarificationQuestion?.questionId ? 'border-[#efe2bd] text-[#efe2bd]' : 'border-[#3a2a1c] text-[#bcae86]'}`}
+                            >
+                              {row.speakerName}: {row.answered ? 'answered' : 'open'}
+                            </button>
+                          ))}
+                        </div>
+                        <div className="mt-2 font-mono text-[7px] uppercase tracking-widest text-[#bcae86]">
+                          {meetingRoleQuestions.filter(row => row.answered).length}/{meetingRoleQuestions.length} role questions answered
+                        </div>
+                        <textarea
+                          data-testid="initiation-meeting-director-clarification"
+                          value={initiationClarificationDraft}
+                          onChange={(event) => setInitiationClarificationDraft(event.target.value)}
+                          className="mt-2 min-h-[70px] w-full resize-none border border-[#7b6542] bg-[#0d0c0b] px-2 py-2 font-mono text-[8px] leading-relaxed text-[#efe2bd] outline-none focus:border-[#efe2bd]"
+                        />
+                        <button
+                          type="button"
+                          data-testid="initiation-meeting-save-clarification"
+                          onClick={submitInitiationClarification}
+                          disabled={!selectedClarificationQuestion || !initiationClarificationDraft.trim()}
+                          className="mt-2 w-full border border-[#7b6542] bg-[#efe2bd] px-3 py-2 font-mono text-[8px] uppercase tracking-widest text-[#251b13] disabled:opacity-40"
+                        >
+                          Save clarification
+                        </button>
+                      </section>
+                      <section data-testid="initiation-meeting-next-actions" className="mt-3 border border-[#3a2a1c] bg-[#1a120d] p-3">
+                        <div className="font-mono text-[8px] uppercase tracking-widest text-[#d8c99f] mb-1">First execution actions</div>
+                        <div className="mb-2 font-mono text-[7px] uppercase tracking-widest text-[#bcae86]">These become the first Leader assignments after approval</div>
+                        <div className="space-y-2">
+                          {initiationActionDrafts.map((action, index) => (
+                            <input
+                              key={`initiation-meeting-action-${index}`}
+                              data-testid={`initiation-meeting-next-action-${index}`}
+                              value={action}
+                              onChange={(event) => updateActionDraft(index, event.target.value)}
+                              className="w-full border border-[#7b6542] bg-[#0d0c0b] px-2 py-2 font-mono text-[8px] leading-relaxed text-[#efe2bd] outline-none focus:border-[#efe2bd]"
+                            />
+                          ))}
+                        </div>
+                        <button
+                          type="button"
+                          data-testid="initiation-meeting-save-next-actions"
+                          onClick={saveInitiationNextActionsToMeeting}
+                          className="mt-2 w-full border border-[#7b6542] bg-[#efe2bd] px-3 py-2 font-mono text-[8px] uppercase tracking-widest text-[#251b13]"
+                        >
+                          Save next actions
+                        </button>
+                        <div data-testid="initiation-meeting-next-action-resolution" className="mt-2 font-mono text-[7px] uppercase tracking-widest text-[#bcae86]">
+                          {initiationMeetingSession?.nextActionResolution?.status || 'awaiting meeting confirmation'}
+                        </div>
+                      </section>
+                      <section className="mt-3 border border-[#3a2a1c] bg-[#1a120d] p-3">
+                        <div className="font-mono text-[8px] uppercase tracking-widest text-[#d8c99f] mb-2">Confirmed team</div>
+                        <div className="space-y-2">
+                          {invitedMembers.map(member => (
+                            <button
+                              key={member.id}
+                              type="button"
+                              data-testid={`initiation-meeting-confirmed-team-${member.id}`}
+                              onClick={() => toggleConfirmedTeamMember(member.id)}
+                              className={`w-full border px-2 py-1.5 text-left font-mono text-[7px] uppercase tracking-widest leading-relaxed ${confirmedMemberIds.includes(member.id) ? 'border-[#efe2bd] text-[#efe2bd]' : 'border-[#7b6542] text-[#7d6a49]'}`}
+                            >
+                              {member.name}: {confirmedMemberIds.includes(member.id) ? 'Confirmed' : 'Removed after meeting'}
+                            </button>
+                          ))}
+                        </div>
+                      </section>
+                    </div>
                     <button data-testid="initiation-finish-meeting" onClick={() => { setInitiationPhase('decision'); goStep('result'); }} className="pointer-events-auto absolute right-[360px] bottom-6 z-30 bg-[#8f1e18] hover:bg-[#a62a22] text-white px-5 py-4 flex items-center justify-center gap-3 font-mono text-[10px] uppercase tracking-widest transition-colors">
-                      结束会议，查看结论 <ChevronRight size={15} />
+                      缁撴潫浼氳锛屾煡鐪嬬粨璁?<ChevronRight size={15} />
                     </button>
                   </section>
                   <aside className="hidden">
                     <div>
-                      <div className="font-mono text-[9px] uppercase tracking-[0.24em] text-[#bcae86] mb-4">会议沉淀</div>
+                      <div className="font-mono text-[9px] uppercase tracking-[0.24em] text-[#bcae86] mb-4">Meeting State</div>
                       <div className="border border-[#3a2a1c] bg-[#0d0c0b] p-4 mb-4">
                         <div className="font-serif text-2xl mb-1">{selectedMember.name}</div>
                         <div className="font-mono text-[8px] uppercase tracking-widest text-[#7d6a49] mb-3">{selectedMember.title}</div>
                         <p className="font-serif text-lg leading-relaxed text-[#d8c99f]">{selectedMember.duty}</p>
                       </div>
                       <div className="space-y-2">
-                        {['描述项目', '确认第一领导人', '确认汇报人', '确认执行成员', '确认产出形式'].map((item, index) => (
+                        {['Describe project', 'Confirm Leader', 'Confirm Reviewer', 'Confirm execution members', 'Confirm output format'].map((item, index) => (
                           <div key={item} className="flex items-center gap-3 font-serif text-lg text-[#d8c99f]">
                             <CheckCircle2 size={15} className={index < 4 ? 'text-[#59684b]' : 'text-[#8f1e18]'} />
                             {item}
@@ -6101,7 +6066,7 @@ export default function EngineWorkspace() {
                       </div>
                     </div>
                     <button onClick={() => { setInitiationPhase('decision'); goStep('result'); }} className="mt-5 w-full bg-[#8f1e18] hover:bg-[#a62a22] text-white px-4 py-4 flex items-center justify-center gap-3 font-mono text-[10px] uppercase tracking-widest transition-colors">
-                      结束会议，查看结论 <ChevronRight size={15} />
+                      End Meeting and Review Result <ChevronRight size={15} />
                     </button>
                   </aside>
                 </div>
@@ -6111,15 +6076,15 @@ export default function EngineWorkspace() {
                 <div className="max-w-5xl mx-auto">
                   <section className="bg-[#efe2bd] text-[#251b13] border border-[#7b6542] p-8">
                     <div className="font-mono text-[10px] uppercase tracking-[0.28em] text-[#8f1e18] mb-5">Step 05 / Initiation Result</div>
-                    <h2 className="font-serif text-5xl leading-none mb-7">立项结论：通过</h2>
+                    <h2 className="font-serif text-5xl leading-none mb-7">Initiation Result: Approved</h2>
                     <div className="grid md:grid-cols-2 gap-4">
                       {[
-                        ['项目名', initiationDraft.name],
-                        ['第一领导人', firstLead.name],
-                        ['汇报负责人', reporter.name],
-                        ['执行成员', workingGroup.map(member => member.name).join(' / ') || firstLead.name],
-                        ['产出形式', initiationDraft.output],
-                        ['来源会议', 'Mandatory initiation roundtable'],
+                        ['Project Name', initiationDraft.name],
+                        ['First Leader', firstLead.name],
+                        ['Reviewer', reporter.name],
+                        ['Execution Members', workingGroup.map(member => member.name).join(' / ') || firstLead.name],
+                        ['Output Format', initiationDraft.output],
+                        ['Source Meeting', 'Mandatory initiation roundtable'],
                       ].map(([label, value]) => (
                         <div key={label} className="border border-[#b8a57d] bg-[#f7edcf] p-4">
                           <div className="font-mono text-[8px] uppercase tracking-widest text-[#7d6a49] mb-2">{label}</div>
@@ -6216,17 +6181,16 @@ export default function EngineWorkspace() {
                     </div>
                     <button data-testid="initiation-approve-create" onClick={approveInitiationProject} className="mt-7 w-full bg-[#8f1e18] hover:bg-[#a62a22] text-white px-4 py-4 flex items-center justify-center gap-3 font-mono text-[10px] uppercase tracking-widest transition-colors">
                       <CheckCircle2 size={16} />
-                      生成项目并进入 dashboard
+                      鐢熸垚椤圭洰骞惰繘鍏?dashboard
                     </button>
                   </section>
                   <aside className="hidden">
                     <div className="font-mono text-[10px] uppercase tracking-[0.26em] text-[#8f1e18] mb-5">Project Gate</div>
                     <p className="font-serif text-2xl leading-relaxed text-[#d8c99f]">
-                      现在才可以生成项目。通过后，这个项目会出现在 dashboard，并带上本次会议的第一领导人、汇报人和产出形式。
-                    </p>
+                      鐜板湪鎵嶅彲浠ョ敓鎴愰」鐩€傞€氳繃鍚庯紝杩欎釜椤圭洰浼氬嚭鐜板湪 dashboard锛屽苟甯︿笂鏈浼氳鐨勭涓€棰嗗浜恒€佹眹鎶ヤ汉鍜屼骇鍑哄舰寮忋€?                    </p>
                     <button onClick={approveInitiationProject} className="mt-7 w-full bg-[#8f1e18] hover:bg-[#a62a22] text-white px-4 py-4 flex items-center justify-center gap-3 font-mono text-[10px] uppercase tracking-widest transition-colors">
                       <CheckCircle2 size={16} />
-                      生成项目并进入 dashboard
+                      鐢熸垚椤圭洰骞惰繘鍏?dashboard
                     </button>
                   </aside>
                 </div>
@@ -6236,7 +6200,7 @@ export default function EngineWorkspace() {
 
           {!isInitiationMeetingStep && <aside className="border-l border-[#3a2a1c] bg-[#efe2bd] text-[#251b13] p-7 overflow-y-auto">
             <div className="font-mono text-[10px] uppercase tracking-[0.3em] text-[#8f1e18] mb-4">Initiation Summary</div>
-            <h2 className="font-serif text-4xl leading-none mb-5">{initiationDraft.name || '未命名项目'}</h2>
+            <h2 className="font-serif text-4xl leading-none mb-5">{initiationDraft.name || 'Untitled Project'}</h2>
             <p className="font-serif text-xl leading-relaxed text-[#4d3c28] mb-6">{initiationDraft.summary}</p>
             <div className="space-y-3 mb-8">
               {[
@@ -6254,7 +6218,7 @@ export default function EngineWorkspace() {
             <div className="border-2 border-[#8f1e18] p-5 rotate-[-1deg]">
               <div className="font-mono text-[9px] uppercase tracking-[0.26em] text-[#8f1e18] mb-3">Rule</div>
               <p className="font-serif text-2xl leading-snug">
-                项目必须完成立项圆桌后才会进入 dashboard。
+                A project enters the dashboard only after the kickoff roundtable is approved.
               </p>
             </div>
           </aside>}
@@ -6296,18 +6260,18 @@ export default function EngineWorkspace() {
               <DoorOpen size={16} className="text-[#8f1e18]" />
               Initiation Pipeline
             </div>
-            <h2 className="font-serif text-4xl leading-tight mb-4">输入项目名，选择参会人，然后召开强制立项圆桌。</h2>
+            <h2 className="font-serif text-4xl leading-tight mb-4">Enter a project name, invite participants, then run a required kickoff roundtable.</h2>
             <p className="font-serif text-xl leading-relaxed text-[#d8c99f] max-w-3xl">
-              加号不会直接生成项目。它会先创建立项草案，再邀请成员进入会议准备页，会议通过后才把项目写入 dashboard。
+              New projects now pass through a real kickoff workflow before they enter the dashboard.
             </p>
           </div>
           <div className="border-l border-[#3a2a1c] p-6 bg-[#0f0d0b]">
             <div className="grid grid-cols-2 gap-3 h-full">
               {[
-                { label: 'Step 01', value: '输入项目名' },
-                { label: 'Step 02', value: '选择参会人' },
-                { label: 'Step 03', value: '开始圆桌会议' },
-                { label: 'Step 04', value: '通过后生成项目' },
+                { label: 'Step 01', value: 'Enter project brief' },
+                { label: 'Step 02', value: 'Invite participants' },
+                { label: 'Step 03', value: 'Start kickoff meeting' },
+                { label: 'Step 04', value: 'Create after approval' },
               ].map(item => (
                 <div key={item.label} className="border border-[#3a2a1c] p-4 bg-[#1a130e]">
                   <div className="font-mono text-[8px] uppercase tracking-widest text-[#7d6a49] mb-2">{item.label}</div>
@@ -6326,9 +6290,9 @@ export default function EngineWorkspace() {
               <DoorOpen size={16} className="text-[#8f1e18]" />
               Project Birth Protocol
             </div>
-            <h2 className="font-serif text-4xl leading-tight mb-4">项目不是从表单里创建，而是从圆桌会议里被批准出来。</h2>
+            <h2 className="font-serif text-4xl leading-tight mb-4">Projects are approved through the roundtable, not spawned from a form.</h2>
             <p className="font-serif text-xl leading-relaxed text-[#d8c99f] max-w-3xl">
-              发起人先说明要做什么，团队在立项圆桌里商讨领导、汇报、执行与产出形式。会议结论通过后，项目才进入 dashboard。
+              The owner explains the goal, the team discusses leadership and execution, and approval creates the project.
             </p>
           </div>
           <div className="border-l border-[#3a2a1c] p-6 bg-[#0f0d0b]">
@@ -6348,9 +6312,9 @@ export default function EngineWorkspace() {
 
       <div className="grid grid-cols-3 gap-6 mb-12">
         {[
-          { icon: Database, label: 'Compute Used', val: '$24.50' },
           { icon: Cpu, label: 'Active Projects', val: projects.length },
-          { icon: Activity, label: 'Task Throughput', val: '92%' }
+          { icon: ClipboardList, label: 'Open Tasks', val: projects.reduce((count, project) => count + ((project.tasks || []).filter(task => task.status !== 'done').length), 0) },
+          { icon: MessageSquare, label: 'Stored Messages', val: chatMessages.length }
         ].map((stat, i) => (
           <div key={i} className="border border-[#d1d0c9] bg-white p-6 shadow-sm flex flex-col">
             <div className="flex justify-between items-center mb-6 text-gray-500">
@@ -6365,6 +6329,18 @@ export default function EngineWorkspace() {
       <div className="border border-[#d1d0c9] bg-white p-8 shadow-sm">
          <h2 className="font-serif text-2xl mb-6">Active Portfolios</h2>
          <div className="flex flex-col gap-4">
+           {projects.length === 0 && (
+             <div className="border border-dashed border-gray-300 bg-gray-50 p-8 text-center">
+               <div className="font-serif text-2xl mb-2">No projects yet</div>
+               <p className="font-mono text-[10px] uppercase tracking-widest text-gray-500 mb-5">Create one through the real kickoff workflow.</p>
+               <button
+                 onClick={navToInitiation}
+                 className="bg-black text-white px-5 py-3 font-mono text-[10px] uppercase tracking-widest hover:bg-[#8f1e18] transition-colors"
+               >
+                 New Project
+               </button>
+             </div>
+           )}
            {projects.map(proj => (
              <div 
                key={proj.id} 
@@ -6406,14 +6382,14 @@ export default function EngineWorkspace() {
     const projectText = (value) => localizeText(String(value ?? ''), activeLanguage);
     const isInitiatedProject = Boolean(activeProject.initiation);
     const dashboardStats = [
-      { label: '今日重点', value: isInitiatedProject ? '立项共识' : 'Auth Middleware', icon: Crosshair },
-      { label: '活跃频道', value: chatChannels.length, icon: Hash },
-      { label: '时间线事件', value: isInitiatedProject ? activeProject.logs.length : PROJECT_TIMELINE_EVENTS.length, icon: GitCommit },
-      { label: '自主循环', value: activeProject.autonomousLedger?.length || 0, icon: Activity },
+      { label: 'Focus', value: isInitiatedProject ? 'Kickoff Consensus' : 'Waiting', icon: Crosshair },
+      { label: 'Active Channels', value: chatChannels.length, icon: Hash },
+      { label: 'Timeline Logs', value: activeProject.logs?.length || 0, icon: GitCommit },
+      { label: 'Autonomous Cycles', value: activeProject.autonomousLedger?.length || 0, icon: Activity },
     ];
     const nextSuggestion = isInitiatedProject
-      ? `先由 ${activeProject.initiation.firstLead} 接管日常推进，${activeProject.initiation.reporter} 产出第一份汇报模板。工作组本轮交付：${activeProject.initiation.output}。`
-      : '先进入圆桌会议室确认 BYOK 认证优先级，再让工程与设计频道同步执行边界。若需要看全貌，使用贡献时间线检查分叉进度。';
+      ? `Let ${activeProject.initiation.firstLead} coordinate execution while ${activeProject.initiation.reporter} keeps the first evidence report current. Output target: ${activeProject.initiation.output}.`
+      : 'No kickoff evidence has been created for this project yet.';
     const recentLine = isInitiatedProject
       ? activeProject.logs.map((log, index) => ({
           id: `init-log-${index}`,
@@ -6423,11 +6399,11 @@ export default function EngineWorkspace() {
           title: log.log,
           contributor: log.agent,
         }))
-      : PROJECT_TIMELINE_EVENTS.slice(0, 5);
+      : [];
     const launchers = [
-      { id: 'meeting', label: '圆桌会议室', sub: 'War Room', icon: ClipboardList, desc: '高权重会议发言与 Agent 意图调度。' },
-      { id: 'chat', label: '小组频道', sub: 'Chat', icon: Monitor, desc: '项目组日常沟通、@ 提醒和任务卡片。' },
-      { id: 'timeline', label: '贡献时间线', sub: 'Timeline', icon: ScrollText, desc: '横向提交线、分叉工作流和事件详情。' },
+      { id: 'meeting', label: 'Roundtable Room', sub: 'War Room', icon: ClipboardList, desc: 'Meeting turns, decisions, and Agent intent routing.' },
+      { id: 'chat', label: 'Group Channels', sub: 'Chat', icon: Monitor, desc: 'Project communication, mentions, acknowledgements, and task cards.' },
+      { id: 'timeline', label: 'Manager Flow Graph', sub: 'Timeline', icon: ScrollText, desc: 'Work, decisions, changes, reports, and proof.' },
     ];
     const eventLedgerSummary = summarizeProjectEventLedger(activeProject);
     const managerDashboardStats = [
@@ -12519,6 +12495,43 @@ export default function EngineWorkspace() {
       : null;
 
     const speakerAgent = roomSpeaker ? meetingProject.team.find(a => a.id === roomSpeaker) : null;
+    const activeIntention = roomIntentions.find(intent => intent.status === 'speaking')
+      || roomIntentions.find(intent => intent.status === 'queued')
+      || roomIntentions[0]
+      || null;
+    const visibleQueue = roomIntentions.filter(intent => intent.status !== 'yielded');
+    const speechRecognitionSupported = typeof window !== 'undefined'
+      && (window.SpeechRecognition || window.webkitSpeechRecognition);
+    const toggleRoomVoiceInput = () => {
+      if (roomVoiceStatus === 'listening') {
+        roomSpeechRecognitionRef.current?.stop?.();
+        setRoomVoiceStatus('idle');
+        return;
+      }
+      const Recognition = speechRecognitionSupported;
+      if (!Recognition) {
+        setRoomVoiceStatus('unsupported');
+        return;
+      }
+      const recognition = new Recognition();
+      recognition.lang = activeLanguage === 'zh' ? 'zh-CN' : 'en-US';
+      recognition.interimResults = false;
+      recognition.continuous = false;
+      recognition.onstart = () => setRoomVoiceStatus('listening');
+      recognition.onend = () => setRoomVoiceStatus(status => (status === 'listening' ? 'idle' : status));
+      recognition.onerror = () => setRoomVoiceStatus('error');
+      recognition.onresult = (event) => {
+        const spokenText = Array.from(event.results)
+          .map(result => result[0]?.transcript || '')
+          .join(' ')
+          .trim();
+        if (spokenText) {
+          setRoomInput(prev => `${prev}${prev && !/\s$/.test(prev) ? ' ' : ''}${spokenText}`);
+        }
+      };
+      roomSpeechRecognitionRef.current = recognition;
+      recognition.start();
+    };
 
     if (!meetingStartTime && (projectMode === 'meeting' || meetingOptions.forceTimer)) {
       setMeetingStartTime(Date.now());
@@ -12539,7 +12552,7 @@ export default function EngineWorkspace() {
                 <span className="sep">/</span>
                 <span className="text-[#efe2bd]">{meetingTitle}</span>
                 <span className="sep">/</span>
-                <span className={isAnySpeaking ? 'text-[#8f1e18]' : 'text-[#59684b]'}>{isAnySpeaking ? '会议进行中' : '待命'}</span>
+                <span className={isAnySpeaking ? 'text-[#8f1e18]' : 'text-[#59684b]'}>{isAnySpeaking ? 'Meeting active' : 'Standing by'}</span>
               </div>
             </div>
             <div className="flex items-center gap-4">
@@ -12548,7 +12561,7 @@ export default function EngineWorkspace() {
                   onClick={completeMeeting}
                   className="font-mono text-[10px] uppercase tracking-widest border border-[#8f1e18] bg-[#8f1e18] px-3 py-1.5 text-white hover:bg-[#a62a22] transition-colors"
                 >
-                  结束会议
+                  End Meeting
                 </button>
               )}
               <div className="meeting-timer font-mono text-sm text-[#bcae86] border border-[#3a2a1c] px-3 py-1.5 rounded bg-[#1a130e]/60">
@@ -12585,13 +12598,13 @@ export default function EngineWorkspace() {
                 </svg>
               </div>
 
-              {/* Central Speaker Card — 3 states */}
+              {/* Central Speaker Card 鈥?3 states */}
               <div className="absolute inset-0 flex items-center justify-center z-10 pointer-events-none">
                 {!roomSpeaker && roomTranscript.length <= 1 ? (
                   /* IDLE state */
                   <div className="w-[min(480px,42%)] bg-[#1a130e] border border-[#3a2a1c] p-6 text-center pointer-events-auto">
                     <div className="font-mono text-[10px] uppercase tracking-[0.28em] text-[#7d6a49] mb-3">Roundtable Standby</div>
-                    <div className="font-serif text-2xl leading-relaxed text-[#bcae86] mb-3">输入发言以开始会议讨论</div>
+                    <div className="font-serif text-2xl leading-relaxed text-[#bcae86] mb-3">Enter a message to begin the meeting discussion.</div>
                     <div className="w-12 h-0.5 bg-[#3a2a1c] mx-auto">
                       <div className="w-4 h-full bg-[#8f1e18] animate-pulse" />
                     </div>
@@ -12615,7 +12628,7 @@ export default function EngineWorkspace() {
                 )}
               </div>
 
-              {/* Agent Avatars — dynamic arc positioning */}
+              {/* Agent Avatars 鈥?dynamic arc positioning */}
               {meetingProject.team.map((agent, index) => {
                 const pos = getMeetingAvatarPos(index, teamCount);
                 const speaking = roomSpeaker === agent.id;
@@ -12642,18 +12655,38 @@ export default function EngineWorkspace() {
 
             {/* Right Sidebar */}
             <aside className="flex flex-col gap-3 min-h-0">
-              {/* Intent Queue */}
-              <div className="bg-[#1a130e]/80 border border-[#3a2a1c] rounded p-4 max-h-[35%] overflow-y-auto shrink-0">
+              <div className="bg-[#1a130e]/80 border border-[#3a2a1c] rounded p-4 shrink-0">
                 <div className="flex items-center gap-2 mb-3">
                   <span className="node-id-tag bg-[#8f1e18]">INT</span>
-                  <span className="sr-only">{activeLanguage === 'zh' ? '发言意图队列' : 'Intent Queue'}</span>
-                  <span className="font-mono text-[9px] uppercase tracking-widest text-[#7d6a49]">发言意图队列</span>
+                  <span className="font-mono text-[9px] uppercase tracking-widest text-[#7d6a49]">Speaking Intent</span>
                 </div>
-                {roomIntentions.length === 0 ? (
-                  <p className="font-serif text-sm text-[#7d6a49]">等待用户发言后生成 Agent 意图分数。</p>
-                ) : roomIntentions.map((intent, idx) => {
+                {activeIntention ? (
+                  <div className="border-l-[3px] border-[#8f1e18] bg-[#0d0c0b]/50 p-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="font-serif text-lg leading-tight text-[#efe2bd]">{activeIntention.name}</span>
+                      <span className="font-mono text-[8px] text-[#7d6a49]">{activeIntention.score}/10</span>
+                    </div>
+                    <div className="mt-2 font-mono text-[8px] uppercase tracking-widest leading-relaxed text-[#7d6a49]">
+                      {activeIntention.target}
+                    </div>
+                  </div>
+                ) : (
+                  <p className="font-serif text-sm leading-relaxed text-[#7d6a49]">Waiting for user input before generating Agent intent scores.</p>
+                )}
+              </div>
+
+              {/* Queue */}
+              <div className="bg-[#1a130e]/80 border border-[#3a2a1c] rounded p-4 max-h-[24%] overflow-y-auto shrink-0">
+                <div className="flex items-center gap-2 mb-3">
+                  <span className="node-id-tag bg-[#8f1e18]">QUE</span>
+                  <span className="sr-only">Intent Queue</span>
+                  <span className="font-mono text-[9px] uppercase tracking-widest text-[#7d6a49]">Intent Queue</span>
+                </div>
+                {visibleQueue.length === 0 ? (
+                  <p className="font-serif text-sm text-[#7d6a49]">Waiting for user input to generate Agent intent scores.</p>
+                ) : visibleQueue.map((intent, idx) => {
                   const statusColor = intent.status === 'speaking' ? '#8f1e18' : intent.status === 'yielded' ? '#59684b' : '#b9782b';
-                  const statusLabel = intent.status === 'speaking' ? '发言中' : intent.status === 'yielded' ? '已让出' : '排队中';
+                  const statusLabel = intent.status === 'speaking' ? 'Speaking' : intent.status === 'yielded' ? 'Yielded' : 'Queued';
                   return (
                     <div key={intent.id} className={`border-l-[3px] p-3 mb-2 transition-opacity ${intent.status === 'yielded' ? 'opacity-50' : ''}`}
                       style={{ borderColor: statusColor, background: 'rgba(26,19,14,0.5)' }}>
@@ -12679,7 +12712,7 @@ export default function EngineWorkspace() {
               <div className="bg-[#1a130e]/80 border border-[#3a2a1c] rounded p-4 flex-1 overflow-y-auto min-h-0">
                 <div className="flex items-center gap-2 mb-3">
                   <span className="node-id-tag bg-[#8f1e18]">LOG</span>
-                  <span className="font-mono text-[9px] uppercase tracking-widest text-[#7d6a49]">会议速记</span>
+                  <span className="font-mono text-[9px] uppercase tracking-widest text-[#7d6a49]">浼氳閫熻</span>
                 </div>
                 <div className="space-y-3">
                   {roomTranscript.slice(-8).map((log, idx) => {
@@ -12700,23 +12733,58 @@ export default function EngineWorkspace() {
               </div>
 
               {/* Input */}
-              <div className="bg-[#251b13] border border-[#3a2a1c] rounded-lg p-2 flex items-center gap-2 shrink-0">
+              <div className="bg-[#251b13] border border-[#3a2a1c] rounded-lg p-3 flex items-end gap-3 shrink-0">
+                <button
+                  type="button"
+                  data-testid="project-meeting-voice"
+                  onClick={toggleRoomVoiceInput}
+                  disabled={!speechRecognitionSupported || roomVoiceStatus === 'unsupported'}
+                  aria-pressed={roomVoiceStatus === 'listening'}
+                  title={roomVoiceStatus === 'unsupported' ? 'Voice input is not supported in this browser' : 'Mark voice input'}
+                  className={`shrink-0 rounded border px-3 py-3 font-mono text-[8px] uppercase tracking-widest transition-colors ${
+                    roomVoiceStatus === 'listening'
+                      ? 'border-[#8f1e18] bg-[#8f1e18] text-white'
+                      : 'border-[#3a2a1c] bg-[#1a130e] text-[#bcae86] hover:border-[#7b6542] hover:text-[#efe2bd] disabled:opacity-40'
+                  }`}
+                >
+                  <Mic2 size={17} className={roomVoiceStatus === 'listening' ? 'animate-pulse' : ''} />
+                  <span className="mt-1 block">Mark</span>
+                </button>
+                <textarea
+                  data-testid="project-meeting-input"
+                  value={roomInput}
+                  onChange={(e) => setRoomInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault();
+                      submitMeetingInput(meetingProject);
+                    }
+                  }}
+                  placeholder="Enter meeting remarks..."
+                  className="min-h-[76px] flex-1 resize-none bg-transparent py-1 outline-none text-[#efe2bd] font-serif text-lg leading-relaxed placeholder-[#7d6a49]/60"
+                />
+                <button data-testid="project-meeting-send" onClick={() => submitMeetingInput(meetingProject)}
+                  className="shrink-0 bg-[#8f1e18] hover:bg-[#a62a22] text-white px-5 py-3 rounded flex items-center gap-2 font-mono text-[9px] uppercase tracking-widest transition-colors">
+                  Speak
+                </button>
+              </div>
+              <div className="hidden">
                 <div className={`p-2 rounded ${isAnySpeaking ? 'bg-[#8f1e18]/20' : 'bg-[#3a2a1c]'}`}>
                   <Mic2 size={16} className={`${isAnySpeaking ? 'text-[#8f1e18] animate-pulse' : 'text-[#7d6a49]'}`} />
                 </div>
                 <input
-                  data-testid="project-meeting-input"
+                  data-testid="project-meeting-input-legacy"
                   value={roomInput}
                   onChange={(e) => setRoomInput(e.target.value)}
                   onKeyDown={(e) => { if (e.key === 'Enter') submitMeetingInput(meetingProject); }}
-                  placeholder="输入会议发言..."
+                  placeholder="Enter a meeting message..."
                   className="flex-1 bg-transparent outline-none text-[#efe2bd] font-serif text-base placeholder-[#7d6a49]/60"
                 />
-                <button data-testid="project-meeting-send" onClick={() => submitMeetingInput(meetingProject)}
+                <button data-testid="project-meeting-send-legacy" onClick={() => submitMeetingInput(meetingProject)}
                   className="bg-[#8f1e18] hover:bg-[#a62a22] text-white px-4 py-1.5 rounded flex items-center gap-2 font-mono text-[9px] uppercase tracking-widest transition-colors">
-                  发言
+                  Send
                 </button>
-                <span className="font-mono text-[8px] text-[#7d6a49] px-1">⏎</span>
+                <span className="font-mono text-[8px] text-[#7d6a49] px-1">Enter</span>
               </div>
             </aside>
           </div>
@@ -12761,7 +12829,7 @@ export default function EngineWorkspace() {
       };
     };
 
-    const mentionCandidates = [{ id: '_all', name: 'all', label: '所有人', role: '' }, ...activeProject.team.map(a => ({ ...a, label: a.name }))];
+    const mentionCandidates = [{ id: '_all', name: 'all', label: '鎵€鏈変汉', role: '' }, ...activeProject.team.map(a => ({ ...a, label: a.name }))];
     const filteredMentions = mentionCandidates.filter(m => m.name.toLowerCase().includes(mentionFilter.toLowerCase()));
 
     const handleChatKeyDown = (e) => {
@@ -12992,7 +13060,7 @@ export default function EngineWorkspace() {
                 <button onClick={() => { setShowMentionPicker(!showMentionPicker); setMentionFilter(''); setMentionIndex(0); }}
                   className="p-1.5 text-[#7d6a49] hover:text-[#efe2bd] transition-colors font-mono text-sm font-bold">@</button>
                 <input value={chatInput} onChange={handleChatChange} onKeyDown={handleChatKeyDown}
-                  placeholder={activeLanguage === 'zh' ? `发送到 #${activeChannel?.name || '频道'}...` : `Message #${activeChannel?.name || 'channel'}...`}
+                  placeholder={activeLanguage === 'zh' ? `鍙戦€佸埌 #${activeChannel?.name || '棰戦亾'}...` : `Message #${activeChannel?.name || 'channel'}...`}
                   className="flex-1 bg-transparent outline-none font-serif text-base text-[#efe2bd] placeholder-[#7d6a49]/60" />
                 <button onClick={submitChatInput}
                   className="bg-[#8f1e18] hover:bg-[#a62a22] text-white px-4 py-1.5 rounded flex items-center gap-2 font-mono text-[9px] uppercase tracking-widest transition-colors">
@@ -13077,12 +13145,12 @@ export default function EngineWorkspace() {
     const UNIT_PX = { hour: 120, day: 280, week: 400, month: 200 };
     const UNIT_HOURS = { hour: 1, day: 24, week: 168, month: 720 };
     const RUNTIME_EVENT_TYPES = ['Project Approved', 'Leader Confirmed', 'Leader Assignment', 'Assignment Ack', 'Peer Handoff', 'Peer Handoff Ack', 'Change Discussion', 'Change Confirmed', 'Change Sync', 'Work Pulse', 'Daily Report', 'Task Completed'];
-    const EVENT_TYPES = ['创建', '分析', '内部沟通', '文档更新', '代码上传', '重要决策', '汇报记录'];
+    const EVENT_TYPES = ['Created', 'Analysis', 'Internal Note', 'Document Update', 'Code Upload', 'Decision', 'Report'];
     const SCALE_PROFILES = {
       hour:  { priorities: ['core', 'normal', 'low'], types: EVENT_TYPES },
-      day:   { priorities: ['core', 'normal'], types: ['创建', '分析', '文档更新', '代码上传', '重要决策', '汇报记录'] },
-      week:  { priorities: ['core', 'normal'], types: ['创建', '文档更新', '代码上传', '重要决策', '汇报记录'] },
-      month: { priorities: ['core'], types: ['创建', '重要决策', '汇报记录'] },
+      day:   { priorities: ['core', 'normal'], types: ['Created', 'Analysis', 'Document Update', 'Code Upload', 'Decision', 'Report'] },
+      week:  { priorities: ['core', 'normal'], types: ['Created', 'Document Update', 'Code Upload', 'Decision', 'Report'] },
+      month: { priorities: ['core'], types: ['Created', 'Decision', 'Report'] },
     };
     const DETAIL_LEVELS = {
       compact: tlZoom < 0.68,
@@ -13113,20 +13181,11 @@ export default function EngineWorkspace() {
       coordination: 'Work Pulse',
     }[eventType] || 'Daily Report');
     const projectTimelineEvents = (activeProject?.logs || []).map((log, index) => {
-      const type = log.eventType === 'leader-assignment'
-        ? '内部沟通'
-        : log.eventType === 'change-confirmed'
-          ? '重要决策'
-          : log.eventType === 'change-discussion' || log.eventType === 'change-sync'
-            ? '内部沟通'
-            : log.eventType === 'work-pulse'
-              ? '汇报记录'
-              : '汇报记录';
-      const branch = /design|体验|界面|Dieter/i.test(`${log.agent} ${log.log}`)
+      const branch = /design|experience|interface|dieter/i.test(`${log.agent} ${log.log}`)
         ? 'Design'
-        : /code|api|backend|Linus|工程|技术/i.test(`${log.agent} ${log.log}`)
+        : /code|api|backend|linus|engineering|technical/i.test(`${log.agent} ${log.log}`)
           ? 'Engineering'
-          : /market|strategy|Don|市场|策略/i.test(`${log.agent} ${log.log}`)
+          : /market|strategy|don/i.test(`${log.agent} ${log.log}`)
             ? 'Market'
             : 'Main';
       return {
@@ -13147,7 +13206,24 @@ export default function EngineWorkspace() {
         directTargetIds: log.directTargetIds || [],
       };
     });
-    const timelineEvents = projectTimelineEvents.length ? projectTimelineEvents : PROJECT_TIMELINE_EVENTS;
+    const timelineEvents = projectTimelineEvents;
+
+    if (!timelineEvents.length) {
+      return (
+        <div className="h-full p-10 bg-[#0d0c0b] text-[#efe2bd]">
+          <button onClick={() => setProjectMode('dashboard')} className="mb-8 flex items-center gap-2 font-mono text-[10px] uppercase tracking-widest text-[#bcae86] hover:text-white">
+            <ArrowLeft size={14} /> Back to Dashboard
+          </button>
+          <div className="border border-[#3a2a1c] bg-[#171411] p-8 max-w-2xl">
+            <div className="font-mono text-[10px] uppercase tracking-[0.26em] text-[#8f1e18] mb-3">No Timeline Evidence</div>
+            <h2 className="font-serif text-3xl mb-3">This project has no persisted runtime events yet.</h2>
+            <p className="font-serif text-lg leading-relaxed text-[#d8c99f]">
+              Kickoff approval, chat commands, worker cycles, and meeting updates will create timeline records here.
+            </p>
+          </div>
+        </div>
+      );
+    }
 
     const maxT = Math.max(...timelineEvents.map(e => e.t));
     const getBaseNodeX = (t) => WORLD_X_OFFSET + (t / UNIT_HOURS[timelineScale]) * UNIT_PX[timelineScale];
@@ -13430,7 +13506,7 @@ export default function EngineWorkspace() {
     const isNodeVisible = (id) => tlEntranceDone || tlVisibleNodes.has(id);
     const isLineVisible = (key) => tlEntranceDone || tlVisibleLines.has(key);
 
-    const ATTACH_ICONS = { code: '{ }', doc: '📄', design: '🎨', link: '🔗' };
+    const ATTACH_ICONS = { code: '{ }', doc: '馃搫', design: '馃帹', link: '馃敆' };
     const miniGraphNodes = [];
     const miniGraphEdges = [];
     if (selected) {
@@ -13601,7 +13677,7 @@ export default function EngineWorkspace() {
                 const isLow = event.priority === 'low';
                 const isCore = event.priority === 'core';
                 const isCoreMain = isCore && event.branch === 'Main';
-                const isDecision = event.type === '重要决策';
+                const isDecision = event.type === '閲嶈鍐崇瓥';
                 const nodeVisible = isNodeVisible(event.id);
                 const filteredOut = !(scaleProfile.priorities.includes(event.priority) && scaleProfile.types.includes(event.type));
                 const typeStyle = EVENT_TYPE_STYLES[event.type] || 'bg-[#251b13] text-[#efe2bd]';
@@ -13668,7 +13744,7 @@ export default function EngineWorkspace() {
                       </div>
                       {showMeta && (
                         <div className={`font-mono uppercase tracking-widest ${isLow ? 'text-[7px]' : 'text-[8px]'} text-[#7d6a49]`}>
-                          {event.contributor} · {formatTime(event.t)}
+                          {event.contributor} 路 {formatTime(event.t)}
                         </div>
                       )}
                       {showDetail && (
@@ -13746,7 +13822,7 @@ export default function EngineWorkspace() {
                         <div className="tl-detail-section-title">{timelineText('Related Artifacts')} ({selected.attachments.length})</div>
                         {selected.attachments.map((att, i) => (
                           <div key={i} className="tl-attach-item">
-                            <span className="text-sm flex-shrink-0 w-5 text-center">{ATTACH_ICONS[att.type] || '📎'}</span>
+                            <span className="text-sm flex-shrink-0 w-5 text-center">{ATTACH_ICONS[att.type] || '馃搸'}</span>
                             <div className="flex-1 min-w-0">
                               <div className="font-mono text-[10px] text-[#d8c99f] truncate">{att.name || att.title || att.fileName || att.id}</div>
                               <div className="font-mono text-[8px] text-[#7d6a49] truncate">{att.diff || att.summary || att.absolutePath || att.path || att.relativePath}</div>
@@ -13837,7 +13913,7 @@ export default function EngineWorkspace() {
                                       style={{ cursor: isCurrent ? 'default' : 'pointer' }}>
                                       <circle cx={p.cx} cy={p.cy} r={isCurrent ? 16 : 12} fill={isCurrent ? '#251b13' : '#1a150f'} stroke={isCurrent ? bc : '#3a2a1c'} strokeWidth={isCurrent ? 2 : 1} />
                                       <text x={p.cx} y={p.cy + 1} textAnchor="middle" dominantBaseline="middle" fill={isCurrent ? '#efe2bd' : '#7d6a49'} fontSize="7" fontFamily="monospace">{n.eventId.replace('T-', '')}</text>
-                                      <text x={p.cx} y={p.cy + (isCurrent ? 28 : 24)} textAnchor="middle" fill="#7d6a49" fontSize="7" fontFamily="monospace">{n.title.length > 8 ? n.title.slice(0, 8) + '…' : n.title}</text>
+                                        <text x={p.cx} y={p.cy + (isCurrent ? 28 : 24)} textAnchor="middle" fill="#7d6a49" fontSize="7" fontFamily="monospace">{n.title.length > 8 ? `${n.title.slice(0, 8)}...` : n.title}</text>
                                     </g>
                                   );
                                 })}
@@ -13890,7 +13966,7 @@ export default function EngineWorkspace() {
                     )}
                   </div>
 
-                  {/* 8. Action bar — fixed at bottom */}
+                  {/* 8. Action bar 鈥?fixed at bottom */}
                   <div className="flex-shrink-0 px-5 py-3 border-t border-[#2a2118] flex items-center gap-2">
                     <button className="flex-1 font-mono text-[9px] uppercase tracking-widest border border-[#3a2a1c] text-[#7d6a49] hover:text-[#efe2bd] hover:border-[#7b6542] px-3 py-2 transition-colors rounded-sm">
                       {timelineText('Jump To Chat')}
@@ -14189,7 +14265,7 @@ export default function EngineWorkspace() {
     const compactText = (value, max = 96) => {
       const text = String(value || '').replace(/\s+/g, ' ').trim();
       if (text.length <= max) return text;
-      return `${text.slice(0, Math.max(0, max - 1)).trim()}…`;
+      return `${text.slice(0, Math.max(0, max - 3)).trim()}...`;
     };
     const timeKeyForNode = (node) => {
       if (node.commitArea?.key) return node.commitArea.key;
@@ -14934,7 +15010,7 @@ export default function EngineWorkspace() {
               const isUserSpeaking = speakingAgent === 'user';
               const isTargeted = targetNodeIds.includes(ai.id);
               
-              // 连线特效：如果自己说话或者用户说话且该员工被定向/全体，则激活数据流
+              // 杩炵嚎鐗规晥锛氬鏋滆嚜宸辫璇濇垨鑰呯敤鎴疯璇濅笖璇ュ憳宸ヨ瀹氬悜/鍏ㄤ綋锛屽垯婵€娲绘暟鎹祦
               const isLineActive = isSpeaking || (isUserSpeaking && (targetNodeIds.length === 0 || isTargeted));
               return (
                 <line 
@@ -14956,7 +15032,6 @@ export default function EngineWorkspace() {
               const isSpeaking = speakingAgent === ai.id;
               const isTargeted = targetNodeIds.includes(ai.id);
               
-              // 切换定向对象开关
               const toggleTarget = () => {
                 if (targetNodeIds.includes(ai.id)) {
                   setTargetNodeIds(targetNodeIds.filter(id => id !== ai.id));
@@ -14967,10 +15042,10 @@ export default function EngineWorkspace() {
 
               return (
                 <g key={`node-${ai.id}`} transform={`translate(${pos.x}, ${pos.y})`} onClick={toggleTarget} className="cursor-pointer group">
-                  {/* 定向虚线框更加克制沉稳 */}
+                  {/* 瀹氬悜铏氱嚎妗嗘洿鍔犲厠鍒舵矇绋?*/}
                   {isTargeted && <circle r="26" fill="none" stroke="#888" strokeWidth="1" strokeDasharray="3 3" />}
                   
-                  {/* 移除了极其刺眼的纯白实心背景，改用黑色背景+加粗白色边框来优雅地指示发言状态 */}
+                  {/* 绉婚櫎浜嗘瀬鍏跺埡鐪肩殑绾櫧瀹炲績鑳屾櫙锛屾敼鐢ㄩ粦鑹茶儗鏅?鍔犵矖鐧借壊杈规鏉ヤ紭闆呭湴鎸囩ず鍙戣█鐘舵€?*/}
                   <circle r="20" fill={isTargeted ? '#222' : '#111'} stroke={isSpeaking ? '#fff' : (isTargeted ? '#aaa' : '#444')} strokeWidth={isSpeaking ? "3" : "2"} className="transition-all duration-300 group-hover:stroke-[#888]" />
                   <text y="-35" fill={isSpeaking || isTargeted ? '#fff' : '#888'} fontSize="12" fontFamily="Space Mono" textAnchor="middle" className="tracking-widest transition-colors">{ai.name.toUpperCase()}</text>
                   <text y="-50" fill={isTargeted ? '#888' : '#555'} fontSize="8" fontFamily="Space Mono" textAnchor="middle" className="tracking-widest transition-colors">{ai.role.toUpperCase()}</text>
@@ -14980,7 +15055,7 @@ export default function EngineWorkspace() {
 
             {/* User/Director Node at Bottom Center */}
             <g transform={`translate(${cx}, ${cy})`}>
-               {/* 同样移除了用户的实心高光，仅用线条变化 */}
+               {/* 鍚屾牱绉婚櫎浜嗙敤鎴风殑瀹炲績楂樺厜锛屼粎鐢ㄧ嚎鏉″彉鍖?*/}
                <rect x="-30" y="-30" width="60" height="60" fill="#111" stroke={speakingAgent === 'user' ? '#fff' : '#555'} strokeWidth={speakingAgent === 'user' ? "3" : "2"} rx="8" className="transition-all duration-300" />
                <text y="5" fill={speakingAgent === 'user' ? '#fff' : '#aaa'} fontSize="14" fontFamily="Space Mono" textAnchor="middle" fontWeight="bold">YOU</text>
                <text y="20" fill="#555" fontSize="8" fontFamily="Space Mono" textAnchor="middle" className="tracking-widest">DIRECTOR</text>
@@ -15024,7 +15099,7 @@ export default function EngineWorkspace() {
                        <div className="flex items-center gap-3 mb-2">
                          {!isUser && <span className="font-mono text-[10px] text-[#aaa] tracking-widest border border-[#333] px-1 bg-[#1a1a1a]">{log.agent.role.toUpperCase()}</span>}
                          
-                         {/* 增加剧本速记里的发文目标显示 */}
+                         {/* 澧炲姞鍓ф湰閫熻閲岀殑鍙戞枃鐩爣鏄剧ず */}
                          {isUser && log.targetNames && (
                            <span className="font-mono text-[10px] text-[#888] tracking-widest border border-[#333] px-1 bg-[#1a1a1a]">
                              TO: @{log.targetNames.join(', @')}
@@ -15058,7 +15133,7 @@ export default function EngineWorkspace() {
            {meetingState === 'active' && (
              <div className="py-6 border-t border-[#333] bg-[var(--warroom-bg)] relative z-20 flex flex-col">
                
-               {/* 独立开辟的 Directive Target 指示栏 */}
+               {/* 鐙珛寮€杈熺殑 Directive Target 鎸囩ず鏍?*/}
                <div className="mb-3 flex items-center gap-2">
                  <span className="font-mono text-[10px] text-[#555] tracking-widest">DIRECTIVE TARGET:</span>
                  {targetNodeIds.length === 0 ? (
@@ -15075,7 +15150,7 @@ export default function EngineWorkspace() {
                  )}
                </div>
 
-               {/* 主输入区域 */}
+               {/* 涓昏緭鍏ュ尯鍩?*/}
                <div className="flex items-center gap-4 bg-[#111] border border-[#333] p-2 focus-within:border-[#fff] transition-colors">
                  <div className="bg-[#fff] p-2">
                    <CornerDownRight size={16} className="text-black" />

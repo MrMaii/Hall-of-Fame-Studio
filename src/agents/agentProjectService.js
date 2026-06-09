@@ -26,6 +26,7 @@ import { createTranslator, localizeText, normalizeLanguage } from '../i18n/runti
 
 const nowIso = () => new Date().toISOString();
 const DEFAULT_AGENT_WORK_INTERVAL_MS = 30 * 60 * 1000;
+const MODEL_INTENT_LEDGER_LIMIT = 120;
 
 const READ_MODEL_LOCALIZED_KEYS = new Set([
   'stage',
@@ -76,6 +77,30 @@ function extractKickoffActionFromPath(path = '') {
     meetingId: parts[1] || null,
     action: parts[2] || 'create',
   };
+}
+
+function commandShouldRequestModelIntent(command = '') {
+  return /^POST\s+/i.test(command)
+    && !/\/llm\//i.test(command)
+    && !/\/manager-flow-graph\/nodes\/[^/]+\/confirm/i.test(command);
+}
+
+function compactModelIntent(value = {}) {
+  if (!value || typeof value !== 'object') return {};
+  return Object.fromEntries(Object.entries(value).filter(([, item]) => (
+    item !== undefined
+    && item !== null
+    && (!(Array.isArray(item)) || item.length > 0)
+    && (!(typeof item === 'string') || item.trim())
+  )));
+}
+
+function modelIntentSummary(record = {}) {
+  const intent = record.intent || {};
+  if (typeof intent.intent === 'string' && intent.intent.trim()) return intent.intent.trim();
+  if (typeof record.content === 'string' && record.content.trim()) return record.content.trim().slice(0, 220);
+  if (record.error) return `Model intent failed: ${record.error}`;
+  return 'Model intent recorded.';
 }
 
 function multiChannelSourceModeFor(channelId, sourceMode) {
@@ -1762,6 +1787,299 @@ export function createKickoffMeetingSession({
       transcriptIds: transcript.map((item) => item.id).filter(Boolean),
       roleTranscriptIds: (roleNegotiation.transcript || []).map((item) => item.id),
       leaderCampaignIds: (leaderElection.transcript || []).map((item) => item.id),
+      roleQuestionResolutions,
+      leaderElectionResolution,
+      nextActionResolution,
+      unansweredRoleQuestionIds: roleQuestionResolutions.filter((item) => !item.answered).map((item) => item.questionId),
+      hearingEdgeCount: transcript.reduce((count, item) => count + (item.hears?.length || item.hearsOthers?.length || 0), 0),
+    },
+  };
+}
+
+function buildModelKickoffMeetingMessages({
+  projectId = '',
+  meetingId = '',
+  name = 'Untitled Agent Project',
+  brief = '',
+  team = [],
+  tasks = [],
+  language = 'en',
+  now = nowIso(),
+} = {}) {
+  return [
+    {
+      role: 'system',
+      content: [
+        'You are the real kickoff meeting engine for Hall of Fame Studio.',
+        'Generate a concise, usable project-initiation meeting from the supplied project brief and agent roster.',
+        'Every agent turn must be grounded in the agent role and the user brief. Do not invent hidden requirements, API keys, fake progress, or completed work.',
+        'Return JSON only. No markdown.',
+      ].join('\n'),
+    },
+    {
+      role: 'user',
+      content: JSON.stringify({
+        now,
+        project: { id: projectId, name, brief, language },
+        meetingId,
+        team: team.map((agent) => ({
+          id: agent.id,
+          name: agent.name,
+          role: agent.role || agent.title || 'Agent',
+          duty: agent.duty || agent.skill || '',
+        })),
+        requestedNextActions: (tasks || []).map((task, index) => ({
+          id: task.id || `task_${index + 1}`,
+          text: typeof task === 'string' ? task : task.text,
+          ownerId: task.ownerId || null,
+          assignee: task.assignee || null,
+        })),
+        requiredShape: {
+          roleTurns: [
+            {
+              agentId: 'agent id from team',
+              type: 'role-question or role-volunteer',
+              text: 'one meeting turn in the project language',
+              hears: ['other agent ids that heard this turn'],
+            },
+          ],
+          leaderCampaigns: [
+            {
+              agentId: 'agent id from team',
+              score: 1,
+              claim: 'why this agent should or should not lead this specific project',
+              hears: ['other agent ids that heard this turn'],
+            },
+          ],
+          recommendedLeaderId: 'agent id from team',
+          reviewerId: 'agent id from team',
+          nextActions: [
+            {
+              text: 'concrete first action',
+              ownerId: 'agent id from team',
+            },
+          ],
+          decisionSummary: 'one sentence meeting result',
+          risks: ['real risk or ambiguity from the brief'],
+        },
+      }),
+    },
+  ];
+}
+
+function normalizeModelArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function normalizeModelText(value = '') {
+  return String(value || '').trim();
+}
+
+function findMeetingAgent(team = [], value = '') {
+  const normalized = String(value || '').toLowerCase();
+  if (!normalized) return null;
+  return team.find((agent) => String(agent.id || '').toLowerCase() === normalized)
+    || team.find((agent) => String(agent.name || '').toLowerCase() === normalized)
+    || null;
+}
+
+function normalizeMeetingHearIds(team = [], speakerId, value = []) {
+  const ids = normalizeModelArray(value)
+    .map((item) => findMeetingAgent(team, item)?.id || String(item || '').trim())
+    .filter((id) => id && id !== speakerId && team.some((agent) => agent.id === id));
+  const fallback = team.filter((agent) => agent.id !== speakerId).map((agent) => agent.id);
+  return uniqueStrings(ids.length ? ids : fallback);
+}
+
+function createModelKickoffMeetingSession(input = {}, modelPayload = {}, modelResult = {}) {
+  const {
+    meetingId = `kickoff_meeting_${Date.now()}`,
+    projectId = `project_${Date.now()}`,
+    name = 'Untitled Agent Project',
+    brief = '',
+    team = [],
+    tasks = [],
+    selectedLeaderId,
+    reviewerId,
+    now = nowIso(),
+    language = 'en',
+  } = input;
+  const currentLanguage = normalizeLanguage(language);
+  const validTeam = team.filter((agent) => agent?.id);
+  if (!validTeam.length) throw new Error('kickoff-meeting-requires-team');
+
+  const transcriptFromModel = normalizeModelArray(modelPayload.transcript);
+  const roleSource = normalizeModelArray(modelPayload.roleTurns).length
+    ? normalizeModelArray(modelPayload.roleTurns)
+    : transcriptFromModel.filter((turn) => /role|question|volunteer|nomination/i.test(`${turn.stage || ''} ${turn.type || ''}`));
+  const campaignSource = normalizeModelArray(modelPayload.leaderCampaigns).length
+    ? normalizeModelArray(modelPayload.leaderCampaigns)
+    : transcriptFromModel.filter((turn) => /leader|campaign/i.test(`${turn.stage || ''} ${turn.type || ''}`));
+
+  const roleTranscript = roleSource.map((turn, index) => {
+    const speaker = findMeetingAgent(validTeam, turn.agentId || turn.speakerId || turn.speaker || turn.name);
+    const text = normalizeModelText(turn.text || turn.question || turn.statement || turn.claim || turn.content);
+    if (!speaker || !text) return null;
+    const kind = /volunteer|nomination|self/i.test(String(turn.type || turn.stage || '')) ? 'role-volunteer' : 'role-question';
+    return {
+      id: `${meetingId}_role_${index + 1}`,
+      type: kind,
+      speaker: speaker.name,
+      speakerId: speaker.id,
+      agentId: speaker.id,
+      role: speaker.role || speaker.title || 'Agent',
+      text,
+      hears: normalizeMeetingHearIds(validTeam, speaker.id, turn.hears || turn.hearsOthers),
+      stage: kind === 'role-question' ? 'role-clarification' : 'self-nomination',
+      source: 'model-kickoff-meeting',
+    };
+  }).filter(Boolean);
+
+  const leaderCampaigns = campaignSource.map((turn, index) => {
+    const speaker = findMeetingAgent(validTeam, turn.agentId || turn.speakerId || turn.speaker || turn.name);
+    const text = normalizeModelText(turn.claim || turn.text || turn.statement || turn.content);
+    if (!speaker || !text) return null;
+    const score = Number(turn.score);
+    return {
+      id: `${meetingId}_leader_${index + 1}`,
+      type: 'leader-campaign',
+      speaker: speaker.name,
+      speakerId: speaker.id,
+      agentId: speaker.id,
+      role: speaker.role || speaker.title || 'Agent',
+      text,
+      score: Number.isFinite(score) ? score : Math.max(1, campaignSource.length - index),
+      hearsOthers: normalizeMeetingHearIds(validTeam, speaker.id, turn.hears || turn.hearsOthers),
+      hears: normalizeMeetingHearIds(validTeam, speaker.id, turn.hears || turn.hearsOthers),
+      stage: 'leader-campaign',
+      source: 'model-kickoff-meeting',
+    };
+  }).filter(Boolean);
+
+  if (!roleTranscript.length && !leaderCampaigns.length) {
+    throw new Error('model-kickoff-meeting-empty-transcript');
+  }
+
+  const leaderCandidates = leaderCampaigns.map((turn, index) => ({
+    id: `${meetingId}_candidate_${turn.agentId || index + 1}`,
+    agentId: turn.agentId,
+    name: turn.speaker,
+    role: turn.role,
+    score: Number.isFinite(Number(turn.score)) ? Number(turn.score) : Math.max(1, leaderCampaigns.length - index),
+    claim: turn.text,
+    hearsOthers: turn.hearsOthers || [],
+  }));
+  const modelLeader = findMeetingAgent(validTeam, selectedLeaderId)
+    || findMeetingAgent(validTeam, modelPayload.recommendedLeaderId)
+    || findMeetingAgent(validTeam, modelPayload.selectedLeaderId)
+    || findMeetingAgent(validTeam, leaderCandidates[0]?.agentId)
+    || validTeam[0];
+  const modelReviewer = findMeetingAgent(validTeam, reviewerId)
+    || findMeetingAgent(validTeam, modelPayload.reviewerId)
+    || validTeam.find((agent) => agent.id !== modelLeader?.id)
+    || modelLeader;
+  const leaderElection = {
+    source: 'model-kickoff-meeting',
+    projectId,
+    projectName: name,
+    recommendedLeaderId: modelLeader?.id || null,
+    recommendedLeaderName: modelLeader?.name || null,
+    candidates: leaderCandidates,
+    transcript: leaderCampaigns,
+  };
+  const roleNegotiation = {
+    source: 'model-kickoff-meeting',
+    projectId,
+    projectName: name,
+    transcript: roleTranscript,
+  };
+  const nextActions = normalizeModelArray(modelPayload.nextActions).length
+    ? normalizeModelArray(modelPayload.nextActions).map((action, index) => {
+      const owner = findMeetingAgent(validTeam, action.ownerId || action.assignee || action.agentId || action.ownerName);
+      return {
+        id: action.id || `meeting_next_action_${index + 1}`,
+        text: normalizeModelText(action.text || action.title || action.action),
+        ownerId: owner?.id || modelLeader?.id || null,
+        ownerName: owner?.name || modelLeader?.name || null,
+        assignee: owner?.name || modelLeader?.name || null,
+        status: action.status || 'pending',
+      };
+    }).filter((action) => action.text)
+    : tasks;
+  const transcript = [
+    {
+      id: `${meetingId}_director_brief`,
+      type: 'director-brief',
+      speaker: 'Director',
+      speakerId: 'director',
+      role: 'Project Owner',
+      text: brief || name,
+      hears: validTeam.map((agent) => agent.id),
+      stage: 'brief',
+      source: 'director',
+    },
+    ...roleTranscript,
+    ...leaderCampaigns,
+  ];
+  const roleQuestionResolutions = buildRoleQuestionResolutions({ transcript, clarifications: [] });
+  const leaderElectionResolution = buildLeaderElectionResolution({
+    leaderElection,
+    selectedLeaderId: selectedLeaderId || modelLeader?.id,
+    team: validTeam,
+    now,
+    managerConfirmed: false,
+  });
+  const nextActionResolution = buildNextActionResolution({
+    tasks: nextActions,
+    team: validTeam,
+    selectedLeaderId: leaderElectionResolution.selectedLeaderId || modelLeader?.id,
+    now,
+    managerConfirmed: false,
+    source: 'model-kickoff-meeting-next-actions',
+  });
+
+  return {
+    id: meetingId,
+    projectId,
+    name,
+    brief,
+    source: 'model-kickoff-meeting-session',
+    modelGenerated: true,
+    modelProvider: {
+      provider: modelResult.provider || null,
+      model: modelResult.model || null,
+      usage: modelResult.usage || null,
+      responseId: modelResult.id || null,
+    },
+    status: 'awaiting-manager-decision',
+    createdAt: now,
+    updatedAt: now,
+    team: validTeam,
+    tasks: nextActionResolution.tasks || nextActions,
+    recommendedLeaderId: modelLeader?.id || null,
+    recommendedLeaderName: modelLeader?.name || null,
+    reviewerId: modelReviewer?.id || null,
+    reviewerName: modelReviewer?.name || null,
+    roleNegotiation,
+    leaderElection,
+    transcript,
+    roleQuestionResolutions,
+    leaderElectionResolution,
+    nextActionResolution,
+    decisionOptions: {
+      selectableTeamIds: validTeam.map((agent) => agent.id),
+      leaderCandidateIds: uniqueStrings(leaderCandidates.map((candidate) => candidate.id)),
+      recommendedLeaderId: modelLeader?.id || null,
+      reviewerId: modelReviewer?.id || null,
+      taskCount: nextActionResolution.tasks?.length || nextActions.length || 0,
+    },
+    evidence: {
+      modelGenerated: true,
+      decisionSummary: normalizeModelText(modelPayload.decisionSummary),
+      risks: normalizeModelArray(modelPayload.risks).map(normalizeModelText).filter(Boolean),
+      transcriptIds: transcript.map((item) => item.id).filter(Boolean),
+      roleTranscriptIds: roleTranscript.map((item) => item.id),
+      leaderCampaignIds: leaderCampaigns.map((item) => item.id),
       roleQuestionResolutions,
       leaderElectionResolution,
       nextActionResolution,
@@ -6636,6 +6954,8 @@ export function createAgentProjectService({
   kickoffMeetings = [],
   messageLimit = 240,
   artifactWriter = null,
+  projectRuntime = null,
+  llmProvider = null,
   store = createAgentProjectMemoryStore({
     projects,
     messages,
@@ -6644,9 +6964,18 @@ export function createAgentProjectService({
     hydrateProject: hydrateAgentProject,
   }),
 } = {}) {
+  const attachLocalRuntime = (project) => (
+    projectRuntime && typeof projectRuntime.attachProject === 'function'
+      ? projectRuntime.attachProject(project)
+      : project
+  );
+  const saveProject = (project) => store.saveProject(attachLocalRuntime(project));
   const persistResult = (result) => {
     if (result.project?.id) {
-      store.saveProject(result.project);
+      result = {
+        ...result,
+        project: saveProject(result.project),
+      };
     }
     if (result.messages?.length) {
       store.appendMessages(result.messages);
@@ -6667,8 +6996,149 @@ export function createAgentProjectService({
     if (!store.getKickoffMeeting) throw new Error(`Kickoff meeting not found: ${meetingId}`);
     return store.getKickoffMeeting(meetingId);
   };
+  const modelProviderStatus = () => (
+    typeof llmProvider?.status === 'function'
+      ? llmProvider.status()
+      : {
+        provider: 'none',
+        enabled: false,
+        configured: false,
+      }
+  );
+  const enrichCommandResultWithModelIntent = async ({
+    projectId,
+    result = {},
+    command = '',
+    input = {},
+    now = nowIso(),
+  } = {}) => {
+    if (!commandShouldRequestModelIntent(command) || typeof llmProvider?.createRuntimeIntent !== 'function') {
+      return result;
+    }
+    const status = modelProviderStatus();
+    if (!status.enabled) {
+      return {
+        ...result,
+        modelIntentStatus: status,
+      };
+    }
+
+    const project = result.project?.id
+      ? result.project
+      : projectId
+        ? store.getProject(projectId)
+        : null;
+    if (!project?.id) {
+      return {
+        ...result,
+        modelIntentStatus: status,
+      };
+    }
+
+    const modelResult = await llmProvider.createRuntimeIntent({
+      project,
+      command,
+      input,
+      resultMessages: result.messages || [],
+      now,
+    });
+    const timestamp = Date.parse(now) || Date.now();
+    const modelIntent = {
+      id: `model_intent_${project.id}_${timestamp}`,
+      projectId: project.id,
+      provider: status.provider,
+      model: modelResult.model || status.model,
+      baseURL: status.baseURL,
+      command,
+      createdAt: now,
+      ok: Boolean(modelResult.ok),
+      skipped: Boolean(modelResult.skipped),
+      status: modelResult.ok ? 'ready' : 'failed',
+      intent: compactModelIntent(modelResult.intent || {}),
+      content: modelResult.content || '',
+      usage: modelResult.usage || null,
+      error: modelResult.error || null,
+      responseId: modelResult.id || null,
+    };
+    const log = {
+      id: `log_${modelIntent.id}`,
+      time: now,
+      agent: 'Model Provider Driver',
+      actor: 'Model Provider Driver',
+      eventType: modelResult.ok ? 'model-intent' : 'model-intent-error',
+      source: 'model-provider',
+      channelId: 'model-driver',
+      log: modelIntentSummary(modelIntent),
+      modelIntentId: modelIntent.id,
+      provider: modelIntent.provider,
+      model: modelIntent.model,
+      command,
+    };
+    const projectWithIntent = appendProjectEvents({
+      ...project,
+      logs: [log, ...(project.logs || [])],
+      modelIntentLedger: [
+        modelIntent,
+        ...(project.modelIntentLedger || []),
+      ].slice(0, MODEL_INTENT_LEDGER_LIMIT),
+    }, [
+      createProjectLedgerEvent({
+        id: `evt_${modelIntent.id}`,
+        type: modelResult.ok ? 'model-intent' : 'model-intent-error',
+        time: now,
+        actor: 'Model Provider Driver',
+        summary: log.log,
+        source: 'model-provider',
+        channelId: 'model-driver',
+        evidenceIds: [modelIntent.id, log.id],
+        entityIds: {
+          projectId: project.id,
+          logId: log.id,
+        },
+        payload: {
+          provider: modelIntent.provider,
+          model: modelIntent.model,
+          command,
+          intent: modelIntent.intent,
+          usage: modelIntent.usage,
+          ok: modelIntent.ok,
+          error: modelIntent.error,
+        },
+      }),
+    ]);
+    store.saveProject(projectWithIntent);
+
+    return {
+      ...result,
+      project: projectWithIntent,
+      modelIntent,
+      modelIntentLog: log,
+      modelIntentStatus: status,
+    };
+  };
 
   return {
+    getModelProviderStatus() {
+      return modelProviderStatus();
+    },
+    async testModelProvider(input = {}) {
+      if (typeof llmProvider?.test !== 'function') {
+        return {
+          ok: false,
+          skipped: true,
+          reason: 'model-provider-not-configured',
+          status: modelProviderStatus(),
+        };
+      }
+      const result = await llmProvider.test(input.prompt);
+      return {
+        ...result,
+        status: modelProviderStatus(),
+      };
+    },
+    async enrichCommandResultWithModelIntent(input = {}) {
+      return enrichCommandResultWithModelIntent(input);
+    },
     listProjects() {
       return store.listProjects();
     },
@@ -6686,6 +7156,52 @@ export function createAgentProjectService({
         meeting,
         messages: [],
         route: 'kickoff-meeting-created',
+      };
+    },
+    async createKickoffMeetingAsync(input = {}) {
+      if (!store.saveKickoffMeeting) throw new Error('Kickoff meeting store is not available.');
+      if (typeof llmProvider?.createChatCompletion !== 'function') {
+        throw new Error('model-provider-not-configured');
+      }
+      const status = modelProviderStatus();
+      if (!status.enabled) {
+        const reason = status.blockedByPolicy ? 'model-blocked' : status.configured ? 'provider-disabled' : 'missing-api-key';
+        throw new Error(`model-provider-unavailable:${reason}`);
+      }
+      const now = input.now || nowIso();
+      const meetingId = input.meetingId || `kickoff_meeting_${Date.parse(now) || Date.now()}`;
+      const completion = await llmProvider.createChatCompletion({
+        messages: buildModelKickoffMeetingMessages({
+          ...input,
+          meetingId,
+          now,
+        }),
+        json: true,
+        maxTokens: Math.max(1800, Number(input.maxTokens) || 0),
+        timeoutMs: input.timeoutMs || 45_000,
+      });
+      if (!completion.ok) {
+        throw new Error(`model-kickoff-meeting-failed:${completion.error || completion.reason || 'unknown'}`);
+      }
+      if (!completion.json || typeof completion.json !== 'object') {
+        throw new Error('model-kickoff-meeting-invalid-json');
+      }
+      const meeting = createModelKickoffMeetingSession({
+        ...input,
+        meetingId,
+        now,
+      }, completion.json, completion);
+      store.saveKickoffMeeting(meeting);
+      return {
+        meeting,
+        messages: [],
+        route: 'kickoff-meeting-created',
+        modelKickoffMeeting: {
+          ok: true,
+          provider: completion.provider,
+          model: completion.model,
+          usage: completion.usage || null,
+        },
       };
     },
     clarifyKickoffMeeting({ meetingId, ...input } = {}) {
@@ -7257,7 +7773,52 @@ export function createAgentProjectService({
       };
     },
     replaceProject(project) {
-      return store.saveProject(project);
+      return saveProject(project);
+    },
+    getLocalRuntime(projectId) {
+      const project = store.getProject(projectId);
+      const attached = attachLocalRuntime(project);
+      if (attached !== project) saveProject(attached);
+      return {
+        projectId,
+        localRuntime: attached.localRuntime || null,
+      };
+    },
+    bindProjectWorkspace({ projectId, workspacePath, createIfMissing = false, now = nowIso() } = {}) {
+      if (!projectRuntime?.bindWorkspace) throw new Error('Local project runtime is not configured.');
+      const project = projectRuntime.bindWorkspace(store.getProject(projectId), workspacePath, { createIfMissing, now });
+      return {
+        project: saveProject(project),
+        localRuntime: project.localRuntime,
+      };
+    },
+    listWorkspaceFiles({ projectId, ...input } = {}) {
+      if (!projectRuntime?.listWorkspace) throw new Error('Local project runtime is not configured.');
+      return projectRuntime.listWorkspace(store.getProject(projectId), input);
+    },
+    readWorkspaceFile({ projectId, ...input } = {}) {
+      if (!projectRuntime?.readWorkspaceFile) throw new Error('Local project runtime is not configured.');
+      return projectRuntime.readWorkspaceFile(store.getProject(projectId), input);
+    },
+    writeWorkspaceFile({ projectId, ...input } = {}) {
+      if (!projectRuntime?.writeWorkspaceFile) throw new Error('Local project runtime is not configured.');
+      return projectRuntime.writeWorkspaceFile(store.getProject(projectId), input);
+    },
+    deleteWorkspacePath({ projectId, ...input } = {}) {
+      if (!projectRuntime?.deleteWorkspacePath) throw new Error('Local project runtime is not configured.');
+      return projectRuntime.deleteWorkspacePath(store.getProject(projectId), input);
+    },
+    executeWorkspaceCommand({ projectId, ...input } = {}) {
+      if (!projectRuntime?.executeWorkspaceCommand) throw new Error('Local project runtime is not configured.');
+      return projectRuntime.executeWorkspaceCommand(store.getProject(projectId), input);
+    },
+    archiveProject({ projectId, reason, now = nowIso() } = {}) {
+      if (!projectRuntime?.archiveProject) throw new Error('Local project runtime is not configured.');
+      const project = projectRuntime.archiveProject(store.getProject(projectId), { reason, now });
+      return {
+        project: saveProject(project),
+        localRuntime: project.localRuntime,
+      };
     },
     initiateProject(input = {}) {
       return persistResult(createKickoffProjectFromMeeting(input));
@@ -7298,7 +7859,7 @@ export function createAgentProjectService({
       return persistResult(runAgentWorkCycle({
         project: store.getProject(projectId),
         agentId,
-        artifactWriter,
+        artifactWriter: artifactWriter || (projectRuntime?.writeArtifact ? projectRuntime.writeArtifact.bind(projectRuntime) : null),
         ...input,
       }));
     },
@@ -7309,7 +7870,7 @@ export function createAgentProjectService({
         ...input,
       });
       summary.processed.forEach((item) => {
-        store.saveProject(item.result.project);
+        item.result.project = saveProject(item.result.project);
       });
       if (summary.messages.length) {
         store.appendMessages(summary.messages);
@@ -7325,7 +7886,7 @@ export function createAgentProjectService({
         ...input,
       });
       summary.projects.forEach((project) => {
-        store.saveProject(project);
+        saveProject(project);
       });
       if (summary.messages.length) {
         store.appendMessages(summary.messages);

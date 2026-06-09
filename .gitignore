@@ -4,6 +4,11 @@
 node_modules
 dist
 .tmp
+.env
+.env/local
+.env/*.local
+.env/*.secret
+.env/*.secrets
 
 # External skill tooling (not part of Hall of Fame private assets)
 tools/
