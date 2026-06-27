@@ -2249,6 +2249,7 @@ export function approveKickoffMeetingSession({
   reviewerId,
   tasks,
   now = nowIso(),
+  language = meeting.language || 'en',
 } = {}) {
   const selectedIds = selectedTeamIds?.length ? new Set(selectedTeamIds) : null;
   const team = selectedIds
@@ -2284,6 +2285,7 @@ export function approveKickoffMeetingSession({
     nextActionResolution: meetingNextActionResolution,
     now,
     source: 'backend-kickoff-meeting-session-approval',
+    language,
   });
   const approvedMeeting = {
     ...meeting,

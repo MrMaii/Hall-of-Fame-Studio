@@ -9,6 +9,7 @@ import {
 } from 'node:fs';
 import { dirname, relative, resolve, sep } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import process from 'node:process';
 
 const DEFAULT_MAX_READ_BYTES = 512 * 1024;
 const DEFAULT_MAX_LIST_ENTRIES = 500;
@@ -243,8 +244,9 @@ export function createLocalProjectRuntime({
       if (commandAllowlist.size && !commandAllowlist.has(commandName)) {
         throw new Error(`Workspace command is not allowed: ${commandName}`);
       }
+      const executable = commandName === 'node' ? process.execPath : command;
       const cwd = input.cwd ? safeJoin(workspacePath, input.cwd) : workspacePath;
-      const result = spawnSync(command, Array.isArray(input.args) ? input.args.map(String) : [], {
+      const result = spawnSync(executable, Array.isArray(input.args) ? input.args.map(String) : [], {
         cwd,
         shell: Boolean(input.shell),
         encoding: 'utf8',
@@ -256,6 +258,7 @@ export function createLocalProjectRuntime({
         workspacePath,
         cwd,
         command,
+        executable,
         args: Array.isArray(input.args) ? input.args.map(String) : [],
         status: result.status,
         signal: result.signal,

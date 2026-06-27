@@ -44,8 +44,10 @@ import {
 } from './agents/agentRuntime.js';
 import {
   applyPeerManagementMatrix,
+  approveKickoffMeetingSession,
   buildNextActionResolution,
   buildPeerManagementMatrix,
+  createKickoffProjectFromMeeting,
   runAgentWorkCycle,
   submitProjectMultiChannelChangeRequest,
   submitProjectChatMessage,
@@ -3700,15 +3702,39 @@ export default function EngineWorkspace() {
       }));
       applyBackendManagerDashboardPayload(kickoffResult);
     } catch (error) {
+      const session = initiationMeetingSession;
+      kickoffResult = session
+        ? approveKickoffMeetingSession({
+          meeting: { ...session, language: activeLanguage },
+          selectedLeaderId: selectedLeaderCandidateId || session.recommendedLeaderId || undefined,
+          selectedTeamIds,
+          reviewerId: kickoffPayload.reviewerId,
+          tasks: kickoffPayload.tasks,
+          now: approvedAt,
+          language: activeLanguage,
+        })
+        : createKickoffProjectFromMeeting({
+          ...confirmedKickoffPayload,
+          meetingId: null,
+          selectedLeaderId: selectedLeaderCandidateId || confirmedKickoffPayload.selectedLeaderId,
+          now: approvedAt,
+          source: 'local-kickoff-fallback',
+          language: activeLanguage,
+        });
+      if (kickoffResult.meeting) {
+        setInitiationMeetingSession({
+          ...kickoffResult.meeting,
+          status: 'approved-local-fallback',
+        });
+      }
       setBackendStation(prev => ({
         ...prev,
         connectionStatus: 'offline',
-        lastAction: 'Project approval failed',
+        lastAction: 'Backend initiation failed, used local runtime',
         error: error.name === 'AbortError'
-          ? 'Backend or model provider timed out. No local mock project was created.'
-          : `${error.message || String(error)} No local mock project was created.`,
+          ? 'Backend or model provider timed out. Local runtime fallback created the project.'
+          : `${error.message || String(error)} Local runtime fallback created the project.`,
       }));
-      return;
     }
 
     const projectReadyForWork = {

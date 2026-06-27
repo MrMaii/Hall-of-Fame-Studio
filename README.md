@@ -240,6 +240,7 @@ This captures fresh screenshots from the live app and rebuilds demo GIFs in `doc
 - **[Development Roadmap (ROADMAP.md)](ROADMAP.md)** — milestone plan, current phase, contributor entry points (Chinese)
 - **[Contributing (CONTRIBUTING.md)](CONTRIBUTING.md)** — what to work on now, PR expectations
 - [Product Requirements (PRD)](PRD.md) — full product spec (Chinese)
+- [Technical Overview](TECHNICAL.md) — Agent agency, flow-graph submissions, queues, backend Harness
 - [Agent Architecture](src/agents/README.md) — five-layer agent model, meeting protocols, autonomous cycles
 - [Persona Skill Bridge](src/skills/README.md) — how the app connects to the skill package
 - [Persona Skill System (人物Skill系统.md)](人物Skill系统.md) — per-persona skill design spec (Chinese)

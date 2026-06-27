@@ -94,20 +94,39 @@ export function createAgentProjectApi({ service } = {}) {
       }
 
       if (method === 'POST' && kickoffMeetingRoute && !kickoffMeetingRoute.meetingId) {
-        if (typeof service.createKickoffMeetingAsync !== 'function') {
-          return json(400, { error: 'model-kickoff-meeting-not-supported' });
-        }
         try {
+          if (typeof service.createKickoffMeetingAsync !== 'function') {
+            throw new Error('model-kickoff-meeting-not-supported');
+          }
+          if (body.forceDeterministicFallback) {
+            throw new Error('deterministic-kickoff-meeting-requested');
+          }
           return json(200, publicResult(await service.createKickoffMeetingAsync({
             ...body,
             language,
           })));
         } catch (error) {
-          return json(400, {
-            error: 'model-kickoff-meeting-failed',
-            message: error.message || String(error),
-            modelProvider: service.getModelProviderStatus ? service.getModelProviderStatus() : { enabled: false },
+          if (body.allowDeterministicFallback === false) {
+            return json(400, {
+              error: 'model-kickoff-meeting-failed',
+              message: error.message || String(error),
+              modelProvider: service.getModelProviderStatus ? service.getModelProviderStatus() : { enabled: false },
+            });
+          }
+          const fallbackResult = service.createKickoffMeeting({
+            ...body,
+            language,
+            allowDeterministicFallback: true,
           });
+          return json(200, publicResult({
+            ...fallbackResult,
+            modelKickoffMeeting: {
+              ok: false,
+              fallback: true,
+              error: error.message || String(error),
+              modelProvider: service.getModelProviderStatus ? service.getModelProviderStatus() : { enabled: false },
+            },
+          }));
         }
       }
 
@@ -167,13 +186,10 @@ export function createAgentProjectApi({ service } = {}) {
             return json(200, { kickoffMeetings: service.listKickoffMeetings() });
           }
           if (method === 'POST' && !kickoffMeetingRoute.meetingId) {
-            if (!body.allowDeterministicFallback) {
-              return json(400, {
-                error: 'kickoff-meeting-requires-async-model-path',
-                message: 'Use handleAsync/HTTP with a configured model provider to create a real kickoff meeting.',
-              });
-            }
-            return json(200, publicResult(service.createKickoffMeeting(body)));
+            return json(200, publicResult(service.createKickoffMeeting({
+              ...body,
+              allowDeterministicFallback: true,
+            })));
           }
           if (!kickoffMeetingRoute.meetingId) {
             return json(405, { error: 'method-not-allowed', method, path });
