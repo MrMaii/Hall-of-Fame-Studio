@@ -391,6 +391,27 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
       if (
         method === 'POST'
         && route?.action === 'agents'
+        && route.tail[1] === 'artifact-drafts'
+      ) {
+        const agentId = decodeURIComponent(route.tail[0]);
+        const result = await service.generateAgentArtifactDraft({ projectId: route.projectId, agentId, ...body });
+        return json(200, {
+          ...publicProjectResult(result, result.project?.id || route.projectId, language),
+          artifactDraft: result.artifactDraft,
+          providerUsage: result.providerUsage || null,
+          modelProviderStatus: result.modelProviderStatus || (service.getModelProviderStatus ? service.getModelProviderStatus() : { enabled: false }),
+          submission: result.submission || null,
+          artifact: result.artifact || null,
+          log: result.log || null,
+          task: result.task || null,
+          agentDashboard: service.getAgentDashboard(result.project?.id || route.projectId, agentId),
+          managerFlowGraph: service.getManagerFlowGraph(result.project?.id || route.projectId, { language }),
+          managerReadyPackage: service.getManagerReadyPackage(result.project?.id || route.projectId, { language }),
+        });
+      }
+      if (
+        method === 'POST'
+        && route?.action === 'agents'
         && route.tail[1] === 'evidence-searches'
         && body.useProvider
       ) {
@@ -399,6 +420,8 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
         return json(200, {
           ...publicProjectResult(result, result.project?.id || route.projectId, language),
           evidenceSearch: result.evidenceSearch,
+          sourceSnapshots: result.sourceSnapshots || [],
+          providerReceipt: result.providerReceipt || null,
           log: result.log,
           task: result.task,
           submission: result.submission,
@@ -691,6 +714,27 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
         if (method === 'GET' && route.action === 'evidence-quality-audit') {
           return json(200, { evidenceQualityAudit: service.getEvidenceQualityAudit(route.projectId, { language }) });
         }
+        if (method === 'GET' && route.action === 'artifact-quality-audit') {
+          return json(200, { artifactQualityAudit: service.getArtifactQualityAudit(route.projectId, { language }) });
+        }
+        if (method === 'GET' && route.action === 'submission-review-workflow') {
+          return json(200, { submissionReviewWorkflow: service.getSubmissionReviewWorkflow(route.projectId, { language }) });
+        }
+        if (method === 'POST' && route.action === 'evidence-source-review-workflow') {
+          const result = service.reviewEvidenceSource({ projectId: route.projectId, ...body });
+          return json(200, {
+            ...publicProjectResult(result, result.project?.id || route.projectId, language),
+            evidenceSourceReview: result.evidenceSourceReview,
+            evidenceSearch: result.evidenceSearch,
+            evidenceSourceReviewWorkflow: service.getEvidenceSourceReviewWorkflow(result.project?.id || route.projectId, { language }),
+            readinessProofMap: service.getReadinessProofMap(result.project?.id || route.projectId),
+            managerFlowGraph: service.getManagerFlowGraph(result.project?.id || route.projectId, { language }),
+            managerReadyPackage: service.getManagerReadyPackage(result.project?.id || route.projectId, { language }),
+            log: result.log,
+            task: result.task,
+            submission: result.submission,
+          });
+        }
         if (method === 'GET' && route.action === 'evidence-source-review-workflow') {
           return json(200, { evidenceSourceReviewWorkflow: service.getEvidenceSourceReviewWorkflow(route.projectId, { language }) });
         }
@@ -775,6 +819,9 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
               managerFlowGraph: service.getManagerFlowGraph(result.project?.id || route.projectId, { language }),
               managerReadyPackage: service.getManagerReadyPackage(result.project?.id || route.projectId, { language }),
             });
+          }
+          if (method === 'POST' && route.tail[1] === 'artifact-drafts') {
+            return json(400, { error: 'agent-artifact-draft-requires-async-handler' });
           }
           if (method === 'POST' && route.tail[1] === 'evidence-searches') {
             const result = service.recordAgentEvidenceSearch({ projectId: route.projectId, agentId, ...body });
@@ -881,6 +928,106 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
           }
           return json(405, { error: 'method-not-allowed', method, path });
         }
+        if (route.action === 'private-pilot-release-candidates') {
+          if (method === 'GET') {
+            return json(200, {
+              privatePilotReleaseCandidateWorkflow: service.getPrivatePilotReleaseCandidateWorkflow(route.projectId, { language }),
+            });
+          }
+          if (method === 'POST') {
+            const result = service.recordPrivatePilotReleaseCandidate({
+              projectId: route.projectId,
+              ...body,
+            });
+            return json(200, {
+              ...publicProjectResult(result, result.project?.id || route.projectId, language),
+              privatePilotReleaseCandidate: result.privatePilotReleaseCandidate,
+              privatePilotReleaseCandidateWorkflow: result.privatePilotReleaseCandidateWorkflow,
+              projectEvidenceExportPackage: result.projectEvidenceExportPackage,
+              log: result.log,
+              managerReadyPackage: service.getManagerReadyPackage(result.project?.id || route.projectId, { language, fresh: true }),
+            });
+          }
+          return json(405, { error: 'method-not-allowed', method, path });
+        }
+        if (route.action === 'private-pilot-launch-runs') {
+          if (method === 'GET') {
+            return json(200, {
+              privatePilotLaunchRunWorkflow: service.getPrivatePilotLaunchRunWorkflow(route.projectId, { language }),
+            });
+          }
+          if (method === 'POST') {
+            const result = service.recordPrivatePilotLaunchRun({
+              projectId: route.projectId,
+              ...body,
+            });
+            return json(200, {
+              ...publicProjectResult(result, result.project?.id || route.projectId, language),
+              privatePilotLaunchRun: result.privatePilotLaunchRun,
+              privatePilotLaunchRunWorkflow: result.privatePilotLaunchRunWorkflow,
+              log: result.log,
+              managerReadyPackage: service.getManagerReadyPackage(result.project?.id || route.projectId, { language, fresh: true }),
+            });
+          }
+          return json(405, { error: 'method-not-allowed', method, path });
+        }
+        if (route.action === 'private-pilot-launch-health-checks') {
+          if (method === 'GET') {
+            return json(200, {
+              privatePilotLaunchHealthCheckWorkflow: service.getPrivatePilotLaunchHealthCheckWorkflow(route.projectId, { language }),
+            });
+          }
+          if (method === 'POST') {
+            const result = service.recordPrivatePilotLaunchHealthCheck({
+              projectId: route.projectId,
+              ...body,
+            });
+            return json(200, {
+              ...publicProjectResult(result, result.project?.id || route.projectId, language),
+              privatePilotLaunchHealthCheck: result.privatePilotLaunchHealthCheck,
+              privatePilotLaunchHealthCheckWorkflow: result.privatePilotLaunchHealthCheckWorkflow,
+              log: result.log,
+              managerReadyPackage: service.getManagerReadyPackage(result.project?.id || route.projectId, { language, fresh: true }),
+            });
+          }
+          return json(405, { error: 'method-not-allowed', method, path });
+        }
+        if (route.action === 'private-pilot-acceptance-reports') {
+          if (method === 'GET') {
+            return json(200, {
+              privatePilotAcceptanceReportWorkflow: service.getPrivatePilotAcceptanceReportWorkflow(route.projectId, { language }),
+            });
+          }
+          if (method === 'POST') {
+            const result = service.recordPrivatePilotAcceptanceReport({
+              projectId: route.projectId,
+              ...body,
+            });
+            return json(200, {
+              ...publicProjectResult(result, result.project?.id || route.projectId, language),
+              privatePilotAcceptanceReport: result.privatePilotAcceptanceReport,
+              privatePilotAcceptanceReportWorkflow: result.privatePilotAcceptanceReportWorkflow,
+              log: result.log,
+              managerReadyPackage: service.getManagerReadyPackage(result.project?.id || route.projectId, { language, fresh: true }),
+            });
+          }
+          return json(405, { error: 'method-not-allowed', method, path });
+        }
+        if (method === 'GET' && route.action === 'private-pilot-go-live-readiness') {
+          return json(200, {
+            privatePilotGoLiveReadiness: service.getPrivatePilotGoLiveReadiness(route.projectId, { language }),
+          });
+        }
+        if (method === 'GET' && route.action === 'production-launch-gap-register') {
+          return json(200, {
+            productionLaunchGapRegister: service.getProductionLaunchGapRegister(route.projectId, { language }),
+          });
+        }
+        if (method === 'GET' && route.action === 'production-launch-control-center') {
+          return json(200, {
+            productionLaunchControlCenter: service.getProductionLaunchControlCenter(route.projectId, { language }),
+          });
+        }
         if (route.action === 'launch-approvals') {
           if (method === 'GET') {
             return json(200, { launchApprovalWorkflow: service.getLaunchApprovalWorkflow(route.projectId, { language }) });
@@ -969,8 +1116,130 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
         if (method === 'GET' && route.action === 'operations-readiness') {
           return json(200, { operationsReadiness: service.getOperationsReadiness(route.projectId, { language }) });
         }
+        if (method === 'GET' && route.action === 'production-operations-readiness') {
+          return json(200, { productionOperationsReadiness: service.getProductionOperationsReadiness(route.projectId, { language }) });
+        }
+        if (route.action === 'production-operations-control-receipts') {
+          if (method === 'GET') {
+            return json(200, {
+              productionOperationsControlReceiptWorkflow: service.getProductionOperationsControlReceiptWorkflow(route.projectId, { language }),
+            });
+          }
+          if (method === 'POST') {
+            const result = service.recordProductionOperationsControlReceipt({
+              projectId: route.projectId,
+              ...body,
+            });
+            return json(200, {
+              ...publicProjectResult(result, result.project?.id || route.projectId, language),
+              productionOperationsControlReceipt: result.productionOperationsControlReceipt,
+              productionOperationsControlReceiptWorkflow: result.productionOperationsControlReceiptWorkflow,
+              productionOperationsReadiness: result.productionOperationsReadiness,
+              log: result.log,
+              managerReadyPackage: service.getManagerReadyPackage(result.project?.id || route.projectId, { language, fresh: true }),
+            });
+          }
+          return json(405, { error: 'method-not-allowed', method, path });
+        }
+        if (route.action === 'production-deployment-control-receipts') {
+          if (method === 'GET') {
+            return json(200, {
+              productionDeploymentControlReceiptWorkflow: service.getProductionDeploymentControlReceiptWorkflow(route.projectId, { language }),
+            });
+          }
+          if (method === 'POST') {
+            const result = service.recordProductionDeploymentControlReceipt({
+              projectId: route.projectId,
+              ...body,
+            });
+            return json(200, {
+              ...publicProjectResult(result, result.project?.id || route.projectId, language),
+              productionDeploymentControlReceipt: result.productionDeploymentControlReceipt,
+              productionDeploymentControlReceiptWorkflow: result.productionDeploymentControlReceiptWorkflow,
+              deploymentPreflight: result.deploymentPreflight,
+              persistenceAdapterDryRun: result.persistenceAdapterDryRun,
+              workerQueueAdapterDryRun: result.workerQueueAdapterDryRun,
+              adapterGatewayPreflight: result.adapterGatewayPreflight,
+              log: result.log,
+              managerReadyPackage: service.getManagerReadyPackage(result.project?.id || route.projectId, { language, fresh: true }),
+            });
+          }
+          return json(405, { error: 'method-not-allowed', method, path });
+        }
         if (method === 'GET' && route.action === 'provider-readiness') {
           return json(200, { providerReadiness: service.getProviderReadiness(route.projectId, { language }) });
+        }
+        if (method === 'GET' && route.action === 'provider-controlled-run') {
+          return json(200, { providerControlledRun: service.getProviderControlledRun(route.projectId, { language }) });
+        }
+        if (route.action === 'provider-eval-runs') {
+          if (method === 'GET') {
+            return json(200, { providerEvalRunWorkflow: service.getProviderEvalRunWorkflow(route.projectId, { language }) });
+          }
+          if (method === 'POST') {
+            const result = service.recordProviderEvalRun({
+              projectId: route.projectId,
+              ...body,
+            });
+            return json(200, {
+              ...publicProjectResult(result, result.project?.id || route.projectId, language),
+              providerEvalRun: result.providerEvalRun,
+              providerEvalRunWorkflow: result.providerEvalRunWorkflow,
+              providerControlledRun: result.providerControlledRun,
+              log: result.log,
+              managerReadyPackage: service.getManagerReadyPackage(result.project?.id || route.projectId, { language, fresh: true }),
+            });
+          }
+          return json(405, { error: 'method-not-allowed', method, path });
+        }
+        if (route.action === 'production-provider-control-receipts') {
+          if (method === 'GET') {
+            return json(200, {
+              productionProviderControlReceiptWorkflow: service.getProductionProviderControlReceiptWorkflow(route.projectId, { language }),
+            });
+          }
+          if (method === 'POST') {
+            const result = service.recordProductionProviderControlReceipt({
+              projectId: route.projectId,
+              ...body,
+            });
+            return json(200, {
+              ...publicProjectResult(result, result.project?.id || route.projectId, language),
+              productionProviderControlReceipt: result.productionProviderControlReceipt,
+              productionProviderControlReceiptWorkflow: result.productionProviderControlReceiptWorkflow,
+              providerReadiness: result.providerReadiness,
+              providerControlledRun: result.providerControlledRun,
+              providerEvalRunWorkflow: result.providerEvalRunWorkflow,
+              log: result.log,
+              managerReadyPackage: service.getManagerReadyPackage(result.project?.id || route.projectId, { language, fresh: true }),
+            });
+          }
+          return json(405, { error: 'method-not-allowed', method, path });
+        }
+        if (method === 'GET' && route.action === 'evidence-custody-readiness') {
+          return json(200, { evidenceCustodyReadiness: service.getEvidenceCustodyReadiness(route.projectId, { language }) });
+        }
+        if (route.action === 'production-security-control-receipts') {
+          if (method === 'GET') {
+            return json(200, {
+              productionSecurityControlReceiptWorkflow: service.getProductionSecurityControlReceiptWorkflow(route.projectId, { language }),
+            });
+          }
+          if (method === 'POST') {
+            const result = service.recordProductionSecurityControlReceipt({
+              projectId: route.projectId,
+              ...body,
+            });
+            return json(200, {
+              ...publicProjectResult(result, result.project?.id || route.projectId, language),
+              productionSecurityControlReceipt: result.productionSecurityControlReceipt,
+              productionSecurityControlReceiptWorkflow: result.productionSecurityControlReceiptWorkflow,
+              securityBoundary: result.securityBoundary,
+              log: result.log,
+              managerReadyPackage: service.getManagerReadyPackage(result.project?.id || route.projectId, { language, fresh: true }),
+            });
+          }
+          return json(405, { error: 'method-not-allowed', method, path });
         }
         if (method === 'GET' && route.action === 'security-boundary') {
           return json(200, { securityBoundary: service.getSecurityBoundary(route.projectId, { language }) });

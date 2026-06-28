@@ -6720,11 +6720,251 @@ export default function EngineWorkspace() {
     const backendProductionLaunchAudit = backendManagerReadyPackage?.productionLaunchAudit || null;
     const backendProjectEvidenceArchive = backendManagerReadyPackage?.projectEvidenceArchive || null;
     const backendProjectEvidenceExportWorkflow = backendManagerReadyPackage?.projectEvidenceExportWorkflow || null;
+    const backendPrivatePilotGoLiveReadiness = backendManagerReadyPackage?.privatePilotGoLiveReadiness || null;
+    const backendProductionLaunchGapRowsFallback = [
+      ...(backendManagerReadyPackage?.productionLaunchAudit?.productionBlockers || []),
+      ...(backendManagerReadyPackage?.productionLaunchAudit?.failedProductionGates || []),
+    ].slice(0, 12).map((row, index) => ({
+      id: row.id || `production-gap-${index + 1}`,
+      label: row.label || row.id || `Production gap ${index + 1}`,
+      owner: row.owner || (String(row.id || '').includes('provider') ? 'runtime-platform' : String(row.id || '').includes('audit') || String(row.id || '').includes('security') ? 'security-admin' : 'operations-owner'),
+      domain: row.source || row.scope || row.severity || 'production-hardening',
+      status: row.passed ? 'ready' : 'blocked',
+      action: row.action || row.detail || 'Attach production evidence and re-run the launch audit.',
+      apiPath: row.apiPath || backendManagerReadyPackage?.backendRoutes?.productionLaunchAudit || (activeProject?.id ? `/projects/${activeProject.id}/production-launch-audit` : null),
+    }));
+    const backendProductionLaunchGapRegister = backendManagerReadyPackage?.productionLaunchGapRegister || (backendManagerReadyPackage ? {
+      schemaVersion: 'production-launch-gap-register/v1',
+      status: backendProductionLaunchGapRowsFallback.length ? 'production-gaps-open' : 'production-gap-register-sync-pending',
+      readyForProduction: false,
+      productionDecision: backendManagerReadyPackage.productionLaunchAudit?.productionDecision || 'no-go',
+      gapRows: backendProductionLaunchGapRowsFallback,
+      domainRows: [],
+      nextAction: backendProductionLaunchGapRowsFallback[0] || {
+        id: 'production-launch-gap-register-sync',
+        owner: 'manager',
+        domain: 'production-hardening',
+        action: 'Fetch the standalone production launch gap register.',
+        apiPath: backendManagerReadyPackage.backendRoutes?.productionLaunchGapRegister || (activeProject?.id ? `/projects/${activeProject.id}/production-launch-gap-register` : null),
+      },
+      backendRoutes: {
+        productionLaunchGapRegister: backendManagerReadyPackage.backendRoutes?.productionLaunchGapRegister || (activeProject?.id ? `/projects/${activeProject.id}/production-launch-gap-register` : null),
+      },
+      summary: {
+        openGapCount: backendProductionLaunchGapRowsFallback.length,
+        blockerCount: backendProductionLaunchGapRowsFallback.filter(row => row.status !== 'ready').length,
+        domainCount: new Set(backendProductionLaunchGapRowsFallback.map(row => row.domain)).size,
+        ownerCount: new Set(backendProductionLaunchGapRowsFallback.map(row => row.owner)).size,
+        privatePilotAccepted: Boolean(backendPrivatePilotGoLiveReadiness?.readyForPrivatePilotAcceptance),
+        securityGapCount: backendProductionLaunchGapRowsFallback.filter(row => row.owner === 'security-admin').length,
+        infrastructureGapCount: backendProductionLaunchGapRowsFallback.filter(row => row.owner === 'runtime-platform').length,
+        operationsGapCount: backendProductionLaunchGapRowsFallback.filter(row => row.owner === 'operations-owner').length,
+        providerGapCount: backendProductionLaunchGapRowsFallback.filter(row => String(row.id || '').includes('provider')).length,
+      },
+    } : null);
+    const backendProductionLaunchControlRowsFallback = [
+      {
+        id: 'production-gap-register',
+        label: 'Production gap register',
+        owner: backendProductionLaunchGapRegister?.nextAction?.owner || 'manager',
+        domain: backendProductionLaunchGapRegister?.nextAction?.domain || 'production-hardening',
+        ready: (backendProductionLaunchGapRegister?.summary?.openGapCount || 0) === 0,
+        status: (backendProductionLaunchGapRegister?.summary?.openGapCount || 0) === 0 ? 'ready' : 'blocked',
+        detail: `${backendProductionLaunchGapRegister?.summary?.openGapCount || 0} production gap(s) remain open.`,
+        apiPath: backendProductionLaunchGapRegister?.backendRoutes?.productionLaunchGapRegister || backendManagerReadyPackage?.backendRoutes?.productionLaunchGapRegister || (activeProject?.id ? `/projects/${activeProject.id}/production-launch-gap-register` : null),
+      },
+      {
+        id: 'production-operations-controls',
+        label: 'Production operations controls',
+        owner: 'operations-owner',
+        domain: 'operations',
+        ready: Boolean(backendManagerReadyPackage?.productionOperationsReadiness?.readyForProductionOperations),
+        status: backendManagerReadyPackage?.productionOperationsReadiness?.readyForProductionOperations ? 'ready' : 'blocked',
+        detail: `${backendManagerReadyPackage?.productionOperationsControlReceiptWorkflow?.summary?.verifiedControlCount ?? 0}/${backendManagerReadyPackage?.productionOperationsControlReceiptWorkflow?.summary?.requiredControlCount ?? 10} production operations controls verified.`,
+        apiPath: backendManagerReadyPackage?.backendRoutes?.productionOperationsControlReceipts || (activeProject?.id ? `/projects/${activeProject.id}/production-operations-control-receipts` : null),
+      },
+      {
+        id: 'production-deployment-preflight',
+        label: 'Production deployment preflight',
+        owner: 'runtime-platform',
+        domain: 'managed-infrastructure',
+        ready: Boolean(backendManagerReadyPackage?.productionDeploymentControlReceiptWorkflow?.readyForProductionDeployment),
+        status: backendManagerReadyPackage?.productionDeploymentControlReceiptWorkflow?.readyForProductionDeployment ? 'ready' : 'blocked',
+        detail: `${backendManagerReadyPackage?.productionDeploymentControlReceiptWorkflow?.summary?.verifiedControlCount ?? 0}/${backendManagerReadyPackage?.productionDeploymentControlReceiptWorkflow?.summary?.requiredControlCount ?? 11} production deployment controls verified.`,
+        apiPath: backendManagerReadyPackage?.backendRoutes?.productionDeploymentControlReceipts || (activeProject?.id ? `/projects/${activeProject.id}/production-deployment-control-receipts` : null),
+      },
+      {
+        id: 'provider-production-rollout',
+        label: 'Provider production rollout',
+        owner: 'runtime-platform',
+        domain: 'provider-rollout',
+        ready: Boolean(backendManagerReadyPackage?.productionProviderControlReceiptWorkflow?.readyForProductionProvider),
+        status: backendManagerReadyPackage?.productionProviderControlReceiptWorkflow?.readyForProductionProvider ? 'ready' : 'blocked',
+        detail: `${backendManagerReadyPackage?.productionProviderControlReceiptWorkflow?.summary?.verifiedControlCount ?? 0}/${backendManagerReadyPackage?.productionProviderControlReceiptWorkflow?.summary?.requiredControlCount ?? 15} production provider controls verified.`,
+        apiPath: backendManagerReadyPackage?.backendRoutes?.productionProviderControlReceipts || (activeProject?.id ? `/projects/${activeProject.id}/production-provider-control-receipts` : null),
+      },
+      {
+        id: 'production-launch-approvals',
+        label: 'Production launch approvals',
+        owner: 'manager',
+        domain: 'release-governance',
+        ready: Boolean(backendManagerReadyPackage?.launchApprovalWorkflow?.readyForProduction),
+        status: backendManagerReadyPackage?.launchApprovalWorkflow?.readyForProduction ? 'ready' : 'blocked',
+        detail: backendManagerReadyPackage?.launchApprovalWorkflow?.readyForProduction ? 'Production approvals complete.' : 'Production approvals still require Manager, security-admin, and operations-owner.',
+        apiPath: backendManagerReadyPackage?.backendRoutes?.launchApprovals || (activeProject?.id ? `/projects/${activeProject.id}/launch-approvals` : null),
+      },
+    ];
+    const backendProductionLaunchControlCenter = backendManagerReadyPackage?.productionLaunchControlCenter || (backendManagerReadyPackage ? {
+      schemaVersion: 'production-launch-control-center/v1',
+      status: backendPrivatePilotGoLiveReadiness?.readyForPrivatePilotAcceptance ? 'production-launch-controls-blocked' : 'private-pilot-proof-needed',
+      productionDecision: 'no-go',
+      readyForPrivatePilotAcceptance: Boolean(backendPrivatePilotGoLiveReadiness?.readyForPrivatePilotAcceptance),
+      readyForProduction: false,
+      controlRows: backendProductionLaunchControlRowsFallback,
+      blockedRows: backendProductionLaunchControlRowsFallback.filter(row => !row.ready),
+      ownerRows: [],
+      stageRows: [],
+      nextAction: backendProductionLaunchControlRowsFallback.find(row => !row.ready) || null,
+      backendRoutes: {
+        productionLaunchControlCenter: backendManagerReadyPackage.backendRoutes?.productionLaunchControlCenter || (activeProject?.id ? `/projects/${activeProject.id}/production-launch-control-center` : null),
+      },
+      summary: {
+        controlCount: backendProductionLaunchControlRowsFallback.length,
+        readyControlCount: backendProductionLaunchControlRowsFallback.filter(row => row.ready).length,
+        blockedControlCount: backendProductionLaunchControlRowsFallback.filter(row => !row.ready).length,
+        ownerCount: new Set(backendProductionLaunchControlRowsFallback.map(row => row.owner)).size,
+        openGapCount: backendProductionLaunchGapRegister?.summary?.openGapCount || 0,
+        privatePilotAccepted: Boolean(backendPrivatePilotGoLiveReadiness?.readyForPrivatePilotAcceptance),
+      },
+    } : null);
+    const backendPrivatePilotReleaseCandidateWorkflow = backendManagerReadyPackage?.privatePilotReleaseCandidateWorkflow || null;
+    const backendPrivatePilotLaunchRunWorkflow = backendManagerReadyPackage?.privatePilotLaunchRunWorkflow || null;
+    const backendPrivatePilotLaunchHealthCheckWorkflow = backendManagerReadyPackage?.privatePilotLaunchHealthCheckWorkflow || null;
+    const backendPrivatePilotAcceptanceReportWorkflow = backendManagerReadyPackage?.privatePilotAcceptanceReportWorkflow || null;
+    const backendProductionOperationsReadiness = backendManagerReadyPackage?.productionOperationsReadiness || null;
+    const backendProductionOperationsControlReceiptWorkflow = backendManagerReadyPackage?.productionOperationsControlReceiptWorkflow || (backendProductionOperationsReadiness ? {
+      schemaVersion: 'production-operations-control-receipt-workflow/v1',
+      status: backendProductionOperationsReadiness.productionControlReceipts?.receiptCount
+        ? 'production-operations-control-receipts-recorded'
+        : 'production-operations-control-receipts-needed',
+      readyForPrivatePilotOperations: backendProductionOperationsReadiness.readyForPrivatePilotOperations,
+      readyForProductionOperationsControls: (backendProductionOperationsReadiness.productionControlReceipts?.missingControlIds || []).length === 0
+        && (backendProductionOperationsReadiness.productionControlReceipts?.verifiedControlIds || []).length > 0,
+      readyForProductionOperations: backendProductionOperationsReadiness.readyForProductionOperations,
+      readyForProduction: backendProductionOperationsReadiness.readyForProduction,
+      latestReceipt: backendProductionOperationsReadiness.productionControlReceipts?.latestReceiptId ? {
+        id: backendProductionOperationsReadiness.productionControlReceipts.latestReceiptId,
+        checksum: backendProductionOperationsReadiness.productionControlReceipts.latestReceiptChecksum,
+      } : null,
+      controlRows: (backendProductionOperationsReadiness.productionControlReceipts?.missingControlIds || []).map(controlId => ({
+        controlId,
+        label: controlId,
+        status: 'missing',
+        verified: false,
+      })),
+      backendRoutes: {
+        productionOperationsControlReceipts: backendProductionOperationsReadiness.productionControlReceipts?.route || backendProductionOperationsReadiness.backendRoutes?.productionOperationsControlReceipts || null,
+      },
+      summary: {
+        receiptCount: backendProductionOperationsReadiness.productionControlReceipts?.receiptCount || 0,
+        verifiedControlCount: backendProductionOperationsReadiness.productionControlReceipts?.verifiedControlIds?.length || 0,
+        requiredControlCount: (backendProductionOperationsReadiness.productionControlReceipts?.verifiedControlIds?.length || 0)
+          + (backendProductionOperationsReadiness.productionControlReceipts?.missingControlIds?.length || 0),
+        missingControlCount: backendProductionOperationsReadiness.productionControlReceipts?.missingControlIds?.length || 0,
+      },
+      checksum: backendProductionOperationsReadiness.productionControlReceipts?.latestReceiptChecksum || backendProductionOperationsReadiness.checksum || null,
+    } : null);
+    const backendProductionDeploymentControlReceiptWorkflow = backendManagerReadyPackage?.productionDeploymentControlReceiptWorkflow || (backendDeploymentPreflight ? {
+      schemaVersion: 'production-deployment-control-receipt-workflow/v1',
+      status: 'production-deployment-control-receipts-needed',
+      readyForPrivatePilotDeployment: Boolean(backendDeploymentPreflight.privatePilotDeploymentReady),
+      readyForProductionDeploymentControls: false,
+      readyForProductionDeployment: false,
+      readyForProduction: false,
+      latestReceipt: null,
+      controlRows: (backendDeploymentPreflight.productionControls || []).map(control => ({
+        controlId: control.id || control.controlId,
+        label: control.label || control.id || control.controlId,
+        status: 'missing',
+        verified: false,
+        sourceReady: control.ready ?? null,
+      })),
+      backendRoutes: {
+        productionDeploymentControlReceipts: backendManagerReadyPackage?.backendRoutes?.productionDeploymentControlReceipts || (activeProject?.id ? `/projects/${activeProject.id}/production-deployment-control-receipts` : null),
+        deploymentPreflight: backendManagerReadyPackage?.backendRoutes?.deploymentPreflight || (activeProject?.id ? `/projects/${activeProject.id}/deployment-preflight` : null),
+      },
+      summary: {
+        receiptCount: 0,
+        verifiedControlCount: 0,
+        requiredControlCount: backendDeploymentPreflight.productionControls?.length || 11,
+        missingControlCount: backendDeploymentPreflight.productionControls?.length || 11,
+      },
+      checksum: backendDeploymentPreflight.checksum || null,
+    } : null);
+    const backendProductionSecurityControlReceiptWorkflow = backendManagerReadyPackage?.productionSecurityControlReceiptWorkflow || (backendManagerReadyPackage?.securityBoundary ? {
+      schemaVersion: 'production-security-control-receipt-workflow/v1',
+      status: backendManagerReadyPackage.securityBoundary.productionSecurityControlReceipts?.count
+        ? 'production-security-control-receipts-recorded'
+        : 'production-security-control-receipts-needed',
+      readyForLocalSecurityBoundary: backendManagerReadyPackage.securityBoundary.status === 'local-boundary-ready',
+      readyForProductionSecurityControls: (backendManagerReadyPackage.securityBoundary.production?.missingControlIds || []).length === 0
+        && (backendManagerReadyPackage.securityBoundary.production?.verifiedControlIds || []).length > 0,
+      readyForProductionSecurity: Boolean(backendManagerReadyPackage.securityBoundary.readyForProduction),
+      readyForProduction: Boolean(backendManagerReadyPackage.securityBoundary.readyForProduction),
+      latestReceipt: backendManagerReadyPackage.securityBoundary.productionSecurityControlReceipts?.rows?.[0] || null,
+      controlRows: (backendManagerReadyPackage.securityBoundary.production?.missingControlIds || []).map(controlId => ({
+        controlId,
+        label: controlId,
+        status: 'missing',
+        verified: false,
+      })),
+      backendRoutes: {
+        productionSecurityControlReceipts: backendManagerReadyPackage.backendRoutes?.productionSecurityControlReceipts || (activeProject?.id ? `/projects/${activeProject.id}/production-security-control-receipts` : null),
+      },
+      summary: {
+        receiptCount: backendManagerReadyPackage.securityBoundary.productionSecurityControlReceipts?.count || 0,
+        verifiedControlCount: backendManagerReadyPackage.securityBoundary.production?.verifiedControlIds?.length || 0,
+        requiredControlCount: ((backendManagerReadyPackage.securityBoundary.production?.verifiedControlIds || []).length + (backendManagerReadyPackage.securityBoundary.production?.missingControlIds || []).length) || 6,
+        missingControlCount: backendManagerReadyPackage.securityBoundary.production?.missingControlIds?.length ?? backendManagerReadyPackage.securityBoundary.summary?.productionBlockerCount ?? 0,
+      },
+      checksum: backendManagerReadyPackage.securityBoundary.production?.latestReceiptChecksum || backendManagerReadyPackage.securityBoundary.checksum || null,
+    } : null);
     const backendLaunchApprovalWorkflow = backendManagerReadyPackage?.launchApprovalWorkflow || backendManagerDashboard?.launchApprovalWorkflow || null;
     const backendSecurityBoundary = backendManagerReadyPackage?.securityBoundary || null;
     const backendProviderReadiness = backendManagerReadyPackage?.providerReadiness || null;
+    const backendProviderControlledRun = backendManagerReadyPackage?.providerControlledRun || null;
+    const backendProviderEvalRunWorkflow = backendManagerReadyPackage?.providerEvalRunWorkflow || null;
+    const backendProductionProviderControlReceiptWorkflow = backendManagerReadyPackage?.productionProviderControlReceiptWorkflow || (backendProviderEvalRunWorkflow ? {
+      schemaVersion: 'production-provider-control-receipt-workflow/v1',
+      status: 'production-provider-control-receipts-needed',
+      readyForLocalProviderContract: Boolean(backendProviderReadiness?.readyForLocalPilot && backendProviderControlledRun?.readyForPrivatePilotRun && backendProviderEvalRunWorkflow?.readyForPrivatePilotProviderEval),
+      readyForProductionProviderControls: false,
+      readyForProductionProvider: false,
+      readyForProduction: false,
+      latestReceipt: null,
+      controlRows: (backendProviderReadiness?.requiredProductionControls || []).map(control => ({
+        controlId: control.id,
+        label: control.label || control.id,
+        status: 'missing',
+        verified: false,
+        sourceStatus: control.status || null,
+      })),
+      backendRoutes: {
+        productionProviderControlReceipts: backendManagerReadyPackage?.backendRoutes?.productionProviderControlReceipts || (activeProject?.id ? `/projects/${activeProject.id}/production-provider-control-receipts` : null),
+      },
+      summary: {
+        receiptCount: 0,
+        verifiedControlCount: 0,
+        requiredControlCount: 15,
+        missingControlCount: 15,
+      },
+      checksum: backendProviderEvalRunWorkflow.checksum || null,
+    } : null);
+    const backendArtifactQualityAudit = backendManagerReadyPackage?.artifactQualityAudit || null;
+    const backendSubmissionReviewWorkflow = backendManagerReadyPackage?.submissionReviewWorkflow || null;
     const backendEvidenceQualityAudit = backendManagerReadyPackage?.evidenceQualityAudit || null;
     const backendEvidenceSourceReviewWorkflow = backendManagerReadyPackage?.evidenceSourceReviewWorkflow || null;
+    const backendEvidenceCustodyReadiness = backendManagerReadyPackage?.evidenceCustodyReadiness || null;
     const backendOperationsReadiness = backendManagerReadyPackage?.operationsReadiness || null;
     const backendPersistenceAdapterPlan = backendManagerReadyPackage?.persistenceAdapterPlan || null;
     const backendPersistenceAdapterDryRun = backendManagerReadyPackage?.persistenceAdapterDryRun || null;
@@ -10531,17 +10771,65 @@ export default function EngineWorkspace() {
                             ['Export Ready', (backendProjectEvidenceExportWorkflow?.readyForPrivatePilotHandoff ?? backendManagerReadyPackage.summary?.projectEvidenceExportReady) ? 'ready' : 'blocked'],
                             ['Package Ready', (backendProjectEvidenceExportWorkflow?.readyForPrivatePilotDownload ?? backendManagerReadyPackage.summary?.projectEvidenceExportDownloadReady) ? 'ready' : 'audit-needed'],
                             ['Export Approvals', backendProjectEvidenceExportWorkflow?.summary?.approvalCount ?? backendManagerReadyPackage.summary?.projectEvidenceExportApprovalCount ?? 0],
+                            ['Go-Live Status', backendPrivatePilotGoLiveReadiness?.status || backendManagerReadyPackage.summary?.privatePilotGoLiveStatus || 'go-live-needed'],
+                            ['Go-Live Phase', backendPrivatePilotGoLiveReadiness?.activePhase || backendManagerReadyPackage.summary?.privatePilotGoLiveActivePhase || 'preflight'],
+                            ['Go-Live Ready', (backendPrivatePilotGoLiveReadiness?.readyForPrivatePilotGoLive ?? backendManagerReadyPackage.summary?.privatePilotGoLiveReady) ? 'ready' : 'blocked'],
+                            ['Next Go-Live Action', backendPrivatePilotGoLiveReadiness?.nextAction?.id || backendManagerReadyPackage.summary?.privatePilotGoLiveNextActionId || 'none'],
+                            ['Release Candidate', backendPrivatePilotReleaseCandidateWorkflow?.status || backendManagerReadyPackage.summary?.privatePilotReleaseCandidateStatus || 'record-needed'],
+                            ['Candidate Ready', (backendPrivatePilotReleaseCandidateWorkflow?.readyForPrivatePilotRelease ?? backendManagerReadyPackage.summary?.privatePilotReleaseCandidateReady) ? 'ready' : 'record'],
+                            ['Candidate Gates', `${backendPrivatePilotReleaseCandidateWorkflow?.summary?.passedGateCount ?? 0}/${backendPrivatePilotReleaseCandidateWorkflow?.summary?.gateCount ?? 0}`],
+                            ['Candidate Receipts', backendPrivatePilotReleaseCandidateWorkflow?.summary?.candidateCount ?? backendManagerReadyPackage.summary?.privatePilotReleaseCandidateCount ?? 0],
+                            ['Pilot Launch Run', backendPrivatePilotLaunchRunWorkflow?.status || backendManagerReadyPackage.summary?.privatePilotLaunchRunStatus || 'launch-needed'],
+                            ['Launch Run Ready', (backendPrivatePilotLaunchRunWorkflow?.readyForPrivatePilotLaunch ?? backendManagerReadyPackage.summary?.privatePilotLaunchRunReady) ? 'ready' : 'record'],
+                            ['Launch Run Gates', `${backendPrivatePilotLaunchRunWorkflow?.summary?.passedGateCount ?? 0}/${backendPrivatePilotLaunchRunWorkflow?.summary?.gateCount ?? 0}`],
+                            ['Launch Run Receipts', backendPrivatePilotLaunchRunWorkflow?.summary?.runCount ?? backendManagerReadyPackage.summary?.privatePilotLaunchRunCount ?? 0],
+                            ['Post Launch Health', backendPrivatePilotLaunchHealthCheckWorkflow?.status || backendManagerReadyPackage.summary?.privatePilotLaunchHealthCheckStatus || 'check-needed'],
+                            ['Health Ready', (backendPrivatePilotLaunchHealthCheckWorkflow?.readyForPrivatePilotMonitoring ?? backendManagerReadyPackage.summary?.privatePilotLaunchHealthCheckReady) ? 'ready' : 'record'],
+                            ['Health Gates', `${backendPrivatePilotLaunchHealthCheckWorkflow?.summary?.passedGateCount ?? 0}/${backendPrivatePilotLaunchHealthCheckWorkflow?.summary?.gateCount ?? 0}`],
+                            ['Health Receipts', backendPrivatePilotLaunchHealthCheckWorkflow?.summary?.healthCheckCount ?? backendManagerReadyPackage.summary?.privatePilotLaunchHealthCheckCount ?? 0],
+                            ['Acceptance Report', backendPrivatePilotAcceptanceReportWorkflow?.status || backendManagerReadyPackage.summary?.privatePilotAcceptanceReportStatus || 'report-needed'],
+                            ['Acceptance Ready', (backendPrivatePilotAcceptanceReportWorkflow?.readyForPrivatePilotAcceptance ?? backendManagerReadyPackage.summary?.privatePilotAcceptanceReportReady) ? 'ready' : 'record'],
+                            ['Acceptance Gates', `${backendPrivatePilotAcceptanceReportWorkflow?.summary?.passedGateCount ?? 0}/${backendPrivatePilotAcceptanceReportWorkflow?.summary?.gateCount ?? 0}`],
+                            ['Acceptance Reports', backendPrivatePilotAcceptanceReportWorkflow?.summary?.reportCount ?? backendManagerReadyPackage.summary?.privatePilotAcceptanceReportCount ?? 0],
+                            ['Production Ops', backendProductionOperationsReadiness?.status || backendManagerReadyPackage.summary?.productionOperationsStatus || 'controls-blocked'],
+                            ['Ops Local Proof', (backendProductionOperationsReadiness?.readyForPrivatePilotOperations ?? backendManagerReadyPackage.summary?.productionOperationsReadyForPrivatePilot) ? 'ready' : 'blocked'],
+                            ['Ops Prod Ready', (backendProductionOperationsReadiness?.readyForProductionOperations ?? backendManagerReadyPackage.summary?.productionOperationsReadyForProduction) ? 'ready' : 'blocked'],
+                            ['Ops Controls', `${backendProductionOperationsReadiness?.summary?.productionControlPassedGateCount ?? 0}/${backendProductionOperationsReadiness?.summary?.productionControlGateCount ?? backendManagerReadyPackage.summary?.productionOperationsControlGateCount ?? 0}`],
+                            ['Ops Receipts', `${backendProductionOperationsControlReceiptWorkflow?.summary?.verifiedControlCount ?? backendManagerReadyPackage.summary?.productionOperationsVerifiedControlCount ?? 0}/${backendProductionOperationsControlReceiptWorkflow?.summary?.requiredControlCount ?? 0}`],
+                            ['Artifact Audit', backendArtifactQualityAudit?.status || backendManagerReadyPackage.summary?.artifactQualityAuditStatus || 'unknown'],
+                            ['Artifact Ready', (backendArtifactQualityAudit?.readyForLocalPilot ?? backendManagerReadyPackage.summary?.artifactQualityReady) ? 'ready' : 'review'],
+                            ['Artifact Quality', backendArtifactQualityAudit?.summary?.averageQualityScore ?? backendManagerReadyPackage.summary?.artifactQualityAverageScore ?? 0],
+                            ['Artifact Proofs', `${backendArtifactQualityAudit?.summary?.proofReadyCount ?? backendManagerReadyPackage.summary?.artifactQualityProofReadyCount ?? 0}/${backendArtifactQualityAudit?.summary?.submissionCount ?? backendManagerReadyPackage.summary?.artifactQualitySubmissionCount ?? 0}`],
+                            ['Artifact Types', `${backendArtifactQualityAudit?.summary?.coveredArtifactTypeCount ?? backendManagerReadyPackage.summary?.artifactQualityCoveredTypeCount ?? 0}/${backendArtifactQualityAudit?.summary?.requiredArtifactTypeCount ?? backendManagerReadyPackage.summary?.artifactQualityRequiredTypeCount ?? 0}`],
+                            ['Review Workflow', backendSubmissionReviewWorkflow?.status || backendManagerReadyPackage.summary?.submissionReviewWorkflowStatus || 'review-open'],
+                            ['Review Rounds', `${backendSubmissionReviewWorkflow?.summary?.revisionResponseCount ?? backendManagerReadyPackage.summary?.submissionReviewRevisionResponseCount ?? 0}/${backendSubmissionReviewWorkflow?.summary?.reviewRoundCount ?? backendManagerReadyPackage.summary?.submissionReviewRoundCount ?? 0}`],
                             ['Evidence Audit', backendEvidenceQualityAudit?.status || backendManagerReadyPackage.summary?.evidenceQualityAuditStatus || 'unknown'],
                             ['Evidence Ready', (backendEvidenceQualityAudit?.readyForDecision ?? backendManagerReadyPackage.summary?.evidenceQualityDecisionReady) ? 'ready' : 'review'],
                             ['Evidence Quality', backendEvidenceQualityAudit?.summary?.averageQualityScore ?? backendManagerReadyPackage.summary?.evidenceQualityAverageScore ?? 0],
                             ['Evidence Safety', (backendEvidenceQualityAudit?.summary?.sourceSafetyReady ?? backendManagerReadyPackage.summary?.evidenceQualitySourceSafetyReady) ? 'ready' : 'review'],
+                            ['Source Snapshots', backendEvidenceQualityAudit?.summary?.sourceSnapshotCount ?? backendManagerReadyPackage.summary?.evidenceSourceSnapshotCount ?? 0],
+                            ['Provider Receipts', backendEvidenceQualityAudit?.summary?.providerReceiptCount ?? backendManagerReadyPackage.summary?.evidenceProviderReceiptCount ?? 0],
                             ['Source Review', backendEvidenceSourceReviewWorkflow?.status || backendManagerReadyPackage.summary?.evidenceSourceReviewStatus || 'unknown'],
                             ['Source Queue', backendEvidenceSourceReviewWorkflow?.summary?.reviewRequiredSourceCount ?? backendManagerReadyPackage.summary?.evidenceSourceReviewQueuedCount ?? 0],
+                            ['Source Decisions', backendEvidenceSourceReviewWorkflow?.summary?.sourceReviewDecisionCount ?? backendManagerReadyPackage.summary?.evidenceSourceReviewDecisionCount ?? 0],
+                            ['Source Pending', backendEvidenceSourceReviewWorkflow?.summary?.pendingDecisionSourceCount ?? backendManagerReadyPackage.summary?.evidenceSourceReviewPendingDecisionCount ?? 0],
+                            ['Evidence Custody', backendEvidenceCustodyReadiness?.status || backendManagerReadyPackage.summary?.evidenceCustodyStatus || 'unknown'],
+                            ['Custody Ready', (backendEvidenceCustodyReadiness?.readyForPrivatePilot ?? backendManagerReadyPackage.summary?.evidenceCustodyReady) ? 'ready' : 'blocked'],
+                            ['Custody Records', backendEvidenceCustodyReadiness?.summary?.custodyRecordCount ?? backendManagerReadyPackage.summary?.evidenceCustodyRecordCount ?? 0],
+                            ['Custody Storage', (backendEvidenceCustodyReadiness?.readyForProduction ?? backendManagerReadyPackage.summary?.evidenceCustodyProductionReady) ? 'production-ready' : 'managed-blocked'],
                             ['Proof Routes', backendManagerReadyPackage.summary?.proofRouteCount ?? 0],
                             ['MVP Core', `${backendManagerReadyPackage.summary?.mvpCorePassedCount ?? backendMvpReadiness?.summary?.corePassedCount ?? 0}/${backendManagerReadyPackage.summary?.mvpCoreTotalCount ?? backendMvpReadiness?.summary?.coreTotalCount ?? 0}`],
                             ['Prod Blockers', backendManagerReadyPackage.summary?.mvpProductionBlockerCount ?? backendMvpReadiness?.summary?.productionBlockerCount ?? 0],
                             ['Security', backendSecurityBoundary?.status || backendManagerReadyPackage.summary?.securityBoundaryStatus || 'unknown'],
                             ['Providers', backendProviderReadiness?.status || backendManagerReadyPackage.summary?.providerReadinessStatus || 'unknown'],
+                            ['Controlled Run', backendProviderControlledRun?.status || backendManagerReadyPackage.summary?.providerControlledRunStatus || 'unknown'],
+                            ['Run Ready', (backendProviderControlledRun?.readyForPrivatePilotRun ?? backendManagerReadyPackage.summary?.providerControlledRunReady) ? 'ready' : 'blocked'],
+                            ['Run Ops', `${backendProviderControlledRun?.summary?.runnableOperationCount ?? backendManagerReadyPackage.summary?.providerControlledRunRunnableOperationCount ?? 0}/${backendProviderControlledRun?.summary?.operationCount ?? backendManagerReadyPackage.summary?.providerControlledRunOperationCount ?? 0}`],
+                            ['Run Cost', `${backendProviderControlledRun?.summary?.estimatedRunCostCents ?? backendManagerReadyPackage.summary?.providerControlledRunEstimatedCostCents ?? 0}c`],
+                            ['Provider Eval', backendProviderEvalRunWorkflow?.status || backendManagerReadyPackage.summary?.providerEvalRunWorkflowStatus || 'unknown'],
+                            ['Eval Ready', (backendProviderEvalRunWorkflow?.readyForPrivatePilotProviderEval ?? backendManagerReadyPackage.summary?.providerEvalRunReady) ? 'ready' : 'record'],
+                            ['Eval Runs', `${backendProviderEvalRunWorkflow?.summary?.passedRunCount ?? backendManagerReadyPackage.summary?.providerEvalRunPassedCount ?? 0}/${backendProviderEvalRunWorkflow?.summary?.runCount ?? backendManagerReadyPackage.summary?.providerEvalRunCount ?? 0}`],
+                            ['Eval Critical', `${backendProviderEvalRunWorkflow?.summary?.replayedCriticalOperationCount ?? backendManagerReadyPackage.summary?.providerEvalRunReplayedCriticalCount ?? 0}/${backendProviderEvalRunWorkflow?.summary?.criticalOperationCount ?? backendManagerReadyPackage.summary?.providerEvalRunCriticalCount ?? 0}`],
                             ['Operations', backendOperationsReadiness?.status || backendManagerReadyPackage.summary?.operationsReadinessStatus || 'unknown'],
                             ['Persistence Adapter', backendManagerReadyPackage.summary?.persistenceAdapterDryRunStatus || 'unknown'],
                             ['DB Driver', backendManagerReadyPackage.summary?.persistenceAdapterDriver || 'unknown'],
@@ -10596,6 +10884,7 @@ export default function EngineWorkspace() {
                                 [projectText('Submissions'), backendProjectEvidenceArchive.summary?.submissionCount ?? 0],
                                 [projectText('Final Deliverables'), backendProjectEvidenceArchive.summary?.finalDeliverableCount ?? 0],
                                 [projectText('Evidence Searches'), backendProjectEvidenceArchive.summary?.evidenceSearchCount ?? 0],
+                                [projectText('Source Decisions'), backendProjectEvidenceArchive.summary?.evidenceSourceReviewDecisionCount ?? 0],
                                 [projectText('Reviews'), backendProjectEvidenceArchive.summary?.submissionReviewCount ?? 0],
                                 [projectText('Transcript Messages'), backendProjectEvidenceArchive.summary?.transcriptMessageCount ?? 0],
                                 [projectText('Raw Leaks'), backendProjectEvidenceArchive.summary?.rawLeakCount ?? 0],
@@ -10609,6 +10898,97 @@ export default function EngineWorkspace() {
                             </div>
                             <div className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#9b875c]">
                               {projectText('Archive route')}: {backendProjectEvidenceArchive.backendRoutes?.projectEvidenceArchive || backendManagerReadyPackage.backendRoutes?.projectEvidenceArchive || `/projects/${activeProject.id}/project-evidence-archive`}
+                            </div>
+                          </div>
+                        )}
+                        {backendArtifactQualityAudit && (
+                          <div data-testid="backend-artifact-quality-audit-snapshot" className="mt-3 border border-[#d8c99f] bg-[#efe2bd]/55 p-2">
+                            <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                              <div className="min-w-0">
+                                <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">{projectText('Artifact Quality Audit')}</div>
+                                <div className="font-serif text-base leading-tight">{projectText(backendArtifactQualityAudit.status || 'unknown')}</div>
+                              </div>
+                              <span className={`node-status-tag ${backendArtifactQualityAudit.readyForLocalPilot ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
+                                {backendArtifactQualityAudit.readyForLocalPilot ? projectText('local ready') : projectText('review needed')}
+                              </span>
+                            </div>
+                            <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2">
+                              {[
+                                [projectText('Submissions'), backendArtifactQualityAudit.summary?.submissionCount ?? 0],
+                                [projectText('Types'), `${backendArtifactQualityAudit.summary?.coveredArtifactTypeCount ?? 0}/${backendArtifactQualityAudit.summary?.requiredArtifactTypeCount ?? 0}`],
+                                [projectText('Quality'), backendArtifactQualityAudit.summary?.averageQualityScore ?? 0],
+                                [projectText('Quality Ready'), `${backendArtifactQualityAudit.summary?.qualityReadyCount ?? 0}/${backendArtifactQualityAudit.summary?.submissionCount ?? 0}`],
+                                [projectText('Proof Ready'), `${backendArtifactQualityAudit.summary?.proofReadyCount ?? 0}/${backendArtifactQualityAudit.summary?.submissionCount ?? 0}`],
+                                [projectText('Reviews'), backendArtifactQualityAudit.summary?.reviewCount ?? 0],
+                                [projectText('Revisions'), backendArtifactQualityAudit.summary?.revisionCount ?? 0],
+                                [projectText('Generated Drafts'), `${backendArtifactQualityAudit.summary?.generatedDraftQualityReadyCount ?? 0}/${backendArtifactQualityAudit.summary?.generatedDraftCount ?? 0}`],
+                                [projectText('Failed Gates'), backendArtifactQualityAudit.summary?.failedLocalDecisionGateCount ?? 0],
+                                [projectText('Production Controls'), backendArtifactQualityAudit.summary?.productionControlCount ?? 0],
+                                [projectText('Packet'), backendArtifactQualityAudit.checksum || 'missing'],
+                              ].map(([label, value]) => (
+                                <div key={`artifact-quality-audit-${label}`} className="border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                  <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">{label}</div>
+                                  <div className="font-serif text-sm leading-tight break-words">{value}</div>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="mt-2 space-y-1">
+                              {(backendArtifactQualityAudit.failedLocalDecisionGates?.length ? backendArtifactQualityAudit.failedLocalDecisionGates : backendArtifactQualityAudit.requiredProductionControls || []).slice(0, 3).map(row => (
+                                <div key={`artifact-quality-gap-${row.id}`} className="grid grid-cols-[1fr_auto] gap-2 border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                  <div className="min-w-0">
+                                    <div className="font-serif text-sm leading-tight truncate">{projectText(row.label || row.id)}</div>
+                                    <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] truncate">{projectText(row.detail || '')}</div>
+                                  </div>
+                                  <span className="node-status-tag bg-[#251b13] text-[#efe2bd]">{row.status || row.severity || 'watch'}</span>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#9b875c]">
+                              Audit route: {backendArtifactQualityAudit.backendRoutes?.artifactQualityAudit || backendManagerReadyPackage.backendRoutes?.artifactQualityAudit || `/projects/${activeProject.id}/artifact-quality-audit`}
+                            </div>
+                          </div>
+                        )}
+                        {backendSubmissionReviewWorkflow && (
+                          <div data-testid="backend-submission-review-workflow-snapshot" className="mt-3 border border-[#d8c99f] bg-[#efe2bd]/55 p-2">
+                            <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                              <div className="min-w-0">
+                                <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">{projectText('Submission Review Workflow')}</div>
+                                <div className="font-serif text-base leading-tight">{projectText(backendSubmissionReviewWorkflow.status || 'review-loop-open')}</div>
+                              </div>
+                              <span className={`node-status-tag ${backendSubmissionReviewWorkflow.readyForPrivatePilotReview ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
+                                {backendSubmissionReviewWorkflow.readyForPrivatePilotReview ? projectText('loop closed') : projectText('review open')}
+                              </span>
+                            </div>
+                            <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2">
+                              {[
+                                [projectText('Review Rounds'), backendSubmissionReviewWorkflow.summary?.reviewRoundCount ?? 0],
+                                [projectText('Accepted'), backendSubmissionReviewWorkflow.summary?.acceptedCount ?? 0],
+                                [projectText('Change Requests'), backendSubmissionReviewWorkflow.summary?.changesRequestedCount ?? 0],
+                                [projectText('Open Changes'), backendSubmissionReviewWorkflow.summary?.openChangeRequestCount ?? 0],
+                                [projectText('Revision Responses'), backendSubmissionReviewWorkflow.summary?.revisionResponseCount ?? 0],
+                                [projectText('Final Accepted'), `${backendSubmissionReviewWorkflow.summary?.acceptedFinalDeliverableCount ?? 0}/${backendSubmissionReviewWorkflow.summary?.finalDeliverableCount ?? 0}`],
+                                [projectText('Proof Ready'), `${backendSubmissionReviewWorkflow.summary?.proofReadyCount ?? 0}/${backendSubmissionReviewWorkflow.summary?.reviewRoundCount ?? 0}`],
+                                [projectText('Packet'), backendSubmissionReviewWorkflow.checksum || 'missing'],
+                              ].map(([label, value]) => (
+                                <div key={`submission-review-workflow-${label}`} className="border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                  <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">{label}</div>
+                                  <div className="font-serif text-sm leading-tight break-words">{value}</div>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="mt-2 space-y-1">
+                              {(backendSubmissionReviewWorkflow.openChangeRequestRows?.length ? backendSubmissionReviewWorkflow.openChangeRequestRows : backendSubmissionReviewWorkflow.roundRows || []).slice(0, 3).map(row => (
+                                <div key={`submission-review-workflow-row-${row.id}`} className="grid grid-cols-[1fr_auto] gap-2 border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                  <div className="min-w-0">
+                                    <div className="font-serif text-sm leading-tight truncate">{projectText(row.submissionTitle || row.submissionId || row.id)}</div>
+                                    <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] truncate">{projectText(`${row.verdict || 'review'} / ${row.responseSubmissionIds?.length || 0} response(s)`)}</div>
+                                  </div>
+                                  <span className={`node-status-tag ${row.status === 'closed' ? 'bg-[#59684b] text-white' : 'bg-[#251b13] text-[#efe2bd]'}`}>{projectText(row.status || 'open')}</span>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#9b875c]">
+                              {projectText('Review workflow route')}: {backendSubmissionReviewWorkflow.backendRoutes?.submissionReviewWorkflow || backendManagerReadyPackage.backendRoutes?.submissionReviewWorkflow || `/projects/${activeProject.id}/submission-review-workflow`}
                             </div>
                           </div>
                         )}
@@ -10677,6 +11057,10 @@ export default function EngineWorkspace() {
                             <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2">
                               {[
                                 [projectText('Review Items'), backendEvidenceSourceReviewWorkflow.summary?.reviewItemCount ?? 0],
+                                [projectText('Decision Required'), backendEvidenceSourceReviewWorkflow.summary?.decisionRequiredSourceCount ?? 0],
+                                [projectText('Decisions'), backendEvidenceSourceReviewWorkflow.summary?.sourceReviewDecisionCount ?? 0],
+                                [projectText('Approved'), backendEvidenceSourceReviewWorkflow.summary?.approvedSourceReviewCount ?? 0],
+                                [projectText('Pending'), backendEvidenceSourceReviewWorkflow.summary?.pendingDecisionSourceCount ?? 0],
                                 [projectText('Queued'), backendEvidenceSourceReviewWorkflow.summary?.reviewRequiredSourceCount ?? 0],
                                 [projectText('Auto Cleared'), backendEvidenceSourceReviewWorkflow.summary?.autoClearedSourceCount ?? 0],
                                 [projectText('Blocked Sources'), backendEvidenceSourceReviewWorkflow.summary?.blockedSourceCount ?? 0],
@@ -10742,6 +11126,580 @@ export default function EngineWorkspace() {
                             </div>
                             <div className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#9b875c]">
                               {projectText('Export route')}: {backendProjectEvidenceExportWorkflow.backendRoutes?.projectEvidenceExports || backendManagerReadyPackage.backendRoutes?.projectEvidenceExports || `/projects/${activeProject.id}/project-evidence-exports`}
+                            </div>
+                          </div>
+                        )}
+                        {backendPrivatePilotGoLiveReadiness && (
+                          <div data-testid="backend-private-pilot-go-live-readiness-snapshot" className="mt-3 border border-[#d8c99f] bg-[#efe2bd]/55 p-2">
+                            <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                              <div className="min-w-0">
+                                <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">{projectText('Private Pilot Go-Live Readiness')}</div>
+                                <div className="font-serif text-base leading-tight">{projectText(backendPrivatePilotGoLiveReadiness.status || 'go-live-needed')}</div>
+                              </div>
+                              <span className={`node-status-tag ${backendPrivatePilotGoLiveReadiness.readyForPrivatePilotGoLive ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
+                                {backendPrivatePilotGoLiveReadiness.readyForPrivatePilotAcceptance ? projectText('accepted') : backendPrivatePilotGoLiveReadiness.readyForPrivatePilotGoLive ? projectText('go-live ready') : projectText('blocked')}
+                              </span>
+                            </div>
+                            <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2">
+                              {[
+                                [projectText('Active Phase'), backendPrivatePilotGoLiveReadiness.activePhase || 'preflight'],
+                                [projectText('Go-Live Stages'), `${backendPrivatePilotGoLiveReadiness.summary?.goLiveReadyStageCount ?? 0}/${backendPrivatePilotGoLiveReadiness.summary?.goLiveStageCount ?? 0}`],
+                                [projectText('Acceptance Stages'), `${backendPrivatePilotGoLiveReadiness.summary?.acceptanceReadyStageCount ?? 0}/${backendPrivatePilotGoLiveReadiness.summary?.acceptanceStageCount ?? 0}`],
+                                [projectText('Failed Go-Live'), backendPrivatePilotGoLiveReadiness.summary?.failedGoLiveStageCount ?? 0],
+                                [projectText('Next Action'), backendPrivatePilotGoLiveReadiness.nextAction?.id || 'none'],
+                                [projectText('Owner'), backendPrivatePilotGoLiveReadiness.nextAction?.owner || 'manager'],
+                                [projectText('Proofs'), backendPrivatePilotGoLiveReadiness.summary?.proofIdCount ?? 0],
+                                [projectText('Events'), backendPrivatePilotGoLiveReadiness.summary?.eventIdCount ?? 0],
+                                [projectText('Latest Launch'), backendPrivatePilotGoLiveReadiness.latestRecords?.launchRunId || 'missing'],
+                                [projectText('Latest Health'), backendPrivatePilotGoLiveReadiness.latestRecords?.launchHealthCheckId || 'missing'],
+                                [projectText('Acceptance'), backendPrivatePilotGoLiveReadiness.latestRecords?.acceptanceReportId || 'missing'],
+                                [projectText('Packet'), backendPrivatePilotGoLiveReadiness.checksum || 'missing'],
+                              ].map(([label, value]) => (
+                                <div key={`private-pilot-go-live-${label}`} className="border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                  <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">{label}</div>
+                                  <div className="font-serif text-sm leading-tight break-words">{value}</div>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="mt-2 space-y-1">
+                              {(backendPrivatePilotGoLiveReadiness.failedGoLiveRows?.length ? backendPrivatePilotGoLiveReadiness.failedGoLiveRows : backendPrivatePilotGoLiveReadiness.stageRows || []).slice(0, 5).map(row => (
+                                <div key={`private-pilot-go-live-stage-${row.id}`} className="grid grid-cols-[1fr_auto] gap-2 border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                  <div className="min-w-0">
+                                    <div className="font-serif text-sm leading-tight truncate">{row.label || row.id}</div>
+                                    <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] truncate">{row.action || row.detail || row.status}</div>
+                                    {row.apiPath && (
+                                      <div className="font-mono text-[7px] uppercase tracking-widest text-[#9b875c] truncate">Route: {row.apiPath}</div>
+                                    )}
+                                  </div>
+                                  <span className={`node-status-tag ${row.ready ? 'bg-[#59684b] text-white' : 'bg-[#251b13] text-[#efe2bd]'}`}>{row.ready ? projectText('ready') : projectText('action')}</span>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#9b875c]">
+                              {projectText('Go-live route')}: {backendPrivatePilotGoLiveReadiness.backendRoutes?.privatePilotGoLiveReadiness || backendManagerReadyPackage.backendRoutes?.privatePilotGoLiveReadiness || `/projects/${activeProject.id}/private-pilot-go-live-readiness`}
+                            </div>
+                          </div>
+                        )}
+                        {backendProductionLaunchGapRegister && (
+                          <div data-testid="backend-production-launch-gap-register-snapshot" className="mt-3 border border-[#d8c99f] bg-[#efe2bd]/55 p-2">
+                            <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                              <div className="min-w-0">
+                                <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">{projectText('Production Launch Gap Register')}</div>
+                                <div className="font-serif text-base leading-tight">{projectText(backendProductionLaunchGapRegister.status || 'production-gaps-open')}</div>
+                              </div>
+                              <span className="node-status-tag bg-[#8f1e18] text-white">
+                                {backendProductionLaunchGapRegister.readyForProduction ? projectText('production ready') : projectText('production blocked')}
+                              </span>
+                            </div>
+                            <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2">
+                              {[
+                                [projectText('Open Gaps'), backendProductionLaunchGapRegister.summary?.openGapCount ?? 0],
+                                [projectText('Blockers'), backendProductionLaunchGapRegister.summary?.blockerCount ?? 0],
+                                [projectText('Domains'), backendProductionLaunchGapRegister.summary?.domainCount ?? 0],
+                                [projectText('Owners'), backendProductionLaunchGapRegister.summary?.ownerCount ?? 0],
+                                [projectText('Next Action'), backendProductionLaunchGapRegister.nextAction?.id || 'none'],
+                                [projectText('Owner'), backendProductionLaunchGapRegister.nextAction?.owner || 'manager'],
+                                [projectText('Private Pilot'), backendProductionLaunchGapRegister.summary?.privatePilotAccepted ? projectText('accepted') : projectText('open')],
+                                [projectText('Production'), backendProductionLaunchGapRegister.productionDecision || 'no-go'],
+                                [projectText('Security'), backendProductionLaunchGapRegister.summary?.securityGapCount ?? 0],
+                                [projectText('Infra'), backendProductionLaunchGapRegister.summary?.infrastructureGapCount ?? 0],
+                                [projectText('Ops'), backendProductionLaunchGapRegister.summary?.operationsGapCount ?? 0],
+                                [projectText('Provider'), backendProductionLaunchGapRegister.summary?.providerGapCount ?? 0],
+                              ].map(([label, value]) => (
+                                <div key={`production-launch-gap-${label}`} className="border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                  <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">{label}</div>
+                                  <div className="font-serif text-sm leading-tight break-words">{value}</div>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="mt-2 space-y-1">
+                              {(backendProductionLaunchGapRegister.gapRows || []).slice(0, 5).map(row => (
+                                <div key={`production-launch-gap-row-${row.id}`} className="grid grid-cols-[1fr_auto] gap-2 border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                  <div className="min-w-0">
+                                    <div className="font-serif text-sm leading-tight truncate">{row.label || row.id}</div>
+                                    <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] truncate">{row.owner || 'manager'} / {row.domain || 'production-hardening'}</div>
+                                    <div className="font-mono text-[7px] uppercase tracking-widest text-[#9b875c] truncate">{row.action || row.detail || row.status}</div>
+                                    {row.apiPath && (
+                                      <div className="font-mono text-[7px] uppercase tracking-widest text-[#9b875c] truncate">Route: {row.apiPath}</div>
+                                    )}
+                                  </div>
+                                  <span className={`node-status-tag ${row.status === 'ready' ? 'bg-[#59684b] text-white' : 'bg-[#251b13] text-[#efe2bd]'}`}>{row.status || 'blocked'}</span>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#9b875c]">
+                              {projectText('Gap register route')}: {backendProductionLaunchGapRegister.backendRoutes?.productionLaunchGapRegister || backendManagerReadyPackage.backendRoutes?.productionLaunchGapRegister || `/projects/${activeProject.id}/production-launch-gap-register`}
+                            </div>
+                          </div>
+                        )}
+                        {backendProductionLaunchControlCenter && (
+                          <div data-testid="backend-production-launch-control-center-snapshot" className="mt-3 border border-[#d8c99f] bg-[#efe2bd]/55 p-2">
+                            <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                              <div className="min-w-0">
+                                <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">{projectText('Production Launch Control Center')}</div>
+                                <div className="font-serif text-base leading-tight">{projectText(backendProductionLaunchControlCenter.status || 'production-launch-controls-blocked')}</div>
+                              </div>
+                              <span className="node-status-tag bg-[#8f1e18] text-white">
+                                {backendProductionLaunchControlCenter.readyForProduction ? projectText('production ready') : projectText('no-go')}
+                              </span>
+                            </div>
+                            <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2">
+                              {[
+                                [projectText('Controls'), backendProductionLaunchControlCenter.summary?.controlCount ?? 0],
+                                [projectText('Ready'), backendProductionLaunchControlCenter.summary?.readyControlCount ?? 0],
+                                [projectText('Blocked'), backendProductionLaunchControlCenter.summary?.blockedControlCount ?? 0],
+                                [projectText('Owners'), backendProductionLaunchControlCenter.summary?.ownerCount ?? 0],
+                                [projectText('Open Gaps'), backendProductionLaunchControlCenter.summary?.openGapCount ?? 0],
+                                [projectText('Next Action'), backendProductionLaunchControlCenter.nextAction?.id || 'none'],
+                                [projectText('Owner'), backendProductionLaunchControlCenter.nextAction?.owner || 'manager'],
+                                [projectText('Decision'), backendProductionLaunchControlCenter.productionDecision || 'no-go'],
+                              ].map(([label, value]) => (
+                                <div key={`production-launch-control-${label}`} className="border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                  <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">{label}</div>
+                                  <div className="font-serif text-sm leading-tight break-words">{value}</div>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="mt-2 space-y-1">
+                              {(backendProductionLaunchControlCenter.blockedRows?.length ? backendProductionLaunchControlCenter.blockedRows : backendProductionLaunchControlCenter.controlRows || []).slice(0, 5).map(row => (
+                                <div key={`production-launch-control-row-${row.id}`} className="grid grid-cols-[1fr_auto] gap-2 border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                  <div className="min-w-0">
+                                    <div className="font-serif text-sm leading-tight truncate">{row.label || row.id}</div>
+                                    <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] truncate">{row.owner || 'manager'} / {row.domain || 'release-governance'}</div>
+                                    <div className="font-mono text-[7px] uppercase tracking-widest text-[#9b875c] truncate">{row.detail || row.action || row.status}</div>
+                                    {row.apiPath && (
+                                      <div className="font-mono text-[7px] uppercase tracking-widest text-[#9b875c] truncate">Route: {row.apiPath}</div>
+                                    )}
+                                  </div>
+                                  <span className={`node-status-tag ${row.ready ? 'bg-[#59684b] text-white' : 'bg-[#251b13] text-[#efe2bd]'}`}>{row.ready ? projectText('ready') : projectText('blocked')}</span>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#9b875c]">
+                              {projectText('Control center route')}: {backendProductionLaunchControlCenter.backendRoutes?.productionLaunchControlCenter || backendManagerReadyPackage.backendRoutes?.productionLaunchControlCenter || `/projects/${activeProject.id}/production-launch-control-center`}
+                            </div>
+                          </div>
+                        )}
+                        {backendPrivatePilotReleaseCandidateWorkflow && (
+                          <div data-testid="backend-private-pilot-release-candidate-workflow-snapshot" className="mt-3 border border-[#d8c99f] bg-[#efe2bd]/55 p-2">
+                            <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                              <div className="min-w-0">
+                                <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">{projectText('Private Pilot Release Candidate')}</div>
+                                <div className="font-serif text-base leading-tight">{projectText(backendPrivatePilotReleaseCandidateWorkflow.status || 'record-needed')}</div>
+                              </div>
+                              <span className={`node-status-tag ${backendPrivatePilotReleaseCandidateWorkflow.readyForPrivatePilotRelease ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
+                                {backendPrivatePilotReleaseCandidateWorkflow.readyForPrivatePilotRelease ? projectText('candidate ready') : backendPrivatePilotReleaseCandidateWorkflow.readyToRecord ? projectText('record needed') : projectText('blocked')}
+                              </span>
+                            </div>
+                            <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2">
+                              {[
+                                [projectText('Ready To Record'), backendPrivatePilotReleaseCandidateWorkflow.readyToRecord ? projectText('yes') : projectText('no')],
+                                [projectText('Candidate Ready'), backendPrivatePilotReleaseCandidateWorkflow.readyForPrivatePilotRelease ? projectText('ready') : projectText('record')],
+                                [projectText('Candidates'), `${backendPrivatePilotReleaseCandidateWorkflow.summary?.readyCandidateCount ?? 0}/${backendPrivatePilotReleaseCandidateWorkflow.summary?.candidateCount ?? 0}`],
+                                [projectText('Gates'), `${backendPrivatePilotReleaseCandidateWorkflow.summary?.passedGateCount ?? 0}/${backendPrivatePilotReleaseCandidateWorkflow.summary?.gateCount ?? 0}`],
+                                [projectText('Failed Gates'), backendPrivatePilotReleaseCandidateWorkflow.summary?.failedGateCount ?? 0],
+                                [projectText('Failed Blockers'), backendPrivatePilotReleaseCandidateWorkflow.summary?.failedBlockerGateCount ?? 0],
+                                [projectText('Proofs'), backendPrivatePilotReleaseCandidateWorkflow.summary?.proofIdCount ?? 0],
+                                [projectText('Events'), backendPrivatePilotReleaseCandidateWorkflow.summary?.eventIdCount ?? 0],
+                                [projectText('Latest Candidate'), backendPrivatePilotReleaseCandidateWorkflow.latestCandidate?.id || 'missing'],
+                                [projectText('Packet'), backendPrivatePilotReleaseCandidateWorkflow.checksum || 'missing'],
+                              ].map(([label, value]) => (
+                                <div key={`private-pilot-release-candidate-${label}`} className="border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                  <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">{label}</div>
+                                  <div className="font-serif text-sm leading-tight break-words">{value}</div>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="mt-2 space-y-1">
+                              {(backendPrivatePilotReleaseCandidateWorkflow.failedPrerequisiteGates?.length ? backendPrivatePilotReleaseCandidateWorkflow.failedPrerequisiteGates : backendPrivatePilotReleaseCandidateWorkflow.prerequisiteGates || []).slice(0, 4).map(row => (
+                                <div key={`private-pilot-release-candidate-gate-${row.id}`} className="grid grid-cols-[1fr_auto] gap-2 border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                  <div className="min-w-0">
+                                    <div className="font-serif text-sm leading-tight truncate">{row.label || row.id}</div>
+                                    <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] truncate">{row.detail || row.status}</div>
+                                    {row.apiPath && (
+                                      <div className="font-mono text-[7px] uppercase tracking-widest text-[#9b875c] truncate">Route: {row.apiPath}</div>
+                                    )}
+                                  </div>
+                                  <span className={`node-status-tag ${row.passed ? 'bg-[#59684b] text-white' : 'bg-[#251b13] text-[#efe2bd]'}`}>{row.passed ? projectText('passed') : row.status || 'missing'}</span>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#9b875c]">
+                              {projectText('Candidate route')}: {backendPrivatePilotReleaseCandidateWorkflow.backendRoutes?.privatePilotReleaseCandidates || backendManagerReadyPackage.backendRoutes?.privatePilotReleaseCandidates || `/projects/${activeProject.id}/private-pilot-release-candidates`}
+                            </div>
+                          </div>
+                        )}
+                        {backendPrivatePilotLaunchRunWorkflow && (
+                          <div data-testid="backend-private-pilot-launch-run-workflow-snapshot" className="mt-3 border border-[#d8c99f] bg-[#efe2bd]/55 p-2">
+                            <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                              <div className="min-w-0">
+                                <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">{projectText('Private Pilot Launch Run')}</div>
+                                <div className="font-serif text-base leading-tight">{projectText(backendPrivatePilotLaunchRunWorkflow.status || 'launch-needed')}</div>
+                              </div>
+                              <span className={`node-status-tag ${backendPrivatePilotLaunchRunWorkflow.readyForPrivatePilotLaunch ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
+                                {backendPrivatePilotLaunchRunWorkflow.readyForPrivatePilotLaunch ? projectText('launch ready') : backendPrivatePilotLaunchRunWorkflow.readyToLaunch ? projectText('record needed') : projectText('blocked')}
+                              </span>
+                            </div>
+                            <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2">
+                              {[
+                                [projectText('Ready To Launch'), backendPrivatePilotLaunchRunWorkflow.readyToLaunch ? projectText('yes') : projectText('no')],
+                                [projectText('Launch Ready'), backendPrivatePilotLaunchRunWorkflow.readyForPrivatePilotLaunch ? projectText('ready') : projectText('record')],
+                                [projectText('Launch Runs'), `${backendPrivatePilotLaunchRunWorkflow.summary?.readyRunCount ?? 0}/${backendPrivatePilotLaunchRunWorkflow.summary?.runCount ?? 0}`],
+                                [projectText('Gates'), `${backendPrivatePilotLaunchRunWorkflow.summary?.passedGateCount ?? 0}/${backendPrivatePilotLaunchRunWorkflow.summary?.gateCount ?? 0}`],
+                                [projectText('Failed Gates'), backendPrivatePilotLaunchRunWorkflow.summary?.failedGateCount ?? 0],
+                                [projectText('Failed Blockers'), backendPrivatePilotLaunchRunWorkflow.summary?.failedBlockerGateCount ?? 0],
+                                [projectText('Proofs'), backendPrivatePilotLaunchRunWorkflow.summary?.proofIdCount ?? 0],
+                                [projectText('Events'), backendPrivatePilotLaunchRunWorkflow.summary?.eventIdCount ?? 0],
+                                [projectText('Latest Run'), backendPrivatePilotLaunchRunWorkflow.latestRun?.id || 'missing'],
+                                [projectText('Packet'), backendPrivatePilotLaunchRunWorkflow.checksum || 'missing'],
+                              ].map(([label, value]) => (
+                                <div key={`private-pilot-launch-run-${label}`} className="border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                  <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">{label}</div>
+                                  <div className="font-serif text-sm leading-tight break-words">{value}</div>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="mt-2 space-y-1">
+                              {(backendPrivatePilotLaunchRunWorkflow.failedLaunchGates?.length ? backendPrivatePilotLaunchRunWorkflow.failedLaunchGates : backendPrivatePilotLaunchRunWorkflow.launchGates || []).slice(0, 4).map(row => (
+                                <div key={`private-pilot-launch-run-gate-${row.id}`} className="grid grid-cols-[1fr_auto] gap-2 border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                  <div className="min-w-0">
+                                    <div className="font-serif text-sm leading-tight truncate">{row.label || row.id}</div>
+                                    <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] truncate">{row.detail || row.status}</div>
+                                    {row.apiPath && (
+                                      <div className="font-mono text-[7px] uppercase tracking-widest text-[#9b875c] truncate">Route: {row.apiPath}</div>
+                                    )}
+                                  </div>
+                                  <span className={`node-status-tag ${row.passed ? 'bg-[#59684b] text-white' : 'bg-[#251b13] text-[#efe2bd]'}`}>{row.passed ? projectText('passed') : row.status || 'missing'}</span>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#9b875c]">
+                              {projectText('Launch run route')}: {backendPrivatePilotLaunchRunWorkflow.backendRoutes?.privatePilotLaunchRuns || backendManagerReadyPackage.backendRoutes?.privatePilotLaunchRuns || `/projects/${activeProject.id}/private-pilot-launch-runs`}
+                            </div>
+                          </div>
+                        )}
+                        {backendPrivatePilotLaunchHealthCheckWorkflow && (
+                          <div data-testid="backend-private-pilot-launch-health-check-workflow-snapshot" className="mt-3 border border-[#d8c99f] bg-[#efe2bd]/55 p-2">
+                            <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                              <div className="min-w-0">
+                                <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">{projectText('Private Pilot Launch Health')}</div>
+                                <div className="font-serif text-base leading-tight">{projectText(backendPrivatePilotLaunchHealthCheckWorkflow.status || 'check-needed')}</div>
+                              </div>
+                              <span className={`node-status-tag ${backendPrivatePilotLaunchHealthCheckWorkflow.readyForPrivatePilotMonitoring ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
+                                {backendPrivatePilotLaunchHealthCheckWorkflow.readyForPrivatePilotMonitoring ? projectText('health ready') : backendPrivatePilotLaunchHealthCheckWorkflow.readyToCheck ? projectText('record needed') : projectText('blocked')}
+                              </span>
+                            </div>
+                            <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2">
+                              {[
+                                [projectText('Ready To Check'), backendPrivatePilotLaunchHealthCheckWorkflow.readyToCheck ? projectText('yes') : projectText('no')],
+                                [projectText('Health Ready'), backendPrivatePilotLaunchHealthCheckWorkflow.readyForPrivatePilotMonitoring ? projectText('ready') : projectText('record')],
+                                [projectText('Health Checks'), `${backendPrivatePilotLaunchHealthCheckWorkflow.summary?.readyHealthCheckCount ?? 0}/${backendPrivatePilotLaunchHealthCheckWorkflow.summary?.healthCheckCount ?? 0}`],
+                                [projectText('Gates'), `${backendPrivatePilotLaunchHealthCheckWorkflow.summary?.passedGateCount ?? 0}/${backendPrivatePilotLaunchHealthCheckWorkflow.summary?.gateCount ?? 0}`],
+                                [projectText('Failed Gates'), backendPrivatePilotLaunchHealthCheckWorkflow.summary?.failedGateCount ?? 0],
+                                [projectText('Failed Blockers'), backendPrivatePilotLaunchHealthCheckWorkflow.summary?.failedBlockerGateCount ?? 0],
+                                [projectText('Proofs'), backendPrivatePilotLaunchHealthCheckWorkflow.summary?.proofIdCount ?? 0],
+                                [projectText('Events'), backendPrivatePilotLaunchHealthCheckWorkflow.summary?.eventIdCount ?? 0],
+                                [projectText('Latest Check'), backendPrivatePilotLaunchHealthCheckWorkflow.latestHealthCheck?.id || 'missing'],
+                                [projectText('Packet'), backendPrivatePilotLaunchHealthCheckWorkflow.checksum || 'missing'],
+                              ].map(([label, value]) => (
+                                <div key={`private-pilot-launch-health-check-${label}`} className="border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                  <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">{label}</div>
+                                  <div className="font-serif text-sm leading-tight break-words">{value}</div>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="mt-2 space-y-1">
+                              {(backendPrivatePilotLaunchHealthCheckWorkflow.failedHealthGates?.length ? backendPrivatePilotLaunchHealthCheckWorkflow.failedHealthGates : backendPrivatePilotLaunchHealthCheckWorkflow.healthGates || []).slice(0, 4).map(row => (
+                                <div key={`private-pilot-launch-health-check-gate-${row.id}`} className="grid grid-cols-[1fr_auto] gap-2 border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                  <div className="min-w-0">
+                                    <div className="font-serif text-sm leading-tight truncate">{row.label || row.id}</div>
+                                    <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] truncate">{row.detail || row.status}</div>
+                                    {row.apiPath && (
+                                      <div className="font-mono text-[7px] uppercase tracking-widest text-[#9b875c] truncate">Route: {row.apiPath}</div>
+                                    )}
+                                  </div>
+                                  <span className={`node-status-tag ${row.passed ? 'bg-[#59684b] text-white' : row.severity === 'warning' ? 'bg-[#c2912f] text-[#251b13]' : 'bg-[#251b13] text-[#efe2bd]'}`}>{row.passed ? projectText('passed') : row.status || 'missing'}</span>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#9b875c]">
+                              {projectText('Health route')}: {backendPrivatePilotLaunchHealthCheckWorkflow.backendRoutes?.privatePilotLaunchHealthChecks || backendManagerReadyPackage.backendRoutes?.privatePilotLaunchHealthChecks || `/projects/${activeProject.id}/private-pilot-launch-health-checks`}
+                            </div>
+                          </div>
+                        )}
+                        {backendPrivatePilotAcceptanceReportWorkflow && (
+                          <div data-testid="backend-private-pilot-acceptance-report-workflow-snapshot" className="mt-3 border border-[#d8c99f] bg-[#efe2bd]/55 p-2">
+                            <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                              <div className="min-w-0">
+                                <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">{projectText('Private Pilot Acceptance Report')}</div>
+                                <div className="font-serif text-base leading-tight">{projectText(backendPrivatePilotAcceptanceReportWorkflow.status || 'report-needed')}</div>
+                              </div>
+                              <span className={`node-status-tag ${backendPrivatePilotAcceptanceReportWorkflow.readyForPrivatePilotAcceptance ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
+                                {backendPrivatePilotAcceptanceReportWorkflow.readyForPrivatePilotAcceptance ? projectText('acceptance ready') : backendPrivatePilotAcceptanceReportWorkflow.readyToReport ? projectText('record needed') : projectText('blocked')}
+                              </span>
+                            </div>
+                            <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2">
+                              {[
+                                [projectText('Ready To Report'), backendPrivatePilotAcceptanceReportWorkflow.readyToReport ? projectText('yes') : projectText('no')],
+                                [projectText('Acceptance Ready'), backendPrivatePilotAcceptanceReportWorkflow.readyForPrivatePilotAcceptance ? projectText('ready') : projectText('record')],
+                                [projectText('Reports'), `${backendPrivatePilotAcceptanceReportWorkflow.summary?.readyReportCount ?? 0}/${backendPrivatePilotAcceptanceReportWorkflow.summary?.reportCount ?? 0}`],
+                                [projectText('Gates'), `${backendPrivatePilotAcceptanceReportWorkflow.summary?.passedGateCount ?? 0}/${backendPrivatePilotAcceptanceReportWorkflow.summary?.gateCount ?? 0}`],
+                                [projectText('Failed Gates'), backendPrivatePilotAcceptanceReportWorkflow.summary?.failedGateCount ?? 0],
+                                [projectText('Failed Blockers'), backendPrivatePilotAcceptanceReportWorkflow.summary?.failedBlockerGateCount ?? 0],
+                                [projectText('Proofs'), backendPrivatePilotAcceptanceReportWorkflow.summary?.proofIdCount ?? 0],
+                                [projectText('Events'), backendPrivatePilotAcceptanceReportWorkflow.summary?.eventIdCount ?? 0],
+                                [projectText('Latest Report'), backendPrivatePilotAcceptanceReportWorkflow.latestReport?.id || 'missing'],
+                                [projectText('Packet'), backendPrivatePilotAcceptanceReportWorkflow.checksum || 'missing'],
+                              ].map(([label, value]) => (
+                                <div key={`private-pilot-acceptance-report-${label}`} className="border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                  <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">{label}</div>
+                                  <div className="font-serif text-sm leading-tight break-words">{value}</div>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="mt-2 space-y-1">
+                              {(backendPrivatePilotAcceptanceReportWorkflow.failedAcceptanceGates?.length ? backendPrivatePilotAcceptanceReportWorkflow.failedAcceptanceGates : backendPrivatePilotAcceptanceReportWorkflow.acceptanceGates || []).slice(0, 4).map(row => (
+                                <div key={`private-pilot-acceptance-report-gate-${row.id}`} className="grid grid-cols-[1fr_auto] gap-2 border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                  <div className="min-w-0">
+                                    <div className="font-serif text-sm leading-tight truncate">{row.label || row.id}</div>
+                                    <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] truncate">{row.detail || row.status}</div>
+                                    {row.apiPath && (
+                                      <div className="font-mono text-[7px] uppercase tracking-widest text-[#9b875c] truncate">Route: {row.apiPath}</div>
+                                    )}
+                                  </div>
+                                  <span className={`node-status-tag ${row.passed ? 'bg-[#59684b] text-white' : row.severity === 'warning' ? 'bg-[#c2912f] text-[#251b13]' : 'bg-[#251b13] text-[#efe2bd]'}`}>{row.passed ? projectText('passed') : row.status || 'missing'}</span>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#9b875c]">
+                              {projectText('Acceptance route')}: {backendPrivatePilotAcceptanceReportWorkflow.backendRoutes?.privatePilotAcceptanceReports || backendManagerReadyPackage.backendRoutes?.privatePilotAcceptanceReports || `/projects/${activeProject.id}/private-pilot-acceptance-reports`}
+                            </div>
+                          </div>
+                        )}
+                        {backendProductionOperationsReadiness && (
+                          <div data-testid="backend-production-operations-readiness-snapshot" className="mt-3 border border-[#d8c99f] bg-[#efe2bd]/55 p-2">
+                            <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                              <div className="min-w-0">
+                                <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">{projectText('Production Operations Readiness')}</div>
+                                <div className="font-serif text-base leading-tight">{projectText(backendProductionOperationsReadiness.status || 'controls-blocked')}</div>
+                              </div>
+                              <span className={`node-status-tag ${backendProductionOperationsReadiness.readyForProductionOperations ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
+                                {backendProductionOperationsReadiness.readyForProductionOperations ? projectText('production ready') : backendProductionOperationsReadiness.readyForPrivatePilotOperations ? projectText('controls blocked') : projectText('proof blocked')}
+                              </span>
+                            </div>
+                            <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2">
+                              {[
+                                [projectText('Local Proof'), `${backendProductionOperationsReadiness.summary?.localProofPassedGateCount ?? 0}/${backendProductionOperationsReadiness.summary?.localProofGateCount ?? 0}`],
+                                [projectText('Local Failures'), backendProductionOperationsReadiness.summary?.failedLocalProofGateCount ?? 0],
+                                [projectText('Prod Controls'), `${backendProductionOperationsReadiness.summary?.productionControlPassedGateCount ?? 0}/${backendProductionOperationsReadiness.summary?.productionControlGateCount ?? 0}`],
+                                [projectText('Blocked Controls'), backendProductionOperationsReadiness.summary?.failedProductionControlGateCount ?? 0],
+                                [projectText('Private Pilot Ops'), backendProductionOperationsReadiness.readyForPrivatePilotOperations ? projectText('ready') : projectText('blocked')],
+                                [projectText('Production Ops'), backendProductionOperationsReadiness.readyForProductionOperations ? projectText('ready') : projectText('blocked')],
+                                [projectText('Alert Rules'), `${backendProductionOperationsReadiness.observabilityPlan?.localRoutedAlertRuleCount ?? 0}/${backendProductionOperationsReadiness.observabilityPlan?.localAlertRuleCount ?? 0}`],
+                                [projectText('On Call'), backendProductionOperationsReadiness.onCallPlan?.configured ? projectText('configured') : projectText('blocked')],
+                                [projectText('Incident System'), backendProductionOperationsReadiness.incidentPlan?.configured ? projectText('configured') : projectText('blocked')],
+                                [projectText('Restore Drill'), backendProductionOperationsReadiness.incidentPlan?.restoreDrillReceiptConfigured ? projectText('configured') : projectText('blocked')],
+                                [projectText('Next Gap'), backendProductionOperationsReadiness.nextShortestPath?.id || 'none'],
+                                [projectText('Packet'), backendProductionOperationsReadiness.checksum || 'missing'],
+                              ].map(([label, value]) => (
+                                <div key={`production-operations-readiness-${label}`} className="border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                  <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">{label}</div>
+                                  <div className="font-serif text-sm leading-tight break-words">{value}</div>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="mt-2 space-y-1">
+                              {(backendProductionOperationsReadiness.failedProductionControlGates?.length ? backendProductionOperationsReadiness.failedProductionControlGates : backendProductionOperationsReadiness.failedLocalProofGates || []).slice(0, 4).map(row => (
+                                <div key={`production-operations-readiness-gate-${row.id}`} className="grid grid-cols-[1fr_auto] gap-2 border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                  <div className="min-w-0">
+                                    <div className="font-serif text-sm leading-tight truncate">{row.label || row.id}</div>
+                                    <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] truncate">{row.detail || row.status}</div>
+                                    {row.apiPath && (
+                                      <div className="font-mono text-[7px] uppercase tracking-widest text-[#9b875c] truncate">Route: {row.apiPath}</div>
+                                    )}
+                                  </div>
+                                  <span className={`node-status-tag ${row.passed ? 'bg-[#59684b] text-white' : row.severity === 'warning' ? 'bg-[#c2912f] text-[#251b13]' : 'bg-[#251b13] text-[#efe2bd]'}`}>{row.passed ? projectText('passed') : row.status || 'missing'}</span>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#9b875c]">
+                              {projectText('Production ops route')}: {backendProductionOperationsReadiness.backendRoutes?.productionOperationsReadiness || backendManagerReadyPackage.backendRoutes?.productionOperationsReadiness || `/projects/${activeProject.id}/production-operations-readiness`}
+                            </div>
+                          </div>
+                        )}
+                        {backendProductionOperationsControlReceiptWorkflow && (
+                          <div data-testid="backend-production-operations-control-receipts-snapshot" className="mt-3 border border-[#d8c99f] bg-[#efe2bd]/55 p-2">
+                            <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                              <div className="min-w-0">
+                                <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">{projectText('Production Operations Control Receipts')}</div>
+                                <div className="font-serif text-base leading-tight">{projectText(backendProductionOperationsControlReceiptWorkflow.status || 'receipts-needed')}</div>
+                              </div>
+                              <span className={`node-status-tag ${backendProductionOperationsControlReceiptWorkflow.readyForProductionOperations ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
+                                {backendProductionOperationsControlReceiptWorkflow.readyForProductionOperations ? projectText('ops ready') : projectText('receipts needed')}
+                              </span>
+                            </div>
+                            <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2">
+                              {[
+                                [projectText('Receipts'), backendProductionOperationsControlReceiptWorkflow.summary?.receiptCount ?? 0],
+                                [projectText('Verified Controls'), `${backendProductionOperationsControlReceiptWorkflow.summary?.verifiedControlCount ?? 0}/${backendProductionOperationsControlReceiptWorkflow.summary?.requiredControlCount ?? 0}`],
+                                [projectText('Missing Controls'), backendProductionOperationsControlReceiptWorkflow.summary?.missingControlCount ?? 0],
+                                [projectText('Latest Receipt'), backendProductionOperationsControlReceiptWorkflow.latestReceipt?.id || 'missing'],
+                                [projectText('Private Pilot Ops'), backendProductionOperationsControlReceiptWorkflow.readyForPrivatePilotOperations ? projectText('ready') : projectText('blocked')],
+                                [projectText('Control Proof'), backendProductionOperationsControlReceiptWorkflow.readyForProductionOperationsControls ? projectText('ready') : projectText('blocked')],
+                                [projectText('Production Ops'), backendProductionOperationsControlReceiptWorkflow.readyForProductionOperations ? projectText('ready') : projectText('blocked')],
+                                [projectText('Packet'), backendProductionOperationsControlReceiptWorkflow.checksum || 'missing'],
+                              ].map(([label, value]) => (
+                                <div key={`production-operations-control-receipts-${label}`} className="border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                  <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">{label}</div>
+                                  <div className="font-serif text-sm leading-tight break-words">{value}</div>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="mt-2 space-y-1">
+                              {(backendProductionOperationsControlReceiptWorkflow.controlRows || []).filter(row => !row.verified).slice(0, 4).map(row => (
+                                <div key={`production-operations-control-receipt-row-${row.controlId}`} className="grid grid-cols-[1fr_auto] gap-2 border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                  <div className="min-w-0">
+                                    <div className="font-serif text-sm leading-tight truncate">{row.label || row.controlId}</div>
+                                    <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] truncate">{row.latestReceiptChecksum || row.status || 'missing'}</div>
+                                  </div>
+                                  <span className={`node-status-tag ${row.verified ? 'bg-[#59684b] text-white' : 'bg-[#251b13] text-[#efe2bd]'}`}>{row.verified ? projectText('verified') : projectText('missing')}</span>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#9b875c]">
+                              {projectText('Ops receipts route')}: {backendProductionOperationsControlReceiptWorkflow.backendRoutes?.productionOperationsControlReceipts || backendProductionOperationsReadiness?.backendRoutes?.productionOperationsControlReceipts || `/projects/${activeProject.id}/production-operations-control-receipts`}
+                            </div>
+                          </div>
+                        )}
+                        {backendProductionDeploymentControlReceiptWorkflow && (
+                          <div data-testid="backend-production-deployment-control-receipts-snapshot" className="mt-3 border border-[#d8c99f] bg-[#efe2bd]/55 p-2">
+                            <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                              <div className="min-w-0">
+                                <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">{projectText('Production Deployment Control Receipts')}</div>
+                                <div className="font-serif text-base leading-tight">{projectText(backendProductionDeploymentControlReceiptWorkflow.status || 'receipts-needed')}</div>
+                              </div>
+                              <span className={`node-status-tag ${backendProductionDeploymentControlReceiptWorkflow.readyForProductionDeployment ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
+                                {backendProductionDeploymentControlReceiptWorkflow.readyForProductionDeployment ? projectText('deployment ready') : projectText('receipts needed')}
+                              </span>
+                            </div>
+                            <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2">
+                              {[
+                                [projectText('Receipts'), backendProductionDeploymentControlReceiptWorkflow.summary?.receiptCount ?? 0],
+                                [projectText('Verified Controls'), `${backendProductionDeploymentControlReceiptWorkflow.summary?.verifiedControlCount ?? 0}/${backendProductionDeploymentControlReceiptWorkflow.summary?.requiredControlCount ?? 0}`],
+                                [projectText('Missing Controls'), backendProductionDeploymentControlReceiptWorkflow.summary?.missingControlCount ?? 0],
+                                [projectText('Latest Receipt'), backendProductionDeploymentControlReceiptWorkflow.latestReceipt?.id || 'missing'],
+                                [projectText('Private Pilot Deploy'), backendProductionDeploymentControlReceiptWorkflow.readyForPrivatePilotDeployment ? projectText('ready') : projectText('blocked')],
+                                [projectText('Control Proof'), backendProductionDeploymentControlReceiptWorkflow.readyForProductionDeploymentControls ? projectText('ready') : projectText('blocked')],
+                                [projectText('Production Deploy'), backendProductionDeploymentControlReceiptWorkflow.readyForProductionDeployment ? projectText('ready') : projectText('blocked')],
+                                [projectText('Packet'), backendProductionDeploymentControlReceiptWorkflow.checksum || 'missing'],
+                              ].map(([label, value]) => (
+                                <div key={`production-deployment-control-receipts-${label}`} className="border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                  <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">{label}</div>
+                                  <div className="font-serif text-sm leading-tight break-words">{value}</div>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="mt-2 space-y-1">
+                              {(backendProductionDeploymentControlReceiptWorkflow.controlRows || []).filter(row => !row.verified).slice(0, 4).map(row => (
+                                <div key={`production-deployment-control-receipt-row-${row.controlId}`} className="grid grid-cols-[1fr_auto] gap-2 border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                  <div className="min-w-0">
+                                    <div className="font-serif text-sm leading-tight truncate">{row.label || row.controlId}</div>
+                                    <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] truncate">{row.latestReceiptChecksum || row.status || 'missing'}</div>
+                                  </div>
+                                  <span className={`node-status-tag ${row.verified ? 'bg-[#59684b] text-white' : 'bg-[#251b13] text-[#efe2bd]'}`}>{row.verified ? projectText('verified') : projectText('missing')}</span>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#9b875c]">
+                              {projectText('Deployment receipts route')}: {backendProductionDeploymentControlReceiptWorkflow.backendRoutes?.productionDeploymentControlReceipts || `/projects/${activeProject.id}/production-deployment-control-receipts`}
+                            </div>
+                          </div>
+                        )}
+                        {backendProductionSecurityControlReceiptWorkflow && (
+                          <div data-testid="backend-production-security-control-receipts-snapshot" className="mt-3 border border-[#d8c99f] bg-[#efe2bd]/55 p-2">
+                            <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                              <div className="min-w-0">
+                                <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">{projectText('Production Security Control Receipts')}</div>
+                                <div className="font-serif text-base leading-tight">{projectText(backendProductionSecurityControlReceiptWorkflow.status || 'receipts-needed')}</div>
+                              </div>
+                              <span className={`node-status-tag ${backendProductionSecurityControlReceiptWorkflow.readyForProductionSecurity ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
+                                {backendProductionSecurityControlReceiptWorkflow.readyForProductionSecurity ? projectText('security ready') : projectText('receipts needed')}
+                              </span>
+                            </div>
+                            <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2">
+                              {[
+                                [projectText('Receipts'), backendProductionSecurityControlReceiptWorkflow.summary?.receiptCount ?? 0],
+                                [projectText('Verified Controls'), `${backendProductionSecurityControlReceiptWorkflow.summary?.verifiedControlCount ?? 0}/${backendProductionSecurityControlReceiptWorkflow.summary?.requiredControlCount ?? 0}`],
+                                [projectText('Missing Controls'), backendProductionSecurityControlReceiptWorkflow.summary?.missingControlCount ?? 0],
+                                [projectText('Latest Receipt'), backendProductionSecurityControlReceiptWorkflow.latestReceipt?.id || 'missing'],
+                                [projectText('Local Boundary'), backendProductionSecurityControlReceiptWorkflow.readyForLocalSecurityBoundary ? projectText('ready') : projectText('blocked')],
+                                [projectText('Control Proof'), backendProductionSecurityControlReceiptWorkflow.readyForProductionSecurityControls ? projectText('ready') : projectText('blocked')],
+                                [projectText('Production Security'), backendProductionSecurityControlReceiptWorkflow.readyForProductionSecurity ? projectText('ready') : projectText('blocked')],
+                                [projectText('Packet'), backendProductionSecurityControlReceiptWorkflow.checksum || 'missing'],
+                              ].map(([label, value]) => (
+                                <div key={`production-security-control-receipts-${label}`} className="border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                  <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">{label}</div>
+                                  <div className="font-serif text-sm leading-tight break-words">{value}</div>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="mt-2 space-y-1">
+                              {(backendProductionSecurityControlReceiptWorkflow.controlRows || []).filter(row => !row.verified).slice(0, 4).map(row => (
+                                <div key={`production-security-control-receipt-row-${row.controlId}`} className="grid grid-cols-[1fr_auto] gap-2 border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                  <div className="min-w-0">
+                                    <div className="font-serif text-sm leading-tight truncate">{row.label || row.controlId}</div>
+                                    <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] truncate">{row.latestReceiptChecksum || row.status || 'missing'}</div>
+                                  </div>
+                                  <span className={`node-status-tag ${row.verified ? 'bg-[#59684b] text-white' : 'bg-[#251b13] text-[#efe2bd]'}`}>{row.verified ? projectText('verified') : projectText('missing')}</span>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#9b875c]">
+                              {projectText('Security receipts route')}: {backendProductionSecurityControlReceiptWorkflow.backendRoutes?.productionSecurityControlReceipts || `/projects/${activeProject.id}/production-security-control-receipts`}
+                            </div>
+                          </div>
+                        )}
+                        {backendProductionProviderControlReceiptWorkflow && (
+                          <div data-testid="backend-production-provider-control-receipts-snapshot" className="mt-3 border border-[#d8c99f] bg-[#efe2bd]/55 p-2">
+                            <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                              <div className="min-w-0">
+                                <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">{projectText('Production Provider Control Receipts')}</div>
+                                <div className="font-serif text-base leading-tight">{projectText(backendProductionProviderControlReceiptWorkflow.status || 'receipts-needed')}</div>
+                              </div>
+                              <span className={`node-status-tag ${backendProductionProviderControlReceiptWorkflow.readyForProductionProvider ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
+                                {backendProductionProviderControlReceiptWorkflow.readyForProductionProvider ? projectText('provider ready') : projectText('receipts needed')}
+                              </span>
+                            </div>
+                            <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2">
+                              {[
+                                [projectText('Receipts'), backendProductionProviderControlReceiptWorkflow.summary?.receiptCount ?? 0],
+                                [projectText('Verified Controls'), `${backendProductionProviderControlReceiptWorkflow.summary?.verifiedControlCount ?? 0}/${backendProductionProviderControlReceiptWorkflow.summary?.requiredControlCount ?? 0}`],
+                                [projectText('Missing Controls'), backendProductionProviderControlReceiptWorkflow.summary?.missingControlCount ?? 0],
+                                [projectText('Latest Receipt'), backendProductionProviderControlReceiptWorkflow.latestReceipt?.id || 'missing'],
+                                [projectText('Provider Local'), backendProductionProviderControlReceiptWorkflow.readyForLocalProviderContract ? projectText('ready') : projectText('blocked')],
+                                [projectText('Provider Eval'), backendProviderEvalRunWorkflow?.readyForPrivatePilotProviderEval ? projectText('ready') : projectText('blocked')],
+                                [projectText('Production Provider'), backendProductionProviderControlReceiptWorkflow.readyForProductionProvider ? projectText('ready') : projectText('blocked')],
+                                [projectText('Packet'), backendProductionProviderControlReceiptWorkflow.checksum || 'missing'],
+                              ].map(([label, value]) => (
+                                <div key={`production-provider-control-receipts-${label}`} className="border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                  <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">{label}</div>
+                                  <div className="font-serif text-sm leading-tight break-words">{value}</div>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="mt-2 space-y-1">
+                              {(backendProductionProviderControlReceiptWorkflow.controlRows || []).filter(row => !row.verified).slice(0, 4).map(row => (
+                                <div key={`production-provider-control-receipt-row-${row.controlId}`} className="grid grid-cols-[1fr_auto] gap-2 border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                  <div className="min-w-0">
+                                    <div className="font-serif text-sm leading-tight truncate">{row.label || row.controlId}</div>
+                                    <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] truncate">{row.latestReceiptChecksum || row.sourceStatus || row.status || 'missing'}</div>
+                                  </div>
+                                  <span className={`node-status-tag ${row.verified ? 'bg-[#59684b] text-white' : 'bg-[#251b13] text-[#efe2bd]'}`}>{row.verified ? projectText('verified') : projectText('missing')}</span>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#9b875c]">
+                              {projectText('Provider receipts route')}: {backendProductionProviderControlReceiptWorkflow.backendRoutes?.productionProviderControlReceipts || `/projects/${activeProject.id}/production-provider-control-receipts`}
                             </div>
                           </div>
                         )}
@@ -11065,10 +12023,16 @@ export default function EngineWorkspace() {
                                 ['Gates', `${backendProviderReadiness.summary?.passedGateCount ?? 0}/${backendProviderReadiness.summary?.gateCount ?? 0}`],
                                 ['Provider Searches', backendProviderReadiness.summary?.providerBackedSearchCount ?? 0],
                                 ['Evidence Sources', backendProviderReadiness.summary?.evidenceSourceCount ?? 0],
+                                ['Source Snapshots', backendProviderReadiness.summary?.evidenceSourceSnapshotCount ?? 0],
+                                ['Provider Receipts', backendProviderReadiness.summary?.evidenceProviderReceiptCount ?? 0],
+                                ['Source Audit', backendProviderReadiness.summary?.sourceAuditCoverageReady ? 'ready' : 'blocked'],
                                 ['Production Controls', backendProviderReadiness.summary?.productionControlCount ?? 0],
                                 ['Local Controls', backendProviderReadiness.summary?.localProductionControlCount ?? 0],
                                 ['Usage Rows', backendProviderReadiness.summary?.providerUsageCount ?? 0],
                                 ['Daily Cost', `${backendProviderReadiness.summary?.providerDailyCostCents ?? 0}c`],
+                                ['Model Drafts', backendProviderReadiness.summary?.modelArtifactDraftCount ?? 0],
+                                ['Draft Quality', `${backendProviderReadiness.summary?.modelArtifactDraftQualityReadyCount ?? 0}/${backendProviderReadiness.summary?.modelArtifactDraftCount ?? 0}`],
+                                ['Human Review', backendProviderReadiness.summary?.modelArtifactDraftHumanReviewRequiredCount ?? 0],
                                 ['Failure Control', backendProviderReadiness.summary?.providerFailureControlReady ? 'ready' : 'blocked'],
                                 ['Open Circuits', backendProviderReadiness.summary?.providerOpenCircuitCount ?? 0],
                                 ['Retry Attempts', backendProviderReadiness.summary?.providerRetryAttempts ?? 0],
@@ -11103,6 +12067,151 @@ export default function EngineWorkspace() {
                             </div>
                             <div className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#9b875c]">
                               Provider route: {backendManagerReadyPackage.backendRoutes?.providerReadiness || `/projects/${activeProject.id}/provider-readiness`}
+                            </div>
+                          </div>
+                        )}
+                        {backendProviderControlledRun && (
+                          <div data-testid="backend-provider-controlled-run-snapshot" className="mt-3 border border-[#d8c99f] bg-[#efe2bd]/55 p-2">
+                            <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                              <div className="min-w-0">
+                                <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">Provider Controlled Run</div>
+                                <div className="font-serif text-base leading-tight">{backendProviderControlledRun.status || 'unknown'} / {backendProviderControlledRun.runMode || 'policy dry-run'}</div>
+                              </div>
+                              <span className={`node-status-tag ${backendProviderControlledRun.readyForPrivatePilotRun ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
+                                {backendProviderControlledRun.readyForPrivatePilotRun ? 'Controlled Run Ready' : 'Run Blocked'}
+                              </span>
+                            </div>
+                            <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2">
+                              {[
+                                ['Operations', `${backendProviderControlledRun.summary?.runnableOperationCount ?? 0}/${backendProviderControlledRun.summary?.operationCount ?? 0}`],
+                                ['Blocked Ops', backendProviderControlledRun.summary?.blockedOperationCount ?? 0],
+                                ['Gates', `${backendProviderControlledRun.summary?.passedGateCount ?? 0}/${backendProviderControlledRun.summary?.gateCount ?? 0}`],
+                                ['Estimated Cost', `${backendProviderControlledRun.summary?.estimatedRunCostCents ?? 0}c`],
+                                ['Budget Left', backendProviderControlledRun.budget?.remainingDailyBudgetCents ?? 'unlimited'],
+                                ['Hourly Left', backendProviderControlledRun.budget?.remainingHourlyRequests ?? 'unlimited'],
+                                ['Model Proof', backendProviderControlledRun.summary?.modelProofReady ? 'ready' : 'missing'],
+                                ['Search Proof', backendProviderControlledRun.summary?.searchProofReady ? 'ready' : 'missing'],
+                                ['Human Review', backendProviderControlledRun.summary?.humanReviewReady ? 'ready' : 'blocked'],
+                                ['Evidence Gov', backendProviderControlledRun.summary?.evidenceReady ? 'ready' : 'blocked'],
+                                ['Redaction', backendProviderControlledRun.summary?.redactionReady ? 'ready' : 'blocked'],
+                                ['Packet', backendProviderControlledRun.checksum || 'missing'],
+                              ].map(([label, value]) => (
+                                <div key={`provider-controlled-run-${label}`} className="border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                  <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">{label}</div>
+                                  <div className="font-serif text-sm leading-tight break-words">{value}</div>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="mt-2 space-y-1">
+                              {(backendProviderControlledRun.failedGates?.length ? backendProviderControlledRun.failedGates : backendProviderControlledRun.operationPlan || []).slice(0, 4).map(row => (
+                                <div key={`provider-controlled-run-row-${row.id}`} className="grid grid-cols-[1fr_auto] gap-2 border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                  <div className="min-w-0">
+                                    <div className="font-serif text-sm leading-tight truncate">{row.label || row.operation || row.id}</div>
+                                    <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] truncate">{row.detail || row.purpose || row.policyReason || ''}</div>
+                                    {(row.apiPath || row.route) && (
+                                      <div className="font-mono text-[7px] uppercase tracking-widest text-[#9b875c] truncate">Route: {row.apiPath || row.route}</div>
+                                    )}
+                                  </div>
+                                  <span className="node-status-tag bg-[#251b13] text-[#efe2bd]">{row.status || row.decision || 'watch'}</span>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#9b875c]">
+                              Controlled run route: {backendProviderControlledRun.backendRoutes?.providerControlledRun || backendManagerReadyPackage.backendRoutes?.providerControlledRun || `/projects/${activeProject.id}/provider-controlled-run`}
+                            </div>
+                          </div>
+                        )}
+                        {backendProviderEvalRunWorkflow && (
+                          <div data-testid="backend-provider-eval-run-workflow-snapshot" className="mt-3 border border-[#d8c99f] bg-[#efe2bd]/55 p-2">
+                            <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                              <div className="min-w-0">
+                                <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">Provider Eval Runs</div>
+                                <div className="font-serif text-base leading-tight">{backendProviderEvalRunWorkflow.status || 'unknown'} / {backendProviderEvalRunWorkflow.latestRun?.mode || 'shadow replay'}</div>
+                              </div>
+                              <span className={`node-status-tag ${backendProviderEvalRunWorkflow.readyForPrivatePilotProviderEval ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
+                                {backendProviderEvalRunWorkflow.readyForPrivatePilotProviderEval ? 'Eval Ready' : 'Eval Record Needed'}
+                              </span>
+                            </div>
+                            <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2">
+                              {[
+                                ['Runs', `${backendProviderEvalRunWorkflow.summary?.passedRunCount ?? 0}/${backendProviderEvalRunWorkflow.summary?.runCount ?? 0}`],
+                                ['Critical Replay', `${backendProviderEvalRunWorkflow.summary?.replayedCriticalOperationCount ?? 0}/${backendProviderEvalRunWorkflow.summary?.criticalOperationCount ?? 0}`],
+                                ['Operations', `${backendProviderEvalRunWorkflow.summary?.replayedOperationCount ?? 0}/${backendProviderEvalRunWorkflow.summary?.operationCount ?? 0}`],
+                                ['Gates', `${backendProviderEvalRunWorkflow.summary?.passedGateCount ?? 0}/${backendProviderEvalRunWorkflow.summary?.gateCount ?? 0}`],
+                                ['Proofs', backendProviderEvalRunWorkflow.summary?.proofIdCount ?? 0],
+                                ['Events', backendProviderEvalRunWorkflow.summary?.eventIdCount ?? 0],
+                                ['Latest Run', backendProviderEvalRunWorkflow.summary?.latestRunStatus || 'missing'],
+                                ['Packet', backendProviderEvalRunWorkflow.checksum || 'missing'],
+                              ].map(([label, value]) => (
+                                <div key={`provider-eval-run-${label}`} className="border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                  <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">{label}</div>
+                                  <div className="font-serif text-sm leading-tight break-words">{value}</div>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="mt-2 space-y-1">
+                              {(backendProviderEvalRunWorkflow.failedGates?.length ? backendProviderEvalRunWorkflow.failedGates : backendProviderEvalRunWorkflow.latestRun?.operationRows || backendProviderEvalRunWorkflow.requiredProductionControls || []).slice(0, 4).map(row => (
+                                <div key={`provider-eval-run-row-${row.id}`} className="grid grid-cols-[1fr_auto] gap-2 border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                  <div className="min-w-0">
+                                    <div className="font-serif text-sm leading-tight truncate">{row.label || row.operation || row.id}</div>
+                                    <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] truncate">{row.detail || row.evalStatus || row.detail || ''}</div>
+                                    {(row.apiPath || row.route) && (
+                                      <div className="font-mono text-[7px] uppercase tracking-widest text-[#9b875c] truncate">Route: {row.apiPath || row.route}</div>
+                                    )}
+                                  </div>
+                                  <span className="node-status-tag bg-[#251b13] text-[#efe2bd]">{row.status || row.evalStatus || 'watch'}</span>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#9b875c]">
+                              Provider eval route: {backendProviderEvalRunWorkflow.backendRoutes?.providerEvalRuns || backendManagerReadyPackage.backendRoutes?.providerEvalRuns || `/projects/${activeProject.id}/provider-eval-runs`}
+                            </div>
+                          </div>
+                        )}
+                        {backendEvidenceCustodyReadiness && (
+                          <div data-testid="backend-evidence-custody-readiness-snapshot" className="mt-3 border border-[#d8c99f] bg-[#efe2bd]/55 p-2">
+                            <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                              <div className="min-w-0">
+                                <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">Evidence Custody Readiness</div>
+                                <div className="font-serif text-base leading-tight">{backendEvidenceCustodyReadiness.status || 'unknown'} / {backendEvidenceCustodyReadiness.readyForProduction ? 'production-ready' : 'managed-storage-blocked'}</div>
+                              </div>
+                              <span className={`node-status-tag ${backendEvidenceCustodyReadiness.readyForPrivatePilot ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
+                                {backendEvidenceCustodyReadiness.readyForPrivatePilot ? 'Local Custody Ready' : 'Needs Custody Work'}
+                              </span>
+                            </div>
+                            <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2">
+                              {[
+                                ['Gates', `${backendEvidenceCustodyReadiness.summary?.passedGateCount ?? 0}/${backendEvidenceCustodyReadiness.summary?.gateCount ?? 0}`],
+                                ['Custody Records', backendEvidenceCustodyReadiness.summary?.custodyRecordCount ?? 0],
+                                ['Source Snapshots', backendEvidenceCustodyReadiness.summary?.sourceSnapshotCount ?? 0],
+                                ['Provider Receipts', backendEvidenceCustodyReadiness.summary?.providerReceiptCount ?? 0],
+                                ['Source Decisions', backendEvidenceCustodyReadiness.summary?.sourceReviewDecisionCount ?? 0],
+                                ['Persistence Rows', `${backendEvidenceCustodyReadiness.summary?.sourceSnapshotPersistenceCount ?? 0}/${backendEvidenceCustodyReadiness.summary?.providerReceiptPersistenceCount ?? 0}`],
+                                ['Managed Storage', backendEvidenceCustodyReadiness.managedStorage?.configured ? 'configured' : 'missing'],
+                                ['Production Controls', backendEvidenceCustodyReadiness.summary?.productionControlCount ?? 0],
+                              ].map(([label, value]) => (
+                                <div key={`evidence-custody-${label}`} className="border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                  <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">{label}</div>
+                                  <div className="font-serif text-sm leading-tight break-words">{value}</div>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="mt-2 space-y-1">
+                              {(backendEvidenceCustodyReadiness.failedGates?.length ? backendEvidenceCustodyReadiness.failedGates : backendEvidenceCustodyReadiness.requiredProductionControls || []).slice(0, 3).map(row => (
+                                <div key={`evidence-custody-gap-${row.id}`} className="grid grid-cols-[1fr_auto] gap-2 border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                  <div className="min-w-0">
+                                    <div className="font-serif text-sm leading-tight truncate">{row.label}</div>
+                                    <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] truncate">{row.detail}</div>
+                                    {row.apiPath && (
+                                      <div className="font-mono text-[7px] uppercase tracking-widest text-[#9b875c] truncate">Route: {row.apiPath}</div>
+                                    )}
+                                  </div>
+                                  <span className="node-status-tag bg-[#251b13] text-[#efe2bd]">{row.status}</span>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#9b875c]">
+                              Custody route: {backendManagerReadyPackage.backendRoutes?.evidenceCustodyReadiness || `/projects/${activeProject.id}/evidence-custody-readiness`}
                             </div>
                           </div>
                         )}
@@ -11179,6 +12288,7 @@ export default function EngineWorkspace() {
                             ['Change Intake', backendManagerDashboard.changeSourceIntake?.sourceReadyCount ?? 0],
                             ['Change Owner Pulses', backendManagerDashboard.changeFlow?.rows?.filter(row => row.ownerWorkStarted).length ?? 0],
                             ['Submissions', backendManagerDashboard.submissions?.count ?? 0],
+                            ['Generated Drafts', backendManagerDashboard.submissions?.generatedDraftCount ?? 0],
                             ['Final Deliverables', backendManagerDashboard.submissions?.finalDeliverableCount ?? 0],
                             ['Pending Review', backendManagerDashboard.submissions?.pendingReviewCount ?? 0],
                             ['Evidence Searches', backendManagerDashboard.evidenceSearches?.count ?? 0],
@@ -11199,6 +12309,9 @@ export default function EngineWorkspace() {
                         <div data-testid="backend-manager-submissions-route" className="mt-1 font-mono text-[8px] uppercase tracking-widest text-[#9b875c]">
                           Submissions route: {backendManagerDashboard.backendRoutes?.submissions || `/projects/${activeProject.id}/submissions`} / {backendManagerDashboard.submissions?.count ?? 0} submitted
                         </div>
+                        <div data-testid="backend-manager-artifact-drafts-route" className="mt-1 font-mono text-[8px] uppercase tracking-widest text-[#9b875c]">
+                          Draft route: {`/projects/${activeProject.id}/agents/:agentId/artifact-drafts`} / {backendManagerDashboard.submissions?.generatedDraftCount ?? 0} generated
+                        </div>
                         <div data-testid="backend-manager-evidence-searches-route" className="mt-1 font-mono text-[8px] uppercase tracking-widest text-[#9b875c]">
                           Evidence route: {backendManagerDashboard.backendRoutes?.evidenceSearches || `/projects/${activeProject.id}/evidence-searches`} / {backendManagerDashboard.evidenceSearches?.count ?? 0} searches
                           {' '} / Audit route: {backendManagerDashboard.backendRoutes?.evidenceQualityAudit || `/projects/${activeProject.id}/evidence-quality-audit`}
@@ -11215,6 +12328,11 @@ export default function EngineWorkspace() {
                                   <div className="min-w-0">
                                     <div className="font-serif text-sm leading-tight truncate">{row.title}</div>
                                     <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] truncate">{row.agentName} / {row.artifactType} / {row.reviewStatus}</div>
+                                    {(row.isGeneratedDraft || row.artifactDraft) && (
+                                      <div data-testid="backend-manager-artifact-drafts-snapshot" className="font-mono text-[7px] uppercase tracking-widest text-[#8f1e18] truncate">
+                                        Draft {row.artifactDraftModelUsed ? 'model' : 'local'} / {row.artifactDraftSource || row.artifactDraft?.source || 'artifact-draft'} / {row.artifactDraftId || row.artifactDraft?.draftId || 'draft'}
+                                      </div>
+                                    )}
                                   </div>
                                   <span className="node-status-tag bg-[#251b13] text-[#efe2bd]">{row.status}</span>
                                 </div>
@@ -13250,6 +14368,11 @@ export default function EngineWorkspace() {
                                                 <div className="min-w-0">
                                                   <div className="font-serif text-sm leading-tight truncate">{submission.title}</div>
                                                   <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] truncate">{submission.artifactType} / {submission.status} / {submission.reviewStatus}</div>
+                                                  {(submission.isGeneratedDraft || submission.artifactDraft) && (
+                                                    <div data-testid={`agent-focus-artifact-draft-${agent.id}`} className="font-mono text-[7px] uppercase tracking-widest text-[#8f1e18] truncate">
+                                                      Draft {submission.artifactDraftModelUsed ? 'model' : 'local'} / {submission.artifactDraftSource || submission.artifactDraft?.source || 'artifact-draft'}
+                                                    </div>
+                                                  )}
                                                 </div>
                                                 <span className="node-status-tag bg-[#251b13] text-[#efe2bd]">{submission.artifactType}</span>
                                               </div>

@@ -597,11 +597,11 @@ export function classifyAccessRequest({ method = 'GET', path = '/', body = {} } 
         allowedRoles: ['manager', 'security-admin'],
       });
     }
-    if (resolvedMethod === 'POST' && ['message', 'submissions', 'evidence-searches', 'work-cycle'].includes(section)) {
+    if (resolvedMethod === 'POST' && ['message', 'submissions', 'artifact-drafts', 'evidence-searches', 'work-cycle'].includes(section)) {
       return accessRoute({
         routeKey: `agent-${section}`,
         capability: `write Agent ${section}`,
-        sensitivity: section === 'submissions' ? 'artifact-content' : section === 'evidence-searches' ? 'search-and-evidence' : 'agent-work',
+        sensitivity: ['submissions', 'artifact-drafts'].includes(section) ? 'artifact-content' : section === 'evidence-searches' ? 'search-and-evidence' : 'agent-work',
         projectId,
         agentId,
         allowedRoles: ['agent', 'reviewer-agent', 'security-admin'],
@@ -762,6 +762,85 @@ export function classifyAccessRequest({ method = 'GET', path = '/', body = {} } 
         : ['manager', 'security-admin', 'operations-owner'],
     });
   }
+  if (action === 'private-pilot-release-candidates') {
+    return accessRoute({
+      routeKey: 'private-pilot-release-candidates',
+      capability: resolvedMethod === 'GET'
+        ? 'read private-pilot release candidate workflow'
+        : 'write private-pilot release candidate receipt',
+      sensitivity: 'release-candidate-checksums-approvals-and-handoff-proof',
+      projectId,
+      allowedRoles: resolvedMethod === 'GET'
+        ? ['manager', 'runtime-platform', 'security-admin', 'observer']
+        : ['manager', 'security-admin', 'operations-owner'],
+    });
+  }
+  if (action === 'private-pilot-launch-runs') {
+    return accessRoute({
+      routeKey: 'private-pilot-launch-runs',
+      capability: resolvedMethod === 'GET'
+        ? 'read private-pilot launch run workflow'
+        : 'write private-pilot launch run receipt',
+      sensitivity: 'private-pilot-launch-run-activation-proof',
+      projectId,
+      allowedRoles: resolvedMethod === 'GET'
+        ? ['manager', 'runtime-platform', 'security-admin', 'observer']
+        : ['manager', 'security-admin', 'operations-owner'],
+    });
+  }
+  if (action === 'private-pilot-launch-health-checks') {
+    return accessRoute({
+      routeKey: 'private-pilot-launch-health-checks',
+      capability: resolvedMethod === 'GET'
+        ? 'read private-pilot launch health check workflow'
+        : 'write private-pilot launch health check receipt',
+      sensitivity: 'private-pilot-post-launch-health-proof',
+      projectId,
+      allowedRoles: resolvedMethod === 'GET'
+        ? ['manager', 'runtime-platform', 'security-admin', 'observer']
+        : ['manager', 'security-admin', 'operations-owner'],
+    });
+  }
+  if (action === 'private-pilot-acceptance-reports') {
+    return accessRoute({
+      routeKey: 'private-pilot-acceptance-reports',
+      capability: resolvedMethod === 'GET'
+        ? 'read private-pilot acceptance report workflow'
+        : 'write private-pilot acceptance report receipt',
+      sensitivity: 'private-pilot-customer-acceptance-proof',
+      projectId,
+      allowedRoles: resolvedMethod === 'GET'
+        ? ['manager', 'runtime-platform', 'security-admin', 'observer']
+        : ['manager', 'security-admin', 'operations-owner'],
+    });
+  }
+  if (action === 'private-pilot-go-live-readiness') {
+    return accessRoute({
+      routeKey: 'private-pilot-go-live-readiness',
+      capability: 'read private-pilot go-live readiness command view',
+      sensitivity: 'private-pilot-release-launch-health-acceptance-and-operations-proof',
+      projectId,
+      allowedRoles: ['manager', 'runtime-platform', 'security-admin', 'observer'],
+    });
+  }
+  if (action === 'production-launch-gap-register') {
+    return accessRoute({
+      routeKey: 'production-launch-gap-register',
+      capability: 'read production launch gap register and next-action map',
+      sensitivity: 'production-launch-blocker-and-control-metadata',
+      projectId,
+      allowedRoles: ['manager', 'runtime-platform', 'security-admin', 'observer'],
+    });
+  }
+  if (action === 'production-launch-control-center') {
+    return accessRoute({
+      routeKey: 'production-launch-control-center',
+      capability: 'read production launch control center and release gate map',
+      sensitivity: 'production-launch-control-and-approval-metadata',
+      projectId,
+      allowedRoles: ['manager', 'runtime-platform', 'security-admin', 'observer'],
+    });
+  }
   if (action === 'operations-readiness') {
     return accessRoute({
       routeKey: 'operations-readiness',
@@ -769,6 +848,54 @@ export function classifyAccessRequest({ method = 'GET', path = '/', body = {} } 
       sensitivity: 'runtime-health-security-and-recovery-metadata',
       projectId,
       allowedRoles: ['manager', 'runtime-platform', 'security-admin'],
+    });
+  }
+  if (action === 'production-operations-readiness') {
+    return accessRoute({
+      routeKey: 'production-operations-readiness',
+      capability: 'read production operations, observability, on-call, incident, and restore readiness',
+      sensitivity: 'production-operations-control-metadata',
+      projectId,
+      allowedRoles: ['manager', 'runtime-platform', 'security-admin', 'operations-owner'],
+    });
+  }
+  if (action === 'production-operations-control-receipts') {
+    return accessRoute({
+      routeKey: 'production-operations-control-receipts',
+      capability: resolvedMethod === 'GET'
+        ? 'read production operations control receipt workflow'
+        : 'write production operations control receipt',
+      sensitivity: 'production-operations-control-evidence',
+      projectId,
+      allowedRoles: resolvedMethod === 'GET'
+        ? ['manager', 'runtime-platform', 'security-admin', 'operations-owner']
+        : ['security-admin', 'operations-owner'],
+    });
+  }
+  if (action === 'production-deployment-control-receipts') {
+    return accessRoute({
+      routeKey: 'production-deployment-control-receipts',
+      capability: resolvedMethod === 'GET'
+        ? 'read production deployment control receipt workflow'
+        : 'write production deployment control receipt',
+      sensitivity: 'production-deployment-promotion-rollback-and-infrastructure-evidence',
+      projectId,
+      allowedRoles: resolvedMethod === 'GET'
+        ? ['manager', 'runtime-platform', 'security-admin', 'operations-owner', 'observer']
+        : ['runtime-platform', 'security-admin', 'operations-owner'],
+    });
+  }
+  if (action === 'production-security-control-receipts') {
+    return accessRoute({
+      routeKey: 'production-security-control-receipts',
+      capability: resolvedMethod === 'GET'
+        ? 'read production security control receipt workflow'
+        : 'write production security control receipt',
+      sensitivity: 'production-identity-kms-and-security-audit-evidence',
+      projectId,
+      allowedRoles: resolvedMethod === 'GET'
+        ? ['manager', 'runtime-platform', 'security-admin', 'observer']
+        : ['security-admin'],
     });
   }
   if (action === 'provider-readiness') {
@@ -780,6 +907,39 @@ export function classifyAccessRequest({ method = 'GET', path = '/', body = {} } 
       allowedRoles: ['manager', 'runtime-platform', 'security-admin'],
     });
   }
+  if (action === 'provider-controlled-run') {
+    return accessRoute({
+      routeKey: 'provider-controlled-run',
+      capability: 'read controlled provider run policy and budget plan',
+      sensitivity: 'provider-policy-budget-and-usage-run-plan',
+      projectId,
+      allowedRoles: ['manager', 'runtime-platform', 'security-admin'],
+    });
+  }
+  if (action === 'provider-eval-runs') {
+    return accessRoute({
+      routeKey: 'provider-eval-runs',
+      capability: resolvedMethod === 'GET'
+        ? 'read provider eval shadow replay workflow'
+        : 'write provider eval shadow replay receipt',
+      sensitivity: 'provider-eval-usage-proof-and-release-readiness',
+      projectId,
+      allowedRoles: ['manager', 'runtime-platform', 'security-admin'],
+    });
+  }
+  if (action === 'production-provider-control-receipts') {
+    return accessRoute({
+      routeKey: 'production-provider-control-receipts',
+      capability: resolvedMethod === 'GET'
+        ? 'read production provider control receipt workflow'
+        : 'write production provider control receipt',
+      sensitivity: 'production-provider-rollout-evidence',
+      projectId,
+      allowedRoles: resolvedMethod === 'GET'
+        ? ['manager', 'runtime-platform', 'security-admin', 'observer']
+        : ['runtime-platform', 'security-admin'],
+    });
+  }
   if (action === 'evidence-quality-audit') {
     return accessRoute({
       routeKey: 'evidence-quality-audit',
@@ -789,13 +949,36 @@ export function classifyAccessRequest({ method = 'GET', path = '/', body = {} } 
       allowedRoles: ['manager', 'security-admin', 'observer'],
     });
   }
+  if (action === 'artifact-quality-audit') {
+    return accessRoute({
+      routeKey: 'artifact-quality-audit',
+      capability: 'read artifact quality and submission readiness audit',
+      sensitivity: 'artifact-quality-and-output-review-audit',
+      projectId,
+      allowedRoles: ['manager', 'security-admin', 'observer'],
+    });
+  }
+  if (action === 'evidence-custody-readiness') {
+    return accessRoute({
+      routeKey: 'evidence-custody-readiness',
+      capability: 'read evidence custody and storage readiness',
+      sensitivity: 'evidence-custody-and-storage-policy',
+      projectId,
+      allowedRoles: ['manager', 'security-admin', 'observer'],
+    });
+  }
   if (action === 'evidence-source-review-workflow') {
     return accessRoute({
       routeKey: 'evidence-source-review-workflow',
-      capability: 'read evidence source review workflow',
+      capability: resolvedMethod === 'GET'
+        ? 'read evidence source review workflow'
+        : 'write evidence source review decision',
       sensitivity: 'evidence-source-review-policy-and-proof-routes',
       projectId,
-      allowedRoles: ['manager', 'security-admin', 'observer'],
+      allowedRoles: resolvedMethod === 'GET'
+        ? ['manager', 'security-admin', 'observer']
+        : ['manager', 'reviewer-agent', 'security-admin'],
+      reviewerMatch: resolvedMethod !== 'GET',
     });
   }
   if (action === 'launch-approvals') {
@@ -835,11 +1018,17 @@ export function classifyAccessRequest({ method = 'GET', path = '/', body = {} } 
       allowedRoles: ['manager', 'security-admin'],
     });
   }
-  if (['submissions', 'evidence-searches', 'submission-reviews'].includes(action)) {
+  if (['submissions', 'evidence-searches', 'submission-reviews', 'submission-review-workflow'].includes(action)) {
     return accessRoute({
       routeKey: action,
       capability: `read ${action}`,
-      sensitivity: action === 'submissions' ? 'artifact-content' : action === 'evidence-searches' ? 'search-and-evidence' : 'review-comments',
+      sensitivity: action === 'submissions'
+        ? 'artifact-content'
+        : action === 'evidence-searches'
+          ? 'search-and-evidence'
+          : action === 'submission-review-workflow'
+            ? 'review-comments-and-artifact-lineage'
+            : 'review-comments',
       projectId,
       allowedRoles: ['manager', 'security-admin', 'observer'],
     });
@@ -1151,18 +1340,32 @@ export function buildAccessControlPolicySnapshot() {
       { id: 'security-audit-read', roles: ['manager', 'security-admin'], examples: ['/projects/:id/security-access-audit'] },
       { id: 'security-audit-stream-read', roles: ['manager', 'security-admin'], examples: ['/projects/:id/security-audit-stream'] },
       { id: 'identity-session-control', roles: ['manager', 'security-admin'], examples: ['/projects/:id/identity-sessions'] },
+      { id: 'production-security-control-receipts', roles: ['security-admin'], examples: ['/projects/:id/production-security-control-receipts'] },
+      { id: 'production-deployment-control-receipts', roles: ['runtime-platform', 'security-admin', 'operations-owner'], examples: ['/projects/:id/production-deployment-control-receipts'] },
+      { id: 'production-provider-control-receipts', roles: ['runtime-platform', 'security-admin'], examples: ['/projects/:id/production-provider-control-receipts'] },
       { id: 'pilot-launch-readiness-read', roles: ['manager', 'security-admin', 'observer'], examples: ['/projects/:id/pilot-launch-readiness'] },
       { id: 'deployment-preflight-read', roles: ['manager', 'security-admin', 'observer'], examples: ['/projects/:id/deployment-preflight'] },
       { id: 'adapter-gateway-preflight-read', roles: ['manager', 'runtime-platform', 'security-admin'], examples: ['/projects/:id/adapter-gateway-preflight'] },
       { id: 'production-launch-audit-read', roles: ['manager', 'security-admin', 'observer'], examples: ['/projects/:id/production-launch-audit'] },
       { id: 'project-evidence-archive-export', roles: ['manager', 'security-admin', 'observer'], examples: ['/projects/:id/project-evidence-archive'] },
       { id: 'project-evidence-export-approval', roles: ['manager', 'security-admin', 'operations-owner'], examples: ['/projects/:id/project-evidence-exports'] },
+      { id: 'private-pilot-release-candidate', roles: ['manager', 'security-admin', 'operations-owner'], examples: ['/projects/:id/private-pilot-release-candidates'] },
+      { id: 'private-pilot-launch-run', roles: ['manager', 'security-admin', 'operations-owner'], examples: ['/projects/:id/private-pilot-launch-runs'] },
+      { id: 'private-pilot-launch-health-check', roles: ['manager', 'security-admin', 'operations-owner'], examples: ['/projects/:id/private-pilot-launch-health-checks'] },
+      { id: 'private-pilot-go-live-readiness-read', roles: ['manager', 'runtime-platform', 'security-admin', 'observer'], examples: ['/projects/:id/private-pilot-go-live-readiness'] },
+      { id: 'production-launch-gap-register-read', roles: ['manager', 'runtime-platform', 'security-admin', 'observer'], examples: ['/projects/:id/production-launch-gap-register'] },
+      { id: 'production-launch-control-center-read', roles: ['manager', 'runtime-platform', 'security-admin', 'observer'], examples: ['/projects/:id/production-launch-control-center'] },
       { id: 'evidence-quality-audit-read', roles: ['manager', 'security-admin', 'observer'], examples: ['/projects/:id/evidence-quality-audit'] },
+      { id: 'artifact-quality-audit-read', roles: ['manager', 'security-admin', 'observer'], examples: ['/projects/:id/artifact-quality-audit'] },
+      { id: 'submission-review-workflow-read', roles: ['manager', 'security-admin', 'observer'], examples: ['/projects/:id/submission-review-workflow'] },
       { id: 'evidence-source-review-workflow-read', roles: ['manager', 'security-admin', 'observer'], examples: ['/projects/:id/evidence-source-review-workflow'] },
+      { id: 'evidence-source-review-decision-write', roles: ['manager', 'reviewer-agent', 'security-admin'], examples: ['/projects/:id/evidence-source-review-workflow'] },
       { id: 'launch-approval-workflow', roles: ['manager', 'security-admin'], examples: ['/projects/:id/launch-approvals'] },
       { id: 'operations-readiness-read', roles: ['manager', 'runtime-platform', 'security-admin'], examples: ['/projects/:id/operations-readiness'] },
       { id: 'queue-adapter-read', roles: ['manager', 'runtime-platform', 'security-admin'], examples: ['/projects/:id/worker-queue-adapter-plan', '/projects/:id/worker-queue-adapter-dry-run'] },
       { id: 'provider-readiness-read', roles: ['manager', 'runtime-platform', 'security-admin'], examples: ['/projects/:id/provider-readiness'] },
+      { id: 'provider-controlled-run-read', roles: ['manager', 'runtime-platform', 'security-admin'], examples: ['/projects/:id/provider-controlled-run'] },
+      { id: 'provider-eval-run-workflow', roles: ['manager', 'runtime-platform', 'security-admin'], examples: ['/projects/:id/provider-eval-runs'] },
       { id: 'persistence-export', roles: ['security-admin'], examples: ['/projects/:id/persistence-snapshot', '/projects/:id/persistence-migration-plan', '/projects/:id/persistence-migration-dry-run', '/projects/:id/persistence-adapter-plan', '/projects/:id/persistence-adapter-dry-run'] },
     ],
     limitations: [
