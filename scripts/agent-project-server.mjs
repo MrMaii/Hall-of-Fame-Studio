@@ -1,6 +1,8 @@
 import { createAgentProjectHttpServer } from '../src/agents/agentProjectHttpServer.js';
 import { createLocalProjectRuntime } from '../src/agents/localProjectRuntime.js';
 import { createModelProviderFromEnv } from '../src/agents/modelProvider.js';
+import { createSearchProviderFromEnv } from '../src/agents/searchProvider.js';
+import { createSecretVaultFromEnv } from '../src/agents/secretVault.js';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -36,13 +38,21 @@ const workspaceRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 ].forEach(loadEnvFile);
 
 const filePath = process.env.AGENT_PROJECT_STORE || new URL('../.tmp/agent-project-store.json', import.meta.url);
+const securityAuditLogPath = process.env.AGENT_SECURITY_AUDIT_LOG || undefined;
 const defaultRuntimeRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../.tmp/agent-projects');
 const runtimeRoot = resolve(process.env.AGENT_PROJECT_RUNTIME_ROOT || defaultRuntimeRoot);
 const port = Number(process.env.AGENT_PROJECT_PORT || 8787);
 const host = process.env.AGENT_PROJECT_HOST || '127.0.0.1';
 const autonomousSchedulerEnabled = /^(1|true|yes)$/i.test(process.env.AGENT_AUTONOMOUS_SCHEDULER || '');
 const autonomousSchedulerIntervalMs = Number(process.env.AGENT_AUTONOMOUS_INTERVAL_MS || 60_000);
-const llmProvider = createModelProviderFromEnv(process.env);
+const accessControlMode = process.env.AGENT_ACCESS_CONTROL_MODE || 'prototype-open';
+const accessSigningSecret = process.env.AGENT_ACCESS_SIGNING_SECRET || '';
+const accessReplayProtection = /^(1|true|yes)$/i.test(process.env.AGENT_ACCESS_REPLAY_PROTECTION || '');
+const accessAuditFailClosed = /^(1|true|yes)$/i.test(process.env.AGENT_ACCESS_AUDIT_FAIL_CLOSED || '');
+const secretVault = createSecretVaultFromEnv(process.env);
+const secretVaultStatus = secretVault.status();
+const llmProvider = createModelProviderFromEnv(process.env, { secretVaultStatus });
+const searchProvider = createSearchProviderFromEnv(process.env, { secretVaultStatus });
 const projectRuntime = createLocalProjectRuntime({
   rootPath: runtimeRoot,
   enableCommandExecution: /^(1|true|yes)$/i.test(process.env.AGENT_WORKSPACE_EXEC || ''),
@@ -54,6 +64,7 @@ const projectRuntime = createLocalProjectRuntime({
 
 const httpServer = createAgentProjectHttpServer({
   filePath,
+  securityAuditLogPath,
   projectRuntime,
   autonomousScheduler: {
     enabled: autonomousSchedulerEnabled,
@@ -61,14 +72,29 @@ const httpServer = createAgentProjectHttpServer({
     runImmediately: autonomousSchedulerEnabled,
   },
   llmProvider,
+  searchProvider,
+  secretVault,
+  accessControl: {
+    defaultMode: accessControlMode,
+    signingSecret: accessSigningSecret,
+    requireSignedRequestIds: accessReplayProtection,
+    failClosedOnAuditError: accessAuditFailClosed,
+  },
 });
 const runtime = await httpServer.listen({ port, host });
 
 console.log(`Agent project backend listening on ${runtime.url}`);
 console.log(`Store: ${httpServer.api.store.filePath}`);
+console.log(`Security audit log: ${httpServer.api.store.securityAuditLogPath || 'disabled'}`);
 console.log(`Project runtime: ${runtimeRoot}`);
 console.log(`Autonomous scheduler: ${autonomousSchedulerEnabled ? `enabled every ${autonomousSchedulerIntervalMs}ms` : 'disabled'}`);
+console.log(`Access control: ${accessControlMode}`);
+console.log(`Access signing: ${accessSigningSecret ? 'enabled' : 'disabled'}`);
+console.log(`Access replay protection: ${accessReplayProtection ? 'enabled' : 'disabled'}`);
+console.log(`Access audit fail-closed: ${accessAuditFailClosed ? 'enabled' : 'disabled'}`);
+console.log(`Secret vault: ${secretVaultStatus.ready ? `ready (${secretVaultStatus.provider}/${secretVaultStatus.encryptedRecordCount} record(s))` : 'disabled or not configured'}`);
 console.log(`Model provider: ${llmProvider.enabled ? `enabled (${llmProvider.provider}/${llmProvider.model})` : `disabled (${llmProvider.status().configured ? 'configured but not enabled or blocked' : 'missing key or disabled'})`}`);
+console.log(`Search provider: ${searchProvider.enabled ? `enabled (${searchProvider.provider})` : `disabled (${searchProvider.status().configured ? 'configured but not enabled' : 'missing endpoint/key or disabled'})`}`);
 
 const shutdown = async () => {
   await httpServer.close();

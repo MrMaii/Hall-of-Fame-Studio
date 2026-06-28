@@ -12,7 +12,7 @@
 |------|------|
 | 现在能用吗？ | **不能。** UI 与演示流程可本地运行，但不构成可靠产品。 |
 | 能部署给团队用吗？ | **不能。** 无生产级安全、无稳定运行时、无 SLA。 |
-| 能接 API Key 跑真实任务吗？ | **不建议。** BYOK 与安全隔离仍在规划中。 |
+| 能接 API Key 跑真实任务吗？ | **仍不建议。** 已有模型/搜索 provider 状态、provider readiness 闸门、provider policy/usage ledger、本地 secret-vault 契约与基础 redaction 原型，但正式身份权限、托管 KMS/密钥轮换和托管审计仍未达到生产要求。 |
 | 现在适合做什么？ | 阅读架构、参与 Skill 设计、讨论协作协议、提交 Issue/PR。 |
 | 我们卡在哪？ | **阶段 1 → 阶段 2 之间**（见下文）。 |
 
@@ -33,7 +33,7 @@ M0 原型壳层          ██████████████████�
 M1 人物 Skill 设计   ████████░░░░░░░░░░░░  ← 当前主战场
 M2 Agent 协作机制    ██████░░░░░░░░░░░░░░  进行中（骨架已有）
 M3 运行算法 Runtime  ████░░░░░░░░░░░░░░░░  原型级（非生产）
-M4 安全与 BYOK       ░░░░░░░░░░░░░░░░░░░░  未开始
+M4 安全与 BYOK       ██░░░░░░░░░░░░░░░░░░  原型启动
 M5 公开发布          ░░░░░░░░░░░░░░░░░░░░  未开始
 ```
 
@@ -120,13 +120,41 @@ M5 公开发布          ░░░░░░░░░░░░░░░░░░�
 
 **已有原型：**
 - `planAutonomousWorkCycle` + `advanceAutonomousProjectCycle`
+- Manager Flow Graph emits proofed role-clarification nodes and first-class `self-marketing` nodes for role self-nominations and Leader campaign pitches.
+- Readiness Proof Map exposes `roleNegotiationRoutes` and `selfMarketingRoutes`, covered by `npm run agents:product-team`.
+- Artifact revision lineage links requested-changes reviews to revision-note/final-deliverable submissions, superseded drafts, resolved obligations, Flow Graph `revision` edges, and Readiness Proof Map `revisionRoutes`.
+- Evidence searches now compute source `qualityScore`/`qualitySignals` plus aggregate `evidenceJudgement`, visible in Manager Dashboard, Flow Graph, Task Evidence, and Readiness Proof Map.
+- Real Node HTTP scheduler status/tick coverage is now part of `npm run agents:product-team`, proving the same generic product-team acceptance sample can be advanced by backend project and Agent workers without a browser tab.
+- MVP readiness is exposed by `GET /projects/:id/mvp-readiness` and Manager Ready Package, separating local-pilot readiness from production blockers.
+- Private pilot launch readiness is exposed by `GET /projects/:id/pilot-launch-readiness` and Manager Ready Package. It returns `pilot-launch-readiness/v1` with a private-pilot go/no-go decision, production no-go decision, launch packet checksum, evidence routes, failed gates, and production blockers aggregated from MVP readiness, proof routes, security boundary, provider readiness, managed persistence, queue adapter, operations readiness, and incident drill receipts.
+- Deployment preflight is exposed by `GET /projects/:id/deployment-preflight` and Manager Ready Package. It returns `deployment-preflight/v1` with private-pilot deployment blocker gates, warnings, production controls, backend store/scheduler status, access-control hardening flags, secret-vault readiness, provider policy status, adapter status, adapter gateway preflight, operations readiness, and a checksum while keeping `productionDeploymentReady: false`.
+- Production launch audit is exposed by `GET /projects/:id/production-launch-audit` and Manager Ready Package. It returns `production-launch-audit/v1` with unified private-pilot and production decisions, private-pilot gates, production gates, audit-integrity gates, evidence routes, production blockers, next-shortest-path guidance, and a checksum. The product-team Harness now requires private-pilot `go` for the completed acceptance project while keeping production `no-go`.
+- Launch approval workflow is exposed by `GET|POST /projects/:id/launch-approvals` and Manager Ready Package. It returns `launch-approval-workflow/v1`, persists `launch-approval/v1` records for private-pilot and production release modes, requires Manager + security-admin approval for private pilot, requires operations-owner for production, and mirrors approval proof into Manager Flow Graph, Readiness Proof Map, event ledger, timeline, production launch audit, and the `launch_approvals` persistence/migration seed path.
+- Project evidence archive is exposed by `GET /projects/:id/project-evidence-archive` and summarized in Manager Ready Package. The standalone route returns full `project-evidence-archive/v1` redacted contents with manifest checksums, integrity gates, final-deliverable/transcript/evidence/review/Flow-Graph proof, readiness summaries, persistence summary, worker recovery summary, and raw-secret scan status; Manager Ready Package keeps a manifest-only snapshot with the same route, status, gates, counts, and checksums for dashboard responsiveness. This closes the private-pilot/customer handoff proof surface; production-grade export/download approval, encrypted storage, retention, audit, and data residency remain M4/M5 work.
+- Production persistence snapshot is exposed by `GET /projects/:id/persistence-snapshot`, giving the future managed database migration a normalized table/checksum/integrity contract while the app still uses the local JSON file store.
+- Managed persistence migration plan is exposed by `GET /projects/:id/persistence-migration-plan`, deriving Postgres-compatible table plans, seed batches, RLS guidance, critical-table coverage, verification gates, and cutover steps from the current persistence snapshot.
+- Managed persistence dry-run verification is exposed by `GET /projects/:id/persistence-migration-dry-run`, simulating the adapter import contract against the snapshot to check seed coverage, row counts, checksums, primary-key uniqueness, RLS guidance, and migration-plan gates before a real managed database adapter is wired in.
+- Managed persistence adapter plan and dry-run are exposed by `GET /projects/:id/persistence-adapter-plan` and `GET /projects/:id/persistence-adapter-dry-run`, turning the database cutover blocker into a concrete adapter contract with critical table coverage for membership/replay/audit/provider/worker/read-model records plus a configurable adapter status facade. The default `local-shadow` driver produces local execution receipts for shadow-read parity, transaction rollback, backup/restore, RLS coverage, audit-stream continuity, and read-model checkpoint gates. `http-json` now has an async gateway dry-run path through the project API when `MANAGED_PERSISTENCE_HTTP_ENDPOINT` or `ADAPTER_GATEWAY_HTTP_ENDPOINT` is configured; `postgres` remains a future real-driver target.
+- Worker queue snapshot is exposed by `GET|POST /workers/queue-snapshot` and `GET|POST /projects/:id/worker-queue`, giving future queue/cron infrastructure a due-row, priority, idempotency, lease, retry/dead-letter, execution receipt, and recovery-route contract while the app still uses the local Node scheduler.
+- Worker queue adapter plan and dry-run are exposed by `GET /projects/:id/worker-queue-adapter-plan` and `GET /projects/:id/worker-queue-adapter-dry-run`, turning the queue/cron blocker into a configurable adapter contract. The default `local-shadow` driver produces local execution receipts for enqueue, durable lease acquisition, dispatch, receipt acknowledgement, retry import, dead-letter recovery, queue inspection, `worker-queue-adapter-snapshot-parity/v1` queue/lease/ack/dead-letter parity, and adapter gate checks. `http-json` now has an async gateway dry-run path through the project API when `WORKER_QUEUE_HTTP_ENDPOINT` or `ADAPTER_GATEWAY_HTTP_ENDPOINT` is configured; `managed-queue` remains a future real queue adapter target.
+- Adapter gateway contract validation is exposed by `npm run adapters:gateway`, which spins up local mock `http-json` gateways, verifies shared health, managed persistence execution receipt, and worker queue execution receipt shapes, then proves the project API dry-run routes can execute through that gateway before a real private adapter gateway exists.
+- A runnable private adapter gateway reference process is exposed by `npm run adapters:gateway-server`. It serves `GET /health`, `GET /state`, `POST /persistence/dry-run`, and `POST /worker-queue/dry-run`, supports bearer auth through `ADAPTER_GATEWAY_AUTH_TOKEN`, persists imported shadow table records, queue rows, queue leases, dead-letter rows, and receipt summaries through the `ADAPTER_GATEWAY_STORAGE_DRIVER` adapter contract, and is verified by `npm run adapters:gateway-server:validate` against the shared client contract, backend project API dry-run routes, and `GET /projects/:id/adapter-gateway-preflight` live health/state/capability checks. The current drivers are `json-file`, `memory`, and `postgres` / `postgres-compatible`; `npm run adapters:gateway-postgres-store:validate` proves the Postgres-compatible schema plan, query-bound write operations, and snapshot/count readback parity with a fake query shim. A real managed database/queue driver with real database readback remains the next production gap.
+- Operations readiness is exposed by `GET /projects/:id/operations-readiness`, combining worker proof, queue contract, queue adapter dry-run, execution receipts, retry/dead-letter recovery metrics, audit stream ordering plus hash-chain verification, persistence integrity, migration dry-run status, proof surfaces, alert-rule drafts, a recovery runbook, and `operations-incident-drill/v1` rehearsal receipts into one local operations contract; production still needs centralized observability, incident ownership, backup/restore drills against real infrastructure, durable queue leases, managed dead-letter storage, and real alert routing.
+- Provider readiness is exposed by `GET /projects/:id/provider-readiness` and Manager Ready Package, turning the real-provider rollout blocker into a local contract with redacted model/search status, deterministic validation-provider proof, provider-backed evidence provenance, source-safety review, proof routes, leak scanning, provider control policy, allowlists, budgets/rate limits, Agent tool grants, retry policy, circuit-breaker policy, local secret-vault seal/open/rotation receipt status, provider usage/cost ledger rows, and explicit remaining production controls for managed KMS, revocation, managed provider audit storage, centralized alerting, and real-provider incident handling.
+- Security boundary snapshot is exposed by `GET /projects/:id/security-boundary` and Manager Ready Package, giving the secret-vault/RBAC blocker a route policy, enforced access-policy, optional signed access-header contract, optional signed-request replay contract, optional audit fail-closed contract, optional project membership contract, local encrypted secret-vault contract, sensitive-field, redaction-scan, and production hardening contract while the prototype still lacks real identity/session infrastructure.
+- `accessControl.js` provides prototype enforced-mode decisions for Manager, Agent, Reviewer, runtime, security-admin, and observer roles, including Agent self-scope, Reviewer identity match, sensitive export denial, optional HMAC-signed identity headers when `AGENT_ACCESS_SIGNING_SECRET` is configured, optional file-backed signed request id replay checks when `requireSignedRequestIds` / `AGENT_ACCESS_REPLAY_PROTECTION` is enabled, optional audit fail-closed rejection when `failClosedOnAuditError` / `AGENT_ACCESS_AUDIT_FAIL_CLOSED` is enabled, and persisted project membership policy checks with runtime bindings, revocations, revision audit, and `project_membership_policies` / `project_membership_grants` persistence rows when the API enables `requireProjectMembership`; `access_replay_records`, migration-plan verification gates, and migration dry-run gates are also covered by `npm run agents:product-team`.
+- Security access audit is exposed by `GET /projects/:id/security-access-audit` and `GET /projects/:id/security-audit-stream`, written into project state, linked into the event ledger, persisted into the backend store-level audit stream with sequence/checksum plus tamper-evident hash-chain proof, mirrored to an append-only JSONL audit sink, and exported through the persistence snapshot as `security_access_audit` plus `security_audit_stream`; production still needs immutable centralized audit storage.
 - 确定性 runtime（`agentRuntime.js`）用于 UI 演示
 - 自治 ledger、agentStates、obligation 持久化契约
+- 通用 Agent submission / artifact / evidence-search / submission-review 后端契约，已由 `npm run agents:product-team` 覆盖 Research Project 验收样例的后端链路
 
 **尚未完成：**
 - LLM 驱动的真实工作产出（当前大量为规则/模板生成）
-- 后端 scheduler 替代浏览器内定时器
-- Agent 提交系统：将研究报告、证据包、决策建议等产出按规范提交为流程图节点
+- 生产级 managed database adapter 替代当前 JSON/file store，并把现有 `postgres` / `postgres-compatible` gateway schema/upsert/readback rehearsal 升级为真实数据库连接下的 shadow-read、backup/restore、rollback、RLS 与 cutover 演练
+- 生产级 queue/cron scheduler 替代当前本地 Node interval runner，并实现 `http-json` 或 `managed-queue` driver，把本地 queue shadow execution receipt 升级为真实 durable lease store、managed dead-letter storage 与恢复演练
+- 将 `adapterGatewayStore.js` 的 `json-file` / `memory` / `postgres-compatible` storage adapter rehearsal 替换为真实私有 adapter gateway 后端：托管数据库真实 readback parity、shadow-read、backup/restore、rollback、RLS 验证，以及真实 durable queue lease / managed dead-letter storage
+- 将 `npm run adapters:gateway`、`npm run adapters:gateway-server:validate`、`GET /projects/:id/adapter-gateway-preflight` 和项目级 dry-run API 纳入针对真实私有 adapter gateway 的部署前验收
+- Agent 提交系统的生产级 UI 操作、多轮评审版本管理、真实外部搜索适配与生产级持久化
 - 运行时与 Skill 包的热更新策略
 - 性能与成本控制（token、并发、缓存）
 
@@ -137,21 +165,36 @@ M5 公开发布          ░░░░░░░░░░░░░░░░░░�
 **退出标准：**
 - [ ] Runtime 契约冻结并文档化
 - [ ] 自治周期在 N 轮模拟中状态一致
-- [ ] Research Project 验收样例能跑通信息搜集、内容撰写、脑暴节点、群聊讨论、产出提交，但底层 artifact / submission / evidence 契约保持通用
-- [ ] Agent submission node 契约冻结，并能从任务、群聊、事件账本、工作区文件追溯证据
+- [ ] Research Project 验收样例能跑通信息搜集、内容撰写、脑暴节点、群聊讨论、产出提交、正式评审与最终交付，但底层 artifact / submission / evidence-search / review 契约保持通用
+- [ ] Agent submission / evidence-search / review node 契约冻结，并能从任务、群聊、事件账本、工作区文件追溯证据
 - [ ] 可插拔 LLM adapter（即使首版仅 stub）
 
 ---
 
-### M4 · 安全与 BYOK ⏳ 未开始
+### M4 · 安全与 BYOK 🔐 原型启动
 
 **目标：** 用户自带 API Key 时，密钥与数据不出用户边界；满足最低安全基线后再讨论对外使用。
 
-**规划项（均未实现）：**
+**已有原型：**
+- 模型 provider 与搜索 provider 的后端状态接口，状态响应不返回原始 API Key
+- evidence search 可通过 deterministic provider 跑通，未来可替换为私有 `http-json` 搜索网关
+- `GET /projects/:id/provider-readiness` 已将真实 provider rollout 的剩余差距显式化，包含 provider control policy、allowlist、预算/限流、Agent 工具授权、retry policy、circuit-breaker policy、本地 secret-vault status、provider usage/cost ledger、provider-backed evidence source-safety summary，MVP readiness 的 `production-real-providers` blocker 会指向该路由
+- `.env.example` 记录模型/搜索 provider 配置边界，默认关闭搜索 provider
+- `secretRedaction.js` 已覆盖 provider 状态/错误、evidence source、Agent submission/sourceRefs、review comments、task sourceRefs、workspace artifact draft 与 ledger payload 的原型级写入前脱敏
+- `secretVault.js` 已提供本地 AES-GCM envelope vault 契约，可通过 `SECRET_VAULT_ENABLED` / `SECRET_VAULT_KEY` 启用；Provider Readiness 与 Security Boundary 会展示 vault ready、encrypted record count 与 raw secret record count，但生产仍需托管 KMS/Secret Manager、轮换、撤销与访问审计
+- `npm run agents:product-team` 会注入假密钥并扫描 file store 与 workspace artifact files，验证 BYOK 风格秘密不会以原文持久化
+- `GET /projects/:id/security-boundary` 会导出路由策略、敏感字段清单、provider 状态边界、脱敏扫描摘要和生产安全 blocker，并由 `npm run agents:product-team` 验证
+- `AGENT_ACCESS_SIGNING_SECRET` 可开启原型级签名身份头校验，强制访问模式会先验签再执行角色策略；这降低本地/内测部署中的头部伪造风险，但仍不是正式身份系统
+- `AGENT_ACCESS_REPLAY_PROTECTION` 可要求签名请求携带 `x-hofs-request-id`，本地文件后端会在签名有效期内持久记录已接受的 request id，并在 API 重启后继续拒绝重复 request id；生产多实例仍需要共享 replay store
+- `AGENT_ACCESS_AUDIT_FAIL_CLOSED` 可要求强制访问在审计写入失败时直接拒绝；生产仍需要集中不可变审计、告警和恢复流程
+- `GET|PUT /projects/:id/membership-policy` 可把 `project-membership-policy/v1` 存为项目状态，包含 manager/security/observer/runtime/Agent/Reviewer 授权、Agent runtime 绑定、撤销列表、revision 和事件账本审计；`requireProjectMembership` 会在角色/签名之后读取该持久策略，拒绝不属于该项目或已撤销的 manager、Agent runtime 或 Reviewer；生产仍需要数据库成员表、邀请/撤销流程和行级权限
+- `GET|POST /projects/:id/identity-sessions` 可签发、列出和撤销本地 `identity-session/v1` 运行凭证；token 只在签发响应中返回一次，项目状态只保存 token hash/checksum/status/expiry/revocation proof，`x-hofs-session-token` 可在 MVP 验收中替代重复签名头访问项目 proof route。会话使用会进入 security access audit、backend audit stream、event ledger、persistence snapshot 和 Manager Ready Package 安全边界摘要；生产仍需要正式 IdP、持久 session store、服务身份签发、轮换、audience binding、集中审计和多实例 replay 防护
+
+**尚未完成：**
 - API Key 加密存储与 scope 隔离
 - 沙箱化 tool / file 访问
 - Prompt 注入与跨 Agent 污染防护
-- 审计日志与敏感信息 redaction
+- 生产级审计日志、密钥生命周期管理与 redaction bypass 安全评审
 - 依赖与供应链扫描
 
 > **在此阶段完成前，请勿将本项目用于任何含敏感信息的场景。**
@@ -220,6 +263,9 @@ npm run agents:scenario
 
 | 日期 | 说明 |
 |------|------|
+| 2026-06-27 | 补齐私有 adapter gateway 项目级预检：Manager Ready Package / deployment preflight / API / Harness 可以读取 live health、state 与 capability proof，仍保持 production cutover 阻塞 |
+| 2026-06-27 | Added `project-evidence-archive/v1` as the Manager/customer handoff proof bundle across API, Manager Ready Package manifest summary, UI, access policy, product-team Harness, and docs; production export/download controls remain blocked |
+| 2026-06-27 | 补齐本地 identity-session / runtime credential 合同：签发、使用、撤销、审计、持久化、迁移种子和 Manager 安全边界证明面，仍保持生产身份系统阻塞可见 |
 | 2026-05-31 | 首版路线图：明确 Pre-alpha 状态，锁定 M1 为当前主战场 |
 
 ---

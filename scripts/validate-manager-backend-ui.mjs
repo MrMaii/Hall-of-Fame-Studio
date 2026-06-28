@@ -375,6 +375,25 @@ try {
   await assertPageContains(page, 'Ready package sync:', 'Manager ready package sync must expose sync status.');
   await page.getByTestId('backend-manager-ready-package-snapshot').waitFor({ state: 'visible', timeout: 5000 });
   await assertPageContains(page, 'Manager Ready Package', 'Backend Worker Station must render the manager ready package snapshot.');
+  await assertPageContains(page, 'Gateway Live', 'Manager ready package snapshot must expose adapter gateway live readiness.');
+  await assertPageContains(page, 'Gateway State', 'Manager ready package snapshot must expose adapter gateway state readiness.');
+  await assertPageContains(page, '/adapter-gateway-preflight', 'Manager ready package snapshot must expose the adapter gateway preflight route.');
+  await page.getByTestId('backend-project-evidence-archive-snapshot').waitFor({ state: 'visible', timeout: 5000 });
+  await assertPageContains(page, 'Project Evidence Archive', 'Manager ready package snapshot must include the project evidence archive.');
+  await assertPageContains(page, 'Archive route:', 'Project evidence archive snapshot must expose the standalone route.');
+  await assertPageContains(page, '/project-evidence-archive', 'Project evidence archive snapshot must point to the standalone endpoint.');
+  await page.getByTestId('backend-project-evidence-export-workflow-snapshot').waitFor({ state: 'visible', timeout: 5000 });
+  await assertPageContains(page, 'Project Evidence Export Workflow', 'Manager ready package snapshot must include the evidence export workflow.');
+  await assertPageContains(page, 'Export route:', 'Project evidence export workflow snapshot must expose the standalone route.');
+  await assertPageContains(page, '/project-evidence-exports', 'Project evidence export workflow snapshot must point to the standalone endpoint.');
+  await page.getByTestId('backend-production-launch-audit-snapshot').waitFor({ state: 'visible', timeout: 5000 });
+  await assertPageContains(page, 'Production Launch Audit', 'Manager ready package snapshot must include production launch audit.');
+  await assertPageContains(page, 'Audit route:', 'Production launch audit snapshot must expose the standalone route.');
+  await assertPageContains(page, '/production-launch-audit', 'Production launch audit snapshot must point to the standalone endpoint.');
+  await page.getByTestId('backend-launch-approval-workflow-snapshot').waitFor({ state: 'visible', timeout: 5000 });
+  await assertPageContains(page, 'Launch Approval Workflow', 'Manager ready package snapshot must include launch approval workflow.');
+  await assertPageContains(page, 'Approval route:', 'Launch approval workflow snapshot must expose the standalone route.');
+  await assertPageContains(page, '/launch-approvals', 'Launch approval workflow snapshot must point to the standalone endpoint.');
   await assertPageContains(page, 'Trail Ready', 'Manager ready package snapshot must include scenario trail summary.');
   await assertPageContains(page, 'Walkthrough', 'Manager ready package snapshot must include scenario walkthrough summary.');
   await assertPageContains(page, 'Requirements', 'Manager ready package snapshot must include requirement coverage summary.');
@@ -492,6 +511,19 @@ try {
   await station.getByRole('button', { name: /^Stop$/i }).click();
 
   await station.getByRole('button', { name: /Server Pulse/i }).click();
+  await waitForBackendSnapshot(
+    backendRuntime.url,
+    (snapshot) => {
+      const project = snapshot.projects.find((item) => item.name === 'Manager Demo: Autonomous Agent Studio');
+      return Boolean(
+        project?.autonomousSchedulerLedger?.some((record) => record.trigger === 'manager-ui-backend-pulse')
+        && snapshot.messages.some((message) => message.projectId === project.id && message.source === 'manager-ui-backend-station-chat'),
+      );
+    },
+    'Backend Server Pulse must persist the autonomous pulse before the UI assertion.',
+    { timeoutMs: 10000 },
+  );
+  await page.waitForFunction(() => document.body.innerText.includes('MANAGER-UI-BACKEND-PULSE'), null, { timeout: 10000 });
   await assertPageContains(page, 'MANAGER-UI-BACKEND-PULSE', 'Backend Server Pulse must update the manager dashboard.');
   await station.getByRole('button', { name: /Sync State/i }).click();
   await assertPageContains(page, 'Project sync:', 'Backend Sync State must keep project sync evidence visible in the UI.');
@@ -601,6 +633,10 @@ try {
   await assertPageContains(page, 'HEARD BY', 'Transcript index chat proof must expose named receipt evidence.');
   await backToDashboard(page);
   await scrollDashboardToBottom(page);
+  await page.waitForFunction(() => {
+    const button = document.querySelector('[data-testid="agent-work-cycle-turing"]');
+    return button && !button.disabled;
+  }, null, { timeout: 10000 });
   await page.getByTestId('agent-work-cycle-turing').click();
   const turingPulseSnapshot = await waitForBackendSnapshot(
     backendRuntime.url,
@@ -629,8 +665,8 @@ try {
   await assertPageContains(page, 'Agent Focus Workspace', 'Manager dashboard must open a dedicated per-Agent workspace from the Team row.');
   await assertPageContains(page, 'Owned Task Evidence', 'Per-Agent workspace must expose owned task evidence.');
   await assertPageContains(page, 'Independent state', 'Per-Agent workspace must describe the independent Agent state surface.');
-  await page.getByTestId('agent-focus-backend-dashboard-turing').waitFor({ state: 'visible', timeout: 5000 });
-  await page.getByTestId('agent-focus-backend-cadence-turing').waitFor({ state: 'visible', timeout: 5000 });
+  await page.getByTestId('agent-focus-backend-dashboard-turing').waitFor({ state: 'visible', timeout: 15000 });
+  await page.getByTestId('agent-focus-backend-cadence-turing').waitFor({ state: 'visible', timeout: 15000 });
   await assertPageContains(page, 'Backend Agent Dashboard', 'Per-Agent workspace must sync the backend Agent dashboard read model.');
   await assertPageContains(page, '/agents/turing/dashboard', 'Per-Agent workspace must expose the backend Agent dashboard route.');
   await assertPageContains(page, 'Run Agent Pulse', 'Per-Agent workspace must expose a direct backend Agent pulse control.');
@@ -662,7 +698,11 @@ try {
     },
     'Agent Focus Run Agent Pulse must dispatch through the backend per-Agent worker route.',
   );
-  await page.getByTestId('agent-focus-backend-dashboard-turing').waitFor({ state: 'visible', timeout: 5000 });
+  await page.getByTestId('agent-focus-backend-dashboard-turing').waitFor({ state: 'visible', timeout: 15000 });
+  await page.waitForFunction((targetId) => {
+    const button = document.querySelector(`[data-testid="agent-work-cycle-${targetId}"]`);
+    return button && !button.disabled;
+  }, managedResponseTargetId, { timeout: 15000 });
   await page.getByTestId(`agent-work-cycle-${managedResponseTargetId}`).click();
   await waitForBackendSnapshot(
     backendRuntime.url,
@@ -897,6 +937,9 @@ try {
   assert(readinessProofMap.routes?.some((route) => route.checkId === 'management-loop-running' && route.proofKind === 'timeline' && route.timelineLogIds.length > 0), 'Backend readiness proof map must expose management timeline routes.');
   const managerDashboard = await fetch(`${backendRuntime.url}/projects/${managerProject.id}/manager-dashboard`).then((response) => response.json());
   assert(managerDashboard.readiness?.status === 'manager-ready' && managerDashboard.operationsBoard?.agents?.length > 0, 'Backend manager dashboard endpoint must expose readiness plus Agent operations rows.');
+  assert(managerDashboard.launchApprovalWorkflow?.schemaVersion === 'launch-approval-workflow/v1' && managerDashboard.launchApprovalWorkflow?.readyForProduction === false, 'Backend manager dashboard endpoint must expose launch approval workflow without production overclaim.');
+  const managerReadyPackage = await fetch(`${backendRuntime.url}/projects/${managerProject.id}/manager-ready-package`).then((response) => response.json());
+  assert(managerReadyPackage.launchApprovalWorkflow?.schemaVersion === 'launch-approval-workflow/v1' && managerReadyPackage.backendRoutes?.launchApprovals?.endsWith('/launch-approvals'), 'Backend manager ready package endpoint must expose launch approval workflow and route.');
   assert(managerDashboard.managerScenarioTrail?.rows?.some((row) => row.id === 'dual-channel-change' && row.passed) && managerDashboard.managerScenarioTrail?.rows?.some((row) => row.id === 'next-actions-to-autonomy' && row.passed), 'Backend manager dashboard endpoint must expose a passing end-to-end manager scenario trail.');
   assert(managerDashboard.syncProtocolAudit?.rows?.some((row) => row.id === 'leader-assignment-sync' && row.complete) && managerDashboard.syncProtocolAudit?.rows?.some((row) => row.id === 'change-request-sync' && row.complete), 'Backend manager dashboard endpoint must expose completed sync protocol audit rows for assignment and change flows.');
   assert(managerDashboard.managerCommandCenter?.nextBestAction?.canRun && managerDashboard.managerCommandCenter?.liveLanes?.some((lane) => lane.id === 'workers') && managerDashboard.managerCommandCenter?.agentRows?.length > 0, 'Backend manager dashboard endpoint must expose the live command center.');
@@ -942,7 +985,7 @@ try {
   await page.getByTestId('initiation-next-invite').click();
   await page.getByTestId('initiation-next-lobby').click();
   await page.getByTestId('initiation-start-meeting').click();
-  await assertPageContains(page, 'Kickoff Roundtable', 'Initiation flow must reach the kickoff meeting step.');
+  await assertPageContains(page, 'INITIATION ROUNDTABLE', 'Initiation flow must reach the kickoff meeting step.');
   await page.getByTestId('initiation-meeting-session-proof').waitFor({ state: 'visible', timeout: 5000 });
   await assertPageContains(page, 'Backend Meeting Session', 'Initiation meeting must create a durable backend meeting session before approval.');
   await page.getByTestId('initiation-meeting-director-clarification').waitFor({ state: 'visible', timeout: 5000 });

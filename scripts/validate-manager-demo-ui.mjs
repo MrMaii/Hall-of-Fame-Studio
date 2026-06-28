@@ -193,7 +193,9 @@ try {
   await demoButton.click();
 
   await page.waitForFunction(() => document.body.innerText.includes('Manager Demo: Autonomous Agent Studio'), null, { timeout: 10000 });
-  await page.getByTestId('scenario-control-center').waitFor({ state: 'visible', timeout: 5000 });
+  const scenarioControlCenter = page.getByTestId('scenario-control-center');
+  await scenarioControlCenter.scrollIntoViewIfNeeded();
+  await scenarioControlCenter.waitFor({ state: 'visible', timeout: 5000 });
   await assertPageContains(page, 'Scenario Control Center');
   await assertPageContains(page, 'Kickoff Decisions');
   await assertPageContains(page, '24/7 Work Pulse');
@@ -201,7 +203,9 @@ try {
   await assertPageContains(page, 'Mid-project Change Intake');
   await assertPageContains(page, 'Manager Evidence Exit');
   await assertPageContains(page, '5/5 Agent receipts');
-  await page.getByTestId('manager-live-command-center').waitFor({ state: 'visible', timeout: 5000 });
+  const managerLiveCommandCenter = page.getByTestId('manager-live-command-center');
+  await managerLiveCommandCenter.scrollIntoViewIfNeeded();
+  await managerLiveCommandCenter.waitFor({ state: 'visible', timeout: 5000 });
   await assertPageContains(page, 'Manager Live Command Center');
   await assertPageContains(page, 'Next best action:');
   await assertPageContains(page, 'Kickoff Decision Board');
@@ -578,9 +582,9 @@ try {
   await assertPageContains(page, 'review the next manager handoff evidence');
 
   await clickDashboardStep(page, 'timeline_evidence');
-  await page.getByText('CONTRIBUTION TIMELINE', { exact: false }).waitFor({ state: 'visible', timeout: 5000 });
-  await assertPageContains(page, 'CONTRIBUTION TIMELINE');
-  await assertPageContains(page, 'Reset');
+  await page.getByText('MANAGER FLOW GRAPH', { exact: false }).waitFor({ state: 'visible', timeout: 5000 });
+  await assertPageContains(page, 'MANAGER FLOW GRAPH');
+  await assertPageContains(page, 'RESET');
 
   await mkdir(new URL('../dist/', import.meta.url), { recursive: true });
   await page.screenshot({

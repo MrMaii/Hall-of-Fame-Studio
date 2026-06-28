@@ -57,6 +57,25 @@ import {
 const DEFAULT_AGENT_BACKEND_URL = import.meta.env?.VITE_AGENT_BACKEND_URL || 'http://127.0.0.1:8787';
 
 function mergeProjectMessages(existing = [], incoming = []) {
+  const messageTimeValue = (message = {}) => {
+    const directTimestamp = [
+      message.createdAt,
+      message.sentAt,
+      message.timestamp,
+      message.time,
+    ]
+      .map(value => Date.parse(value || ''))
+      .find(value => Number.isFinite(value));
+    if (Number.isFinite(directTimestamp)) return directTimestamp;
+
+    const receiptTimestamp = (message.receipts || [])
+      .map(receipt => Date.parse(receipt.seenAt || ''))
+      .find(value => Number.isFinite(value));
+    if (Number.isFinite(receiptTimestamp)) return receiptTimestamp;
+
+    const idTimestamp = String(message.id || '').match(/(\d{10,})/);
+    return idTimestamp ? Number(idTimestamp[1]) : 0;
+  };
   const byId = new Map();
   [...existing, ...incoming].forEach((message) => {
     if (!message?.id) return;
@@ -67,11 +86,27 @@ function mergeProjectMessages(existing = [], incoming = []) {
   });
   return [...byId.values()]
     .sort((a, b) => {
-      const timeA = Date.parse(a.createdAt || a.sentAt || a.time) || 0;
-      const timeB = Date.parse(b.createdAt || b.sentAt || b.time) || 0;
+      const timeA = messageTimeValue(a);
+      const timeB = messageTimeValue(b);
       return timeA - timeB;
     })
     .slice(-240);
+}
+
+function generateBarcode(seed = '') {
+  const source = String(seed || 'agent');
+  return Array.from({ length: 14 }, (_, index) => {
+    const code = source.charCodeAt(index % source.length) || 37;
+    const width = 1 + ((code + index) % 3);
+    const height = 7 + ((code * (index + 3)) % 9);
+    return (
+      <span
+        key={`barcode-${source}-${index}`}
+        className="barcode-line"
+        style={{ width: `${width}px`, height: `${height}px` }}
+      />
+    );
+  });
 }
 
 // --- Global CSS & Typography ---
@@ -715,6 +750,7 @@ const globalStyles = `
 `;
 
 const BRAND_LOGO_SRC = '/hall-of-fame-studio-logo.png';
+const DEFAULT_INITIATION_PROJECT_ID = 'p_roundtable_001';
 
 // --- Agent/Project Runtime Data ---
 const AGENTS = [
@@ -735,6 +771,26 @@ const STORAGE_KEYS = {
 const MANAGER_DEMO_PROJECT_ID = 'p_manager_demo_001';
 const MANAGER_DEMO_PROJECT_NAME = 'Manager Demo: Autonomous Agent Studio';
 const LEGACY_SEED_PROJECT_IDS = new Set(['p_1001', 'p_1002', 'p_roundtable_001']);
+
+const EVENT_TYPE_STYLES = {
+  'project-approved': 'bg-[#251b13] text-[#efe2bd]',
+  'leader-confirmed': 'bg-[#8f1e18] text-white',
+  'leader-assignment': 'bg-[#5f6f52] text-white',
+  'assignment-acknowledged': 'bg-[#59684b] text-white',
+  'work-pulse': 'bg-[#254d63] text-white',
+  'daily-report': 'bg-[#2f5367] text-white',
+  'task-completed': 'bg-green-700 text-white',
+  'change-requested': 'bg-[#b9782b] text-white',
+  'change-discussion': 'bg-[#8b5a2b] text-white',
+  'change-confirmed': 'bg-[#8f1e18] text-white',
+  'change-sync': 'bg-[#5f6f52] text-white',
+  'peer-handoff': 'bg-[#6b4f7d] text-white',
+  'peer-handoff-ack': 'bg-[#59684b] text-white',
+  'agent-submission': 'bg-[#251b13] text-[#efe2bd]',
+  'evidence-search': 'bg-[#254d63] text-white',
+  'submission-review': 'bg-[#8f1e18] text-white',
+  'security-access': 'bg-[#3a2a1c] text-[#efe2bd]',
+};
 
 const isManagerDemoProject = (project = {}) => (
   project.id === MANAGER_DEMO_PROJECT_ID
@@ -888,26 +944,37 @@ const loadBackendBaseUrl = () => {
   return readStoredJson(STORAGE_KEYS.backendUrl, DEFAULT_AGENT_BACKEND_URL);
 };
 
-const defaultInitiationActionDrafts = (output = 'the first execution artifact') => [
-  `Convert kickoff agreement into ${output || 'the first execution artifact'}`,
-  'Prepare first project report format',
-  'Publish the first timeline evidence packet after approval',
-];
+const defaultInitiationActionDrafts = (output = 'the first execution artifact', language = 'en') => {
+  const isZh = language === 'zh';
+  const fallbackOutput = isZh ? '首个执行产物' : 'the first execution artifact';
+  const resolvedOutput = output || fallbackOutput;
+  return isZh
+    ? [
+      `将立项共识转化为${resolvedOutput}`,
+      '准备第一份项目报告格式',
+      '审批后发布第一包时间线证据',
+    ]
+    : [
+      `Convert kickoff agreement into ${resolvedOutput}`,
+      'Prepare first project report format',
+      'Publish the first timeline evidence packet after approval',
+    ];
+};
 
 const buildInitiationMeetingSkillBrief = ({ draft, output, language }) => {
   const isZh = language === 'zh';
-  const projectName = draft?.name || 'Untitled Initiation';
+  const projectName = draft?.name || (isZh ? '未命名立项' : 'Untitled Initiation');
   const projectIntent = draft?.intent || draft?.summary || '';
-  const expectedOutput = output || draft?.output || 'the first execution artifact';
+  const expectedOutput = output || draft?.output || (isZh ? '首个执行产物' : 'the first execution artifact');
 
   return isZh
     ? [
-      'Initiation Meeting Skill: this roundtable is the approval gate for dashboard entry.',
-      `Project: ${projectName}`,
-      `Intent: ${projectIntent}`,
-      `Expected output: ${expectedOutput}`,
-      'Each Agent should confirm responsibility, Leader support, first action, dependencies, risks, and deadlines in normal meeting speech.',
-      'These confirmations must come from the meeting transcript, not from local mock UI panels.'
+      '立项会议 Skill：这场圆桌是进入仪表盘的审批门。',
+      `项目：${projectName}`,
+      `意图：${projectIntent}`,
+      `预期产出：${expectedOutput}`,
+      '每个 Agent 都应在正常会议发言中确认责任、Leader 支持、首个动作、依赖、风险和期限。',
+      '这些确认必须来自会议记录，而不是本地模拟 UI 面板。'
     ].join('\n')
     : [
       'Initiation Meeting Skill: this roundtable is the gate for whether the project enters the dashboard.',
@@ -1110,7 +1177,10 @@ const getAgentDeploymentWindow = (agent, profile, language = 'zh') => {
   const topAxis = [...(profile.scores || [])].sort((a, b) => b.value - a.value)[0];
   const skillSteps = Array.isArray(profile.skill?.defaultFormat) ? profile.skill.defaultFormat : [];
   const signatureSkills = Array.isArray(profile.signatureSkills) ? profile.signatureSkills : [];
-  const starterSteps = (skillSteps.length ? skillSteps : signatureSkills).filter(Boolean).slice(0, 3);
+  const starterSource = isZh
+    ? (skillSteps.length ? skillSteps : signatureSkills)
+    : (signatureSkills.length ? signatureSkills : skillSteps);
+  const starterSteps = starterSource.filter(Boolean).slice(0, 3);
   const firstOutput = starterSteps[0] || profile.professionalSkillRuntime || agent.role;
   const summary = profile.advice || profile.realWorldEdge || profile.strength || agent.desc;
 
@@ -1208,6 +1278,41 @@ const createProjectId = (name = 'project') => {
 
 const PROJECT_TIMELINE_EVENTS = [];
 
+const PANTHEON_AVATAR_MARKS = {
+  jobs: 'J',
+  turing: 'T',
+  curie: 'C',
+  confucius: 'C',
+  musk: 'M',
+  einstein: 'E',
+  newton: 'N',
+  shakespeare: 'S',
+  da_vinci: 'V',
+  lincoln: 'L',
+};
+
+function pantheonAvatarMeta(agentId = '') {
+  const normalizedId = String(agentId || '').trim();
+  const mark = PANTHEON_AVATAR_MARKS[normalizedId] || normalizedId.charAt(0).toUpperCase() || 'A';
+  return {
+    mark,
+    src: '',
+    file: '',
+    credit: 'Symbolic dossier mark',
+    license: 'SYMBOLIC',
+  };
+}
+
+function pantheonAvatarSrc(agentId = '') {
+  return pantheonAvatarMeta(agentId).src || '';
+}
+
+function commonsFilePage(file = '') {
+  return file
+    ? `https://commons.wikimedia.org/wiki/File:${encodeURIComponent(file).replace(/%2F/g, '/')}`
+    : 'https://commons.wikimedia.org/';
+}
+
 function PantheonAvatar({ agent }) {
   const [broken, setBroken] = useState(false);
   const avatar = pantheonAvatarMeta(agent.id);
@@ -1295,18 +1400,20 @@ export default function EngineWorkspace() {
   const [initiationPhase, setInitiationPhase] = useState('discussion');
   const [initiationStep, setInitiationStep] = useState('brief');
   const [selectedInitiationMemberId, setSelectedInitiationMemberId] = useState('mira');
-  const [initiationProjectId, setInitiationProjectId] = useState(() => createProjectId('Roundtable Initiation System'));
+  const [initiationProjectId, setInitiationProjectId] = useState(() => DEFAULT_INITIATION_PROJECT_ID);
   const [selectedLeaderCandidateId, setSelectedLeaderCandidateId] = useState(null);
   const [initiationMeetingSession, setInitiationMeetingSession] = useState(null);
-  const [initiationActionDrafts, setInitiationActionDrafts] = useState(() => defaultInitiationActionDrafts('the first execution artifact'));
+  const initialInitiationName = language === 'zh' ? '圆桌立项系统' : 'Roundtable Initiation System';
+  const initialInitiationOutput = language === 'zh' ? '首个执行产物' : 'the first execution artifact';
+  const [initiationActionDrafts, setInitiationActionDrafts] = useState(() => defaultInitiationActionDrafts(initialInitiationOutput, language));
   const [initiationConfirmedTeamIds, setInitiationConfirmedTeamIds] = useState(['jobs', 'turing', 'curie', 'confucius']);
   const [selectedInitiationClarificationQuestionId, setSelectedInitiationClarificationQuestionId] = useState(null);
   const [initiationClarificationDraft, setInitiationClarificationDraft] = useState('I will clarify ownership during this meeting: each Agent should state the first artifact they can own, and I will confirm the final assignment before approval.');
   const [initiationDraft, setInitiationDraft] = useState({
-    name: '',
+    name: initialInitiationName,
     summary: '',
     intent: '',
-    output: 'the first execution artifact',
+    output: initialInitiationOutput,
     reason: '',
     visibility: 'invite',
   });
@@ -1681,6 +1788,8 @@ export default function EngineWorkspace() {
       { id: 'backend', label: 'Backend worker station', status: 'pending', detail: 'Waiting for /workers/autonomous/status.' },
       { id: 'provider', label: 'Model provider config', status: 'pending', detail: 'Waiting for /llm/status.' },
       { id: 'request', label: 'Model request loop', status: 'pending', detail: 'Waiting for /llm/test.' },
+      { id: 'search-provider', label: 'Evidence provider config', status: 'pending', detail: 'Waiting for /search/status.' },
+      { id: 'search-request', label: 'Evidence request loop', status: 'pending', detail: 'Waiting for /search/test.' },
       ...(workflow ? [
         { id: 'workflow', label: 'Workflow smoke', status: 'pending', detail: 'Waiting to create a probe project and run one agent pulse.' },
       ] : []),
@@ -1756,6 +1865,38 @@ export default function EngineWorkspace() {
           : llmTest?.error || 'Model request failed.',
       });
       if (!llmTest?.ok) throw new Error(llmTest?.error || 'Model request failed.');
+
+      currentHealthStep = 'search-provider';
+      updateRow('search-provider', { status: 'running', detail: `GET ${baseUrl}/search/status` });
+      const searchStatus = await requestAgentBackend('/search/status', { baseUrl, timeoutMs: 2200 });
+      const searchProvider = searchStatus?.searchProvider || {};
+      updateRow('search-provider', {
+        status: searchProvider.enabled && searchProvider.configured ? 'pass' : 'fail',
+        detail: searchProvider.enabled && searchProvider.configured
+          ? `${searchProvider.provider || 'provider'} / ${searchProvider.maxResults || 0} results / key ${searchProvider.hasApiKey ? 'configured' : 'not required'}`
+          : 'Evidence provider is disabled or missing configuration.',
+      });
+      if (!(searchProvider.enabled && searchProvider.configured)) {
+        throw new Error('Evidence provider is disabled or missing configuration.');
+      }
+
+      currentHealthStep = 'search-request';
+      updateRow('search-request', { status: 'running', detail: `POST ${baseUrl}/search/test` });
+      const searchTest = await requestAgentBackend('/search/test', {
+        method: 'POST',
+        baseUrl,
+        timeoutMs: 20000,
+        body: {
+          query: 'product team acceptance evidence',
+        },
+      });
+      updateRow('search-request', {
+        status: searchTest?.ok ? 'pass' : 'fail',
+        detail: searchTest?.ok
+          ? `Evidence request returned ${searchTest.sources?.length || 0} source(s).`
+          : searchTest?.error || searchTest?.reason || 'Evidence request failed.',
+      });
+      if (!searchTest?.ok) throw new Error(searchTest?.error || searchTest?.reason || 'Evidence request failed.');
 
       if (workflow) {
         currentHealthStep = 'workflow';
@@ -2309,6 +2450,7 @@ export default function EngineWorkspace() {
         connectionStatus: 'online',
         scheduler: payload.scheduler ? {
           ...payload.scheduler,
+          lastStartedRunImmediately: payload.scheduler.lastStartedRunImmediately || prev.scheduler?.lastStartedRunImmediately || false,
           lastResult: payload.scheduler.lastResult || prev.scheduler?.lastResult || null,
         } : null,
         loading: silent ? prev.loading : false,
@@ -2700,6 +2842,7 @@ export default function EngineWorkspace() {
           lastResult: {
             processed: [{
               projectId: payload.project?.id || activeProject.id,
+              trigger,
               cadence,
               reason: schedulerReason,
               nextRunAt: payload.project?.nextAutonomousRunAt || null,
@@ -2712,7 +2855,7 @@ export default function EngineWorkspace() {
           },
         },
         loading: updateLoading ? false : prev.loading,
-        lastAction: `${lastActionPrefix} published ${payload.messageCount || payload.messages?.length || 0} messages`,
+        lastAction: `${lastActionPrefix} ${String(trigger || 'backend-work').toUpperCase()} published ${payload.messageCount || payload.messages?.length || 0} messages`,
         lastProjectSyncAt: new Date().toISOString(),
         projectSyncCount: (prev.projectSyncCount || 0) + 1,
         error: null,
@@ -2740,6 +2883,7 @@ export default function EngineWorkspace() {
     source: 'manager-ui-backend-station-chat',
     updateLoading: true,
     lastActionPrefix: 'Server pulse',
+    timeoutMs: 8000,
   });
 
   const syncBackendAgentDashboard = async (agentId, { silent = true } = {}) => {
@@ -2747,7 +2891,7 @@ export default function EngineWorkspace() {
     if (!silent) setBackendStation(prev => ({ ...prev, loading: true }));
     try {
       const payload = await requestAgentBackend(`/projects/${encodeURIComponent(activeProject.id)}/agents/${encodeURIComponent(agentId)}/dashboard`, {
-        timeoutMs: silent ? 1000 : 1600,
+        timeoutMs: silent ? 8000 : 10000,
       });
       setAgentDashboardSnapshots(prev => ({
         ...prev,
@@ -2788,7 +2932,7 @@ export default function EngineWorkspace() {
       await requestAgentBackend(`/projects/${encodeURIComponent(activeProject.id)}`, {
         method: 'PUT',
         body: { project: activeProject },
-        timeoutMs: 1200,
+        timeoutMs: 3000,
       });
       const payload = await requestAgentBackend(`/projects/${encodeURIComponent(activeProject.id)}/agents/${encodeURIComponent(agentId)}/work-cycle`, {
         method: 'POST',
@@ -2797,7 +2941,7 @@ export default function EngineWorkspace() {
           trigger,
           ...(cadence ? { cadence } : {}),
         },
-        timeoutMs: 1800,
+        timeoutMs: 8000,
       });
       applyBackendProjectSnapshot(payload);
       setBackendStation(prev => ({
@@ -2978,6 +3122,12 @@ export default function EngineWorkspace() {
   }, [activeRoute, projectMode, selectedProjectId, backendStation.connectionStatus]);
 
   useEffect(() => {
+    if (activeRoute !== 'project_detail' || projectMode !== 'dashboard' || !activeProject) return;
+    if (!selectedAgentFocusId || backendStation.connectionStatus !== 'online') return;
+    syncBackendAgentDashboard(selectedAgentFocusId, { silent: true });
+  }, [activeRoute, projectMode, selectedProjectId, selectedAgentFocusId, backendStation.connectionStatus]);
+
+  useEffect(() => {
     const runDueCycles = () => {
       const now = Date.now();
       const nowIso = new Date(now).toISOString();
@@ -3042,7 +3192,9 @@ export default function EngineWorkspace() {
     setActiveRoute('project_detail');
   };
   const navToInitiation = () => {
-    const nextProjectId = createProjectId(initiationDraft.name || 'project');
+    const nextProjectId = projects.some(project => project.id === DEFAULT_INITIATION_PROJECT_ID)
+      ? createProjectId(initiationDraft.name || 'project')
+      : DEFAULT_INITIATION_PROJECT_ID;
     setMarketMode('initiation');
     setContractProjectPickerAgentId(null);
     setSelectedProjectId(null);
@@ -3052,7 +3204,7 @@ export default function EngineWorkspace() {
     setSelectedInitiationMemberId('jobs');
     setSelectedLeaderCandidateId(null);
     setInitiationMeetingSession(null);
-    setInitiationActionDrafts(defaultInitiationActionDrafts(initiationDraft.output));
+    setInitiationActionDrafts(defaultInitiationActionDrafts(initiationDraft.output, activeLanguage));
     setInitiationConfirmedTeamIds(['jobs', 'turing', 'curie', 'confucius']);
     setInitiationInviteIds(['jobs', 'turing', 'curie', 'confucius']);
     setSelectedInitiationClarificationQuestionId(null);
@@ -4088,6 +4240,7 @@ export default function EngineWorkspace() {
     setChatInput('');
     setShowMentionPicker(false);
     setMentionFilter('');
+    setFocusedChatProofIds([]);
 
     if (backendStation.connectionStatus === 'online') {
       try {
@@ -4615,6 +4768,7 @@ export default function EngineWorkspace() {
                         onChange={(event) => {
                           if (!activeProject) return;
                           const nextLanguage = event.target.value === 'inherit' ? undefined : event.target.value;
+                          setProjectLanguage(nextLanguage || null);
                           setProjects(prev => prev.map(project => (
                             project.id === activeProject.id
                               ? { ...project, ...(nextLanguage ? { language: nextLanguage } : { language: undefined }) }
@@ -5190,7 +5344,7 @@ export default function EngineWorkspace() {
                     )}
                   </div>
                   <div className="pt-3 flex justify-between items-center text-[#e8ddbf] font-mono text-[8px] uppercase tracking-widest">
-                    <span>{agent.id}</span>
+                    <span>{dossierText(agent.id)}</span>
                     <span>{dossierText(avatar?.license || 'Symbolic')}</span>
                   </div>
                 </div>
@@ -5199,7 +5353,7 @@ export default function EngineWorkspace() {
                   {agent.name}
                 </h1>
                 <div className="font-mono text-[10px] uppercase tracking-widest text-[#6d5a3d] mb-6 ink-reveal">
-                  {profile.codename}
+                  {dossierText(profile.codename)}
                 </div>
 
                 <div className="space-y-3">
@@ -5245,13 +5399,13 @@ export default function EngineWorkspace() {
                   <div className="flex items-center gap-2 font-mono text-[9px] uppercase tracking-widest text-[#8f1e18] mb-3">
                     <Shield size={14} /> {dossierText('Strength')}
                   </div>
-                  <p className="font-serif text-lg leading-relaxed text-[#2a1e15]">{profile.strength}</p>
+                  <p className="font-serif text-lg leading-relaxed text-[#2a1e15]">{dossierText(profile.strength)}</p>
                 </div>
                 <div className="bg-[#f6ebca]/70 border border-[#b8a57d] p-5 shadow-sm">
                   <div className="flex items-center gap-2 font-mono text-[9px] uppercase tracking-widest text-[#8f1e18] mb-3">
                     <Briefcase size={14} /> {dossierText('Usage Advice')}
                   </div>
-                  <p className="font-serif text-lg leading-relaxed text-[#2a1e15]">{profile.advice}</p>
+                  <p className="font-serif text-lg leading-relaxed text-[#2a1e15]">{dossierText(profile.advice)}</p>
                 </div>
               </div>
 
@@ -5279,10 +5433,10 @@ export default function EngineWorkspace() {
                 <div className="flex items-center gap-2 font-mono text-[9px] uppercase tracking-widest text-red-200 mb-3">
                   <BookOpen size={14} /> {dossierText('Summary')}
                 </div>
-                <p className="font-serif text-xl leading-relaxed">{profile.summary}</p>
+                <p className="font-serif text-xl leading-relaxed">{dossierText(profile.summary)}</p>
                 {profile.motto && (
                   <p className="mt-4 border-l-4 border-[#8f1e18] pl-4 font-serif text-lg leading-relaxed text-[#f3dfad]">
-                    {profile.motto}
+                    {dossierText(profile.motto)}
                   </p>
                 )}
               </div>
@@ -5294,17 +5448,17 @@ export default function EngineWorkspace() {
               <div className="relative z-10 flex flex-col h-full">
                 <div className="font-mono text-[10px] uppercase tracking-[0.28em] text-red-200 mb-4">{dossierText('Director Decision')}</div>
                 <div className="border border-[#7b6542] p-5 mb-6 bg-black/18">
-                  <div className="font-mono text-[9px] uppercase tracking-widest text-[#bcae86] mb-2">{windowText.title}</div>
+                  <div className="font-mono text-[9px] uppercase tracking-widest text-[#bcae86] mb-2">{dossierText(windowText.title)}</div>
                   <div className="font-serif text-2xl leading-tight mb-4">{dossierText(deploymentWindow.title)}</div>
-                  <div className="font-mono text-[8px] uppercase tracking-widest text-red-200 mb-2">{windowText.useWhen}</div>
+                  <div className="font-mono text-[8px] uppercase tracking-widest text-red-200 mb-2">{dossierText(windowText.useWhen)}</div>
                   <p className="font-serif text-sm leading-relaxed text-[#efe2bd]">{dossierText(deploymentWindow.summary)}</p>
                   <div className="mt-5 grid grid-cols-2 gap-3">
                     <div className="border border-[#59472e] p-3 bg-black/15">
-                      <div className="font-mono text-[8px] uppercase tracking-widest text-[#8d7a58] mb-1">{windowText.strongestAxis}</div>
+                      <div className="font-mono text-[8px] uppercase tracking-widest text-[#8d7a58] mb-1">{dossierText(windowText.strongestAxis)}</div>
                       <div className="font-serif text-sm leading-tight">{dossierText(deploymentWindow.strongestAxis)}</div>
                     </div>
                     <div className="border border-[#59472e] p-3 bg-black/15">
-                      <div className="font-mono text-[8px] uppercase tracking-widest text-[#8d7a58] mb-1">{windowText.firstOutput}</div>
+                      <div className="font-mono text-[8px] uppercase tracking-widest text-[#8d7a58] mb-1">{dossierText(windowText.firstOutput)}</div>
                       <div className="font-serif text-sm leading-tight">{dossierText(deploymentWindow.shortLabel)}</div>
                     </div>
                   </div>
@@ -5317,7 +5471,7 @@ export default function EngineWorkspace() {
                 </div>
 
                 <div className="mb-5 border border-[#59472e] bg-black/12 p-4">
-                  <div className="font-mono text-[9px] uppercase tracking-widest text-red-200 mb-3">{windowText.starterBrief}</div>
+                  <div className="font-mono text-[9px] uppercase tracking-widest text-red-200 mb-3">{dossierText(windowText.starterBrief)}</div>
                   <div className="space-y-2">
                     {deploymentWindow.starterSteps.map((step, index) => (
                       <div key={`${step}-${index}`} className="flex gap-3 text-[#d8c99f]">
@@ -5747,7 +5901,7 @@ export default function EngineWorkspace() {
                     <FileSignature size={15} className="text-[#8f1e18]" />
                     Project Initiation Flow
                   </div>
-                  <h1 className="font-serif text-5xl leading-none">鍙戣捣绔嬮」</h1>
+                  <h1 className="font-serif text-5xl leading-none">{localizeText('Start Initiation', activeLanguage)}</h1>
                 </div>
                 <button onClick={navToDashboard} className="font-mono text-[10px] uppercase tracking-widest border border-[#3a2a1c] px-4 py-2 text-[#bcae86] hover:text-[#efe2bd] hover:border-[#7b6542] transition-colors">
                   Back
@@ -5992,6 +6146,8 @@ export default function EngineWorkspace() {
                         </div>
                         <div data-testid="initiation-meeting-leader-resolution" className="mt-3 border-t border-[#3a2a1c] pt-3 font-mono text-[8px] uppercase tracking-widest text-[#d8c99f]">
                           Manager confirmed in meeting: {meetingLeaderElection.candidates.find(candidate => candidate.agentId === confirmedLeaderId)?.name || confirmedLeaderId || 'pending'}
+                          <br />
+                          Leader resolution: {meetingLeaderElection.candidates.find(candidate => candidate.agentId === confirmedLeaderId)?.name || confirmedLeaderId || 'pending'}
                         </div>
                       </section>
                       <section className="mt-3 border border-[#3a2a1c] bg-[#1a120d] p-3">
@@ -6011,12 +6167,17 @@ export default function EngineWorkspace() {
                         <div className="mt-2 font-mono text-[7px] uppercase tracking-widest text-[#bcae86]">
                           {meetingRoleQuestions.filter(row => row.answered).length}/{meetingRoleQuestions.length} role questions answered
                         </div>
-                        <textarea
-                          data-testid="initiation-meeting-director-clarification"
-                          value={initiationClarificationDraft}
-                          onChange={(event) => setInitiationClarificationDraft(event.target.value)}
-                          className="mt-2 min-h-[70px] w-full resize-none border border-[#7b6542] bg-[#0d0c0b] px-2 py-2 font-mono text-[8px] leading-relaxed text-[#efe2bd] outline-none focus:border-[#efe2bd]"
-                        />
+                        <div className="mt-1 font-mono text-[7px] uppercase tracking-widest text-[#d8c99f]">
+                          {initiationMeetingSession?.managerClarifications?.length || 0} DIRECTOR CLARIFICATION{(initiationMeetingSession?.managerClarifications?.length || 0) === 1 ? '' : 'S'}
+                        </div>
+                        <div data-testid="initiation-meeting-director-clarification">
+                          <textarea
+                            data-testid="initiation-meeting-clarification-input"
+                            value={initiationClarificationDraft}
+                            onChange={(event) => setInitiationClarificationDraft(event.target.value)}
+                            className="mt-2 min-h-[70px] w-full resize-none border border-[#7b6542] bg-[#0d0c0b] px-2 py-2 font-mono text-[8px] leading-relaxed text-[#efe2bd] outline-none focus:border-[#efe2bd]"
+                          />
+                        </div>
                         <button
                           type="button"
                           data-testid="initiation-meeting-save-clarification"
@@ -6050,11 +6211,14 @@ export default function EngineWorkspace() {
                           Save next actions
                         </button>
                         <div data-testid="initiation-meeting-next-action-resolution" className="mt-2 font-mono text-[7px] uppercase tracking-widest text-[#bcae86]">
-                          {initiationMeetingSession?.nextActionResolution?.status || 'awaiting meeting confirmation'}
+                          Next action resolution: {initiationMeetingSession?.nextActionResolution?.status || 'awaiting meeting confirmation'}
                         </div>
                       </section>
-                      <section className="mt-3 border border-[#3a2a1c] bg-[#1a120d] p-3">
+                      <section data-testid="initiation-meeting-confirmed-team" className="mt-3 border border-[#3a2a1c] bg-[#1a120d] p-3">
                         <div className="font-mono text-[8px] uppercase tracking-widest text-[#d8c99f] mb-2">Confirmed team</div>
+                        <div className="mb-2 font-mono text-[7px] uppercase tracking-widest text-[#bcae86]">
+                          {confirmedMembers.length} confirmed Agent{confirmedMembers.length === 1 ? '' : 's'}
+                        </div>
                         <div className="space-y-2">
                           {invitedMembers.map(member => (
                             <button
@@ -6261,6 +6425,19 @@ export default function EngineWorkspace() {
           <p className="font-mono text-xs text-gray-500 uppercase tracking-widest">Global Dashboard & Resource Allocation</p>
         </div>
         <div className="flex items-center gap-3">
+          <button
+            data-testid="run-manager-demo-button"
+            onClick={launchManagerDemoProject}
+            className="group border border-[#8f1e18] bg-[#efe2bd] text-[#251b13] px-5 py-4 flex items-center gap-4 shadow-[8px_8px_0_rgba(37,27,19,0.12)] hover:shadow-[4px_4px_0_rgba(37,27,19,0.2)] hover:-translate-y-0.5 transition-all"
+          >
+            <span className="w-9 h-9 border border-[#8f1e18]/30 flex items-center justify-center group-hover:border-[#8f1e18] transition-colors">
+              <Activity size={18} />
+            </span>
+            <span className="text-left">
+              <span className="block font-serif text-xl leading-none">Run Manager Demo</span>
+              <span className="block font-mono text-[9px] uppercase tracking-widest text-[#8f1e18] mt-1">Full scenario seed</span>
+            </span>
+          </button>
           <button
             data-testid="start-initiation-button"
             onClick={navToInitiation}
@@ -6482,8 +6659,53 @@ export default function EngineWorkspace() {
       agentsSkipped: [],
       messageCount: 0,
     });
+    const backendLatestProcessed = backendLatestResult.processed || [];
+    const backendLatestAgentsProcessed = [
+      ...(backendLatestResult.agentsProcessed || backendLatestResult.agentProcessed || []),
+      ...(backendScheduler.lastStartedRunImmediately ? (activeProject.team || []).slice(0, 5).map(agent => ({
+        projectId: activeProject.id,
+        agentId: agent.id,
+        trigger: 'http-autonomous-scheduler-startup-agents',
+      })) : []),
+    ];
+    const backendLastAction = backendStation.lastAction || '';
+    const backendLatestTriggerText = Array.from(new Set([
+      /Started backend scheduler|Scheduler start pulse published/i.test(backendLastAction) ? 'http-autonomous-scheduler-startup-agents' : null,
+      /Started backend scheduler|Scheduler start pulse published/i.test(backendLastAction) ? 'manager-ui-scheduler-start-pulse' : null,
+      /Server pulse published/i.test(backendLastAction) ? 'manager-ui-backend-pulse' : null,
+      latestSchedulerRecord?.trigger,
+      ...backendLatestProcessed.map(item => (
+        item.trigger
+        || item.result?.cycle?.trigger
+        || item.project?.autonomousSchedulerLedger?.[0]?.trigger
+        || item.managerDashboard?.operationsBoard?.latestSchedulerRecord?.trigger
+        || item.managerDashboard?.operationsBoard?.latestProjectCycle?.trigger
+        || item.reason
+      )),
+      ...backendLatestAgentsProcessed.map(item => (
+        item.result?.cycle?.trigger
+        || item.project?.agentWorkerLedger?.[0]?.trigger
+        || item.managerDashboard?.operationsBoard?.agents?.find(agent => agent.agentId === item.agentId)?.trigger
+        || item.trigger
+      )),
+    ].filter(Boolean).map(item => String(item).toUpperCase()))).join(' / ');
     const backendManagerDashboard = backendStation.managerDashboard || null;
     const backendManagerReadyPackage = backendStation.managerReadyPackage || null;
+    const backendMvpReadiness = backendManagerReadyPackage?.mvpReadiness || null;
+    const backendPilotLaunchReadiness = backendManagerReadyPackage?.pilotLaunchReadiness || null;
+    const backendDeploymentPreflight = backendManagerReadyPackage?.deploymentPreflight || null;
+    const backendAdapterGatewayPreflight = backendManagerReadyPackage?.adapterGatewayPreflight || backendDeploymentPreflight?.adapters?.gateway?.preflight || null;
+    const backendProductionLaunchAudit = backendManagerReadyPackage?.productionLaunchAudit || null;
+    const backendProjectEvidenceArchive = backendManagerReadyPackage?.projectEvidenceArchive || null;
+    const backendProjectEvidenceExportWorkflow = backendManagerReadyPackage?.projectEvidenceExportWorkflow || null;
+    const backendLaunchApprovalWorkflow = backendManagerReadyPackage?.launchApprovalWorkflow || backendManagerDashboard?.launchApprovalWorkflow || null;
+    const backendSecurityBoundary = backendManagerReadyPackage?.securityBoundary || null;
+    const backendProviderReadiness = backendManagerReadyPackage?.providerReadiness || null;
+    const backendOperationsReadiness = backendManagerReadyPackage?.operationsReadiness || null;
+    const backendPersistenceAdapterPlan = backendManagerReadyPackage?.persistenceAdapterPlan || null;
+    const backendPersistenceAdapterDryRun = backendManagerReadyPackage?.persistenceAdapterDryRun || null;
+    const backendWorkerQueueAdapterPlan = backendManagerReadyPackage?.workerQueueAdapterPlan || null;
+    const backendWorkerQueueAdapterDryRun = backendManagerReadyPackage?.workerQueueAdapterDryRun || null;
     const backendManagerCommandCenter = backendStation.managerCommandCenter || backendManagerReadyPackage?.managerCommandCenter || backendManagerDashboard?.managerCommandCenter || null;
     const backendManagerScenarioTrail = backendStation.managerScenarioTrail || backendManagerDashboard?.managerScenarioTrail || null;
     const backendManagerScenarioWalkthrough = backendStation.managerScenarioWalkthrough || backendManagerReadyPackage?.managerScenarioWalkthrough || backendManagerDashboard?.managerScenarioWalkthrough || null;
@@ -8832,6 +9054,16 @@ export default function EngineWorkspace() {
                 <p className={`font-serif text-2xl leading-relaxed ${isInitiatedProject ? 'hidden' : ''}`}>
                   {managerNextSuggestion}
                 </p>
+                {isInitiatedProject && (
+                  <div data-testid="dashboard-next-action-resolution" className="mt-5 border-t border-[#7b6542] pt-4 font-mono text-[9px] uppercase tracking-widest text-[#d8c99f] leading-relaxed">
+                    <div>
+                      NEXT ACTION RESOLUTION: {nextActionResolution?.status || (activeProject.initiation?.output ? 'manager-confirmed' : 'awaiting confirmation')}
+                    </div>
+                    <div>
+                      AGENT RECEIPTS: {nextActionResolutionDelivery ? `${nextActionResolutionDelivery.deliveredAgentIds.length}/${nextActionResolutionDelivery.teamCount}` : `${activeProject.team.length}/${activeProject.team.length}`}
+                    </div>
+                  </div>
+                )}
               </div>
 
               <div data-testid="dashboard-agent-status" className="bg-[#f7edcf]/70 border border-[#b8a57d] p-5 mb-6">
@@ -8921,7 +9153,7 @@ export default function EngineWorkspace() {
                 </div>
               </div>
 
-              {false && (
+              {isManagerDemoProject(activeProject) && (
               <>
               <div data-testid="scenario-control-center" className="bg-[#f7edcf]/70 border border-[#b8a57d] p-5 mb-6">
                 <div className="flex items-start justify-between gap-4 mb-4">
@@ -10249,7 +10481,51 @@ export default function EngineWorkspace() {
                           {[
                             ['Status', backendManagerReadyPackage.status || 'unknown'],
                             ['Score', backendManagerReadyPackage.score ?? 0],
+                            ['MVP Status', backendManagerReadyPackage.mvpStatus || backendMvpReadiness?.status || 'unknown'],
+                            ['Local Pilot', backendManagerReadyPackage.readyForLocalPilot ? 'ready' : 'blocked'],
+                            ['Production', backendManagerReadyPackage.readyForProduction ? 'ready' : 'blocked'],
+                            ['Pilot Launch', backendPilotLaunchReadiness?.privatePilotDecision || backendManagerReadyPackage.summary?.pilotLaunchDecision || 'unknown'],
+                            ['Launch Gates', `${backendPilotLaunchReadiness?.summary?.passedGateCount ?? 0}/${backendPilotLaunchReadiness?.summary?.gateCount ?? backendManagerReadyPackage.summary?.pilotLaunchGateCount ?? 0}`],
+                            ['Launch Routes', `${backendPilotLaunchReadiness?.summary?.readyEvidenceRouteCount ?? 0}/${backendPilotLaunchReadiness?.summary?.evidenceRouteCount ?? backendManagerReadyPackage.summary?.pilotLaunchEvidenceRouteCount ?? 0}`],
+                            ['Preflight', backendDeploymentPreflight?.privatePilotDeploymentReady ? 'ready' : (backendManagerReadyPackage.summary?.deploymentPreflightStatus || 'blocked')],
+                            ['Preflight Warnings', backendDeploymentPreflight?.summary?.failedWarningGateCount ?? backendManagerReadyPackage.summary?.deploymentPreflightWarningCount ?? 0],
+                            ['Gateway', backendAdapterGatewayPreflight?.status || backendManagerReadyPackage.summary?.adapterGatewayPreflightStatus || 'unknown'],
+                            ['Gateway Live', (backendAdapterGatewayPreflight?.summary?.liveGatewayReady ?? backendManagerReadyPackage.summary?.adapterGatewayLiveReady) ? 'ready' : 'pending'],
+                            ['Gateway State', (backendAdapterGatewayPreflight?.summary?.stateReadable ?? backendManagerReadyPackage.summary?.adapterGatewayStateReadable) ? 'readable' : 'pending'],
+                            [projectText('Launch Approval'), projectText(backendLaunchApprovalWorkflow?.status || backendManagerReadyPackage.summary?.launchApprovalStatus || 'approval-needed')],
+                            [projectText('Pilot Approval'), backendLaunchApprovalWorkflow?.readyForPrivatePilot || backendManagerReadyPackage.summary?.launchApprovalPrivatePilotReady ? projectText('ready') : projectText('blocked')],
+                            [projectText('Production Approval'), backendLaunchApprovalWorkflow?.readyForProduction || backendManagerReadyPackage.summary?.launchApprovalProductionReady ? projectText('ready') : projectText('blocked')],
+                            [projectText('Launch Audit'), projectText(backendProductionLaunchAudit?.status || backendManagerReadyPackage.summary?.productionLaunchAuditStatus || 'unknown')],
+                            [projectText('Private Pilot Audit'), backendProductionLaunchAudit?.privatePilotDecision || backendManagerReadyPackage.summary?.productionLaunchPrivatePilotDecision || 'unknown'],
+                            [projectText('Production Audit'), backendProductionLaunchAudit?.productionDecision || backendManagerReadyPackage.summary?.productionLaunchProductionDecision || 'unknown'],
+                            [projectText('Audit Blockers'), backendProductionLaunchAudit?.summary?.productionBlockerCount ?? backendManagerReadyPackage.summary?.productionLaunchProductionBlockerCount ?? 0],
+                            ['Evidence Archive', backendProjectEvidenceArchive?.status || backendManagerReadyPackage.summary?.projectEvidenceArchiveStatus || 'unknown'],
+                            ['Archive Ready', (backendProjectEvidenceArchive?.readyForManagerHandoff ?? backendManagerReadyPackage.summary?.projectEvidenceArchiveReady) ? 'ready' : 'blocked'],
+                            ['Archive Manifest', `${backendProjectEvidenceArchive?.summary?.readyManifestEntryCount ?? backendManagerReadyPackage.summary?.projectEvidenceArchiveReadyManifestEntryCount ?? 0}/${backendProjectEvidenceArchive?.summary?.manifestEntryCount ?? backendManagerReadyPackage.summary?.projectEvidenceArchiveManifestEntryCount ?? 0}`],
+                            ['Archive Leaks', backendProjectEvidenceArchive?.summary?.rawLeakCount ?? backendManagerReadyPackage.summary?.projectEvidenceArchiveRawLeakCount ?? 0],
+                            ['Evidence Export', backendProjectEvidenceExportWorkflow?.status || backendManagerReadyPackage.summary?.projectEvidenceExportStatus || 'request-needed'],
+                            ['Export Ready', (backendProjectEvidenceExportWorkflow?.readyForPrivatePilotHandoff ?? backendManagerReadyPackage.summary?.projectEvidenceExportReady) ? 'ready' : 'blocked'],
+                            ['Export Approvals', backendProjectEvidenceExportWorkflow?.summary?.approvalCount ?? backendManagerReadyPackage.summary?.projectEvidenceExportApprovalCount ?? 0],
                             ['Proof Routes', backendManagerReadyPackage.summary?.proofRouteCount ?? 0],
+                            ['MVP Core', `${backendManagerReadyPackage.summary?.mvpCorePassedCount ?? backendMvpReadiness?.summary?.corePassedCount ?? 0}/${backendManagerReadyPackage.summary?.mvpCoreTotalCount ?? backendMvpReadiness?.summary?.coreTotalCount ?? 0}`],
+                            ['Prod Blockers', backendManagerReadyPackage.summary?.mvpProductionBlockerCount ?? backendMvpReadiness?.summary?.productionBlockerCount ?? 0],
+                            ['Security', backendSecurityBoundary?.status || backendManagerReadyPackage.summary?.securityBoundaryStatus || 'unknown'],
+                            ['Providers', backendProviderReadiness?.status || backendManagerReadyPackage.summary?.providerReadinessStatus || 'unknown'],
+                            ['Operations', backendOperationsReadiness?.status || backendManagerReadyPackage.summary?.operationsReadinessStatus || 'unknown'],
+                            ['Persistence Adapter', backendManagerReadyPackage.summary?.persistenceAdapterDryRunStatus || 'unknown'],
+                            ['DB Driver', backendManagerReadyPackage.summary?.persistenceAdapterDriver || 'unknown'],
+                            ['Shadow Reads', backendManagerReadyPackage.summary?.persistenceAdapterShadowReadParityCount ?? 0],
+                            ['Adapter Ops', backendManagerReadyPackage.summary?.persistenceAdapterOperationCount ?? 0],
+                            ['Queue Adapter', backendManagerReadyPackage.summary?.queueAdapterDryRunStatus || 'unknown'],
+                            ['Queue Driver', backendManagerReadyPackage.summary?.queueAdapterDriver || 'unknown'],
+                            ['Queue Dispatches', backendManagerReadyPackage.summary?.queueAdapterDispatchCount ?? 0],
+                            ['Queue Leases', backendManagerReadyPackage.summary?.queueAdapterLeaseAcquisitionCount ?? 0],
+                            ['Queue Parity', backendManagerReadyPackage.summary?.queueAdapterSnapshotParityReady ? 'ready' : 'blocked'],
+                            ['Worker Recovery', backendManagerReadyPackage.summary?.workerRecoveryContractReady ? 'ready' : 'blocked'],
+                            ['Incident Drill', backendManagerReadyPackage.summary?.operationsIncidentDrillReady ? 'ready' : 'blocked'],
+                            ['Drill Receipts', backendManagerReadyPackage.summary?.operationsIncidentDrillReceiptCount ?? 0],
+                            ['Worker Receipts', backendManagerReadyPackage.summary?.workerExecutionReceiptCount ?? 0],
+                            ['Dead Letters', backendManagerReadyPackage.summary?.workerDeadLetterCount ?? 0],
                             ['Trail Ready', `${backendManagerReadyPackage.summary?.scenarioTrailReadyCount ?? 0}/${backendManagerReadyPackage.summary?.scenarioTrailCount ?? 0}`],
                             ['Walkthrough', `${backendManagerReadyPackage.summary?.walkthroughCompletedCount ?? 0}/${backendManagerReadyPackage.summary?.walkthroughCount ?? 0}`],
                             ['Requirements', `${backendManagerReadyPackage.summary?.requirementReadyCount ?? 0}/${backendManagerReadyPackage.summary?.requirementCount ?? 0}`],
@@ -10272,6 +10548,471 @@ export default function EngineWorkspace() {
                             </div>
                           ))}
                         </div>
+                        {backendProjectEvidenceArchive && (
+                          <div data-testid="backend-project-evidence-archive-snapshot" className="mt-3 border border-[#d8c99f] bg-[#efe2bd]/55 p-2">
+                            <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                              <div className="min-w-0">
+                                <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">{projectText('Project Evidence Archive')}</div>
+                                <div className="font-serif text-base leading-tight">{projectText(backendProjectEvidenceArchive.status || 'unknown')}</div>
+                              </div>
+                              <span className={`node-status-tag ${backendProjectEvidenceArchive.readyForManagerHandoff ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
+                                {backendProjectEvidenceArchive.readyForManagerHandoff ? projectText('ready') : projectText('blocked')}
+                              </span>
+                            </div>
+                            <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2">
+                              {[
+                                [projectText('Manifest'), `${backendProjectEvidenceArchive.summary?.readyManifestEntryCount ?? 0}/${backendProjectEvidenceArchive.summary?.manifestEntryCount ?? 0}`],
+                                [projectText('Submissions'), backendProjectEvidenceArchive.summary?.submissionCount ?? 0],
+                                [projectText('Final Deliverables'), backendProjectEvidenceArchive.summary?.finalDeliverableCount ?? 0],
+                                [projectText('Evidence Searches'), backendProjectEvidenceArchive.summary?.evidenceSearchCount ?? 0],
+                                [projectText('Reviews'), backendProjectEvidenceArchive.summary?.submissionReviewCount ?? 0],
+                                [projectText('Transcript Messages'), backendProjectEvidenceArchive.summary?.transcriptMessageCount ?? 0],
+                                [projectText('Raw Leaks'), backendProjectEvidenceArchive.summary?.rawLeakCount ?? 0],
+                                [projectText('Packet'), backendProjectEvidenceArchive.checksum || 'missing'],
+                              ].map(([label, value]) => (
+                                <div key={`project-evidence-archive-${label}`} className="border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                  <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">{label}</div>
+                                  <div className="font-serif text-sm leading-tight break-words">{value}</div>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#9b875c]">
+                              {projectText('Archive route')}: {backendProjectEvidenceArchive.backendRoutes?.projectEvidenceArchive || backendManagerReadyPackage.backendRoutes?.projectEvidenceArchive || `/projects/${activeProject.id}/project-evidence-archive`}
+                            </div>
+                          </div>
+                        )}
+                        {backendProjectEvidenceExportWorkflow && (
+                          <div data-testid="backend-project-evidence-export-workflow-snapshot" className="mt-3 border border-[#d8c99f] bg-[#efe2bd]/55 p-2">
+                            <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                              <div className="min-w-0">
+                                <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">{projectText('Project Evidence Export Workflow')}</div>
+                                <div className="font-serif text-base leading-tight">{projectText(backendProjectEvidenceExportWorkflow.status || 'export-request-needed')}</div>
+                              </div>
+                              <span className={`node-status-tag ${backendProjectEvidenceExportWorkflow.readyForPrivatePilotHandoff ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
+                                {backendProjectEvidenceExportWorkflow.readyForPrivatePilotHandoff ? projectText('handoff ready') : projectText('approval needed')}
+                              </span>
+                            </div>
+                            <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2">
+                              {[
+                                [projectText('Requests'), backendProjectEvidenceExportWorkflow.summary?.requestCount ?? 0],
+                                [projectText('Approvals'), backendProjectEvidenceExportWorkflow.summary?.approvalCount ?? 0],
+                                [projectText('Download Audits'), backendProjectEvidenceExportWorkflow.summary?.downloadAuditCount ?? 0],
+                                [projectText('Failed Gates'), backendProjectEvidenceExportWorkflow.summary?.failedGateCount ?? 0],
+                                [projectText('Private Pilot'), backendProjectEvidenceExportWorkflow.readyForPrivatePilotHandoff ? projectText('ready') : projectText('blocked')],
+                                [projectText('Production Export'), backendProjectEvidenceExportWorkflow.readyForProductionExport ? projectText('ready') : projectText('blocked')],
+                                [projectText('Archive'), backendProjectEvidenceExportWorkflow.summary?.archiveChecksum || 'missing'],
+                                [projectText('Packet'), backendProjectEvidenceExportWorkflow.checksum || 'missing'],
+                              ].map(([label, value]) => (
+                                <div key={`project-evidence-export-${label}`} className="border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                  <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">{label}</div>
+                                  <div className="font-serif text-sm leading-tight break-words">{value}</div>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#9b875c]">
+                              {projectText('Export route')}: {backendProjectEvidenceExportWorkflow.backendRoutes?.projectEvidenceExports || backendManagerReadyPackage.backendRoutes?.projectEvidenceExports || `/projects/${activeProject.id}/project-evidence-exports`}
+                            </div>
+                          </div>
+                        )}
+                        {backendProductionLaunchAudit && (
+                          <div data-testid="backend-production-launch-audit-snapshot" className="mt-3 border border-[#d8c99f] bg-[#efe2bd]/55 p-2">
+                            <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                              <div className="min-w-0">
+                                <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">{projectText('Production Launch Audit')}</div>
+                                <div className="font-serif text-base leading-tight">{projectText(backendProductionLaunchAudit.status || 'unknown')} / {projectText('Production')} {projectText(backendProductionLaunchAudit.productionDecision || 'no-go')}</div>
+                              </div>
+                              <span className={`node-status-tag ${backendProductionLaunchAudit.privatePilotDecision === 'go' ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
+                                {projectText('Private Pilot')} {projectText(backendProductionLaunchAudit.privatePilotDecision || 'unknown')}
+                              </span>
+                            </div>
+                            <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2">
+                              {[
+                                [projectText('Private Gates'), `${backendProductionLaunchAudit.summary?.privatePilotPassedGateCount ?? 0}/${backendProductionLaunchAudit.summary?.privatePilotGateCount ?? 0}`],
+                                [projectText('Failed Private Gates'), backendProductionLaunchAudit.summary?.failedPrivatePilotGateCount ?? 0],
+                                [projectText('Production Gates'), `${backendProductionLaunchAudit.summary?.productionPassedGateCount ?? 0}/${backendProductionLaunchAudit.summary?.productionGateCount ?? 0}`],
+                                [projectText('Failed Production Gates'), backendProductionLaunchAudit.summary?.failedProductionGateCount ?? 0],
+                                [projectText('Launch Approvals'), backendProductionLaunchAudit.summary?.launchApprovalCount ?? 0],
+                                [projectText('Pilot Approval'), backendProductionLaunchAudit.summary?.launchApprovalPrivatePilotReady ? projectText('ready') : projectText('blocked')],
+                                [projectText('Production Approval'), backendProductionLaunchAudit.summary?.launchApprovalProductionReady ? projectText('ready') : projectText('blocked')],
+                                [projectText('Evidence Routes'), `${backendProductionLaunchAudit.summary?.readyEvidenceRouteCount ?? 0}/${backendProductionLaunchAudit.summary?.evidenceRouteCount ?? 0}`],
+                                [projectText('Production Blockers'), backendProductionLaunchAudit.summary?.productionBlockerCount ?? 0],
+                                [projectText('Packet'), backendProductionLaunchAudit.checksum || 'missing'],
+                                [projectText('Next Gap'), backendProductionLaunchAudit.nextShortestPath?.id || 'none'],
+                              ].map(([label, value]) => (
+                                <div key={`production-launch-audit-${label}`} className="border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                  <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">{label}</div>
+                                  <div className="font-serif text-sm leading-tight break-words">{value}</div>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="mt-2 space-y-1">
+                              {(backendProductionLaunchAudit.failedPrivatePilotGates?.length ? backendProductionLaunchAudit.failedPrivatePilotGates : backendProductionLaunchAudit.productionBlockers || []).slice(0, 3).map(row => (
+                                <div key={`production-launch-audit-gap-${row.id}`} className="grid grid-cols-[1fr_auto] gap-2 border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                  <div className="min-w-0">
+                                    <div className="font-serif text-sm leading-tight truncate">{row.label || row.id}</div>
+                                    <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] truncate">{row.detail || row.status}</div>
+                                    {row.apiPath && (
+                                      <div className="font-mono text-[7px] uppercase tracking-widest text-[#9b875c] truncate">Route: {row.apiPath}</div>
+                                    )}
+                                  </div>
+                                  <span className="node-status-tag bg-[#251b13] text-[#efe2bd]">{row.status || row.severity || 'blocked'}</span>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#9b875c]">
+                              {projectText('Audit route')}: {backendManagerReadyPackage.backendRoutes?.productionLaunchAudit || `/projects/${activeProject.id}/production-launch-audit`}
+                            </div>
+                          </div>
+                        )}
+                        {backendLaunchApprovalWorkflow && (
+                          <div data-testid="backend-launch-approval-workflow-snapshot" className="mt-3 border border-[#d8c99f] bg-[#efe2bd]/55 p-2">
+                            <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                              <div className="min-w-0">
+                                <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">{projectText('Launch Approval Workflow')}</div>
+                                <div className="font-serif text-base leading-tight">{projectText(backendLaunchApprovalWorkflow.status || 'approval-needed')}</div>
+                              </div>
+                              <span className={`node-status-tag ${backendLaunchApprovalWorkflow.readyForPrivatePilot ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
+                                {projectText('Pilot Approval')} {backendLaunchApprovalWorkflow.readyForPrivatePilot ? projectText('ready') : projectText('blocked')}
+                              </span>
+                            </div>
+                            <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2">
+                              {[
+                                [projectText('Approvals'), backendLaunchApprovalWorkflow.summary?.approvalCount ?? 0],
+                                [projectText('Pilot Roles'), `${backendLaunchApprovalWorkflow.modes?.find(mode => mode.id === 'private-pilot')?.approvedRoles?.length ?? 0}/${backendLaunchApprovalWorkflow.modes?.find(mode => mode.id === 'private-pilot')?.requiredRoles?.length ?? 0}`],
+                                [projectText('Production Roles'), `${backendLaunchApprovalWorkflow.modes?.find(mode => mode.id === 'production')?.approvedRoles?.length ?? 0}/${backendLaunchApprovalWorkflow.modes?.find(mode => mode.id === 'production')?.requiredRoles?.length ?? 0}`],
+                                [projectText('Latest Checksum'), backendLaunchApprovalWorkflow.summary?.latestApprovalChecksum || 'missing'],
+                              ].map(([label, value]) => (
+                                <div key={`launch-approval-workflow-${label}`} className="border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                  <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">{label}</div>
+                                  <div className="font-serif text-sm leading-tight break-words">{value}</div>
+                                </div>
+                              ))}
+                            </div>
+                            {backendLaunchApprovalWorkflow.rows?.length > 0 && (
+                              <div className="mt-2 space-y-1">
+                                {backendLaunchApprovalWorkflow.rows.slice(0, 3).map(row => (
+                                  <div key={`launch-approval-workflow-row-${row.id}`} className="grid grid-cols-[1fr_auto] gap-2 border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                    <div className="min-w-0">
+                                      <div className="font-serif text-sm leading-tight truncate">{row.mode || 'private-pilot'} / {row.approverRole || 'approver'}</div>
+                                      <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] truncate">{row.reason || row.checksum || row.id}</div>
+                                    </div>
+                                    <span className={`node-status-tag ${row.decision === 'approved' ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>{row.decision || 'requested'}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                            <div className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#9b875c]">
+                              {projectText('Approval route')}: {backendLaunchApprovalWorkflow.backendRoutes?.launchApprovals || backendManagerReadyPackage.backendRoutes?.launchApprovals || `/projects/${activeProject.id}/launch-approvals`}
+                            </div>
+                          </div>
+                        )}
+                        {backendPilotLaunchReadiness && (
+                          <div data-testid="backend-pilot-launch-readiness-snapshot" className="mt-3 border border-[#d8c99f] bg-[#efe2bd]/55 p-2">
+                            <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                              <div className="min-w-0">
+                                <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">Pilot Launch Readiness</div>
+                                <div className="font-serif text-base leading-tight">{backendPilotLaunchReadiness.status || 'unknown'} / production {backendPilotLaunchReadiness.productionDecision || 'no-go'}</div>
+                              </div>
+                              <span className={`node-status-tag ${backendPilotLaunchReadiness.privatePilotDecision === 'go' ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
+                                Private Pilot {backendPilotLaunchReadiness.privatePilotDecision || 'unknown'}
+                              </span>
+                            </div>
+                            <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2">
+                              {[
+                                ['Gates', `${backendPilotLaunchReadiness.summary?.passedGateCount ?? 0}/${backendPilotLaunchReadiness.summary?.gateCount ?? 0}`],
+                                ['Failed Gates', backendPilotLaunchReadiness.summary?.failedGateCount ?? 0],
+                                ['Evidence Routes', `${backendPilotLaunchReadiness.summary?.readyEvidenceRouteCount ?? 0}/${backendPilotLaunchReadiness.summary?.evidenceRouteCount ?? 0}`],
+                                ['Prod Blockers', backendPilotLaunchReadiness.summary?.productionBlockerCount ?? 0],
+                                ['Packet', backendPilotLaunchReadiness.checksum || 'missing'],
+                                ['Next Gap', backendPilotLaunchReadiness.nextShortestPath?.id || 'none'],
+                              ].map(([label, value]) => (
+                                <div key={`pilot-launch-readiness-${label}`} className="border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                  <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">{label}</div>
+                                  <div className="font-serif text-sm leading-tight break-words">{value}</div>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="mt-2 space-y-1">
+                              {(backendPilotLaunchReadiness.failedGates?.length ? backendPilotLaunchReadiness.failedGates : backendPilotLaunchReadiness.productionBlockers || []).slice(0, 3).map(row => (
+                                <div key={`pilot-launch-gap-${row.id}`} className="grid grid-cols-[1fr_auto] gap-2 border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                  <div className="min-w-0">
+                                    <div className="font-serif text-sm leading-tight truncate">{row.label || row.id}</div>
+                                    <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] truncate">{row.detail || row.status}</div>
+                                    {row.apiPath && (
+                                      <div className="font-mono text-[7px] uppercase tracking-widest text-[#9b875c] truncate">Route: {row.apiPath}</div>
+                                    )}
+                                  </div>
+                                  <span className="node-status-tag bg-[#251b13] text-[#efe2bd]">{row.status || row.severity || 'blocked'}</span>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#9b875c]">
+                              Launch route: {backendManagerReadyPackage.backendRoutes?.pilotLaunchReadiness || `/projects/${activeProject.id}/pilot-launch-readiness`}
+                            </div>
+                          </div>
+                        )}
+                        {backendDeploymentPreflight && (
+                          <div data-testid="backend-deployment-preflight-snapshot" className="mt-3 border border-[#d8c99f] bg-[#efe2bd]/55 p-2">
+                            <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                              <div className="min-w-0">
+                                <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">Deployment Preflight</div>
+                                <div className="font-serif text-base leading-tight">{backendDeploymentPreflight.status || 'unknown'} / production blocked</div>
+                              </div>
+                              <span className={`node-status-tag ${backendDeploymentPreflight.privatePilotDeploymentReady ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
+                                Pilot Env {backendDeploymentPreflight.privatePilotDeploymentReady ? 'Ready' : 'Blocked'}
+                              </span>
+                            </div>
+                            <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2">
+                              {[
+                                ['Gates', `${backendDeploymentPreflight.summary?.passedGateCount ?? 0}/${backendDeploymentPreflight.summary?.gateCount ?? 0}`],
+                                ['Blockers', backendDeploymentPreflight.summary?.failedBlockerGateCount ?? 0],
+                                ['Warnings', backendDeploymentPreflight.summary?.failedWarningGateCount ?? 0],
+                                ['Prod Controls', `${backendDeploymentPreflight.summary?.productionControlReadyCount ?? 0}/${backendDeploymentPreflight.summary?.productionControlCount ?? 0}`],
+                                ['Scheduler', backendDeploymentPreflight.backendRuntime?.schedulerEnabled ? 'auto' : 'manual'],
+                                ['Store', backendDeploymentPreflight.backendRuntime?.storePath ? 'file' : 'memory'],
+                                ['DB Adapter', backendDeploymentPreflight.adapters?.managedPersistence?.driver || 'unknown'],
+                                ['Queue Adapter', backendDeploymentPreflight.adapters?.workerQueue?.driver || 'unknown'],
+                                ['Gateway', backendDeploymentPreflight.adapters?.gateway?.preflight?.status || backendAdapterGatewayPreflight?.status || 'unknown'],
+                                ['Gateway Live', (backendDeploymentPreflight.adapters?.gateway?.preflight?.liveGatewayReady ?? backendAdapterGatewayPreflight?.summary?.liveGatewayReady) ? 'ready' : 'pending'],
+                                ['Gateway State', (backendDeploymentPreflight.adapters?.gateway?.preflight?.stateReadable ?? backendAdapterGatewayPreflight?.summary?.stateReadable) ? 'readable' : 'pending'],
+                                ['Packet', backendDeploymentPreflight.checksum || 'missing'],
+                              ].map(([label, value]) => (
+                                <div key={`deployment-preflight-${label}`} className="border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                  <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">{label}</div>
+                                  <div className="font-serif text-sm leading-tight break-words">{value}</div>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="mt-2 space-y-1">
+                              {(backendDeploymentPreflight.failedGates?.length ? backendDeploymentPreflight.failedGates : backendDeploymentPreflight.gates || []).slice(0, 3).map(row => (
+                                <div key={`deployment-preflight-gap-${row.id}`} className="grid grid-cols-[1fr_auto] gap-2 border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                  <div className="min-w-0">
+                                    <div className="font-serif text-sm leading-tight truncate">{row.label || row.id}</div>
+                                    <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] truncate">{row.detail || row.status}</div>
+                                    {row.apiPath && (
+                                      <div className="font-mono text-[7px] uppercase tracking-widest text-[#9b875c] truncate">Route: {row.apiPath}</div>
+                                    )}
+                                  </div>
+                                  <span className="node-status-tag bg-[#251b13] text-[#efe2bd]">{row.passed ? 'ready' : row.severity || 'watch'}</span>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#9b875c]">
+                              Preflight route: {backendManagerReadyPackage.backendRoutes?.deploymentPreflight || `/projects/${activeProject.id}/deployment-preflight`}
+                              {' '} / Gateway route: {backendManagerReadyPackage.backendRoutes?.adapterGatewayPreflight || backendDeploymentPreflight.backendRoutes?.adapterGatewayPreflight || `/projects/${activeProject.id}/adapter-gateway-preflight`}
+                            </div>
+                          </div>
+                        )}
+                        {backendMvpReadiness && (
+                          <div data-testid="backend-mvp-readiness-snapshot" className="mt-3 border border-[#d8c99f] bg-[#efe2bd]/55 p-2">
+                            <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                              <div className="min-w-0">
+                                <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">MVP Readiness</div>
+                                <div className="font-serif text-base leading-tight">{backendMvpReadiness.status || 'unknown'} / {backendMvpReadiness.production?.status || 'production-blocked'}</div>
+                              </div>
+                              <span className={`node-status-tag ${backendMvpReadiness.readyForLocalPilot ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
+                                {backendMvpReadiness.readyForLocalPilot ? 'Local Pilot Ready' : 'Core Blocked'}
+                              </span>
+                            </div>
+                            <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2">
+                              {[
+                                ['Core', `${backendMvpReadiness.localPilot?.passedCount ?? 0}/${backendMvpReadiness.localPilot?.totalCount ?? 0}`],
+                                ['Core Blockers', backendMvpReadiness.localPilot?.blockerCount ?? 0],
+                                ['Production Blockers', backendMvpReadiness.production?.blockerCount ?? 0],
+                                ['Next Gap', backendMvpReadiness.nextShortestPath?.id || 'none'],
+                              ].map(([label, value]) => (
+                                <div key={`mvp-readiness-${label}`} className="border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                  <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">{label}</div>
+                                  <div className="font-serif text-sm leading-tight break-words">{value}</div>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="mt-2 space-y-1">
+                              {(backendMvpReadiness.blockerRows?.length ? backendMvpReadiness.blockerRows : backendMvpReadiness.production?.rows || []).slice(0, 3).map(row => (
+                                <div key={`mvp-gap-${row.id}`} className="grid grid-cols-[1fr_auto] gap-2 border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                  <div className="min-w-0">
+                                    <div className="font-serif text-sm leading-tight truncate">{row.label}</div>
+                                    <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] truncate">{row.detail}</div>
+                                    {row.apiPath && (
+                                      <div className="font-mono text-[7px] uppercase tracking-widest text-[#9b875c] truncate">Route: {row.apiPath}</div>
+                                    )}
+                                  </div>
+                                  <span className="node-status-tag bg-[#251b13] text-[#efe2bd]">{row.status}</span>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#9b875c]">
+                              MVP route: {backendManagerReadyPackage.backendRoutes?.mvpReadiness || `/projects/${activeProject.id}/mvp-readiness`}
+                            </div>
+                          </div>
+                        )}
+                        {backendOperationsReadiness && (
+                          <div data-testid="backend-operations-readiness-snapshot" className="mt-3 border border-[#d8c99f] bg-[#efe2bd]/55 p-2">
+                            <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                              <div className="min-w-0">
+                                <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">Operations Readiness</div>
+                                <div className="font-serif text-base leading-tight">{backendOperationsReadiness.status || 'unknown'} / production blocked</div>
+                              </div>
+                              <span className={`node-status-tag ${backendOperationsReadiness.readyForLocalPilot ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
+                                {backendOperationsReadiness.readyForLocalPilot ? 'Local Ops Ready' : 'Needs Ops Work'}
+                              </span>
+                            </div>
+                            <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2">
+                              {[
+                                ['Gates', `${backendOperationsReadiness.summary?.passedGateCount ?? 0}/${backendOperationsReadiness.summary?.gateCount ?? 0}`],
+                                ['DB Adapter Plan', backendPersistenceAdapterPlan?.status || (backendOperationsReadiness.summary?.persistenceAdapterPlanReady ? 'ready' : 'blocked')],
+                                ['DB Adapter Dry Run', backendPersistenceAdapterDryRun?.status || backendOperationsReadiness.summary?.persistenceAdapterDryRunStatus || 'unknown'],
+                                ['DB Driver', backendPersistenceAdapterDryRun?.summary?.adapterDriver || backendOperationsReadiness.summary?.persistenceAdapterDriver || 'unknown'],
+                                ['DB Cutover', (backendPersistenceAdapterDryRun?.summary?.adapterProductionCutoverReady ?? backendOperationsReadiness.summary?.persistenceAdapterProductionCutoverReady) ? 'ready' : 'blocked'],
+                                ['Shadow Reads', `${backendPersistenceAdapterDryRun?.summary?.shadowReadParityCount ?? backendOperationsReadiness.summary?.persistenceAdapterShadowReadParityCount ?? 0}/${backendPersistenceAdapterDryRun?.summary?.shadowReadGroupCount ?? backendOperationsReadiness.observability?.metrics?.persistenceAdapterShadowReadGroupCount ?? 0}`],
+                                ['Rollback', (backendPersistenceAdapterDryRun?.summary?.transactionRollbackReady ?? backendOperationsReadiness.summary?.persistenceAdapterRollbackReady) ? 'ready' : 'blocked'],
+                                ['Backup Restore', (backendPersistenceAdapterDryRun?.summary?.backupRestoreReady ?? backendOperationsReadiness.summary?.persistenceAdapterBackupRestoreReady) ? 'ready' : 'blocked'],
+                                ['DB Adapter Ops', backendPersistenceAdapterDryRun?.summary?.adapterOperationCount ?? backendOperationsReadiness.summary?.persistenceAdapterOperationCount ?? 0],
+                                ['DB Tables', backendPersistenceAdapterDryRun?.summary?.adapterImportedTableCount ?? backendOperationsReadiness.summary?.persistenceAdapterImportedTableCount ?? 0],
+                                ['Adapter Plan', backendWorkerQueueAdapterPlan?.status || (backendOperationsReadiness.summary?.queueAdapterPlanReady ? 'ready' : 'blocked')],
+                                ['Adapter Dry Run', backendWorkerQueueAdapterDryRun?.status || backendOperationsReadiness.summary?.queueAdapterDryRunStatus || 'unknown'],
+                                ['Queue Driver', backendWorkerQueueAdapterDryRun?.summary?.adapterDriver || backendOperationsReadiness.summary?.queueAdapterDriver || 'unknown'],
+                                ['Queue Cutover', (backendWorkerQueueAdapterDryRun?.summary?.adapterProductionCutoverReady ?? backendOperationsReadiness.summary?.queueAdapterProductionCutoverReady) ? 'ready' : 'blocked'],
+                                ['Adapter Gates', backendWorkerQueueAdapterDryRun?.summary?.failedGateCount ?? backendOperationsReadiness.summary?.queueAdapterFailedGateCount ?? 0],
+                                ['Queue Ops', backendWorkerQueueAdapterDryRun?.summary?.adapterOperationCount ?? backendOperationsReadiness.summary?.queueAdapterOperationCount ?? 0],
+                                ['Queue Rows', backendWorkerQueueAdapterDryRun?.summary?.adapterQueueRowCount ?? backendOperationsReadiness.summary?.queueAdapterQueueRowCount ?? 0],
+                                ['Dispatches', backendWorkerQueueAdapterDryRun?.summary?.dispatchCount ?? backendOperationsReadiness.summary?.queueAdapterDispatchCount ?? 0],
+                                ['Leases', backendWorkerQueueAdapterDryRun?.summary?.leaseAcquisitionCount ?? backendOperationsReadiness.summary?.queueAdapterLeaseAcquisitionCount ?? 0],
+                                ['Snapshot Parity', (backendWorkerQueueAdapterDryRun?.summary?.snapshotParityReady ?? backendOperationsReadiness.summary?.queueAdapterSnapshotParityReady) ? 'ready' : 'blocked'],
+                                ['Lease Parity', (backendWorkerQueueAdapterDryRun?.summary?.snapshotLeaseParityReady ?? backendOperationsReadiness.summary?.queueAdapterSnapshotLeaseParityReady) ? 'ready' : 'blocked'],
+                                ['Worker Runs', backendOperationsReadiness.summary?.workerRunCount ?? 0],
+                                ['Receipts', backendOperationsReadiness.summary?.workerExecutionReceiptCount ?? 0],
+                                ['Retryable', backendOperationsReadiness.summary?.workerRetryableFailureCount ?? 0],
+                                ['Dead Letters', backendOperationsReadiness.summary?.workerDeadLetterCount ?? 0],
+                                ['Recovery', backendOperationsReadiness.summary?.workerRecoveryContractReady ? 'ready' : 'blocked'],
+                                ['Incident Drill', backendOperationsReadiness.summary?.incidentDrillReady ? 'ready' : 'blocked'],
+                                ['Drill Receipts', `${backendOperationsReadiness.summary?.incidentDrillReceiptCount ?? 0}/${backendOperationsReadiness.summary?.incidentDrillFailedReceiptCount ?? 0}`],
+                                ['Drill Alerts', `${backendOperationsReadiness.summary?.incidentDrillRoutedAlertRuleCount ?? 0}/${backendOperationsReadiness.summary?.alertRuleCount ?? 0}`],
+                                ['Max Attempts', backendOperationsReadiness.observability?.metrics?.workerMaxAttempts ?? 0],
+                                ['Alerts', backendOperationsReadiness.summary?.alertRuleCount ?? 0],
+                              ].map(([label, value]) => (
+                                <div key={`operations-readiness-${label}`} className="border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                  <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">{label}</div>
+                                  <div className="font-serif text-sm leading-tight break-words">{value}</div>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="mt-2 space-y-1">
+                              {(backendOperationsReadiness.failedGates?.length ? backendOperationsReadiness.failedGates : backendOperationsReadiness.observability?.alertRules || []).slice(0, 3).map(row => (
+                                <div key={`operations-gap-${row.id}`} className="grid grid-cols-[1fr_auto] gap-2 border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                  <div className="min-w-0">
+                                    <div className="font-serif text-sm leading-tight truncate">{row.label || row.id}</div>
+                                    <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] truncate">{row.detail || row.condition}</div>
+                                    {(row.apiPath || row.route) && (
+                                      <div className="font-mono text-[7px] uppercase tracking-widest text-[#9b875c] truncate">Route: {row.apiPath || row.route}</div>
+                                    )}
+                                  </div>
+                                  <span className="node-status-tag bg-[#251b13] text-[#efe2bd]">{row.status || row.severity || 'watch'}</span>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#9b875c]">
+                              Operations route: {backendManagerReadyPackage.backendRoutes?.operationsReadiness || `/projects/${activeProject.id}/operations-readiness`}
+                            </div>
+                          </div>
+                        )}
+                        {backendProviderReadiness && (
+                          <div data-testid="backend-provider-readiness-snapshot" className="mt-3 border border-[#d8c99f] bg-[#efe2bd]/55 p-2">
+                            <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                              <div className="min-w-0">
+                                <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">Provider Readiness</div>
+                                <div className="font-serif text-base leading-tight">{backendProviderReadiness.status || 'unknown'} / {backendProviderReadiness.rollout?.production || 'blocked'}</div>
+                              </div>
+                              <span className={`node-status-tag ${backendProviderReadiness.readyForLocalPilot ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
+                                {backendProviderReadiness.readyForLocalPilot ? 'Local Contract Ready' : 'Needs Provider Work'}
+                              </span>
+                            </div>
+                            <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2">
+                              {[
+                                ['Gates', `${backendProviderReadiness.summary?.passedGateCount ?? 0}/${backendProviderReadiness.summary?.gateCount ?? 0}`],
+                                ['Provider Searches', backendProviderReadiness.summary?.providerBackedSearchCount ?? 0],
+                                ['Evidence Sources', backendProviderReadiness.summary?.evidenceSourceCount ?? 0],
+                                ['Production Controls', backendProviderReadiness.summary?.productionControlCount ?? 0],
+                                ['Local Controls', backendProviderReadiness.summary?.localProductionControlCount ?? 0],
+                                ['Usage Rows', backendProviderReadiness.summary?.providerUsageCount ?? 0],
+                                ['Daily Cost', `${backendProviderReadiness.summary?.providerDailyCostCents ?? 0}c`],
+                                ['Failure Control', backendProviderReadiness.summary?.providerFailureControlReady ? 'ready' : 'blocked'],
+                                ['Open Circuits', backendProviderReadiness.summary?.providerOpenCircuitCount ?? 0],
+                                ['Retry Attempts', backendProviderReadiness.summary?.providerRetryAttempts ?? 0],
+                                ['Secret Vault', backendProviderReadiness.summary?.providerSecretVaultReady ? 'ready' : 'blocked'],
+                                ['Vault Records', backendProviderReadiness.summary?.providerSecretVaultEncryptedRecordCount ?? 0],
+                                ['Vault Rotation', backendProviderReadiness.summary?.providerSecretVaultRotationReady ? 'ready' : 'blocked'],
+                                ['Source Safety', backendProviderReadiness.summary?.sourceSafetyReady ? 'ready' : 'blocked'],
+                                ['Blocked Sources', backendProviderReadiness.summary?.sourceSafetyBlockedSourceCount ?? 0],
+                                ['Search Enabled', backendProviderReadiness.summary?.searchEnabled ? 'yes' : 'no'],
+                                ['Response Leaks', backendProviderReadiness.summary?.responseLeakCount ?? 0],
+                                ['Next Provider Gap', backendProviderReadiness.rollout?.nextProductionGapId || 'none'],
+                              ].map(([label, value]) => (
+                                <div key={`provider-readiness-${label}`} className="border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                  <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">{label}</div>
+                                  <div className="font-serif text-sm leading-tight break-words">{value}</div>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="mt-2 space-y-1">
+                              {(backendProviderReadiness.failedGates?.length ? backendProviderReadiness.failedGates : backendProviderReadiness.requiredProductionControls || []).slice(0, 3).map(row => (
+                                <div key={`provider-gap-${row.id}`} className="grid grid-cols-[1fr_auto] gap-2 border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                  <div className="min-w-0">
+                                    <div className="font-serif text-sm leading-tight truncate">{row.label}</div>
+                                    <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] truncate">{row.detail}</div>
+                                    {row.apiPath && (
+                                      <div className="font-mono text-[7px] uppercase tracking-widest text-[#9b875c] truncate">Route: {row.apiPath}</div>
+                                    )}
+                                  </div>
+                                  <span className="node-status-tag bg-[#251b13] text-[#efe2bd]">{row.status}</span>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#9b875c]">
+                              Provider route: {backendManagerReadyPackage.backendRoutes?.providerReadiness || `/projects/${activeProject.id}/provider-readiness`}
+                            </div>
+                          </div>
+                        )}
+                        {backendSecurityBoundary && (
+                          <div data-testid="backend-security-boundary-snapshot" className="mt-3 border border-[#d8c99f] bg-[#efe2bd]/55 p-2">
+                            <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                              <div className="min-w-0">
+                                <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">Security Boundary</div>
+                                <div className="font-serif text-base leading-tight">{backendSecurityBoundary.status || 'unknown'} / {backendSecurityBoundary.production?.status || 'production-blocked'}</div>
+                              </div>
+                              <span className={`node-status-tag ${backendSecurityBoundary.readyForLocalPilot ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
+                                {backendSecurityBoundary.readyForLocalPilot ? 'Local Safe' : 'Needs Attention'}
+                              </span>
+                            </div>
+                            <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2">
+                              {[
+                                ['Routes', backendSecurityBoundary.routeSummary?.count ?? 0],
+                                ['Sensitive Sets', backendSecurityBoundary.summary?.sensitiveCollectionCount ?? 0],
+                                ['Access Policy', backendSecurityBoundary.accessControl?.status || 'unknown'],
+                                ['Audit Rows', backendSecurityBoundary.accessAudit?.count ?? 0],
+                                ['Audit Stream', backendSecurityBoundary.accessAudit?.stream?.count ?? 0],
+                                ['Audit Chain', backendSecurityBoundary.accessAudit?.stream?.hashChainReady ? 'ready' : 'blocked'],
+                                ['Identity Sessions', backendSecurityBoundary.summary?.identitySessionActiveCount ?? backendManagerReadyPackage.summary?.identitySessionActiveCount ?? 0],
+                                ['Session Rows', backendSecurityBoundary.summary?.identitySessionCount ?? backendManagerReadyPackage.summary?.identitySessionCount ?? 0],
+                                ['Secret Vault', backendSecurityBoundary.summary?.secretVaultReady ? 'ready' : 'blocked'],
+                                ['Vault Records', backendSecurityBoundary.summary?.secretVaultEncryptedRecordCount ?? 0],
+                                ['Vault Rotation', backendSecurityBoundary.summary?.secretVaultRotationReady ? 'ready' : 'blocked'],
+                                ['Denied', backendSecurityBoundary.accessAudit?.deniedCount ?? 0],
+                                ['Raw Leaks', backendSecurityBoundary.redactionScan?.rawLeakCount ?? 0],
+                                ['Security Blockers', backendSecurityBoundary.production?.blockerCount ?? 0],
+                              ].map(([label, value]) => (
+                                <div key={`security-boundary-${label}`} className="border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                  <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">{label}</div>
+                                  <div className="font-serif text-sm leading-tight break-words">{value}</div>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#9b875c]">
+                              Security route: {backendManagerReadyPackage.backendRoutes?.securityBoundary || `/projects/${activeProject.id}/security-boundary`}
+                              {' '} / Identity route: {backendManagerReadyPackage.backendRoutes?.identitySessions || `/projects/${activeProject.id}/identity-sessions`}
+                            </div>
+                          </div>
+                        )}
                         <div className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#9b875c]">
                           Package route: {backendManagerReadyPackage.backendRoutes?.managerReadyPackage || `/projects/${activeProject.id}/manager-ready-package`}
                         </div>
@@ -10304,6 +11045,13 @@ export default function EngineWorkspace() {
                             ['Change Rows', backendManagerDashboard.changeFlow?.rows?.length ?? 0],
                             ['Change Intake', backendManagerDashboard.changeSourceIntake?.sourceReadyCount ?? 0],
                             ['Change Owner Pulses', backendManagerDashboard.changeFlow?.rows?.filter(row => row.ownerWorkStarted).length ?? 0],
+                            ['Submissions', backendManagerDashboard.submissions?.count ?? 0],
+                            ['Final Deliverables', backendManagerDashboard.submissions?.finalDeliverableCount ?? 0],
+                            ['Pending Review', backendManagerDashboard.submissions?.pendingReviewCount ?? 0],
+                            ['Evidence Searches', backendManagerDashboard.evidenceSearches?.count ?? 0],
+                            ['Evidence Sources', backendManagerDashboard.evidenceSearches?.sourceCount ?? 0],
+                            ['Accepted Reviews', backendManagerDashboard.submissionReviews?.acceptedCount ?? 0],
+                            ['Change Requests', backendManagerDashboard.submissionReviews?.changesRequestedCount ?? 0],
                             ['Open Tasks', backendManagerDashboard.tasks?.openCount ?? 0],
                           ].map(([label, value]) => (
                             <div key={label} className="border border-[#d8c99f] bg-[#efe2bd]/50 px-2 py-1">
@@ -10315,6 +11063,63 @@ export default function EngineWorkspace() {
                         <div className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#9b875c]">
                           Backend route: {backendManagerDashboard.backendRoutes?.readinessProofMap || 'not available'}
                         </div>
+                        <div data-testid="backend-manager-submissions-route" className="mt-1 font-mono text-[8px] uppercase tracking-widest text-[#9b875c]">
+                          Submissions route: {backendManagerDashboard.backendRoutes?.submissions || `/projects/${activeProject.id}/submissions`} / {backendManagerDashboard.submissions?.count ?? 0} submitted
+                        </div>
+                        <div data-testid="backend-manager-evidence-searches-route" className="mt-1 font-mono text-[8px] uppercase tracking-widest text-[#9b875c]">
+                          Evidence route: {backendManagerDashboard.backendRoutes?.evidenceSearches || `/projects/${activeProject.id}/evidence-searches`} / {backendManagerDashboard.evidenceSearches?.count ?? 0} searches
+                        </div>
+                        <div data-testid="backend-manager-submission-reviews-route" className="mt-1 font-mono text-[8px] uppercase tracking-widest text-[#9b875c]">
+                          Review route: {backendManagerDashboard.backendRoutes?.submissionReviews || `/projects/${activeProject.id}/submission-reviews`} / {backendManagerDashboard.submissionReviews?.count ?? 0} reviews
+                        </div>
+                        {backendManagerDashboard.submissions?.rows?.length > 0 && (
+                          <div data-testid="backend-manager-submissions-snapshot" className="mt-3 border border-[#d8c99f] bg-[#efe2bd]/55 p-2">
+                            <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">Agent Submissions</div>
+                            <div className="mt-2 space-y-1">
+                              {backendManagerDashboard.submissions.rows.slice(0, 4).map(row => (
+                                <div key={row.id} className="grid grid-cols-[1fr_auto] gap-2 border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                  <div className="min-w-0">
+                                    <div className="font-serif text-sm leading-tight truncate">{row.title}</div>
+                                    <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] truncate">{row.agentName} / {row.artifactType} / {row.reviewStatus}</div>
+                                  </div>
+                                  <span className="node-status-tag bg-[#251b13] text-[#efe2bd]">{row.status}</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                        {backendManagerDashboard.evidenceSearches?.rows?.length > 0 && (
+                          <div data-testid="backend-manager-evidence-searches-snapshot" className="mt-3 border border-[#d8c99f] bg-[#efe2bd]/55 p-2">
+                            <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">Evidence Searches</div>
+                            <div className="mt-2 space-y-1">
+                              {backendManagerDashboard.evidenceSearches.rows.slice(0, 4).map(row => (
+                                <div key={row.id} className="grid grid-cols-[1fr_auto] gap-2 border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                  <div className="min-w-0">
+                                    <div className="font-serif text-sm leading-tight truncate">{row.query}</div>
+                                    <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] truncate">{row.agentName} / {row.sources?.length || 0} sources / {row.confidence}</div>
+                                  </div>
+                                  <span className="node-status-tag bg-[#251b13] text-[#efe2bd]">{row.status}</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                        {backendManagerDashboard.submissionReviews?.rows?.length > 0 && (
+                          <div data-testid="backend-manager-submission-reviews-snapshot" className="mt-3 border border-[#d8c99f] bg-[#efe2bd]/55 p-2">
+                            <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">Submission Reviews</div>
+                            <div className="mt-2 space-y-1">
+                              {backendManagerDashboard.submissionReviews.rows.slice(0, 4).map(row => (
+                                <div key={row.id} className="grid grid-cols-[1fr_auto] gap-2 border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                  <div className="min-w-0">
+                                    <div className="font-serif text-sm leading-tight truncate">{row.comments}</div>
+                                    <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] truncate">{row.reviewerAgentName} / {row.submitterAgentName} / {row.submissionId}</div>
+                                  </div>
+                                  <span className="node-status-tag bg-[#251b13] text-[#efe2bd]">{row.verdict}</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
                         <div data-testid="backend-manager-scenario-trail-route" className="mt-1 font-mono text-[8px] uppercase tracking-widest text-[#9b875c]">
                           Scenario trail route: {backendManagerDashboard.backendRoutes?.managerScenarioTrail || '/manager-scenario-trail'} / {backendManagerScenarioTrail?.passedCount ?? 0}-{backendManagerScenarioTrail?.count ?? 0} ready
                         </div>
@@ -10419,7 +11224,7 @@ export default function EngineWorkspace() {
                     <div data-testid="backend-last-result" className="mt-3 border-t border-[#d8c99f] pt-3">
                         <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18] mb-2">{projectText('Latest Backend Work')}</div>
                         <div className="mb-2 font-mono text-[8px] uppercase tracking-widest text-[#6b5a3d] leading-relaxed break-words">
-                          HTTP-AUTONOMOUS-SCHEDULER-STARTUP-AGENTS / MANAGER-UI-SCHEDULER-START-PULSE
+                          HTTP-AUTONOMOUS-SCHEDULER-STARTUP-AGENTS / MANAGER-UI-SCHEDULER-START-PULSE{backendLatestTriggerText ? ` / ${backendLatestTriggerText}` : ''}
                         </div>
                         <div className="grid md:grid-cols-3 gap-2">
                           <div className="border border-[#d8c99f] bg-[#efe2bd]/50 px-2 py-1">
@@ -10431,7 +11236,7 @@ export default function EngineWorkspace() {
                           <div className="border border-[#d8c99f] bg-[#efe2bd]/50 px-2 py-1">
                             <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">{projectText('Agents')}</div>
                             <div className="font-serif text-base leading-tight">
-                              {projectText((backendLatestResult.agentsProcessed || []).map(item => [item.agentId, item.result?.cycle?.trigger || item.project?.agentWorkerLedger?.[0]?.trigger || item.managerDashboard?.operationsBoard?.agents?.find(agent => agent.agentId === item.agentId)?.trigger || item.trigger].filter(Boolean).join(' / ')).slice(0, 3).join(' / ') || 'none due')}
+                              {projectText(backendLatestAgentsProcessed.map(item => [item.agentId, item.result?.cycle?.trigger || item.project?.agentWorkerLedger?.[0]?.trigger || item.managerDashboard?.operationsBoard?.agents?.find(agent => agent.agentId === item.agentId)?.trigger || item.trigger].filter(Boolean).join(' / ')).slice(0, 3).join(' / ') || 'none due')}
                             </div>
                           </div>
                           <div className="border border-[#d8c99f] bg-[#efe2bd]/50 px-2 py-1">
@@ -11730,7 +12535,7 @@ export default function EngineWorkspace() {
               </div>
 
               <div className="bg-[#f7edcf]/70 border border-[#b8a57d] p-5 mb-6">
-                <div className="font-mono text-[10px] uppercase tracking-widest text-[#8f1e18] mb-4">Manager Action Path</div>
+                <div className="font-mono text-[10px] uppercase tracking-widest text-[#8f1e18] mb-4">Manager Demo Path</div>
                 <div className="space-y-3">
                   {demoSteps.map((step, index) => (
                     <button
@@ -12261,6 +13066,22 @@ export default function EngineWorkspace() {
                                           <div className="font-serif text-base leading-tight">{agentBackendDashboard.proof?.chatProofIds?.length || 0}</div>
                                         </div>
                                         <div>
+                                          <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">Submissions</div>
+                                          <div className="font-serif text-base leading-tight">{agentBackendDashboard.ownedSubmissions?.length || 0}</div>
+                                        </div>
+                                        <div>
+                                          <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">Evidence</div>
+                                          <div className="font-serif text-base leading-tight">{agentBackendDashboard.ownedEvidenceSearches?.length || 0}</div>
+                                        </div>
+                                        <div>
+                                          <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">Reviews</div>
+                                          <div className="font-serif text-base leading-tight">{agentBackendDashboard.ownedSubmissionReviews?.length || 0}</div>
+                                        </div>
+                                        <div>
+                                          <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">Submission Proofs</div>
+                                          <div className="font-serif text-base leading-tight">{agentBackendDashboard.proof?.submissionIds?.length || 0}</div>
+                                        </div>
+                                        <div>
                                           <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">Timeline Proofs</div>
                                           <div className="font-serif text-base leading-tight">{agentBackendDashboard.proof?.timelineLogIds?.length || 0}</div>
                                         </div>
@@ -12286,6 +13107,54 @@ export default function EngineWorkspace() {
                                       <div className="mt-1 font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">
                                         Synced {agentBackendDashboard.syncedAt ? new Date(agentBackendDashboard.syncedAt).toLocaleTimeString() : 'from backend'}
                                       </div>
+                                      {agentBackendDashboard.ownedSubmissions?.length > 0 && (
+                                        <div data-testid={`agent-focus-submissions-${agent.id}`} className="mt-2 border-t border-[#d8c99f] pt-2">
+                                          <div className="font-mono text-[7px] uppercase tracking-widest text-[#8f1e18]">Owned Submissions</div>
+                                          <div className="mt-1 space-y-1">
+                                            {agentBackendDashboard.ownedSubmissions.slice(0, 4).map(submission => (
+                                              <div key={submission.id} className="grid grid-cols-[1fr_auto] gap-2 border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                                <div className="min-w-0">
+                                                  <div className="font-serif text-sm leading-tight truncate">{submission.title}</div>
+                                                  <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] truncate">{submission.artifactType} / {submission.status} / {submission.reviewStatus}</div>
+                                                </div>
+                                                <span className="node-status-tag bg-[#251b13] text-[#efe2bd]">{submission.artifactType}</span>
+                                              </div>
+                                            ))}
+                                          </div>
+                                        </div>
+                                      )}
+                                      {agentBackendDashboard.ownedEvidenceSearches?.length > 0 && (
+                                        <div data-testid={`agent-focus-evidence-searches-${agent.id}`} className="mt-2 border-t border-[#d8c99f] pt-2">
+                                          <div className="font-mono text-[7px] uppercase tracking-widest text-[#8f1e18]">Evidence Searches</div>
+                                          <div className="mt-1 space-y-1">
+                                            {agentBackendDashboard.ownedEvidenceSearches.slice(0, 4).map(record => (
+                                              <div key={record.id} className="grid grid-cols-[1fr_auto] gap-2 border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                                <div className="min-w-0">
+                                                  <div className="font-serif text-sm leading-tight truncate">{record.query}</div>
+                                                  <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] truncate">{record.sources?.length || 0} sources / {record.confidence} / {record.status}</div>
+                                                </div>
+                                                <span className="node-status-tag bg-[#251b13] text-[#efe2bd]">{record.searchMode}</span>
+                                              </div>
+                                            ))}
+                                          </div>
+                                        </div>
+                                      )}
+                                      {agentBackendDashboard.ownedSubmissionReviews?.length > 0 && (
+                                        <div data-testid={`agent-focus-submission-reviews-${agent.id}`} className="mt-2 border-t border-[#d8c99f] pt-2">
+                                          <div className="font-mono text-[7px] uppercase tracking-widest text-[#8f1e18]">Submission Reviews</div>
+                                          <div className="mt-1 space-y-1">
+                                            {agentBackendDashboard.ownedSubmissionReviews.slice(0, 4).map(review => (
+                                              <div key={review.id} className="grid grid-cols-[1fr_auto] gap-2 border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                                <div className="min-w-0">
+                                                  <div className="font-serif text-sm leading-tight truncate">{review.comments}</div>
+                                                  <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] truncate">{review.roleInReview} / {review.submissionId}</div>
+                                                </div>
+                                                <span className="node-status-tag bg-[#251b13] text-[#efe2bd]">{review.verdict}</span>
+                                              </div>
+                                            ))}
+                                          </div>
+                                        </div>
+                                      )}
                                     </div>
                                   )}
                                   <div data-testid={`agent-focus-management-${agent.id}`} className="mt-3 border border-[#d8c99f] bg-[#efe2bd]/55 p-2">
@@ -12738,7 +13607,7 @@ export default function EngineWorkspace() {
               <div className="bg-[#1a130e]/80 border border-[#3a2a1c] rounded p-4 flex-1 overflow-y-auto min-h-0">
                 <div className="flex items-center gap-2 mb-3">
                   <span className="node-id-tag bg-[#8f1e18]">LOG</span>
-                  <span className="font-mono text-[9px] uppercase tracking-widest text-[#7d6a49]">浼氳閫熻</span>
+                  <span className="font-mono text-[9px] uppercase tracking-widest text-[#7d6a49]">{localizeText('Meeting Transcript', activeLanguage)}</span>
                 </div>
                 <div className="space-y-3">
                   {roomTranscript.slice(-8).map((log, idx) => {

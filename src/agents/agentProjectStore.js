@@ -2,12 +2,16 @@ export function createAgentProjectMemoryStore({
   projects = [],
   messages = [],
   kickoffMeetings = [],
+  securityAccessAuditRecords = [],
+  accessReplayRecords = [],
   messageLimit = 240,
   hydrateProject = (project) => project,
 } = {}) {
   const projectMap = new Map();
   const kickoffMeetingMap = new Map();
   let chatMessages = [...messages].slice(-messageLimit);
+  let auditRecords = [...securityAccessAuditRecords];
+  let replayRecords = [...accessReplayRecords].filter((record) => record?.replayKey);
 
   projects.forEach((project) => {
     if (!project?.id) return;
@@ -58,11 +62,50 @@ export function createAgentProjectMemoryStore({
     getMessages(projectId) {
       return chatMessages.filter((message) => !projectId || message.projectId === projectId);
     },
+    appendSecurityAuditRecords(records = []) {
+      const nextRecords = (Array.isArray(records) ? records : [records]).filter((record) => record?.id);
+      if (!nextRecords.length) return [];
+      const existingIds = new Set(auditRecords.map((record) => record.id));
+      const uniqueRecords = nextRecords.filter((record) => !existingIds.has(record.id));
+      if (!uniqueRecords.length) return [];
+      auditRecords = [...auditRecords, ...uniqueRecords];
+      return uniqueRecords;
+    },
+    listSecurityAuditRecords(projectId) {
+      return auditRecords.filter((record) => !projectId || record.projectId === projectId);
+    },
+    pruneAccessReplayRecords(nowMs = Date.now()) {
+      const before = replayRecords.length;
+      replayRecords = replayRecords.filter((record) => {
+        const expiresAtMs = Date.parse(record.expiresAt || '');
+        return !Number.isFinite(expiresAtMs) || expiresAtMs > Number(nowMs);
+      });
+      return before - replayRecords.length;
+    },
+    getAccessReplayRecord(replayKey) {
+      const key = String(replayKey || '');
+      if (!key) return null;
+      return replayRecords.find((record) => record.replayKey === key) || null;
+    },
+    appendAccessReplayRecords(records = []) {
+      const nextRecords = (Array.isArray(records) ? records : [records]).filter((record) => record?.replayKey);
+      if (!nextRecords.length) return [];
+      const existingKeys = new Set(replayRecords.map((record) => record.replayKey));
+      const uniqueRecords = nextRecords.filter((record) => !existingKeys.has(record.replayKey));
+      if (!uniqueRecords.length) return [];
+      replayRecords = [...replayRecords, ...uniqueRecords];
+      return uniqueRecords;
+    },
+    listAccessReplayRecords(projectId) {
+      return replayRecords.filter((record) => !projectId || record.projectId === projectId);
+    },
     snapshot() {
       return {
         projects: [...projectMap.values()],
         messages: chatMessages,
         kickoffMeetings: [...kickoffMeetingMap.values()],
+        securityAccessAuditRecords: auditRecords,
+        accessReplayRecords: replayRecords,
       };
     },
   };

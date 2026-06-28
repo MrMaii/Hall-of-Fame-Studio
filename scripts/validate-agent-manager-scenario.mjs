@@ -72,6 +72,15 @@ function assertIncludes(value, pattern, message) {
   assert(pattern.test(value), `${message}: ${value}`);
 }
 
+const scenarioStartedAt = Date.now();
+
+function checkpoint(label) {
+  if (process.env.HOFS_TRACE_MANAGER_SCENARIO) {
+    const elapsedSeconds = ((Date.now() - scenarioStartedAt) / 1000).toFixed(1);
+    console.log(`[manager-scenario +${elapsedSeconds}s] ${label}`);
+  }
+}
+
 function hasContiguousSequences(events = []) {
   return events.every((event, index) => index === 0 || event.sequence === events[index - 1].sequence + 1);
 }
@@ -362,6 +371,7 @@ const spacedMentionReplies = buildAgentChatReplies({
   context: { projectId, projectName },
 });
 assert(spacedMentionReplies.some((message) => message.author === 'Alan Turing'), 'Group chat @mentions with spaced Agent names must route to the mentioned Agent.');
+checkpoint('runtime primitives');
 const network = createAgentNetwork(confirmedTeam, { projectId, projectName, topic: brief });
 assert(network.governance.lead?.id === leaderId, 'Confirmed isLeader marker must control runtime governance.');
 
@@ -765,6 +775,7 @@ assert(publishedCycleChat.project.eventLedger.some((event) => event.type === 'gr
 assert(Object.values(publishedCycleChat.project.agentStates).some((state) => state.worklog.some((item) => item.kind === 'chat-message-sent' && item.source === 'autonomous-cycle-chat')), 'Published autonomous chat must enter Agent-authored worklogs.');
 assert(Object.values(publishedCycleChat.project.agentStates).some((state) => state.inbox.some((item) => item.source === 'autonomous-cycle-chat')), 'Published autonomous management mentions must enter target Agent inboxes.');
 
+checkpoint('manager readiness projection');
 const managerReadiness = evaluateManagerScenarioReadiness({
   project: publishedCycleChat.project,
   team: publishedCycleChat.project.team,
@@ -834,6 +845,7 @@ assert(migratedReadiness.status === 'manager-ready', `Backfilled legacy project 
 
 const serviceTargetProbe = resolveProjectChatTargets('leader assign @Alan Turing prepare service evidence', confirmedTeam);
 assert(serviceTargetProbe.includes('Alan Turing'), 'Project service must resolve spaced @Agent names before dispatching chat commands.');
+checkpoint('durable kickoff meeting service');
 const kickoffMeetingService = createAgentProjectService();
 const createdKickoffMeeting = kickoffMeetingService.createKickoffMeeting({
   meetingId: 'svc_kickoff_meeting_session',
@@ -959,6 +971,7 @@ const reloadedKickoffActionQueue = reloadedKickoffMeetingService.getManagerActio
 assert(reloadedKickoffActionQueue.rows.some((row) => row.requirementId === 'roles-questions-and-self-nominations' && row.apiPath === '/kickoff-meetings/svc_kickoff_meeting_session/clarify' && row.routeResolved), 'Projects approved from a meeting session must resolve kickoff clarification action routes with the durable meeting id.');
 assert(reloadedKickoffActionQueue.rows.some((row) => row.requirementId === 'leader-election-marker' && row.apiPath === '/kickoff-meetings/svc_kickoff_meeting_session/leader' && row.context?.kickoffMeetingId === 'svc_kickoff_meeting_session'), 'Projects approved from a meeting session must resolve Leader confirmation action routes with context.');
 assert(reloadedKickoffActionQueue.rows.some((row) => row.requirementId === 'leader-election-marker' && row.requestBodyTemplate?.selectedLeaderId === 'turing'), 'Projects approved from a meeting session must expose a Leader confirmation request body template.');
+checkpoint('project service read models');
 const projectService = createAgentProjectService({
   projects: [publishedCycleChat.project],
   messages: [
@@ -1387,6 +1400,7 @@ const fileStore = createAgentProjectFileStore({
   hydrateProject: hydrateAgentProject,
   replaceWithSeed: true,
 });
+checkpoint('file-backed service');
 const fileService = createAgentProjectService({ store: fileStore });
 const fileServiceChange = fileService.submitChatMessage({
   projectId,
@@ -1428,6 +1442,7 @@ const apiProjectRuntime = createLocalProjectRuntime({
   enableCommandExecution: true,
   allowedCommands: ['node'],
 });
+checkpoint('file-backed API and local runtime');
 const projectApi = createFileBackedAgentProjectApi({
   filePath: apiStorePath,
   projects: [filePostRestartCycle.project],
@@ -1506,6 +1521,7 @@ apiResponse = projectApi.handle({
   path: `/projects/${projectId}/manager-ready-package`,
 });
 assert(apiResponse.status === 200 && apiResponse.body.ready && apiResponse.body.summary.scenarioTrailReadyCount > 0 && apiResponse.body.summary.commandCenterAttentionCount === apiResponse.body.managerCommandCenter.attentionCount && apiResponse.body.managerDashboard.readiness.status === 'manager-ready', 'Agent project API must expose the manager ready package endpoint with command center summary data.');
+checkpoint('file API manager ready package');
 apiResponse = projectApi.handle({
   method: 'GET',
   path: `/projects/${projectId}/manager-command-center`,
@@ -1556,6 +1572,7 @@ apiResponse = projectApi.handle({
   body: { now: '2026-05-28T16:03:00.000Z' },
 });
 assert(apiResponse.status === 200 && apiResponse.body.managerAction?.requirementId === 'assignee-receives-and-starts' && apiResponse.body.managerActionRun?.requirementId === 'assignee-receives-and-starts' && apiResponse.body.cycle?.trigger === 'manager-action-playbook-assignee-start' && apiResponse.body.project?.agentWorkerLedger?.some((record) => record.trigger === 'manager-action-playbook-assignee-start') && apiResponse.body.project?.eventLedger?.some((event) => event.type === 'manager-action-run') && apiResponse.body.messages?.some((message) => message.agentWorker?.trigger === 'manager-action-playbook-assignee-start') && apiResponse.body.managerDashboard?.managerActionRuns?.count > 0 && apiResponse.body.managerDashboard?.readiness?.status === 'manager-ready' && apiResponse.body.managerActionQueue?.rows?.length > 0, 'Agent project API must execute a manager action queue row through the backend run endpoint and return an auditable manager-action-run receipt.');
+checkpoint('file API action queue run');
 apiResponse = projectApi.handle({
   method: 'POST',
   path: '/kickoff-meetings',
@@ -1600,6 +1617,7 @@ assert(apiResponse.body.project.team.some((agent) => agent.id === 'turing' && ag
 assert(apiResponse.body.managerDashboard?.kickoffExecutionFlow?.firstPulse?.started, 'API kickoff meeting approval responses must include manager-dashboard first-pulse evidence.');
 assert(apiResponse.body.managerReadyPackage?.managerDashboard?.kickoffExecutionFlow?.firstPulse?.started, 'API kickoff meeting approval responses must include manager-ready package first-pulse evidence.');
 assert(apiResponse.body.managerDashboard?.kickoffMeetingFlow?.conversationRows?.some((row) => row.stage === 'director-clarification' && /system Agent owns integration proof/i.test(row.text || '')), 'API kickoff meeting approval responses must include manager clarification conversation evidence.');
+checkpoint('file API kickoff approval');
 apiResponse = projectApi.handle({
   method: 'GET',
   path: '/kickoff-meetings',
@@ -1646,6 +1664,7 @@ assert(apiResponse.status === 200 && apiResponse.body.route === 'multi-channel-c
 assert(apiResponse.body.messages.some((message) => message.channelId === 'main') && apiResponse.body.messages.some((message) => message.channelId === 'google_chat'), 'Agent project API dual-channel changes must return both source messages.');
 assert(apiResponse.body.managerDashboard?.changeFlow?.rows?.some((row) => row.source === 'multi-channel-change-request' && row.sourceMessageIds?.length === 2), 'Agent project API dual-channel changes must return manager-dashboard source evidence.');
 assert(apiResponse.body.managerReadyPackage?.managerScenarioTrail?.rows?.some((row) => row.id === 'dual-channel-change' && row.passed), 'Agent project API dual-channel changes must return manager-ready package scenario trail evidence.');
+checkpoint('file API chat and change commands');
 apiResponse = projectApi.handle({
   method: 'POST',
   path: `/projects/${projectId}/autonomous-cycle`,
@@ -1661,6 +1680,7 @@ apiResponse = projectApi.handle({
 assert(apiResponse.status === 200 && apiResponse.body.messageCount > 0, 'Agent project API must run autonomous worker cycles and return publishable messages.');
 assert(apiResponse.body.managerDashboard?.operationsBoard?.latestProjectCycle?.trigger === 'api-worker', 'Agent project API autonomous-cycle responses must include updated manager-dashboard operations data.');
 assert(apiResponse.body.managerReadyPackage?.operationsBoard?.latestProjectCycle?.trigger === 'api-worker', 'Agent project API autonomous-cycle responses must include updated manager-ready package operations data.');
+checkpoint('file API autonomous cycle');
 apiResponse = projectApi.handle({
   method: 'POST',
   path: `/projects/${projectId}/chat`,
@@ -1674,6 +1694,7 @@ apiResponse = projectApi.handle({
 assert(apiResponse.status === 200 && apiResponse.body.route === 'leader-assignment', 'Agent project API must create an Agent-owned task before a per-Agent worker cycle.');
 const apiAgentTaskId = apiResponse.body.responses.leaderAssignmentResponse.task.id;
 assert(apiResponse.body.responses.leaderAssignmentStartWorkResponse?.cycle?.trigger === 'leader-assignment-start-work', 'Agent project API Leader assignment must immediately start the assigned Agent work pulse.');
+checkpoint('file API leader assignment for agent worker');
 apiResponse = projectApi.handle({
   method: 'POST',
   path: `/projects/${projectId}/agents/turing/work-cycle`,
@@ -1688,6 +1709,7 @@ assert(apiResponse.body.project.eventLedger.some((event) => ['agent-work-pulse',
 assert(apiResponse.body.managerDashboard?.operationsBoard?.agents?.some((agent) => agent.agentId === 'turing' && agent.trigger === 'api-agent-worker'), 'Per-Agent API worker responses must include updated manager-dashboard Agent operations data.');
 assert(apiResponse.body.managerReadyPackage?.operationsBoard?.agents?.some((agent) => agent.agentId === 'turing' && agent.trigger === 'api-agent-worker'), 'Per-Agent API worker responses must include updated manager-ready package Agent operations data.');
 assert(apiResponse.body.task?.id === apiAgentTaskId && apiResponse.body.task.status === 'done', 'First explicit per-Agent API worker pulse after assignment-start work must complete the Agent-owned task.');
+checkpoint('file API first agent worker');
 apiResponse = projectApi.handle({
   method: 'POST',
   path: `/projects/${projectId}/agents/turing/work-cycle`,
@@ -1697,6 +1719,7 @@ apiResponse = projectApi.handle({
   },
 });
 assert(apiResponse.status === 200 && apiResponse.body.project.agentWorkerLedger?.[0]?.agentId === 'turing', 'Subsequent per-Agent API worker pulses must keep the Agent worker ledger moving.');
+checkpoint('file API second agent worker');
 apiResponse = projectApi.handle({
   method: 'GET',
   path: `/projects/${projectId}/agents/turing/dashboard`,
@@ -1704,6 +1727,7 @@ apiResponse = projectApi.handle({
 assert(apiResponse.status === 200 && apiResponse.body.agentId === 'turing' && apiResponse.body.ownedTasks.some((task) => task.id === apiAgentTaskId), 'Agent project API must expose an Agent dashboard with owned tasks.');
 assert(apiResponse.body.latestWorker?.trigger === 'api-agent-worker' && apiResponse.body.proof.chatProofIds.length > 0 && apiResponse.body.proof.timelineLogIds.length > 0, 'Agent project API dashboard must include latest worker and proof ids.');
 assert(apiResponse.body.management.managerNames.length > 0 || apiResponse.body.management.score >= 0, 'Agent project API dashboard must include management relationship metadata.');
+checkpoint('file API agent dashboard');
 apiResponse = projectApi.handle({
   method: 'POST',
   path: `/projects/${projectId}/agents/musk/message`,
@@ -1719,11 +1743,13 @@ assert(apiResponse.status === 200 && apiResponse.body.route === 'agent-message',
 assert(apiResponse.body.messages.some((message) => message.id === 'api_agent_to_agent_source' && message.authorId === 'musk'), 'Agent-to-Agent API response must return the Agent-authored source message.');
 assert(apiResponse.body.agentDashboard?.worklog?.some((item) => item.sourceMessageId === 'api_agent_to_agent_source'), 'Agent-to-Agent API response must include the sender Agent dashboard with worklog proof.');
 assert(apiResponse.body.managerDashboard?.agentCommunicationFlow?.rows?.some((row) => row.messageId === 'api_agent_to_agent_source' && row.inboxSeen && row.senderWorklogSeen), 'Agent-to-Agent API response must include manager-dashboard communication flow proof.');
+checkpoint('file API agent-to-agent message');
 apiResponse = projectApi.handle({
   method: 'GET',
   path: `/projects/${projectId}/agents/turing/dashboard`,
 });
 assert(apiResponse.status === 200 && apiResponse.body.inbox.some((item) => item.sourceMessageId === 'api_agent_to_agent_source') && apiResponse.body.proof.chatProofIds.includes('api_agent_to_agent_source'), 'Target Agent dashboard must expose API Agent-to-Agent inbox and chat proof.');
+checkpoint('file API agent worker and message');
 apiResponse = projectApi.handle({
   method: 'GET',
   path: `/projects/${projectId}/transcripts`,
@@ -1744,6 +1770,7 @@ apiResponse = projectApi.handle({
   },
 });
 assert(apiResponse.status === 200 && apiResponse.body.project.status === 'archived' && existsSync(apiResponse.body.localRuntime.latestArchivePath), 'Agent project API must create a project-scoped archive snapshot.');
+checkpoint('file API local archive');
 persistedSnapshot = JSON.parse(readFileSync(apiStorePath, 'utf8'));
 assert(persistedSnapshot.messages.some((message) => message.id === 'api_google_source'), 'Agent project API must persist chat requests through its file-backed store.');
 assert(persistedSnapshot.projects[0]?.autonomousSchedulerLedger?.[0]?.trigger === 'api-worker', 'Agent project API must persist worker-cycle state.');
@@ -1776,6 +1803,7 @@ apiResponse = restartedApi.handle({
   },
 });
 assert(apiResponse.status === 200 && apiResponse.body.route === 'leader-assignment', 'Restarted Agent project API must continue routing Leader assignments.');
+checkpoint('restarted file API leader assignment');
 apiResponse = restartedApi.handle({
   method: 'GET',
   path: `/projects/${projectId}/readiness`,
@@ -1815,6 +1843,7 @@ const dueWorkerProbe = runDueProjectAutonomousCycles({
 });
 assert(dueWorkerProbe.processed.length === 1 && dueWorkerProbe.processed[0].projectId === `${projectId}_due_probe`, 'Due worker helper must process only due autonomous projects.');
 assert(dueWorkerProbe.skipped.some((item) => item.projectId === `${projectId}_not_due_probe` && item.reason === 'hourly-cadence-waiting'), 'Due worker helper must skip projects whose next run is still in the future.');
+checkpoint('due worker helper');
 const dueApiStorePath = new URL('../.tmp/agent-manager-due-worker-api-store.json', import.meta.url);
 const dueProject = {
   ...restartedApi.service.getProject(projectId),
@@ -1830,6 +1859,7 @@ const notDueProject = {
   lastAutonomousRunAt: '2026-05-28T17:30:00.000Z',
   nextAutonomousRunAt: '2026-05-28T18:30:00.000Z',
 };
+checkpoint('due worker API');
 const dueWorkerApi = createFileBackedAgentProjectApi({
   filePath: dueApiStorePath,
   projects: [dueProject, notDueProject],
@@ -1894,6 +1924,7 @@ apiResponse = restartedDueWorkerApi.handle({
   path: `/projects/${projectId}/readiness`,
 });
 assert(apiResponse.status === 200 && apiResponse.body.readiness.status === 'manager-ready', 'Restarted due-worker API must preserve readiness for processed projects.');
+checkpoint('HTTP manager scenario');
 const httpStorePath = new URL('../.tmp/agent-manager-http-store.json', import.meta.url);
 const httpServer = createAgentProjectHttpServer({
   filePath: httpStorePath,
@@ -2041,6 +2072,7 @@ try {
   assert(httpBody.result.agentProcessed.some((item) => item.projectId === `${projectId}_http_scheduler_due` && item.managerReadyPackage?.operationsBoard?.agents?.length > 0), 'HTTP scheduler tick processed Agent items must include manager-ready package Agent data.');
   assert(httpBody.status.tickCount >= 1 && httpBody.status.processedCount >= 1, 'HTTP scheduler tick endpoint must update scheduler status counters.');
   assert(httpBody.status.agentProcessedCount >= 1, 'HTTP scheduler tick endpoint must update per-Agent scheduler status counters.');
+  checkpoint('HTTP scheduler immediate start');
   httpResponse = await fetch(`${httpRuntime.url}/workers/autonomous/start`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -2076,6 +2108,7 @@ assert(persistedSnapshot.messages.some((message) => message.id === 'http_google_
 assert(persistedSnapshot.projects.find((project) => project.id === projectId)?.autonomousSchedulerLedger?.some((record) => record.trigger === 'http-due-worker'), 'HTTP server must persist due-worker scheduler state.');
 assert(persistedSnapshot.projects.find((project) => project.id === `${projectId}_http_scheduler_due`)?.autonomousSchedulerLedger?.some((record) => record.trigger === 'http-scheduler-tick'), 'HTTP scheduler tick endpoint must persist processed project state.');
 assert(persistedSnapshot.projects.find((project) => project.id === `${projectId}_http_scheduler_due`)?.agentWorkerLedger?.some((record) => record.trigger === 'http-scheduler-tick-agents'), 'HTTP scheduler tick endpoint must persist processed Agent worker state.');
+checkpoint('restarted HTTP readback');
 const restartedHttpServer = createAgentProjectHttpServer({ filePath: httpStorePath });
 const restartedHttpRuntime = await restartedHttpServer.listen();
 try {
@@ -2091,6 +2124,7 @@ try {
 } finally {
   await restartedHttpServer.close();
 }
+checkpoint('HTTP kickoff session');
 const kickoffHttpStorePath = new URL('../.tmp/agent-manager-kickoff-http-store.json', import.meta.url);
 const kickoffHttpRuntimeRoot = fileURLToPath(new URL('../.tmp/agent-manager-kickoff-http-runtime', import.meta.url));
 const kickoffHttpWorkspaceRoot = fileURLToPath(new URL('../.tmp/agent-manager-kickoff-http-workspace', import.meta.url));

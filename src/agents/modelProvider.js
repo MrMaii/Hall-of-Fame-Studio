@@ -1,3 +1,5 @@
+import { redactSensitiveText, redactUrl } from './secretRedaction.js';
+
 const DEFAULT_PROVIDER = 'openai-compatible';
 const DEFAULT_OPENAI_COMPATIBLE_BASE_URL = 'https://api.openai.com/v1';
 const DEFAULT_ANTHROPIC_BASE_URL = 'https://api.anthropic.com/v1';
@@ -291,6 +293,8 @@ function createLimiter(maxConcurrency = DEFAULT_MAX_CONCURRENCY) {
 export function createModelProvider({
   provider = DEFAULT_PROVIDER,
   apiKey,
+  apiKeySource = 'direct-config',
+  secretVaultStatus = null,
   baseURL,
   model = DEFAULT_MODEL,
   enabled = false,
@@ -351,7 +355,7 @@ export function createModelProvider({
         return {
           ok: false,
           status: response.status,
-          error: data?.error?.message || data?.message || raw.slice(0, 400),
+          error: redactSensitiveText(data?.error?.message || data?.message || raw.slice(0, 400)),
           provider: resolvedProvider,
           model: resolvedModel,
         };
@@ -369,7 +373,7 @@ export function createModelProvider({
     } catch (error) {
       return {
         ok: false,
-        error: error.name === 'AbortError' ? 'model request timed out' : error.message || String(error),
+        error: error.name === 'AbortError' ? 'model request timed out' : redactSensitiveText(error.message || String(error)),
         provider: resolvedProvider,
         model: resolvedModel,
       };
@@ -384,7 +388,7 @@ export function createModelProvider({
     configured,
     blockedByPolicy,
     model: resolvedModel,
-    baseURL: resolvedBaseURL,
+    baseURL: redactUrl(resolvedBaseURL),
     status() {
       return {
         provider: resolvedProvider,
@@ -392,7 +396,18 @@ export function createModelProvider({
         configured,
         blockedByPolicy,
         model: resolvedModel,
-        baseURL: resolvedBaseURL,
+        baseURL: redactUrl(resolvedBaseURL),
+        hasApiKey: Boolean(apiKey),
+        apiKeySource: apiKey ? apiKeySource : 'missing',
+        secretVault: secretVaultStatus
+          ? {
+            provider: secretVaultStatus.provider || 'unknown',
+            enabled: Boolean(secretVaultStatus.enabled),
+            configured: Boolean(secretVaultStatus.configured),
+            ready: Boolean(secretVaultStatus.ready),
+            keyId: secretVaultStatus.keyId || null,
+          }
+          : null,
         hasFetch: typeof fetchImpl === 'function',
         maxConcurrency: limiter.limit,
         activeRequests: limiter.activeCount(),
@@ -425,7 +440,7 @@ export function createModelProvider({
   };
 }
 
-export function createModelProviderFromEnv(env = globalThis.process?.env || {}) {
+export function createModelProviderFromEnv(env = globalThis.process?.env || {}, options = {}) {
   const provider = normalizeProvider(env.MODEL_PROVIDER || env.AGENT_MODEL_PROVIDER || DEFAULT_PROVIDER);
   const providerPrefix = provider.toUpperCase().replace(/-/g, '_');
   return createModelProvider({
@@ -435,6 +450,8 @@ export function createModelProviderFromEnv(env = globalThis.process?.env || {}) 
       || env.OPENAI_API_KEY
       || env.ANTHROPIC_API_KEY
       || env.GEMINI_API_KEY,
+    apiKeySource: options.apiKeySource || (options.secretVaultStatus?.ready ? 'local-secret-vault' : 'environment'),
+    secretVaultStatus: options.secretVaultStatus || null,
     baseURL: env.MODEL_BASE_URL || env[`${providerPrefix}_BASE_URL`] || defaultBaseUrlFor(provider),
     model: env.MODEL_NAME || env[`${providerPrefix}_MODEL`] || DEFAULT_MODEL,
     enabled: parseBoolean(env.MODEL_PROVIDER_ENABLED || env.AGENT_LLM_ENABLED, false),

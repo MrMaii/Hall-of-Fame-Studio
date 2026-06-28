@@ -1,5 +1,6 @@
 import { createServer } from 'node:http';
 import { createFileBackedAgentProjectApi } from './agentProjectApi.js';
+import { signAgentProjectAccessHeaders } from './accessControl.js';
 
 async function readJsonBody(request) {
   const chunks = [];
@@ -16,7 +17,7 @@ function writeJson(response, status, body) {
     'content-type': 'application/json; charset=utf-8',
     'access-control-allow-origin': '*',
     'access-control-allow-methods': 'GET,POST,PUT,OPTIONS',
-    'access-control-allow-headers': 'content-type',
+    'access-control-allow-headers': 'content-type,x-hofs-access-mode,x-hofs-role,x-hofs-agent-id,x-hofs-user-id,x-hofs-signed-at,x-hofs-request-id,x-hofs-signature',
   });
   response.end(JSON.stringify(body));
 }
@@ -27,6 +28,7 @@ function createAutonomousSchedulerController({
   now = () => new Date().toISOString(),
   trigger = 'http-autonomous-scheduler',
   source = 'http-autonomous-scheduler-chat',
+  accessControl = {},
 } = {}) {
   let timer = null;
   let running = false;
@@ -56,6 +58,27 @@ function createAutonomousSchedulerController({
     running,
   });
 
+  const runtimeHeaders = ({ method = 'POST', path = '/' } = {}) => {
+    const baseHeaders = {
+      'x-hofs-access-mode': 'enforced',
+      'x-hofs-role': 'runtime-platform',
+      'x-hofs-user-id': 'http-autonomous-scheduler',
+    };
+    if (!accessControl.signingSecret) return baseHeaders;
+    const signedAt = now();
+    return signAgentProjectAccessHeaders({
+      method,
+      path,
+      role: 'runtime-platform',
+      userId: 'http-autonomous-scheduler',
+      signedAt,
+      requestId: (accessControl.requireSignedRequestIds || accessControl.requireReplayProtection)
+        ? `scheduler_${path.replace(/[^a-z0-9]+/gi, '_')}_${Date.parse(signedAt) || Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+        : '',
+      secret: accessControl.signingSecret,
+    });
+  };
+
   const tick = async (input = {}) => {
     if (running) {
       return {
@@ -72,6 +95,7 @@ function createAutonomousSchedulerController({
       const projectResult = api.handle({
         method: 'POST',
         path: '/workers/autonomous/due',
+        headers: runtimeHeaders({ method: 'POST', path: '/workers/autonomous/due' }),
         body: {
           now: tickAt,
           trigger: input.trigger || state.trigger,
@@ -87,6 +111,7 @@ function createAutonomousSchedulerController({
       const agentResult = api.handle({
         method: 'POST',
         path: '/workers/agents/due',
+        headers: runtimeHeaders({ method: 'POST', path: '/workers/agents/due' }),
         body: {
           now: tickAt,
           trigger: input.agentTrigger || `${input.trigger || state.trigger}-agents`,
@@ -182,6 +207,7 @@ function createAutonomousSchedulerController({
 export function createAgentProjectHttpServer({
   api,
   filePath,
+  securityAuditLogPath,
   projects = [],
   messages = [],
   kickoffMeetings = [],
@@ -191,9 +217,14 @@ export function createAgentProjectHttpServer({
   artifactWriter = null,
   projectRuntime = null,
   llmProvider = null,
+  searchProvider = null,
+  providerPolicy = {},
+  secretVault = null,
+  accessControl = {},
 } = {}) {
   const resolvedApi = api || createFileBackedAgentProjectApi({
     filePath,
+    securityAuditLogPath,
     projects,
     messages,
     kickoffMeetings,
@@ -202,6 +233,10 @@ export function createAgentProjectHttpServer({
     artifactWriter,
     projectRuntime,
     llmProvider,
+    searchProvider,
+    providerPolicy,
+    secretVault,
+    accessControl,
   });
   const scheduler = createAutonomousSchedulerController({
     api: resolvedApi,
@@ -209,6 +244,7 @@ export function createAgentProjectHttpServer({
     now: autonomousScheduler.now,
     trigger: autonomousScheduler.trigger,
     source: autonomousScheduler.source,
+    accessControl,
   });
 
   const server = createServer(async (request, response) => {
@@ -241,6 +277,7 @@ export function createAgentProjectHttpServer({
       const result = await (resolvedApi.handleAsync || resolvedApi.handle).call(resolvedApi, {
         method: request.method,
         path: url.pathname,
+        headers: request.headers,
         body,
       });
       writeJson(response, result.status, result.body);
@@ -250,6 +287,13 @@ export function createAgentProjectHttpServer({
         message: error.message || String(error),
       });
     }
+  });
+  const sockets = new Set();
+  server.keepAliveTimeout = Math.min(Number(server.keepAliveTimeout) || 5000, 1000);
+  server.headersTimeout = Math.min(Number(server.headersTimeout) || 60000, 5000);
+  server.on('connection', (socket) => {
+    sockets.add(socket);
+    socket.on('close', () => sockets.delete(socket));
   });
 
   if (autonomousScheduler.enabled || autonomousScheduler.autoStart) {
@@ -278,7 +322,26 @@ export function createAgentProjectHttpServer({
     close() {
       scheduler.stop();
       return new Promise((resolve, reject) => {
-        server.close((error) => (error ? reject(error) : resolve()));
+        let settled = false;
+        let closeIdleTimer = null;
+        let forceCloseTimer = null;
+        const settle = (error = null) => {
+          if (settled) return;
+          settled = true;
+          if (closeIdleTimer) clearTimeout(closeIdleTimer);
+          if (forceCloseTimer) clearTimeout(forceCloseTimer);
+          if (error) reject(error);
+          else resolve();
+        };
+        closeIdleTimer = setTimeout(() => {
+          if (typeof server.closeIdleConnections === 'function') server.closeIdleConnections();
+        }, 50);
+        forceCloseTimer = setTimeout(() => {
+          if (typeof server.closeAllConnections === 'function') server.closeAllConnections();
+          sockets.forEach((socket) => socket.destroy());
+          settle();
+        }, 2500);
+        server.close((error) => settle(error));
       });
     },
   };
