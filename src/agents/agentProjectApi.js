@@ -688,6 +688,12 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
           const evidenceSearchId = decodeURIComponent(route.tail[0]);
           return json(200, { evidenceSearch: service.getEvidenceSearch(route.projectId, evidenceSearchId) });
         }
+        if (method === 'GET' && route.action === 'evidence-quality-audit') {
+          return json(200, { evidenceQualityAudit: service.getEvidenceQualityAudit(route.projectId, { language }) });
+        }
+        if (method === 'GET' && route.action === 'evidence-source-review-workflow') {
+          return json(200, { evidenceSourceReviewWorkflow: service.getEvidenceSourceReviewWorkflow(route.projectId, { language }) });
+        }
         if (method === 'GET' && route.action === 'submission-reviews') {
           if (!route.tail.length) {
             return json(200, { submissionReviews: service.listSubmissionReviews(route.projectId) });
@@ -847,6 +853,15 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
         }
         if (route.action === 'project-evidence-exports') {
           if (method === 'GET') {
+            if (route.tail[1] === 'package') {
+              const exportRequestId = decodeURIComponent(route.tail[0] || '');
+              return json(200, {
+                projectEvidenceExportPackage: service.getProjectEvidenceExportPackage(route.projectId, {
+                  language,
+                  exportRequestId,
+                }),
+              });
+            }
             return json(200, { projectEvidenceExportWorkflow: service.getProjectEvidenceExportWorkflow(route.projectId, { language }) });
           }
           if (method === 'POST') {
@@ -858,6 +873,7 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
               ...publicProjectResult(result, result.project?.id || route.projectId, language),
               projectEvidenceExport: result.projectEvidenceExport,
               projectEvidenceExportWorkflow: result.projectEvidenceExportWorkflow,
+              projectEvidenceExportPackage: result.projectEvidenceExportPackage,
               projectEvidenceArchive: result.projectEvidenceArchive,
               log: result.log,
               managerReadyPackage: service.getManagerReadyPackage(result.project?.id || route.projectId, { language }),

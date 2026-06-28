@@ -88,6 +88,10 @@ const appSource = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8
 assert(appSource.includes('backend-manager-submissions-snapshot'), 'Manager Dashboard UI must expose Agent submissions.');
 assert(appSource.includes('agent-focus-submissions-'), 'Agent Dashboard UI must expose owned submissions.');
 assert(appSource.includes('backend-manager-evidence-searches-snapshot'), 'Manager Dashboard UI must expose evidence searches.');
+assert(appSource.includes('backend-evidence-quality-audit-snapshot'), 'Manager Ready Package UI must expose the evidence quality audit.');
+assert(appSource.includes('/evidence-quality-audit') && appSource.includes('Evidence Quality Audit') && appSource.includes('Decision Gates'), 'Manager UI must expose the evidence quality audit route, status, and gates.');
+assert(appSource.includes('backend-evidence-source-review-workflow-snapshot'), 'Manager Ready Package UI must expose the evidence source review workflow.');
+assert(appSource.includes('/evidence-source-review-workflow') && appSource.includes('Evidence Source Review Workflow') && appSource.includes('Source review route'), 'Manager UI must expose the source review workflow route, status, and proof route.');
 assert(appSource.includes('backend-manager-submission-reviews-snapshot'), 'Manager Dashboard UI must expose submission reviews.');
 assert(appSource.includes('backend-mvp-readiness-snapshot'), 'Manager Ready Package UI must expose MVP readiness.');
 assert(appSource.includes('/mvp-readiness'), 'Manager UI must expose the MVP readiness route.');
@@ -97,11 +101,11 @@ assert(appSource.includes('backend-deployment-preflight-snapshot'), 'Manager Rea
 assert(appSource.includes('/deployment-preflight') && appSource.includes('Deployment Preflight') && appSource.includes('Preflight Warnings'), 'Manager UI must expose the deployment preflight route and warning count.');
 assert(appSource.includes('/adapter-gateway-preflight') && appSource.includes('Gateway Live') && appSource.includes('Gateway State'), 'Manager UI must expose the adapter gateway preflight route and live/state status.');
 assert(appSource.includes('backend-production-launch-audit-snapshot'), 'Manager Ready Package UI must expose production launch audit readiness.');
-assert(appSource.includes('/production-launch-audit') && appSource.includes('Production Launch Audit') && appSource.includes('Private Pilot Audit'), 'Manager UI must expose the production launch audit route and decisions.');
+assert(appSource.includes('/production-launch-audit') && appSource.includes('Production Launch Audit') && appSource.includes('Private Pilot Audit') && appSource.includes('Handoff Package'), 'Manager UI must expose the production launch audit route, decisions, and handoff package status.');
 assert(appSource.includes('backend-project-evidence-archive-snapshot'), 'Manager Ready Package UI must expose the project evidence archive.');
 assert(appSource.includes('/project-evidence-archive') && appSource.includes('Project Evidence Archive') && appSource.includes('Archive route'), 'Manager UI must expose the project evidence archive route and status.');
 assert(appSource.includes('backend-project-evidence-export-workflow-snapshot'), 'Manager Ready Package UI must expose the project evidence export workflow.');
-assert(appSource.includes('/project-evidence-exports') && appSource.includes('Project Evidence Export Workflow') && appSource.includes('Export route'), 'Manager UI must expose the project evidence export workflow route and status.');
+assert(appSource.includes('/project-evidence-exports') && appSource.includes('Project Evidence Export Workflow') && appSource.includes('Export route') && appSource.includes('Package Gates'), 'Manager UI must expose the project evidence export workflow route, package gates, and status.');
 assert(appSource.includes('backend-launch-approval-workflow-snapshot'), 'Manager Ready Package UI must expose launch approval workflow readiness.');
 assert(appSource.includes('/launch-approvals') && appSource.includes('Launch Approval Workflow') && appSource.includes('Pilot Approval'), 'Manager UI must expose the launch approval workflow route and pilot approval status.');
 assert(appSource.includes('backend-provider-readiness-snapshot'), 'Manager Ready Package UI must expose provider readiness.');
@@ -447,6 +451,28 @@ response = api.handle({ method: 'GET', path: `/projects/${projectId}/evidence-se
 assert(response.status === 200 && response.body.evidenceSearch.confidence === 'high', 'Project API must read one Agent evidence search.');
 assert(response.body.evidenceSearch.sourceSafetySummary?.sourceSafetyReady === true, 'Project API must preserve evidence source-safety summary.');
 
+response = api.handle({ method: 'GET', path: `/projects/${projectId}/evidence-quality-audit` });
+assert(response.status === 200 && response.body.evidenceQualityAudit?.schemaVersion === 'evidence-quality-audit/v1', 'Project API must expose a standalone evidence quality audit contract.');
+assert(response.body.evidenceQualityAudit.readyForDecision === true && response.body.evidenceQualityAudit.readyForProduction === false, 'Evidence quality audit must be decision-ready without overclaiming production readiness.');
+assert(response.body.evidenceQualityAudit.summary?.rowCount === 1 && response.body.evidenceQualityAudit.summary?.sourceCount === 3, 'Evidence quality audit must summarize evidence search rows and source count.');
+assert(response.body.evidenceQualityAudit.summary?.averageQualityScore >= 70 && response.body.evidenceQualityAudit.summary?.strongEvidenceCount === 1, 'Evidence quality audit must expose quality scoring and strong evidence count.');
+assert(response.body.evidenceQualityAudit.summary?.sourceSafetyReady === true && response.body.evidenceQualityAudit.summary?.sourceSafetyBlockedSourceCount === 0, 'Evidence quality audit must expose source-safety readiness.');
+assert(response.body.evidenceQualityAudit.rows.some((row) => row.id === evidenceSearch.id && row.proofRoute?.apiPath?.includes('/evidence-searches/')), 'Evidence quality audit must link each search row to a proof route.');
+assert(response.body.evidenceQualityAudit.sourceRows.length === 3 && response.body.evidenceQualityAudit.sourceRows.every((row) => row.qualityScore >= 60 && row.sourceSafetyLevel === 'safe'), 'Evidence quality audit must expose per-source quality and safety rows.');
+assert(response.body.evidenceQualityAudit.gates.some((gate) => gate.id === 'quality-judgement-ready' && gate.passed), 'Evidence quality audit must gate decision-quality evidence.');
+assert(response.body.evidenceQualityAudit.gates.some((gate) => gate.id === 'source-safety-ready' && gate.passed), 'Evidence quality audit must gate source-safety readiness.');
+assert(response.body.evidenceQualityAudit.requiredProductionControls.some((control) => control.id === 'calibrated-source-quality-policy'), 'Evidence quality audit must keep calibrated source-quality policy as an explicit production control.');
+assert(response.body.evidenceQualityAudit.backendRoutes.evidenceQualityAudit?.endsWith('/evidence-quality-audit'), 'Evidence quality audit must expose its own backend route.');
+
+response = api.handle({ method: 'GET', path: `/projects/${projectId}/evidence-source-review-workflow` });
+assert(response.status === 200 && response.body.evidenceSourceReviewWorkflow?.schemaVersion === 'evidence-source-review-workflow/v1', 'Project API must expose a standalone evidence source review workflow contract.');
+assert(response.body.evidenceSourceReviewWorkflow.readyForLocalPilot === true && response.body.evidenceSourceReviewWorkflow.readyForProduction === false, 'Evidence source review workflow must be local-pilot ready without overclaiming production readiness.');
+assert(response.body.evidenceSourceReviewWorkflow.summary?.reviewItemCount === 3 && response.body.evidenceSourceReviewWorkflow.summary?.blockedSourceCount === 0, 'Evidence source review workflow must derive one review item per evidence source and keep blocked sources at zero.');
+assert(response.body.evidenceSourceReviewWorkflow.reviewItems.every((item) => item.sourceId && item.evidenceSearchId === evidenceSearch.id && item.proofRoute?.apiPath?.includes('/evidence-searches/')), 'Every source review item must link to the evidence search proof route.');
+assert(response.body.evidenceSourceReviewWorkflow.gates.some((gate) => gate.id === 'source-review-proof-routes-ready' && gate.passed), 'Evidence source review workflow must gate source proof routes.');
+assert(response.body.evidenceSourceReviewWorkflow.requiredProductionControls.some((control) => control.id === 'human-source-review-policy'), 'Evidence source review workflow must keep human source-review policy as a production control.');
+assert(response.body.evidenceSourceReviewWorkflow.backendRoutes.evidenceSourceReviewWorkflow?.endsWith('/evidence-source-review-workflow'), 'Evidence source review workflow must expose its own backend route.');
+
 response = api.handle({ method: 'GET', path: `/projects/${projectId}/submission-reviews` });
 assert(response.status === 200 && response.body.submissionReviews.length === 2, 'Project API must list submission reviews.');
 response = api.handle({ method: 'GET', path: `/projects/${projectId}/submission-reviews/${encodeURIComponent(reviewsByVerdict.get('accepted').id)}` });
@@ -500,6 +526,15 @@ assert(response.body.providerReadiness?.providerBoundaries?.secretVault?.latestR
 assert(response.body.providerReadiness?.summary?.providerSecretVaultRotationReady === true, 'Provider readiness summary must expose secret-vault rotation readiness.');
 assert(response.body.summary?.providerReadinessFailedGateCount === 0, 'Manager Ready Package summary must expose provider readiness gate status.');
 assert(response.body.summary?.providerBackedSearchCount >= 1, 'Manager Ready Package summary must expose provider-backed search count.');
+assert(response.body.evidenceQualityAudit?.schemaVersion === 'evidence-quality-audit/v1', 'Manager Ready Package must include the evidence quality audit contract.');
+assert(response.body.evidenceQualityAudit?.readyForDecision === true && response.body.evidenceQualityAudit?.readyForProduction === false, 'Manager Ready Package evidence quality audit must be decision-ready without overclaiming production.');
+assert(response.body.evidenceQualityAudit?.checksum && response.body.summary?.evidenceQualityChecksum === response.body.evidenceQualityAudit.checksum, 'Manager Ready Package summary must expose evidence quality audit checksum.');
+assert(response.body.summary?.evidenceQualityDecisionReady === true && response.body.summary?.evidenceQualityAverageScore >= 70, 'Manager Ready Package summary must expose evidence quality decision readiness.');
+assert(response.body.summary?.evidenceQualityFailedDecisionGateCount === 0, 'Manager Ready Package summary must expose evidence quality decision gate status.');
+assert(response.body.evidenceSourceReviewWorkflow?.schemaVersion === 'evidence-source-review-workflow/v1', 'Manager Ready Package must include the evidence source review workflow contract.');
+assert(response.body.evidenceSourceReviewWorkflow?.readyForLocalPilot === true && response.body.evidenceSourceReviewWorkflow?.readyForProduction === false, 'Manager Ready Package source review workflow must be local-ready without production overclaim.');
+assert(response.body.evidenceSourceReviewWorkflow?.reviewItems?.length === 3 && response.body.evidenceSourceReviewWorkflow?.summary?.blockedSourceCount === 0, 'Manager Ready Package source review workflow must expose source review items and blocked-source count.');
+assert(response.body.summary?.evidenceSourceReviewReady === true && response.body.summary?.evidenceSourceReviewChecksum === response.body.evidenceSourceReviewWorkflow.checksum, 'Manager Ready Package summary must expose source review workflow readiness and checksum.');
 assert(response.body.operationsReadiness?.schemaVersion === 'operations-readiness/v1', 'Manager Ready Package must include the operations readiness contract.');
 assert(response.body.operationsReadiness?.recovery?.runbookReady === true, 'Manager Ready Package must expose the recovery runbook.');
 assert(response.body.operationsReadiness?.observability?.alertRules?.length >= 3, 'Manager Ready Package must expose local alert-rule drafts.');
@@ -596,7 +631,7 @@ assert(response.body.securityBoundary.projectMembership?.configured && response.
 assert(response.body.securityBoundary.secretVault?.ready === true && response.body.securityBoundary.secretVault.rawSecretRecordCount === 0, 'Standalone security boundary must expose encrypted secret vault readiness.');
 assert(response.body.securityBoundary.secretVault?.latestRotation?.schemaVersion === 'secret-vault-rotation-receipt/v1' && response.body.securityBoundary.summary?.secretVaultRotationReady === true, 'Standalone security boundary must expose secret-vault rotation readiness.');
 assert(!JSON.stringify(response.body.securityBoundary).includes(FAKE_VAULT_ROTATED_MASTER_KEY), 'Standalone security boundary must not expose the rotated vault master key fixture.');
-for (const routeKey of ['submissions', 'evidence-searches', 'submission-reviews', 'pilot-launch-readiness', 'deployment-preflight', 'adapter-gateway-preflight', 'production-launch-audit', 'launch-approvals', 'project-evidence-exports', 'mvp-readiness', 'persistence-snapshot', 'persistence-migration-plan', 'persistence-migration-dry-run', 'persistence-adapter-plan', 'persistence-adapter-dry-run', 'worker-queue', 'worker-queue-adapter-plan', 'worker-queue-adapter-dry-run', 'operations-readiness', 'provider-readiness', 'security-boundary', 'security-access-audit', 'security-audit-stream', 'membership-policy', 'identity-sessions']) {
+for (const routeKey of ['submissions', 'evidence-searches', 'evidence-quality-audit', 'evidence-source-review-workflow', 'submission-reviews', 'pilot-launch-readiness', 'deployment-preflight', 'adapter-gateway-preflight', 'production-launch-audit', 'launch-approvals', 'project-evidence-exports', 'mvp-readiness', 'persistence-snapshot', 'persistence-migration-plan', 'persistence-migration-dry-run', 'persistence-adapter-plan', 'persistence-adapter-dry-run', 'worker-queue', 'worker-queue-adapter-plan', 'worker-queue-adapter-dry-run', 'operations-readiness', 'provider-readiness', 'security-boundary', 'security-access-audit', 'security-audit-stream', 'membership-policy', 'identity-sessions']) {
   assert(response.body.securityBoundary.routeSummary.routeKeys.includes(routeKey), `Security boundary route manifest must include ${routeKey}.`);
 }
 assert(response.body.securityBoundary.production.status === 'production-blocked' && response.body.securityBoundary.production.blockerCount >= 4, 'Security boundary must keep production hardening blockers visible.');
@@ -637,6 +672,18 @@ response = api.handle({
   headers: enforcedSecurityHeaders,
 });
 assert(response.status === 200 && response.body.providerReadiness.status === 'local-provider-contract-ready', 'Security admin must be able to read provider readiness in enforced mode.');
+response = api.handle({
+  method: 'GET',
+  path: `/projects/${projectId}/evidence-quality-audit`,
+  headers: enforcedSecurityHeaders,
+});
+assert(response.status === 200 && response.body.evidenceQualityAudit.readyForDecision === true, 'Security admin must be able to read evidence quality audit in enforced mode.');
+response = api.handle({
+  method: 'GET',
+  path: `/projects/${projectId}/evidence-source-review-workflow`,
+  headers: enforcedSecurityHeaders,
+});
+assert(response.status === 200 && response.body.evidenceSourceReviewWorkflow.readyForLocalPilot === true, 'Security admin must be able to read evidence source review workflow in enforced mode.');
 response = api.handle({
   method: 'GET',
   path: `/projects/${projectId}/persistence-snapshot`,
@@ -926,6 +973,10 @@ try {
   assert(httpResponse.status === 200 && httpBody.operationsBoard.latestProjectCycle?.trigger === 'product-team-http-scheduler-tick', 'HTTP Manager Ready Package must expose scheduler-produced operations evidence.');
   assert(httpBody.mvpReadiness?.readyForLocalPilot && httpBody.mvpReadiness?.production?.status === 'production-blocked', 'HTTP Manager Ready Package must expose local-pilot readiness without overclaiming production readiness.');
   assert(httpBody.providerReadiness?.status === 'local-provider-contract-ready' && httpBody.providerReadiness?.readyForProduction === false, 'HTTP Manager Ready Package must expose provider readiness without overclaiming production readiness.');
+  assert(httpBody.evidenceQualityAudit?.schemaVersion === 'evidence-quality-audit/v1' && httpBody.evidenceQualityAudit?.readyForDecision === true, 'HTTP Manager Ready Package must expose decision-ready evidence quality audit.');
+  assert(httpBody.summary?.evidenceQualityChecksum === httpBody.evidenceQualityAudit?.checksum, 'HTTP Manager Ready Package summary must expose the evidence quality audit checksum.');
+  assert(httpBody.evidenceSourceReviewWorkflow?.schemaVersion === 'evidence-source-review-workflow/v1' && httpBody.evidenceSourceReviewWorkflow?.readyForLocalPilot === true, 'HTTP Manager Ready Package must expose local-ready evidence source review workflow.');
+  assert(httpBody.summary?.evidenceSourceReviewChecksum === httpBody.evidenceSourceReviewWorkflow?.checksum, 'HTTP Manager Ready Package summary must expose the source review workflow checksum.');
   assert(httpBody.securityBoundary?.status === 'local-boundary-ready' && httpBody.securityBoundary?.redactionScan?.rawLeakCount === 0, 'HTTP Manager Ready Package must expose a clean local security boundary.');
   assert(httpBody.persistenceAdapterPlan?.schemaVersion === 'managed-persistence-adapter-plan/v1' && httpBody.persistenceAdapterDryRun?.schemaVersion === 'managed-persistence-adapter-dry-run/v1', 'HTTP Manager Ready Package must expose managed persistence adapter plan and dry-run readiness.');
   assert(httpBody.operationsReadiness?.summary?.workerRecoveryContractReady === true, 'HTTP Manager Ready Package must expose worker recovery readiness.');
@@ -938,6 +989,7 @@ try {
   assert(['go', 'no-go'].includes(httpBody.productionLaunchAudit?.privatePilotDecision) && httpBody.productionLaunchAudit?.readyForProduction === false, 'HTTP Manager Ready Package must expose launch audit status without claiming production readiness.');
   assert(httpBody.projectEvidenceArchive?.schemaVersion === 'project-evidence-archive/v1' && httpBody.projectEvidenceArchive?.readyForProduction === false, 'HTTP Manager Ready Package must expose the project evidence archive without production overclaim.');
   assert(httpBody.projectEvidenceArchive?.summary?.rawLeakCount === 0 && httpBody.summary?.projectEvidenceArchiveStatus === httpBody.projectEvidenceArchive?.status, 'HTTP Manager Ready Package summary must expose archive status and zero raw leaks.');
+  assert(httpBody.projectEvidenceArchive?.summary?.evidenceQualityDecisionReady === true, 'HTTP Manager Ready Package archive summary must include evidence quality decision readiness.');
   assert(httpBody.workerQueueAdapterPlan?.schemaVersion === 'worker-queue-adapter-plan/v1' && httpBody.workerQueueAdapterDryRun?.status === 'passed', 'HTTP Manager Ready Package must expose queue adapter plan and dry-run readiness.');
   assert(httpBody.summary?.workerExecutionReceiptCount >= 1 && httpBody.summary?.workerDeadLetterCount === 0, 'HTTP Manager Ready Package summary must expose worker receipt and dead-letter counts.');
   assert(httpBody.summary?.queueAdapterDryRunStatus === 'passed' && httpBody.summary?.queueAdapterDispatchCount >= 1, 'HTTP Manager Ready Package summary must expose queue adapter dry-run status.');
@@ -965,7 +1017,23 @@ try {
   assert(httpResponse.status === 200 && httpBody.projectEvidenceArchive?.schemaVersion === 'project-evidence-archive/v1', 'HTTP project evidence archive endpoint must expose the archive contract.');
   assert(httpBody.projectEvidenceArchive?.summary?.finalDeliverableCount >= 1, 'HTTP project evidence archive must include final deliverable evidence.');
   assert(httpBody.projectEvidenceArchive?.summary?.rawLeakCount === 0, 'HTTP project evidence archive must keep redaction clean.');
+  assert(httpBody.projectEvidenceArchive?.manifest?.some((entry) => entry.id === 'evidence-quality-audit' && entry.ready), 'HTTP project evidence archive must include a ready evidence quality audit manifest entry.');
+  assert(httpBody.projectEvidenceArchive?.manifest?.some((entry) => entry.id === 'evidence-source-review-workflow' && entry.ready), 'HTTP project evidence archive must include a ready evidence source review workflow manifest entry.');
+  assert(httpBody.projectEvidenceArchive?.summary?.evidenceSourceReviewReady === true, 'HTTP project evidence archive summary must include source review readiness.');
   assert(httpBody.projectEvidenceArchive?.backendRoutes?.projectEvidenceArchive?.endsWith('/project-evidence-archive'), 'HTTP project evidence archive must expose its own route.');
+
+  httpResponse = await fetch(`${httpRuntime.url}/projects/${projectId}/evidence-quality-audit`);
+  httpBody = await httpResponse.json();
+  assert(httpResponse.status === 200 && httpBody.evidenceQualityAudit?.schemaVersion === 'evidence-quality-audit/v1', 'HTTP evidence quality audit endpoint must expose the audit contract.');
+  assert(httpBody.evidenceQualityAudit?.readyForDecision === true && httpBody.evidenceQualityAudit?.readyForProduction === false, 'HTTP evidence quality audit must be decision-ready without production overclaim.');
+  assert(httpBody.evidenceQualityAudit?.summary?.sourceSafetyReady === true && httpBody.evidenceQualityAudit?.summary?.failedDecisionGateCount === 0, 'HTTP evidence quality audit must expose source-safety and decision gate status.');
+  assert(httpBody.evidenceQualityAudit?.backendRoutes?.evidenceQualityAudit?.endsWith('/evidence-quality-audit'), 'HTTP evidence quality audit must expose its own route.');
+
+  httpResponse = await fetch(`${httpRuntime.url}/projects/${projectId}/evidence-source-review-workflow`);
+  httpBody = await httpResponse.json();
+  assert(httpResponse.status === 200 && httpBody.evidenceSourceReviewWorkflow?.schemaVersion === 'evidence-source-review-workflow/v1', 'HTTP evidence source review workflow endpoint must expose the workflow contract.');
+  assert(httpBody.evidenceSourceReviewWorkflow?.readyForLocalPilot === true && httpBody.evidenceSourceReviewWorkflow?.readyForProduction === false, 'HTTP evidence source review workflow must be local-ready without production overclaim.');
+  assert(httpBody.evidenceSourceReviewWorkflow?.reviewItems?.length === 3 && httpBody.evidenceSourceReviewWorkflow?.backendRoutes?.evidenceSourceReviewWorkflow?.endsWith('/evidence-source-review-workflow'), 'HTTP evidence source review workflow must expose source review items and its own route.');
 
   httpResponse = await fetch(`${httpRuntime.url}/projects/${projectId}/project-evidence-exports`);
   httpBody = await httpResponse.json();
@@ -1896,8 +1964,11 @@ assert(response.body.productionLaunchAudit.productionDecision === 'no-go', 'Prod
 assert(response.body.productionLaunchAudit.summary?.failedPrivatePilotGateCount === 0, 'Standalone production launch audit must have no failed private-pilot gates after full acceptance.');
 assert(response.body.productionLaunchAudit.summary?.failedProductionGateCount > 0, 'Standalone production launch audit must keep production gates failed.');
 assert(response.body.productionLaunchAudit.evidenceRoutes.some((route) => route.id === 'production-launch-audit' && route.ready), 'Standalone production launch audit must include its own evidence route.');
+assert(response.body.productionLaunchAudit.evidenceRoutes.some((route) => route.id === 'evidence-quality-audit' && route.ready), 'Standalone production launch audit must include a ready evidence quality audit route.');
+assert(response.body.productionLaunchAudit.evidenceRoutes.some((route) => route.id === 'evidence-source-review-workflow' && route.ready), 'Standalone production launch audit must include a ready evidence source review workflow route.');
 assert(response.body.productionLaunchAudit.backendRoutes.productionLaunchAudit?.endsWith('/production-launch-audit'), 'Production launch audit must expose its own backend route.');
-assert(response.body.productionLaunchAudit.nextShortestPath?.scope === 'production-hardening', 'Production launch audit must point to production hardening after private-pilot gates pass.');
+assert(response.body.productionLaunchAudit.projectEvidenceHandoff?.readyForPrivatePilotPackage === false, 'Production launch audit must show evidence handoff package as pending before download audit.');
+assert(response.body.productionLaunchAudit.nextShortestPath?.scope === 'private-pilot-handoff', 'Production launch audit must point to evidence handoff before local package audit is recorded.');
 
 response = membershipApi.handle({
   method: 'GET',
@@ -1922,11 +1993,13 @@ assert(response.body.projectEvidenceArchive.summary?.rawLeakCount === 0, 'Projec
 assert(response.body.projectEvidenceArchive.manifest.every((entry) => entry.checksum), 'Every project evidence archive manifest entry must carry a checksum.');
 assert(response.body.projectEvidenceArchive.manifest.some((entry) => entry.id === 'final-deliverables' && entry.ready), 'Project evidence archive manifest must include ready final-deliverable evidence.');
 assert(response.body.projectEvidenceArchive.manifest.some((entry) => entry.id === 'group-chat-transcripts' && entry.ready), 'Project evidence archive manifest must include ready transcript evidence.');
+assert(response.body.projectEvidenceArchive.manifest.some((entry) => entry.id === 'evidence-source-review-workflow' && entry.ready), 'Project evidence archive manifest must include ready evidence source review workflow evidence.');
 assert(response.body.projectEvidenceArchive.integrity.gates.every((gate) => gate.passed), 'Project evidence archive integrity gates must all pass for the acceptance scenario.');
 assert(response.body.projectEvidenceArchive.backendRoutes.projectEvidenceArchive?.endsWith('/project-evidence-archive'), 'Project evidence archive must expose its own backend route.');
 assert(response.body.projectEvidenceArchive.contents.finalDeliverables.some((submission) => submission.id === finalSubmissionId && submission.bodyChecksum), 'Project evidence archive must include the final deliverable body checksum.');
 assert(response.body.projectEvidenceArchive.contents.transcripts.channels.some((channel) => channel.messages.some((message) => message.type === 'submission')), 'Project evidence archive must include submission messages in transcripts.');
 assert(response.body.projectEvidenceArchive.contents.evidenceSearches.some((record) => record.sources?.length >= 1 && record.checksum), 'Project evidence archive must include evidence source packets with checksums.');
+assert(response.body.projectEvidenceArchive.contents.evidenceSourceReviewWorkflow.reviewItems.some((item) => item.evidenceSearchId === evidenceSearch.id && item.checksum), 'Project evidence archive must include evidence source review items with checksums.');
 assert(response.body.projectEvidenceArchive.contents.submissionReviews.some((review) => review.verdict === 'accepted' && review.commentsChecksum), 'Project evidence archive must include accepted review evidence with checksums.');
 assert(response.body.projectEvidenceArchive.contents.managerFlowGraph.nodes.some((node) => node.category === 'submission' && node.subtype === 'final-deliverable'), 'Project evidence archive must include final-deliverable Flow Graph nodes.');
 for (const secret of [FAKE_SEARCH_SECRET, FAKE_MODEL_SECRET, FAKE_SOURCE_SECRET, ACCESS_SIGNING_SECRET, managerIdentitySessionToken, activeSecurityIdentitySessionToken]) {
@@ -1955,13 +2028,13 @@ response = membershipApi.handle({
     method: 'POST',
     path: projectEvidenceExportPath,
     role: 'manager',
-    userId: 'manager-operator',
+    userId: 'director',
   }),
   body: {
     action: 'request',
     mode: 'private-pilot',
     actorRole: 'manager',
-    actorId: 'manager-operator',
+    actorId: 'director',
     reason: 'Request customer handoff evidence package for private-pilot acceptance.',
     retentionDays: 30,
     dataResidencyRegion: 'local-private-pilot',
@@ -1969,11 +2042,12 @@ response = membershipApi.handle({
 });
 assert(response.status === 200 && response.body.projectEvidenceExport?.schemaVersion === 'project-evidence-export/v1', 'Manager must be able to request a governed project evidence export.');
 const exportRequestId = response.body.projectEvidenceExport.exportRequestId;
-assert(response.body.projectEvidenceExport.archiveChecksum === projectEvidenceArchiveChecksum, 'Project evidence export request must pin the current archive checksum.');
+const requestedExportArchiveChecksum = response.body.projectEvidenceArchive?.checksum || response.body.projectEvidenceExport.archiveChecksum;
+assert(response.body.projectEvidenceExport.archiveChecksum && response.body.projectEvidenceExport.archiveChecksum === requestedExportArchiveChecksum, 'Project evidence export request must pin the archive checksum generated for that request.');
 assert(response.body.projectEvidenceExportWorkflow.summary?.requestCount >= 1, 'Project evidence export workflow must count export requests.');
 
 for (const approval of [
-  { role: 'manager', userId: 'manager-operator', reason: 'Manager approves the private-pilot handoff bundle.' },
+  { role: 'manager', userId: 'director', reason: 'Manager approves the private-pilot handoff bundle.' },
   { role: 'security-admin', userId: 'security-lead', reason: 'Security approves the redacted private-pilot handoff bundle.' },
 ]) {
   response = membershipApi.handle({
@@ -2001,6 +2075,66 @@ assert(response.body.projectEvidenceExportWorkflow.readyForProductionExport === 
 assert(response.body.projectEvidenceExportWorkflow.gates.every((gate) => gate.passed), `Project evidence export workflow gates must pass for private-pilot handoff: ${JSON.stringify(response.body.projectEvidenceExportWorkflow.gates.filter((gate) => !gate.passed))}`);
 assert(response.body.managerReadyPackage?.projectEvidenceExportWorkflow?.readyForPrivatePilotHandoff === true, 'Manager Ready Package must embed the approved project evidence export workflow.');
 assert(response.body.managerReadyPackage?.summary?.projectEvidenceExportReady === true, 'Manager Ready Package summary must expose project evidence export readiness.');
+assert(response.body.projectEvidenceExportWorkflow.readyForPrivatePilotDownload === false, 'Project evidence export workflow must require a download-audit record before local package handoff.');
+
+response = membershipApi.handle({
+  method: 'POST',
+  path: projectEvidenceExportPath,
+  headers: signedHeadersFor({
+    method: 'POST',
+    path: projectEvidenceExportPath,
+    role: 'manager',
+    userId: 'director',
+  }),
+  body: {
+    action: 'download-audit',
+    mode: 'private-pilot',
+    exportRequestId,
+    actorRole: 'manager',
+    actorId: 'director',
+    reason: 'Record local private-pilot package handoff after approvals.',
+  },
+});
+assert(response.status === 200 && response.body.projectEvidenceExport?.action === 'download-audit', 'Manager must be able to record a governed project evidence download audit.');
+assert(response.body.projectEvidenceExportWorkflow.readyForPrivatePilotDownload === true, 'Project evidence export workflow must become local package ready after download audit.');
+assert(response.body.projectEvidenceExportWorkflow.readyForProductionExport === false, 'Project evidence export workflow must keep production export blocked after local package audit.');
+assert(response.body.projectEvidenceExportPackage?.schemaVersion === 'project-evidence-export-package/v1', 'Project evidence export download audit must return a local private-pilot package descriptor.');
+assert(response.body.projectEvidenceExportPackage.readyForPrivatePilotDownload === true, 'Project evidence export package must be ready for private-pilot download.');
+assert(response.body.projectEvidenceExportPackage.readyForProductionDownload === false, 'Project evidence export package must not issue production download readiness.');
+assert(response.body.projectEvidenceExportPackage.downloadUrlIssued === false, 'Project evidence export package must not issue a production download URL.');
+assert(response.body.projectEvidenceExportPackage.watermark?.applied === true && response.body.projectEvidenceExportPackage.watermark?.checksum, 'Project evidence export package must include a watermarked handoff descriptor.');
+assert(response.body.projectEvidenceExportPackage.downloadAudit?.id === response.body.projectEvidenceExport.id, 'Project evidence export package must link to the download-audit row.');
+assert(response.body.projectEvidenceExportPackage.archive?.currentChecksum && response.body.projectEvidenceExportPackage.archive?.manifest?.length > 0, 'Project evidence export package must include archive checksum and manifest proof.');
+assert(response.body.managerReadyPackage?.summary?.projectEvidenceExportDownloadReady === true, 'Manager Ready Package summary must expose local project evidence package readiness.');
+assert(response.body.managerReadyPackage?.productionLaunchAudit?.projectEvidenceHandoff?.readyForPrivatePilotPackage === true, 'Manager Ready Package production launch audit must show evidence handoff ready after package audit.');
+assert(response.body.managerReadyPackage?.productionLaunchAudit?.nextShortestPath?.scope === 'production-hardening', 'Production launch audit must return to production hardening after evidence handoff package is ready.');
+
+response = membershipApi.handle({
+  method: 'GET',
+  path: `${projectEvidenceExportPath}/${encodeURIComponent(exportRequestId)}/package`,
+  headers: signedHeadersFor({
+    method: 'GET',
+    path: `${projectEvidenceExportPath}/${encodeURIComponent(exportRequestId)}/package`,
+    role: 'manager',
+    userId: 'director',
+  }),
+});
+assert(response.status === 200 && response.body.projectEvidenceExportPackage?.readyForPrivatePilotDownload === true, 'Project API must expose the approved local evidence export package by request id.');
+assert(response.body.projectEvidenceExportPackage?.exportRequestId === exportRequestId, 'Project evidence export package route must stay scoped to the requested export id.');
+
+response = membershipApi.handle({
+  method: 'GET',
+  path: `/projects/${projectId}/production-launch-audit`,
+  headers: signedHeadersFor({
+    method: 'GET',
+    path: `/projects/${projectId}/production-launch-audit`,
+    role: 'security-admin',
+    userId: 'security-lead',
+  }),
+});
+assert(response.status === 200 && response.body.productionLaunchAudit?.projectEvidenceHandoff?.readyForPrivatePilotPackage === true, 'Standalone production launch audit must include ready evidence handoff after package audit.');
+assert(response.body.productionLaunchAudit.evidenceRoutes.some((route) => route.id === 'project-evidence-export-package' && route.ready && route.route?.includes(encodeURIComponent(exportRequestId))), 'Production launch audit evidence routes must include the ready project evidence export package route.');
+assert(response.body.productionLaunchAudit.nextShortestPath?.scope === 'production-hardening', 'Standalone production launch audit must point to production hardening after handoff package is ready.');
 
 response = membershipApi.handle({
   method: 'GET',
@@ -2009,7 +2143,7 @@ response = membershipApi.handle({
     method: 'GET',
     path: `/projects/${projectId}/readiness-proof-map`,
     role: 'manager',
-    userId: 'manager-operator',
+    userId: 'director',
   }),
 });
 assert(response.status === 200 && response.body.projectEvidenceExportRoutes?.some((route) => route.apiPath?.endsWith('/project-evidence-exports') && route.proofIds?.length && route.timelineLogIds?.length && route.eventIds?.length), 'Readiness Proof Map must include project evidence export routes with proof, timeline, and event links.');
@@ -2021,7 +2155,7 @@ response = membershipApi.handle({
     method: 'GET',
     path: `/projects/${projectId}/manager-flow-graph`,
     role: 'manager',
-    userId: 'manager-operator',
+    userId: 'director',
   }),
 });
 assert(response.status === 200 && response.body.nodes?.some((node) => node.subtype === 'project-evidence-export' && node.route?.endsWith('/project-evidence-exports')), 'Manager Flow Graph must include project evidence export governance nodes.');
@@ -2036,8 +2170,8 @@ response = membershipApi.handle({
     userId: 'security-lead',
   }),
 });
-assert(response.status === 200 && response.body.persistenceSnapshot?.recordsByTable?.project_evidence_exports?.length >= 3, 'Production persistence snapshot must include project evidence export request and approval rows.');
-assert(response.body.persistenceSnapshot.recordsByTable.project_evidence_exports.every((record) => record.data.schemaVersion === 'project-evidence-export/v1' && record.data.archiveChecksum === projectEvidenceArchiveChecksum && record.data.checksum), 'Project evidence export persistence rows must preserve schema version, archive checksum, and row checksum.');
+assert(response.status === 200 && response.body.persistenceSnapshot?.recordsByTable?.project_evidence_exports?.length >= 4, 'Production persistence snapshot must include project evidence export request, approval, and download-audit rows.');
+assert(response.body.persistenceSnapshot.recordsByTable.project_evidence_exports.every((record) => record.data.schemaVersion === 'project-evidence-export/v1' && record.data.archiveChecksum && record.data.checksum), 'Project evidence export persistence rows must preserve schema version, archive checksum, and row checksum.');
 
 const persistedStoreSnapshot = JSON.parse(readFileSync(`${root}/store.json`, 'utf8'));
 assert(Array.isArray(persistedStoreSnapshot.securityAccessAuditRecords), 'File-backed store snapshot must export backend security audit stream records.');
@@ -2048,7 +2182,7 @@ assert(persistedAcceptanceProject?.identitySessions?.some((session) => session.i
 assert(persistedAcceptanceProject?.identitySessions?.some((session) => session.id === managerIdentitySessionId && session.status === 'revoked' && session.revokedAt), 'File-backed store must persist revoked identity-session rows.');
 assert(persistedAcceptanceProject?.providerUsageLedger?.some((record) => record.operation === 'search:evidence' && record.allowed === true && record.eventId), 'File-backed store must persist provider usage ledger rows with event proof.');
 assert(persistedAcceptanceProject?.launchApprovals?.filter((record) => record.mode === 'private-pilot' && record.decision === 'approved').length >= 2, 'File-backed store must persist private-pilot launch approvals.');
-assert(persistedAcceptanceProject?.projectEvidenceExports?.filter((record) => record.exportRequestId === exportRequestId).length >= 3, 'File-backed store must persist project evidence export request and approval rows.');
+assert(persistedAcceptanceProject?.projectEvidenceExports?.filter((record) => record.exportRequestId === exportRequestId).length >= 4, 'File-backed store must persist project evidence export request, approval, and download-audit rows.');
 assert(persistedStoreSnapshot.securityAccessAuditRecords.length >= 11, 'File-backed store snapshot must persist backend security audit stream decisions.');
 assert(persistedStoreSnapshot.securityAccessAuditRecords.some((record) => record.allowed === false && record.streamChecksum), 'File-backed security audit stream must persist denied decisions with checksums.');
 assert(persistedStoreSnapshot.securityAccessAuditRecords.every((record) => record.previousStreamHash && record.streamHash), 'File-backed security audit stream must persist hash-chain links.');
@@ -2076,3 +2210,4 @@ assert(!persistedProjectState.includes(activeSecurityIdentitySessionToken), 'Acc
 assert(persistedProjectState.includes('[REDACTED]'), 'Acceptance Harness must prove secret-bearing fields are redacted before persistence.');
 
 console.log('Product team acceptance scenario validation passed.');
+process.exit(0);

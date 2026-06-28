@@ -382,12 +382,23 @@ try {
   await assertPageContains(page, 'Project Evidence Archive', 'Manager ready package snapshot must include the project evidence archive.');
   await assertPageContains(page, 'Archive route:', 'Project evidence archive snapshot must expose the standalone route.');
   await assertPageContains(page, '/project-evidence-archive', 'Project evidence archive snapshot must point to the standalone endpoint.');
+  await page.getByTestId('backend-evidence-quality-audit-snapshot').waitFor({ state: 'visible', timeout: 5000 });
+  await assertPageContains(page, 'Evidence Quality Audit', 'Manager ready package snapshot must include the evidence quality audit.');
+  await assertPageContains(page, 'Decision Gates', 'Evidence quality audit snapshot must expose decision gate coverage.');
+  await assertPageContains(page, 'Audit route:', 'Evidence quality audit snapshot must expose the standalone route.');
+  await assertPageContains(page, '/evidence-quality-audit', 'Evidence quality audit snapshot must point to the standalone endpoint.');
+  await page.getByTestId('backend-evidence-source-review-workflow-snapshot').waitFor({ state: 'visible', timeout: 5000 });
+  await assertPageContains(page, 'Evidence Source Review Workflow', 'Manager ready package snapshot must include the evidence source review workflow.');
+  await assertPageContains(page, 'Source review route:', 'Evidence source review workflow snapshot must expose the standalone route.');
+  await assertPageContains(page, '/evidence-source-review-workflow', 'Evidence source review workflow snapshot must point to the standalone endpoint.');
   await page.getByTestId('backend-project-evidence-export-workflow-snapshot').waitFor({ state: 'visible', timeout: 5000 });
   await assertPageContains(page, 'Project Evidence Export Workflow', 'Manager ready package snapshot must include the evidence export workflow.');
+  await assertPageContains(page, 'Package Gates', 'Project evidence export workflow snapshot must expose local package readiness gates.');
   await assertPageContains(page, 'Export route:', 'Project evidence export workflow snapshot must expose the standalone route.');
   await assertPageContains(page, '/project-evidence-exports', 'Project evidence export workflow snapshot must point to the standalone endpoint.');
   await page.getByTestId('backend-production-launch-audit-snapshot').waitFor({ state: 'visible', timeout: 5000 });
   await assertPageContains(page, 'Production Launch Audit', 'Manager ready package snapshot must include production launch audit.');
+  await assertPageContains(page, 'Handoff Package', 'Production launch audit snapshot must expose evidence handoff package status.');
   await assertPageContains(page, 'Audit route:', 'Production launch audit snapshot must expose the standalone route.');
   await assertPageContains(page, '/production-launch-audit', 'Production launch audit snapshot must point to the standalone endpoint.');
   await page.getByTestId('backend-launch-approval-workflow-snapshot').waitFor({ state: 'visible', timeout: 5000 });
@@ -721,6 +732,10 @@ try {
   await assertPageContains(page, 'RESPONDED TO', 'Backend-connected managed Agent Pulse must expose management response targets in the Team row.');
   await page.getByTestId('agent-message-target-musk').selectOption('turing');
   await page.getByTestId('agent-message-input-musk').fill('Coordination note: manager-ui-agent-message-proof must stay visible.');
+  await page.waitForFunction(() => {
+    const button = document.querySelector('[data-testid="agent-message-send-musk"]');
+    return button && !button.disabled;
+  }, null, { timeout: 15000 });
   await page.getByTestId('agent-message-send-musk').click();
   await waitForBackendSnapshot(
     backendRuntime.url,

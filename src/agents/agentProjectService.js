@@ -44,6 +44,7 @@ const MODEL_INTENT_LEDGER_LIMIT = 120;
 const AGENT_SUBMISSION_LIMIT = 240;
 const AGENT_EVIDENCE_SEARCH_LIMIT = 240;
 const AGENT_SUBMISSION_REVIEW_LIMIT = 240;
+const AGENT_EVIDENCE_SOURCE_REVIEW_LIMIT = 240;
 const SECURITY_ACCESS_AUDIT_LIMIT = 240;
 const PROJECT_MEMBERSHIP_AUDIT_LIMIT = 80;
 const IDENTITY_SESSION_LIMIT = 120;
@@ -84,6 +85,13 @@ const AGENT_SUBMISSION_REVIEW_STATUSES = new Set([
   'accepted',
   'changes-requested',
   'rejected',
+]);
+const EVIDENCE_SOURCE_REVIEW_DECISIONS = new Set([
+  'under-review',
+  'approved',
+  'rejected',
+  'needs-corroboration',
+  'quarantined',
 ]);
 
 const READ_MODEL_LOCALIZED_KEYS = new Set([
@@ -2675,6 +2683,358 @@ export function reviewAgentSubmission({
   };
 }
 
+export function reviewEvidenceSource({
+  project = {},
+  evidenceSearchId,
+  sourceId,
+  reviewerAgentId = null,
+  decision = 'under-review',
+  comments = '',
+  requestedActions = [],
+  channelId = 'main',
+  now = nowIso(),
+  language = project.language || 'en',
+} = {}) {
+  const currentLanguage = normalizeLanguage(language);
+  const team = project.team || [];
+  const evidenceSearch = (project.evidenceSearches || []).find((record) => String(record.id) === String(evidenceSearchId));
+  if (!evidenceSearch) throw new Error(`Evidence search not found: ${evidenceSearchId}`);
+  const sources = evidenceSearch.sources || evidenceSearch.sourceRefs || [];
+  const source = sources.find((item) => (
+    String(item.id || '') === String(sourceId || '')
+    || String(item.title || '') === String(sourceId || '')
+    || String(item.url || '') === String(sourceId || '')
+  )) || (!sourceId && sources[0]) || null;
+  if (!source) throw new Error(`Evidence source not found: ${sourceId || 'source'}`);
+
+  const sourceOwner = team.find((member) => member.id === evidenceSearch.agentId || member.name === evidenceSearch.agentName) || null;
+  const leader = team.find((member) => member.isLeader) || team[0] || null;
+  const reviewer = team.find((member) => (
+    reviewerAgentId
+      ? member.id === reviewerAgentId || member.name === reviewerAgentId
+      : /review|evidence|qa|critic|risk/i.test(`${member.role || ''} ${member.title || ''} ${member.skill || ''}`)
+  )) || team.find((member) => member.id !== sourceOwner?.id && /review|evidence|qa|critic|risk/i.test(`${member.role || ''} ${member.title || ''} ${member.skill || ''}`))
+    || team.find((member) => member.id !== sourceOwner?.id)
+    || sourceOwner
+    || leader;
+  if (!reviewer) throw new Error('Reviewer not found.');
+
+  const target = sourceOwner && sourceOwner.id !== reviewer.id
+    ? sourceOwner
+    : leader && leader.id !== reviewer.id
+      ? leader
+      : team.find((member) => member.id !== reviewer.id)
+        || null;
+  const normalizedDecision = normalizeEvidenceSourceReviewDecision(decision);
+  const normalizedActions = (Array.isArray(requestedActions) ? requestedActions : [requestedActions])
+    .map((item) => redactSensitiveText(String(item || '').trim()))
+    .filter(Boolean)
+    .slice(0, 12);
+  const safeComments = redactSensitiveText(String(comments || '').trim()
+    || (normalizedDecision === 'approved'
+      ? 'Reviewer approved the evidence source for local pilot use.'
+      : normalizedDecision === 'needs-corroboration'
+        ? 'Reviewer requested corroborating evidence before relying on the source.'
+        : normalizedDecision === 'quarantined' || normalizedDecision === 'rejected'
+          ? 'Reviewer blocked this evidence source from decision use.'
+          : 'Reviewer recorded an evidence source review.'));
+  const timestamp = Date.parse(now) || Date.now();
+  const sourceKey = source.id || source.title || source.url || 'source';
+  const reviewId = `evidence_source_review_${project.id || 'project'}_${evidenceSearch.id}_${slugPart(sourceKey)}_${reviewer.id}_${timestamp}`;
+  const message = attachMessageReceipts({
+    id: `msg_${reviewId}`,
+    projectId: project.id,
+    channelId,
+    type: 'evidence-source-review',
+    author: reviewer.name,
+    authorId: reviewer.id,
+    role: reviewer.role || reviewer.title || 'Reviewer',
+    time: 'Source Review',
+    text: target
+      ? `@${target.name} source review for "${source.title || source.id || 'evidence source'}": ${normalizedDecision}. ${safeComments}`
+      : `@all source review for "${source.title || source.id || 'evidence source'}": ${normalizedDecision}. ${safeComments}`,
+    targets: target ? [target.name] : ['all'],
+    targetIds: target ? [target.id] : ['all'],
+    weight: 'Evidence Source Review',
+    evidenceSearchId: evidenceSearch.id,
+    sourceId: source.id || sourceKey,
+    reviewId,
+  }, team, { seenAt: now });
+  const logId = `log_${reviewId}`;
+  const eventId = `evt_${reviewId}`;
+  const qualityScore = Number(source.qualityScore ?? source.score ?? evidenceSearch.qualityScore ?? evidenceSearch.qualitySummary?.averageScore) || 0;
+  const qualityLevel = source.qualityLevel || source.level || evidenceQualityLevel(qualityScore);
+  const sourceSafetyLevel = source.sourceSafetyLevel || source.safetyLevel || 'unknown';
+  const review = {
+    schemaVersion: 'evidence-source-review/v1',
+    id: reviewId,
+    projectId: project.id || null,
+    evidenceSearchId: evidenceSearch.id,
+    sourceId: source.id || sourceKey,
+    sourceTitle: source.title || `Evidence source ${source.id || sourceKey}`,
+    sourceKind: source.kind || 'source',
+    sourceUrl: source.url ? redactUrl(source.url) : null,
+    taskId: evidenceSearch.taskId || null,
+    submissionId: evidenceSearch.submissionId || null,
+    reviewerAgentId: reviewer.id,
+    reviewerAgentName: reviewer.name || reviewer.id,
+    sourceOwnerAgentId: sourceOwner?.id || evidenceSearch.agentId || null,
+    sourceOwnerAgentName: sourceOwner?.name || evidenceSearch.agentName || null,
+    provider: source.provider || evidenceSearch.provider || 'unknown',
+    decision: normalizedDecision,
+    status: normalizedDecision,
+    comments: safeComments,
+    requestedActions: normalizedActions,
+    qualityScore,
+    qualityLevel,
+    qualitySignals: source.qualitySignals || [],
+    sourceSafetyLevel,
+    sourceSafetyScore: source.sourceSafetyScore ?? null,
+    sourceSafetySignals: source.sourceSafetySignals || [],
+    sourceSafetyJudgement: source.sourceSafetyJudgement || null,
+    channelId,
+    messageId: message.id,
+    timelineLogId: logId,
+    eventId,
+    evidenceIds: uniqueStrings([message.id, logId, eventId, evidenceSearch.id, evidenceSearch.messageId, evidenceSearch.timelineLogId, evidenceSearch.eventId, source.id]),
+    createdAt: now,
+    updatedAt: now,
+  };
+  review.checksum = persistenceChecksum({
+    schemaVersion: review.schemaVersion,
+    id: review.id,
+    evidenceSearchId: review.evidenceSearchId,
+    sourceId: review.sourceId,
+    reviewerAgentId: review.reviewerAgentId,
+    decision: review.decision,
+    qualityScore: review.qualityScore,
+    sourceSafetyLevel: review.sourceSafetyLevel,
+    comments: review.comments,
+  });
+
+  const nextEvidenceSearches = (project.evidenceSearches || []).map((record) => {
+    if (String(record.id) !== String(evidenceSearch.id)) return record;
+    return {
+      ...record,
+      sourceReviewIds: uniqueStrings([...(record.sourceReviewIds || []), reviewId]),
+      latestSourceReviewId: reviewId,
+      latestSourceReviewDecision: normalizedDecision,
+      latestSourceReviewAt: now,
+      sources: (record.sources || []).map((item) => {
+        const itemKey = item.id || item.title || item.url || '';
+        if (String(itemKey) !== String(source.id || sourceKey)) return item;
+        return {
+          ...item,
+          sourceReviewIds: uniqueStrings([...(item.sourceReviewIds || []), reviewId]),
+          latestSourceReviewId: reviewId,
+          latestSourceReviewDecision: normalizedDecision,
+          latestSourceReviewAt: now,
+        };
+      }),
+      sourceRefs: (record.sourceRefs || []).map((item) => {
+        const itemKey = item.id || item.title || item.url || '';
+        if (String(itemKey) !== String(source.id || sourceKey)) return item;
+        return {
+          ...item,
+          sourceReviewIds: uniqueStrings([...(item.sourceReviewIds || []), reviewId]),
+          latestSourceReviewId: reviewId,
+          latestSourceReviewDecision: normalizedDecision,
+          latestSourceReviewAt: now,
+        };
+      }),
+      updatedAt: now,
+    };
+  });
+
+  const nextTasks = (project.tasks || []).map((task) => {
+    if (!evidenceSearch.taskId || String(task.id) !== String(evidenceSearch.taskId)) return task;
+    return {
+      ...task,
+      status: task.status === 'done' ? task.status : (normalizedDecision === 'approved' ? task.status || 'in-progress' : 'in-progress'),
+      lastTouchedAt: now,
+      sourceReviewIds: uniqueStrings([...(task.sourceReviewIds || []), reviewId]),
+      evidenceMessageIds: uniqueStrings([...(task.evidenceMessageIds || []), message.id]),
+      timelineLogIds: uniqueStrings([...(task.timelineLogIds || []), logId]),
+    };
+  });
+  const nextSubmissions = (project.agentSubmissions || []).map((submission) => {
+    if (!evidenceSearch.submissionId || String(submission.id) !== String(evidenceSearch.submissionId)) return submission;
+    return {
+      ...submission,
+      sourceReviewIds: uniqueStrings([...(submission.sourceReviewIds || []), reviewId]),
+      evidenceIds: uniqueStrings([...(submission.evidenceIds || []), ...review.evidenceIds]),
+      updatedAt: now,
+    };
+  });
+  const log = {
+    id: logId,
+    time: now,
+    agent: reviewer.name,
+    agentId: reviewer.id,
+    actor: reviewer.name,
+    eventType: 'evidence-source-review',
+    source: 'agent-evidence-source-review',
+    channelId,
+    taskId: evidenceSearch.taskId || null,
+    submissionId: evidenceSearch.submissionId || null,
+    evidenceSearchId: evidenceSearch.id,
+    sourceId: review.sourceId,
+    sourceReviewId: reviewId,
+    reviewStatus: normalizedDecision,
+    decision: normalizedDecision,
+    log: `${reviewer.name || 'Reviewer'} reviewed source "${review.sourceTitle}" with decision ${normalizedDecision}.`,
+    receiptCount: message.visibility?.receiptCount || 0,
+    directTargetIds: message.directTargetIds || [],
+    requestedActions: normalizedActions,
+  };
+
+  const reviewerState = project.agentStates?.[reviewer.id] || {};
+  const ownerState = sourceOwner ? project.agentStates?.[sourceOwner.id] || {} : {};
+  const nextAgentStates = {
+    ...(project.agentStates || {}),
+    [reviewer.id]: {
+      ...reviewerState,
+      agentId: reviewer.id,
+      name: reviewerState.name || reviewer.name,
+      role: reviewerState.role || reviewer.role,
+      status: normalizedDecision === 'approved' ? 'source-review-approved' : 'source-review-recorded',
+      currentPlan: {
+        ...(reviewerState.currentPlan || {}),
+        focus: `Review source ${review.sourceTitle}`,
+        next: normalizedDecision === 'approved' ? 'Monitor downstream evidence use.' : 'Track requested source follow-up.',
+        evidenceSearchId: evidenceSearch.id,
+        sourceReviewId: reviewId,
+      },
+      worklog: [
+        {
+          id: `worklog_${reviewId}`,
+          at: now,
+          kind: 'evidence-source-review',
+          source: 'agent-evidence-source-review',
+          sourceMessageId: message.id,
+          evidenceSearchId: evidenceSearch.id,
+          sourceId: review.sourceId,
+          sourceReviewId: reviewId,
+          decision: normalizedDecision,
+          text: safeComments,
+        },
+        ...(reviewerState.worklog || []),
+      ].slice(0, 80),
+      lastActiveAt: now,
+    },
+  };
+  if (sourceOwner) {
+    const needsOwnerAction = ['rejected', 'needs-corroboration', 'quarantined'].includes(normalizedDecision);
+    nextAgentStates[sourceOwner.id] = {
+      ...ownerState,
+      agentId: sourceOwner.id,
+      name: ownerState.name || sourceOwner.name,
+      role: ownerState.role || sourceOwner.role,
+      status: needsOwnerAction ? 'source-follow-up-requested' : ownerState.status || 'source-review-received',
+      currentPlan: {
+        ...(ownerState.currentPlan || {}),
+        focus: evidenceSearch.query || review.sourceTitle,
+        next: needsOwnerAction ? 'Address reviewer source decision.' : 'Use approved source in downstream artifact.',
+        evidenceSearchId: evidenceSearch.id,
+        sourceReviewId: reviewId,
+      },
+      inbox: [
+        {
+          id: `inbox_${reviewId}`,
+          at: now,
+          source: 'evidence-source-review',
+          sourceMessageId: message.id,
+          evidenceSearchId: evidenceSearch.id,
+          sourceId: review.sourceId,
+          sourceReviewId: reviewId,
+          taskId: evidenceSearch.taskId || null,
+          text: safeComments,
+          status: normalizedDecision,
+        },
+        ...(ownerState.inbox || []),
+      ].slice(0, 80),
+      obligations: needsOwnerAction
+        ? [
+          {
+            id: `obligation_${reviewId}`,
+            at: now,
+            source: 'evidence-source-review',
+            sourceMessageId: message.id,
+            evidenceSearchId: evidenceSearch.id,
+            sourceId: review.sourceId,
+            sourceReviewId: reviewId,
+            taskId: evidenceSearch.taskId || null,
+            text: normalizedActions.join(' ') || safeComments,
+            status: 'open',
+          },
+          ...(ownerState.obligations || []),
+        ].slice(0, 80)
+        : (ownerState.obligations || []),
+      lastActiveAt: now,
+    };
+  }
+
+  const projectWithReview = appendProjectEvents({
+    ...project,
+    tasks: nextTasks,
+    logs: [log, ...(project.logs || [])],
+    evidenceSearches: nextEvidenceSearches,
+    agentSubmissions: nextSubmissions,
+    evidenceSourceReviews: [review, ...(project.evidenceSourceReviews || [])].slice(0, AGENT_EVIDENCE_SOURCE_REVIEW_LIMIT),
+    agentStates: nextAgentStates,
+  }, [
+    createProjectLedgerEvent({
+      id: eventId,
+      type: 'evidence-source-review',
+      time: now,
+      actor: reviewer.name,
+      summary: log.log,
+      source: 'agent-evidence-source-review',
+      channelId,
+      evidenceIds: review.evidenceIds,
+      entityIds: {
+        projectId: project.id || null,
+        reviewerAgentId: reviewer.id,
+        sourceOwnerAgentId: sourceOwner?.id || evidenceSearch.agentId || null,
+        taskId: evidenceSearch.taskId || null,
+        submissionId: evidenceSearch.submissionId || null,
+        evidenceSearchId: evidenceSearch.id,
+        sourceId: review.sourceId,
+        sourceReviewId: reviewId,
+        messageId: message.id,
+        logId,
+      },
+      payload: {
+        decision: normalizedDecision,
+        comments: safeComments,
+        requestedActions: normalizedActions,
+        qualityScore,
+        qualityLevel,
+        sourceSafetyLevel,
+      },
+    }),
+  ]);
+  const finalProject = applyChatMessagesToAgentStates({
+    project: projectWithReview,
+    team,
+    messages: [message],
+    now,
+    source: 'agent-evidence-source-review-chat',
+    language: currentLanguage,
+  });
+
+  return {
+    route: 'evidence-source-reviewed',
+    project: finalProject,
+    messages: [{ ...message, projectId: project.id }],
+    evidenceSourceReview: review,
+    evidenceSearch: nextEvidenceSearches.find((record) => String(record.id) === String(evidenceSearch.id)),
+    log,
+    task: evidenceSearch.taskId ? nextTasks.find((task) => String(task.id) === String(evidenceSearch.taskId)) : null,
+    submission: evidenceSearch.submissionId ? nextSubmissions.find((submission) => String(submission.id) === String(evidenceSearch.submissionId)) : null,
+  };
+}
+
 export function runDueProjectAutonomousCycles({
   projects = [],
   getMessages = () => [],
@@ -4421,6 +4781,15 @@ function normalizeSubmissionReviewStatus(value = 'under-review') {
   if (normalized === 'approved') return 'accepted';
   if (normalized === 'request-changes' || normalized === 'revision-requested') return 'changes-requested';
   return AGENT_SUBMISSION_REVIEW_STATUSES.has(normalized) ? normalized : 'under-review';
+}
+
+function normalizeEvidenceSourceReviewDecision(value = 'under-review') {
+  const normalized = slugPart(value || 'under-review');
+  if (['approve', 'approved', 'accept', 'accepted', 'clear', 'cleared'].includes(normalized)) return 'approved';
+  if (['reject', 'rejected', 'deny', 'denied'].includes(normalized)) return 'rejected';
+  if (['quarantine', 'quarantined', 'blocked', 'block'].includes(normalized)) return 'quarantined';
+  if (['needs-review', 'request-corroboration', 'needs-corroboration', 'corroborate'].includes(normalized)) return 'needs-corroboration';
+  return EVIDENCE_SOURCE_REVIEW_DECISIONS.has(normalized) ? normalized : 'under-review';
 }
 
 function normalizeConfidence(value = 'medium') {
@@ -7912,6 +8281,8 @@ function buildManagerDashboardSnapshot({ project = {}, messages = [] } = {}) {
       project: projectId ? `/projects/${projectId}` : null,
       readiness: projectId ? `/projects/${projectId}/readiness` : null,
       readinessProofMap: projectId ? `/projects/${projectId}/readiness-proof-map` : null,
+      evidenceQualityAudit: projectId ? `/projects/${projectId}/evidence-quality-audit` : null,
+      evidenceSourceReviewWorkflow: projectId ? `/projects/${projectId}/evidence-source-review-workflow` : null,
       projectEvidenceArchive: projectId ? `/projects/${projectId}/project-evidence-archive` : null,
       projectEvidenceExports: projectId ? `/projects/${projectId}/project-evidence-exports` : null,
       managerReadyPackage: projectId ? `/projects/${projectId}/manager-ready-package` : null,
@@ -7951,6 +8322,522 @@ function buildManagerDashboardSnapshot({ project = {}, messages = [] } = {}) {
       evidenceSearches: projectId ? `/projects/${projectId}/evidence-searches` : null,
       submissionReviews: projectId ? `/projects/${projectId}/submission-reviews` : null,
     },
+  };
+}
+
+function buildEvidenceQualityAudit({
+  project = {},
+  managerDashboard = {},
+  providerReadiness = {},
+  now = nowIso(),
+} = {}) {
+  const projectId = project.id || managerDashboard.projectId || managerDashboard.project?.id || null;
+  const evidenceRecords = project.evidenceSearches || managerDashboard.evidenceSearches?.rows || [];
+  const proofMap = managerDashboard.readinessProofMap || {};
+  const evidenceRoutes = proofMap.evidenceSearchRoutes || [];
+  const routeForRecord = (record = {}) => evidenceRoutes.find((route) => (
+    route.apiPath && record.id && String(route.apiPath).includes(encodeURIComponent(record.id))
+  )) || evidenceRoutes.find((route) => (
+    route.proofLabel && record.query && String(route.proofLabel) === String(record.query)
+  )) || null;
+  const providerBackedRows = evidenceRecords.filter((record) => record.provider && !['manual', 'agent-recorded'].includes(record.provider));
+  const rows = evidenceRecords.map((record) => {
+    const sourceSafetySummary = record.sourceSafetySummary || summarizeEvidenceSourceSafety(record.sources || []);
+    const qualitySummary = record.qualitySummary || summarizeEvidenceQuality(record.sources || [], record.findings || [], record.confidence || 'medium');
+    const proofRoute = routeForRecord(record);
+    const safeRecord = redactSensitiveObject({
+      id: record.id,
+      projectId: record.projectId || projectId,
+      agentId: record.agentId || null,
+      agentName: record.agentName || null,
+      taskId: record.taskId || null,
+      submissionId: record.submissionId || null,
+      provider: record.provider || 'unknown',
+      searchMode: record.searchMode || null,
+      status: record.status || 'unknown',
+      queryPreview: compactPreview(record.query || ''),
+      purposePreview: compactPreview(record.purpose || ''),
+      sourceCount: record.sources?.length || 0,
+      findingCount: record.findings?.length || 0,
+      confidence: record.confidence || null,
+      evidenceJudgement: record.evidenceJudgement || qualitySummary.judgement || null,
+      qualityScore: record.qualityScore ?? qualitySummary.averageScore ?? 0,
+      qualitySummary,
+      sourceSafetySummary,
+      proofRoute: proofRoute ? {
+        apiPath: proofRoute.apiPath || null,
+        proofIds: proofRoute.proofIds || [],
+        timelineLogIds: proofRoute.timelineLogIds || [],
+        eventIds: proofRoute.eventIds || [],
+      } : null,
+      messageId: record.messageId || null,
+      timelineLogId: record.timelineLogId || null,
+      eventId: record.eventId || null,
+      checksum: persistenceChecksum({
+        id: record.id,
+        query: record.query || '',
+        sourceIds: (record.sources || []).map((source) => source.id || source.url || source.title),
+        judgement: record.evidenceJudgement || qualitySummary.judgement || null,
+        sourceSafety: sourceSafetySummary,
+      }),
+    });
+    return safeRecord;
+  });
+  const sourceRows = evidenceRecords.flatMap((record) => (record.sources || []).map((source, index) => redactSensitiveObject({
+    id: source.id || `source_${index + 1}`,
+    evidenceSearchId: record.id || null,
+    agentId: record.agentId || null,
+    provider: record.provider || 'unknown',
+    title: source.title || source.name || `Evidence source ${index + 1}`,
+    kind: source.kind || source.type || 'source',
+    url: source.url ? redactUrl(source.url) : null,
+    summaryPreview: compactPreview(source.summary || source.snippet || source.note || ''),
+    confidence: source.confidence || null,
+    qualityScore: source.qualityScore ?? 0,
+    qualityLevel: source.qualityLevel || evidenceQualityLevel(source.qualityScore || 0),
+    qualitySignals: source.qualitySignals || [],
+    sourceSafetyLevel: source.sourceSafetyLevel || null,
+    sourceSafetyScore: source.sourceSafetyScore ?? null,
+    sourceSafetySignals: source.sourceSafetySignals || [],
+    sourceSafetyJudgement: source.sourceSafetyJudgement || null,
+    capturedAt: source.capturedAt || null,
+  })));
+  const averageQualityScore = rows.length
+    ? Math.round(rows.reduce((sum, row) => sum + (Number(row.qualityScore) || 0), 0) / rows.length)
+    : 0;
+  const strongEvidenceCount = rows.filter((row) => row.evidenceJudgement === 'strong-evidence' || row.qualitySummary?.judgement === 'strong-evidence').length;
+  const usableEvidenceCount = rows.filter((row) => ['strong-evidence', 'usable-evidence'].includes(row.evidenceJudgement || row.qualitySummary?.judgement)).length;
+  const needsCorroborationCount = rows.filter((row) => row.evidenceJudgement === 'needs-corroboration' || row.qualitySummary?.judgement === 'needs-corroboration').length;
+  const sourceSafetySummary = summarizeEvidenceSourceSafety(sourceRows);
+  const readyProofRouteCount = evidenceRoutes.filter((route) => (
+    route.apiPath && ((route.proofIds || []).length || (route.timelineLogIds || []).length || (route.eventIds || []).length)
+  )).length;
+  const gate = ({
+    id,
+    label,
+    passed,
+    detail,
+    apiPath = null,
+    severity = 'blocker',
+  }) => ({
+    id,
+    label,
+    passed: Boolean(passed),
+    status: passed ? 'passed' : severity === 'warning' ? 'warning' : 'missing',
+    severity,
+    detail,
+    apiPath,
+  });
+  const gates = [
+    gate({
+      id: 'evidence-search-present',
+      label: 'Evidence searches are recorded',
+      passed: rows.length > 0,
+      detail: `${rows.length} evidence search row(s).`,
+      apiPath: projectId ? `/projects/${projectId}/evidence-searches` : null,
+    }),
+    gate({
+      id: 'source-count-ready',
+      label: 'Evidence sources are attached',
+      passed: sourceRows.length > 0,
+      detail: `${sourceRows.length} source row(s) attached to evidence searches.`,
+      apiPath: projectId ? `/projects/${projectId}/evidence-searches` : null,
+    }),
+    gate({
+      id: 'quality-judgement-ready',
+      label: 'Evidence has decision-quality judgement',
+      passed: usableEvidenceCount > 0 && averageQualityScore >= 60,
+      detail: `${usableEvidenceCount} usable/strong evidence row(s), ${strongEvidenceCount} strong, average quality ${averageQualityScore}.`,
+      apiPath: projectId ? `/projects/${projectId}/evidence-quality-audit` : null,
+    }),
+    gate({
+      id: 'source-safety-ready',
+      label: 'Evidence sources pass source-safety screening',
+      passed: sourceRows.length > 0 && sourceSafetySummary.sourceSafetyReady,
+      detail: `${sourceSafetySummary.reviewedSourceCount}/${sourceSafetySummary.sourceCount} source(s) screened; ${sourceSafetySummary.blockedSourceCount} blocked, ${sourceSafetySummary.reviewSourceCount} review.`,
+      apiPath: projectId ? `/projects/${projectId}/evidence-quality-audit` : null,
+    }),
+    gate({
+      id: 'proof-routes-ready',
+      label: 'Evidence quality links to proof routes',
+      passed: rows.length > 0 && readyProofRouteCount >= rows.length,
+      detail: `${readyProofRouteCount}/${rows.length} evidence proof route(s) carry proof ids, timeline logs, or ledger events.`,
+      apiPath: projectId ? `/projects/${projectId}/readiness-proof-map` : null,
+    }),
+    gate({
+      id: 'provider-provenance-visible',
+      label: 'Provider provenance is visible when search providers are used',
+      passed: providerBackedRows.length > 0 || rows.length === 0,
+      detail: `${providerBackedRows.length} provider-backed row(s); providers: ${uniqueStrings(rows.map((row) => row.provider)).join(', ') || 'none'}.`,
+      apiPath: projectId ? `/projects/${projectId}/provider-readiness` : null,
+      severity: providerBackedRows.length > 0 || rows.length === 0 ? 'blocker' : 'warning',
+    }),
+    gate({
+      id: 'production-real-search-blocked',
+      label: 'Production evidence provider rollout remains blocked until real controls exist',
+      passed: providerReadiness.readyForProduction === false,
+      detail: `${providerReadiness.status || 'provider-readiness-pending'}; production search requires real gateway, managed audit, incident controls, and calibrated review policy.`,
+      apiPath: projectId ? `/projects/${projectId}/provider-readiness` : null,
+      severity: 'warning',
+    }),
+  ];
+  const decisionGateIds = new Set([
+    'evidence-search-present',
+    'source-count-ready',
+    'quality-judgement-ready',
+    'source-safety-ready',
+    'proof-routes-ready',
+  ]);
+  const failedDecisionGates = gates.filter((row) => decisionGateIds.has(row.id) && !row.passed);
+  const failedGates = gates.filter((row) => !row.passed);
+  const readyForDecision = failedDecisionGates.length === 0;
+  const status = !rows.length
+    ? 'evidence-missing'
+    : sourceSafetySummary.blockedSourceCount > 0
+      ? 'source-safety-blocked'
+      : readyForDecision
+        ? 'decision-ready-evidence'
+        : needsCorroborationCount > 0
+          ? 'evidence-needs-corroboration'
+          : 'evidence-audit-incomplete';
+  const requiredProductionControls = [
+    {
+      id: 'real-search-gateway',
+      label: 'Real external search gateway',
+      status: providerReadiness.readyForProduction ? 'ready' : 'blocked',
+      owner: 'ai-platform',
+      detail: 'Private pilot can use deterministic/local search proof, but production needs a real approved search gateway with region, quota, and outage controls.',
+      apiPath: projectId ? `/projects/${projectId}/provider-readiness` : null,
+    },
+    {
+      id: 'calibrated-source-quality-policy',
+      label: 'Calibrated source quality policy',
+      status: 'blocked',
+      owner: 'reviewer-governance',
+      detail: 'Prototype scoring is deterministic and provider-agnostic; production should calibrate source trust, recency, citation policy, and domain allow/deny rules with human review.',
+      apiPath: projectId ? `/projects/${projectId}/evidence-quality-audit` : null,
+    },
+    {
+      id: 'managed-provider-evidence-audit',
+      label: 'Managed provider evidence audit storage',
+      status: 'blocked',
+      owner: 'operations',
+      detail: 'Production needs immutable provider call receipts, source snapshots, review decisions, and cost/provenance ledgers in managed storage.',
+      apiPath: projectId ? `/projects/${projectId}/provider-readiness` : null,
+    },
+  ];
+  const summary = {
+    rowCount: rows.length,
+    sourceCount: sourceRows.length,
+    averageQualityScore,
+    strongEvidenceCount,
+    usableEvidenceCount,
+    needsCorroborationCount,
+    providerBackedSearchCount: providerBackedRows.length,
+    providerCount: uniqueStrings(rows.map((row) => row.provider)).length,
+    sourceSafetyReady: sourceSafetySummary.sourceSafetyReady,
+    sourceSafetyReadyCount: rows.filter((row) => row.sourceSafetySummary?.sourceSafetyReady).length,
+    sourceSafetyBlockedSourceCount: sourceSafetySummary.blockedSourceCount,
+    sourceSafetyReviewSourceCount: sourceSafetySummary.reviewSourceCount,
+    proofRouteCount: evidenceRoutes.length,
+    readyProofRouteCount,
+    gateCount: gates.length,
+    passedGateCount: gates.filter((row) => row.passed).length,
+    failedGateCount: failedGates.length,
+    failedDecisionGateCount: failedDecisionGates.length,
+    productionControlCount: requiredProductionControls.length,
+  };
+  const audit = {
+    projectId,
+    generatedAt: now,
+    schemaVersion: 'evidence-quality-audit/v1',
+    status,
+    readyForDecision,
+    readyForLocalPilot: readyForDecision,
+    readyForProduction: false,
+    decisionUse: readyForDecision
+      ? 'decision-ready'
+      : sourceSafetySummary.blockedSourceCount > 0
+        ? 'blocked-source-present'
+        : rows.length
+          ? 'needs-review-or-corroboration'
+          : 'blocked-no-evidence',
+    rows,
+    sourceRows,
+    sourceSafetySummary,
+    gates,
+    failedGates,
+    failedDecisionGates,
+    requiredProductionControls,
+    backendRoutes: {
+      evidenceQualityAudit: projectId ? `/projects/${projectId}/evidence-quality-audit` : null,
+      evidenceSearches: managerDashboard.backendRoutes?.evidenceSearches || (projectId ? `/projects/${projectId}/evidence-searches` : null),
+      readinessProofMap: managerDashboard.backendRoutes?.readinessProofMap || (projectId ? `/projects/${projectId}/readiness-proof-map` : null),
+      providerReadiness: managerDashboard.backendRoutes?.providerReadiness || (projectId ? `/projects/${projectId}/provider-readiness` : null),
+      managerReadyPackage: managerDashboard.backendRoutes?.managerReadyPackage || (projectId ? `/projects/${projectId}/manager-ready-package` : null),
+    },
+    summary,
+  };
+  return {
+    ...audit,
+    checksum: persistenceChecksum({
+      schemaVersion: audit.schemaVersion,
+      status,
+      readyForDecision,
+      rows: rows.map((row) => [row.id, row.qualityScore, row.evidenceJudgement, row.sourceSafetySummary?.highestRiskLevel]),
+      gates: gates.map((row) => [row.id, row.passed, row.status]),
+      summary,
+    }),
+  };
+}
+
+function buildEvidenceSourceReviewWorkflow({
+  project = {},
+  managerDashboard = {},
+  evidenceQualityAudit = {},
+  providerReadiness = {},
+  now = nowIso(),
+} = {}) {
+  const projectId = project.id || managerDashboard.projectId || managerDashboard.project?.id || evidenceQualityAudit.projectId || null;
+  const sourceRows = evidenceQualityAudit.sourceRows || [];
+  const evidenceRows = evidenceQualityAudit.rows || [];
+  const rowById = new Map(evidenceRows.map((row) => [String(row.id || ''), row]));
+  const reviewer = (project.team || []).find((member) => /review|evidence|qa|critic|risk/i.test(`${member.role || ''} ${member.title || ''} ${member.skill || ''}`))
+    || (project.team || []).find((member) => member.id !== project.leaderId)
+    || (project.team || [])[0]
+    || null;
+  const workflowRoute = projectId ? `/projects/${projectId}/evidence-source-review-workflow` : null;
+  const reviewItems = sourceRows.map((source, index) => {
+    const evidenceRow = rowById.get(String(source.evidenceSearchId || '')) || {};
+    const qualityScore = Number(source.qualityScore) || 0;
+    const qualityLevel = source.qualityLevel || evidenceQualityLevel(qualityScore);
+    const safetyLevel = source.sourceSafetyLevel || 'unknown';
+    const status = safetyLevel === 'blocked'
+      ? 'blocked-source'
+      : safetyLevel === 'review'
+        ? 'human-review-required'
+        : qualityScore < 60
+          ? 'quality-review-required'
+          : qualityScore < 80
+            ? 'spot-check-required'
+            : 'auto-cleared';
+    const reviewerAction = status === 'blocked-source'
+      ? 'quarantine-or-replace-source'
+      : status === 'auto-cleared'
+        ? 'spot-check-before-production'
+        : 'confirm-source-or-request-corroboration';
+    const proofRoute = evidenceRow.proofRoute || null;
+    return redactSensitiveObject({
+      id: `source_review_${source.evidenceSearchId || 'evidence'}_${source.id || index + 1}`,
+      sourceId: source.id || `source_${index + 1}`,
+      evidenceSearchId: source.evidenceSearchId || null,
+      agentId: source.agentId || null,
+      reviewerAgentId: reviewer?.id || null,
+      reviewerAgentName: reviewer?.name || null,
+      provider: source.provider || evidenceRow.provider || 'unknown',
+      title: source.title || `Evidence source ${index + 1}`,
+      kind: source.kind || 'source',
+      url: source.url ? redactUrl(source.url) : null,
+      qualityScore,
+      qualityLevel,
+      qualitySignals: source.qualitySignals || [],
+      sourceSafetyLevel: safetyLevel,
+      sourceSafetyScore: source.sourceSafetyScore ?? null,
+      sourceSafetySignals: source.sourceSafetySignals || [],
+      sourceSafetyJudgement: source.sourceSafetyJudgement || null,
+      status,
+      reviewRequired: status !== 'auto-cleared',
+      reviewerAction,
+      localDecisionUse: status === 'blocked-source' || qualityScore < 60
+        ? 'blocked'
+        : status === 'auto-cleared'
+          ? 'usable-for-local-pilot'
+          : 'usable-with-review-queue',
+      productionDecisionUse: 'requires-human-source-review-policy',
+      proofRoute: proofRoute ? {
+        apiPath: proofRoute.apiPath || null,
+        proofIds: proofRoute.proofIds || [],
+        timelineLogIds: proofRoute.timelineLogIds || [],
+        eventIds: proofRoute.eventIds || [],
+      } : null,
+      evidenceQualityAuditRoute: evidenceQualityAudit.backendRoutes?.evidenceQualityAudit || (projectId ? `/projects/${projectId}/evidence-quality-audit` : null),
+      workflowRoute,
+      checksum: persistenceChecksum({
+        sourceId: source.id || index,
+        evidenceSearchId: source.evidenceSearchId || null,
+        qualityScore,
+        qualityLevel,
+        sourceSafetyLevel: safetyLevel,
+        status,
+        reviewerAction,
+      }),
+    });
+  });
+  const proofedReviewItemCount = reviewItems.filter((item) => (
+    item.proofRoute?.apiPath
+    && ((item.proofRoute.proofIds || []).length || (item.proofRoute.timelineLogIds || []).length || (item.proofRoute.eventIds || []).length)
+  )).length;
+  const blockedSourceCount = reviewItems.filter((item) => item.status === 'blocked-source').length;
+  const reviewRequiredSourceCount = reviewItems.filter((item) => item.reviewRequired).length;
+  const autoClearedSourceCount = reviewItems.filter((item) => item.status === 'auto-cleared').length;
+  const spotCheckSourceCount = reviewItems.filter((item) => item.status === 'spot-check-required').length;
+  const sourceSafetyReady = Boolean(evidenceQualityAudit.summary?.sourceSafetyReady);
+  const gate = ({ id, label, passed, detail, apiPath = workflowRoute, severity = 'blocker' }) => ({
+    id,
+    label,
+    passed: Boolean(passed),
+    status: passed ? 'passed' : severity === 'warning' ? 'warning' : 'missing',
+    severity,
+    detail,
+    apiPath,
+  });
+  const gates = [
+    gate({
+      id: 'source-review-items-derived',
+      label: 'Source review items are derived from evidence rows',
+      passed: sourceRows.length > 0 && reviewItems.length === sourceRows.length,
+      detail: `${reviewItems.length}/${sourceRows.length} source review item(s) derived from evidence quality audit rows.`,
+    }),
+    gate({
+      id: 'source-safety-screening-ready',
+      label: 'Source safety screening is attached',
+      passed: sourceRows.length > 0 && sourceSafetyReady && blockedSourceCount === 0,
+      detail: `${evidenceQualityAudit.summary?.sourceSafetyReadyCount || 0} evidence row(s) source-safe; ${blockedSourceCount} blocked source(s).`,
+      apiPath: evidenceQualityAudit.backendRoutes?.evidenceQualityAudit || (projectId ? `/projects/${projectId}/evidence-quality-audit` : null),
+    }),
+    gate({
+      id: 'quality-policy-coverage',
+      label: 'Every source has quality policy signals',
+      passed: reviewItems.length > 0 && reviewItems.every((item) => item.qualityScore > 0 && item.qualityLevel && (item.qualitySignals || []).length),
+      detail: `${reviewItems.filter((item) => item.qualityScore > 0 && item.qualityLevel).length}/${reviewItems.length} source(s) have quality judgement.`,
+      apiPath: evidenceQualityAudit.backendRoutes?.evidenceQualityAudit || (projectId ? `/projects/${projectId}/evidence-quality-audit` : null),
+    }),
+    gate({
+      id: 'reviewer-handoff-visible',
+      label: 'Reviewer handoff is visible for every source',
+      passed: reviewItems.length > 0 && reviewItems.every((item) => item.reviewerAction && item.reviewerAgentId),
+      detail: `${reviewItems.length} source review item(s), reviewer ${reviewer?.name || 'unassigned'}.`,
+    }),
+    gate({
+      id: 'source-review-proof-routes-ready',
+      label: 'Source review items link back to proof routes',
+      passed: reviewItems.length > 0 && proofedReviewItemCount === reviewItems.length,
+      detail: `${proofedReviewItemCount}/${reviewItems.length} source review item(s) include API/timeline/event proof.`,
+      apiPath: managerDashboard.backendRoutes?.readinessProofMap || (projectId ? `/projects/${projectId}/readiness-proof-map` : null),
+    }),
+    gate({
+      id: 'production-human-review-policy-blocked',
+      label: 'Production human source-review policy remains explicit',
+      passed: providerReadiness.readyForProduction === false && evidenceQualityAudit.readyForProduction === false,
+      detail: 'Local source screening can support private-pilot decisions; production still needs calibrated human review, snapshot retention, and reviewer approval policy.',
+      severity: 'warning',
+    }),
+  ];
+  const decisionGateIds = new Set([
+    'source-review-items-derived',
+    'source-safety-screening-ready',
+    'quality-policy-coverage',
+    'reviewer-handoff-visible',
+    'source-review-proof-routes-ready',
+  ]);
+  const failedDecisionGates = gates.filter((row) => decisionGateIds.has(row.id) && !row.passed);
+  const failedGates = gates.filter((row) => !row.passed);
+  const readyForLocalPilot = Boolean(evidenceQualityAudit.readyForDecision && failedDecisionGates.length === 0 && blockedSourceCount === 0);
+  const status = !sourceRows.length
+    ? 'source-review-missing'
+    : blockedSourceCount > 0
+      ? 'source-review-blocked'
+      : failedDecisionGates.length
+        ? 'source-review-incomplete'
+        : reviewRequiredSourceCount > 0
+          ? 'source-review-queue-ready'
+          : 'source-review-ready';
+  const requiredProductionControls = [
+    {
+      id: 'human-source-review-policy',
+      label: 'Human source-review policy',
+      status: 'blocked',
+      owner: 'reviewer-governance',
+      detail: 'Production needs named reviewer roles, escalation rules, conflict checks, approval verdicts, and reviewer audit records for source trust decisions.',
+      apiPath: workflowRoute,
+    },
+    {
+      id: 'calibrated-source-quality-policy',
+      label: 'Calibrated source quality policy',
+      status: 'blocked',
+      owner: 'reviewer-governance',
+      detail: 'Prototype source scoring is deterministic; production needs calibrated domain trust, recency, citation, corroboration, and allow/deny policy.',
+      apiPath: workflowRoute,
+    },
+    {
+      id: 'managed-source-snapshot-storage',
+      label: 'Managed source snapshot storage',
+      status: 'blocked',
+      owner: 'operations',
+      detail: 'Production needs immutable source snapshots, provider receipts, review decisions, and retention/deletion policy in managed storage.',
+      apiPath: projectId ? `/projects/${projectId}/persistence-adapter-dry-run` : null,
+    },
+  ];
+  const summary = {
+    sourceCount: sourceRows.length,
+    reviewItemCount: reviewItems.length,
+    autoClearedSourceCount,
+    reviewRequiredSourceCount,
+    spotCheckSourceCount,
+    blockedSourceCount,
+    proofedReviewItemCount,
+    sourceSafetyReady,
+    averageQualityScore: evidenceQualityAudit.summary?.averageQualityScore || 0,
+    gateCount: gates.length,
+    passedGateCount: gates.filter((row) => row.passed).length,
+    failedGateCount: failedGates.length,
+    failedDecisionGateCount: failedDecisionGates.length,
+    productionControlCount: requiredProductionControls.length,
+  };
+  const workflow = {
+    projectId,
+    generatedAt: now,
+    schemaVersion: 'evidence-source-review-workflow/v1',
+    status,
+    readyForLocalPilot,
+    readyForDecision: readyForLocalPilot,
+    readyForProduction: false,
+    reviewer: reviewer ? {
+      agentId: reviewer.id || null,
+      name: reviewer.name || reviewer.id || null,
+      role: reviewer.role || reviewer.title || null,
+    } : null,
+    reviewItems,
+    reviewQueue: reviewItems.filter((item) => item.reviewRequired),
+    autoClearedItems: reviewItems.filter((item) => !item.reviewRequired),
+    gates,
+    failedGates,
+    failedDecisionGates,
+    requiredProductionControls,
+    backendRoutes: {
+      evidenceSourceReviewWorkflow: workflowRoute,
+      evidenceQualityAudit: evidenceQualityAudit.backendRoutes?.evidenceQualityAudit || (projectId ? `/projects/${projectId}/evidence-quality-audit` : null),
+      evidenceSearches: managerDashboard.backendRoutes?.evidenceSearches || (projectId ? `/projects/${projectId}/evidence-searches` : null),
+      readinessProofMap: managerDashboard.backendRoutes?.readinessProofMap || (projectId ? `/projects/${projectId}/readiness-proof-map` : null),
+      providerReadiness: managerDashboard.backendRoutes?.providerReadiness || (projectId ? `/projects/${projectId}/provider-readiness` : null),
+      managerReadyPackage: managerDashboard.backendRoutes?.managerReadyPackage || (projectId ? `/projects/${projectId}/manager-ready-package` : null),
+    },
+    policy: {
+      localPilot: 'automatic quality/source-safety screening plus visible reviewer queue is sufficient for local private-pilot decision rehearsal',
+      production: 'blocked until human source-review policy, calibrated source quality, source snapshot storage, and provider audit storage are approved',
+    },
+    summary,
+  };
+  return {
+    ...workflow,
+    checksum: persistenceChecksum({
+      schemaVersion: workflow.schemaVersion,
+      status,
+      readyForLocalPilot,
+      reviewItems: reviewItems.map((item) => [item.id, item.status, item.qualityScore, item.sourceSafetyLevel, item.checksum]),
+      gates: gates.map((row) => [row.id, row.passed, row.status]),
+      summary,
+    }),
   };
 }
 
@@ -8041,7 +8928,7 @@ function buildMvpReadiness({ managerDashboard = {}, managerFlowGraph = {} } = {}
       label: 'Evidence search has quality judgement',
       passed: Boolean((evidenceSearches.usableEvidenceCount || 0) > 0 && (evidenceSummary.averageQualityScore || evidenceSearches.averageQualityScore || 0) >= 60),
       detail: `${evidenceSearches.count || 0} search(es), ${evidenceSearches.sourceCount || 0} source(s), quality ${evidenceSummary.averageQualityScore || evidenceSearches.averageQualityScore || 0}`,
-      apiPath: managerDashboard.backendRoutes?.evidenceSearches || null,
+      apiPath: managerDashboard.backendRoutes?.evidenceQualityAudit || managerDashboard.backendRoutes?.evidenceSearches || null,
       proofIds: idsFromRoutes(proofMap.evidenceSearchRoutes, 'proofIds'),
       timelineLogIds: idsFromRoutes(proofMap.evidenceSearchRoutes, 'timelineLogIds'),
       eventIds: idsFromRoutes(proofMap.evidenceSearchRoutes, 'eventIds'),
@@ -8231,6 +9118,7 @@ function buildPilotLaunchReadinessSnapshot({
   mvpReadiness = {},
   securityBoundary = {},
   providerReadiness = {},
+  evidenceSourceReviewWorkflow = {},
   operationsReadiness = {},
   persistenceSnapshot = {},
   persistenceAdapterPlan = {},
@@ -8242,6 +9130,7 @@ function buildPilotLaunchReadinessSnapshot({
 } = {}) {
   const projectId = project.id || managerDashboard.projectId || mvpReadiness.projectId || null;
   const route = (key, fallback = null) => managerDashboard.backendRoutes?.[key] || fallback;
+  const evidenceSearches = managerDashboard.evidenceSearches || {};
   const summary = {
     proofRouteCount: managerDashboard.readinessProofMap?.routes?.length || 0,
     flowGraphProofedNodeCount: managerFlowGraph.summary?.proofedNodeCount || 0,
@@ -8394,6 +9283,8 @@ function buildPilotLaunchReadinessSnapshot({
     { id: 'manager-ready-package', route: route('managerReadyPackage', projectId ? `/projects/${projectId}/manager-ready-package` : null), ready: true },
     { id: 'project-evidence-archive', route: route('projectEvidenceArchive', projectId ? `/projects/${projectId}/project-evidence-archive` : null), ready: Boolean(mvpReadiness.readyForLocalPilot) },
     { id: 'project-evidence-exports', route: route('projectEvidenceExports', projectId ? `/projects/${projectId}/project-evidence-exports` : null), ready: true },
+    { id: 'evidence-quality-audit', route: route('evidenceQualityAudit', projectId ? `/projects/${projectId}/evidence-quality-audit` : null), ready: Boolean((evidenceSearches.usableEvidenceCount || 0) > 0 && (evidenceSearches.sourceSafetyBlockedSourceCount || 0) === 0) },
+    { id: 'evidence-source-review-workflow', route: route('evidenceSourceReviewWorkflow', projectId ? `/projects/${projectId}/evidence-source-review-workflow` : null), ready: Boolean(evidenceSourceReviewWorkflow.readyForLocalPilot) },
     { id: 'mvp-readiness', route: route('mvpReadiness', projectId ? `/projects/${projectId}/mvp-readiness` : null), ready: Boolean(mvpReadiness.schemaVersion) },
     { id: 'readiness-proof-map', route: route('readinessProofMap', projectId ? `/projects/${projectId}/readiness-proof-map` : null), ready: summary.proofRouteCount > 0 },
     { id: 'manager-flow-graph', route: route('managerFlowGraph', projectId ? `/projects/${projectId}/manager-flow-graph` : null), ready: summary.flowGraphProofedNodeCount > 0 },
@@ -8886,7 +9777,7 @@ function normalizeProjectEvidenceExportAction(action = 'request') {
   const value = String(action || '').trim().toLowerCase().replace(/_/g, '-');
   if (['approve', 'approved', 'approval'].includes(value)) return 'approve';
   if (['reject', 'rejected', 'deny', 'denied', 'block', 'blocked'].includes(value)) return 'reject';
-  if (['download', 'downloaded', 'audit-download', 'record-download'].includes(value)) return 'download-audit';
+  if (['download-audit', 'download', 'downloaded', 'audit-download', 'record-download'].includes(value)) return 'download-audit';
   return 'request';
 }
 
@@ -8918,9 +9809,10 @@ function buildProjectEvidenceExportRecord({
   const exportRequestId = action === 'request'
     ? id
     : (input.exportRequestId || input.requestId || latestRequest?.exportRequestId || latestRequest?.id || id);
-  const retentionDays = Math.max(1, Number(input.retentionDays || input.retentionPolicyDays || 30) || 30);
-  const expiresAt = input.expiresAt || new Date(createdAtMs + retentionDays * 24 * 60 * 60 * 1000).toISOString();
+  const effectiveRetentionDays = Math.max(1, Number(input.retentionDays || input.retentionPolicyDays || latestRequest?.retentionDays || 30) || 30);
+  const expiresAt = input.expiresAt || latestRequest?.expiresAt || new Date(createdAtMs + effectiveRetentionDays * 24 * 60 * 60 * 1000).toISOString();
   const archiveChecksum = archive.checksum || input.archiveChecksum || input.linkedArchiveChecksum || null;
+  const dataResidencyRegion = input.dataResidencyRegion || input.region || latestRequest?.dataResidencyRegion || 'local-private-pilot';
   const checksumPayload = {
     id,
     projectId: project.id || input.projectId || null,
@@ -8931,8 +9823,8 @@ function buildProjectEvidenceExportRecord({
     actorRole,
     actorId: input.actorId || input.approverId || input.userId || '',
     archiveChecksum,
-    retentionDays,
-    dataResidencyRegion: input.dataResidencyRegion || input.region || 'local-private-pilot',
+    retentionDays: effectiveRetentionDays,
+    dataResidencyRegion,
   };
   return redactSensitiveObject({
     id,
@@ -8954,11 +9846,11 @@ function buildProjectEvidenceExportRecord({
     archiveSchemaVersion: archive.schemaVersion || input.archiveSchemaVersion || null,
     archiveRawLeakCount: archive.summary?.rawLeakCount ?? input.archiveRawLeakCount ?? null,
     manifestEntryCount: archive.summary?.manifestEntryCount ?? input.manifestEntryCount ?? null,
-    retentionDays,
+    retentionDays: effectiveRetentionDays,
     expiresAt,
-    dataResidencyRegion: input.dataResidencyRegion || input.region || 'local-private-pilot',
-    watermarkRequired: input.watermarkRequired ?? true,
-    downloadAuditRequired: input.downloadAuditRequired ?? true,
+    dataResidencyRegion,
+    watermarkRequired: input.watermarkRequired ?? latestRequest?.watermarkRequired ?? true,
+    downloadAuditRequired: input.downloadAuditRequired ?? latestRequest?.downloadAuditRequired ?? true,
     approvalRequired: true,
     encryptedStorageRequired: true,
     encryptedStorageReady: Boolean(input.encryptedStorageReady),
@@ -9017,6 +9909,9 @@ function buildProjectEvidenceExportWorkflowSnapshot({
   const production = requestSummary(latestProductionRequest, 'production');
   const archiveReady = Boolean(archive.readyForManagerHandoff && archive.summary?.rawLeakCount === 0);
   const privatePilotReady = Boolean(privatePilot.ready && archiveReady);
+  const privatePilotRows = latestPrivatePilotRequest ? rowsForRequest(latestPrivatePilotRequest) : [];
+  const latestPrivatePilotDownloadAudit = privatePilotRows.find((record) => record.action === 'download-audit') || null;
+  const privatePilotPackageReady = Boolean(privatePilotReady && latestPrivatePilotDownloadAudit);
   const gates = [
     {
       id: 'export-request-present',
@@ -9061,24 +9956,49 @@ function buildProjectEvidenceExportWorkflowSnapshot({
       apiPath: projectId ? `/projects/${projectId}/project-evidence-exports` : null,
     },
   ];
+  const packageGates = [
+    {
+      id: 'private-pilot-export-approved',
+      label: 'Private-pilot export approval is complete',
+      passed: privatePilotReady,
+      detail: privatePilotReady ? 'approved' : 'approval incomplete',
+      apiPath: projectId ? `/projects/${projectId}/project-evidence-exports` : null,
+    },
+    {
+      id: 'download-audit-recorded',
+      label: 'Download audit is recorded before package handoff',
+      passed: Boolean(latestPrivatePilotDownloadAudit),
+      detail: latestPrivatePilotDownloadAudit?.id || 'no download audit record yet',
+      apiPath: projectId ? `/projects/${projectId}/project-evidence-exports` : null,
+    },
+    {
+      id: 'local-package-only',
+      label: 'Package is local/private-pilot only',
+      passed: true,
+      detail: 'No production download URL is issued from this contract.',
+      apiPath: projectId ? `/projects/${projectId}/project-evidence-exports` : null,
+    },
+  ];
   return {
     projectId,
     generatedAt: now,
     schemaVersion: 'project-evidence-export-workflow/v1',
-    status: privatePilotReady ? 'private-pilot-export-approved' : latestPrivatePilotRequest ? 'export-approval-needed' : 'export-request-needed',
+    status: privatePilotPackageReady ? 'private-pilot-export-package-ready' : privatePilotReady ? 'private-pilot-export-approved' : latestPrivatePilotRequest ? 'export-approval-needed' : 'export-request-needed',
     readyForPrivatePilotHandoff: privatePilotReady,
+    readyForPrivatePilotDownload: privatePilotPackageReady,
     readyForProductionExport: false,
     modes: [privatePilot, production],
     rows,
     latestRequest,
     latestPrivatePilotRequest,
+    latestPrivatePilotDownloadAudit,
     backendRoutes: {
       projectEvidenceExports: projectId ? `/projects/${projectId}/project-evidence-exports` : null,
       projectEvidenceArchive: projectId ? `/projects/${projectId}/project-evidence-archive` : null,
-      projectEvidenceExports: projectId ? `/projects/${projectId}/project-evidence-exports` : null,
       securityAuditStream: projectId ? `/projects/${projectId}/security-audit-stream` : null,
     },
     gates,
+    packageGates,
     productionControls: [
       'authenticated project membership and approval workflow',
       'encrypted object storage',
@@ -9093,11 +10013,16 @@ function buildProjectEvidenceExportWorkflowSnapshot({
       rejectionCount: rows.filter((record) => record.action === 'reject').length,
       downloadAuditCount: rows.filter((record) => record.action === 'download-audit').length,
       privatePilotReady,
+      privatePilotPackageReady,
       productionReady: false,
       gateCount: gates.length,
       passedGateCount: gates.filter((gate) => gate.passed).length,
       failedGateCount: gates.filter((gate) => !gate.passed).length,
+      packageGateCount: packageGates.length,
+      packagePassedGateCount: packageGates.filter((gate) => gate.passed).length,
+      packageFailedGateCount: packageGates.filter((gate) => !gate.passed).length,
       latestRequestChecksum: latestRequest?.checksum || null,
+      latestDownloadAuditChecksum: latestPrivatePilotDownloadAudit?.checksum || null,
       archiveChecksum: archive.checksum || null,
     },
     checksum: persistenceChecksum({
@@ -9106,6 +10031,300 @@ function buildProjectEvidenceExportWorkflowSnapshot({
       rows: rows.map((record) => [record.id, record.action, record.decision, record.checksum]),
       archiveChecksum: archive.checksum || null,
       privatePilotReady,
+    }),
+  };
+}
+
+function buildProjectEvidenceExportPackage({
+  project = {},
+  archive = {},
+  workflow = {},
+  exportRequestId = '',
+  downloadAuditRecord = null,
+  now = nowIso(),
+} = {}) {
+  const projectId = project.id || archive.projectId || workflow.projectId || null;
+  const rows = (project.projectEvidenceExports || [])
+    .filter((record) => record.schemaVersion === 'project-evidence-export/v1')
+    .slice()
+    .sort((a, b) => (Date.parse(b.createdAt) || 0) - (Date.parse(a.createdAt) || 0));
+  const requestedId = String(exportRequestId || workflow.latestPrivatePilotRequest?.exportRequestId || workflow.latestPrivatePilotRequest?.id || '').trim();
+  const request = rows.find((record) => (
+    record.action === 'request'
+    && (record.exportRequestId === requestedId || record.id === requestedId)
+  )) || workflow.latestPrivatePilotRequest || rows.find((record) => record.action === 'request') || null;
+  const requestId = request?.exportRequestId || request?.id || requestedId || null;
+  const requestRows = requestId ? rows.filter((record) => record.exportRequestId === requestId || record.id === requestId) : [];
+  const requiredRoles = PROJECT_EVIDENCE_EXPORT_REQUIRED_ROLES[normalizeProjectEvidenceExportMode(request?.mode)] || PROJECT_EVIDENCE_EXPORT_REQUIRED_ROLES['private-pilot'];
+  const latestByRole = new Map();
+  requestRows
+    .filter((record) => ['approve', 'reject'].includes(record.action))
+    .forEach((record) => {
+      const role = normalizeLaunchApproverRole(record.actorRole);
+      if (!latestByRole.has(role)) latestByRole.set(role, record);
+    });
+  const approvedRoles = requiredRoles.filter((role) => latestByRole.get(role)?.decision === 'approved');
+  const rejectedRoles = requiredRoles.filter((role) => latestByRole.get(role)?.decision === 'rejected');
+  const missingRoles = requiredRoles.filter((role) => !approvedRoles.includes(role));
+  const latestDownloadAudit = downloadAuditRecord
+    || requestRows.find((record) => record.action === 'download-audit')
+    || workflow.latestPrivatePilotDownloadAudit
+    || null;
+  const archiveReady = Boolean(archive.readyForManagerHandoff && archive.summary?.rawLeakCount === 0);
+  const approved = Boolean(request && missingRoles.length === 0 && rejectedRoles.length === 0);
+  const expired = request?.expiresAt ? (Date.parse(request.expiresAt) || 0) < (Date.parse(now) || Date.now()) : false;
+  const readyForPrivatePilotDownload = Boolean(request && approved && archiveReady && latestDownloadAudit && !expired);
+  const checksumDriftSinceRequest = Boolean(request?.archiveChecksum && archive.checksum && request.archiveChecksum !== archive.checksum);
+  const packageId = `project_evidence_export_package_${requestId || projectId || 'project'}_${persistenceChecksum({
+    projectId,
+    requestId,
+    archiveChecksum: archive.checksum || null,
+    downloadAuditChecksum: latestDownloadAudit?.checksum || null,
+    generatedAt: now,
+  })}`;
+  const watermarkText = [
+    'Hall of Fame Studio private-pilot evidence handoff',
+    projectId ? `project=${projectId}` : null,
+    requestId ? `exportRequest=${requestId}` : null,
+    latestDownloadAudit?.actorId ? `downloadActor=${latestDownloadAudit.actorId}` : null,
+    `generated=${now}`,
+  ].filter(Boolean).join(' / ');
+  const gates = [
+    {
+      id: 'request-present',
+      label: 'Export request exists',
+      passed: Boolean(request),
+      detail: request?.id || 'missing request',
+    },
+    {
+      id: 'required-approvals-present',
+      label: 'Required private-pilot approvals are present',
+      passed: approved,
+      detail: approved ? approvedRoles.join(', ') : `missing ${missingRoles.join(', ') || 'approval'}`,
+    },
+    {
+      id: 'archive-ready',
+      label: 'Current archive is ready and redacted',
+      passed: archiveReady,
+      detail: `${archive.status || 'unknown'}, raw leaks ${archive.summary?.rawLeakCount ?? 'unknown'}`,
+    },
+    {
+      id: 'retention-active',
+      label: 'Retention window is active',
+      passed: Boolean(request?.expiresAt && !expired),
+      detail: request?.expiresAt || 'missing expiry',
+    },
+    {
+      id: 'download-audit-recorded',
+      label: 'Download audit record is attached',
+      passed: Boolean(latestDownloadAudit),
+      detail: latestDownloadAudit?.id || 'missing download audit',
+    },
+    {
+      id: 'production-download-blocked',
+      label: 'Production download URL is not issued',
+      passed: true,
+      detail: 'Local package descriptor only; no object-storage URL is issued.',
+    },
+  ];
+  const packageWithoutChecksum = redactSensitiveObject({
+    schemaVersion: 'project-evidence-export-package/v1',
+    packageId,
+    projectId,
+    exportRequestId: requestId,
+    generatedAt: now,
+    status: readyForPrivatePilotDownload ? 'private-pilot-package-ready' : request ? 'package-gates-incomplete' : 'request-missing',
+    readyForPrivatePilotDownload,
+    readyForProductionDownload: false,
+    localPackageOnly: true,
+    downloadUrlIssued: false,
+    request: request ? {
+      id: request.id,
+      mode: request.mode,
+      archiveChecksum: request.archiveChecksum,
+      archiveId: request.archiveId || null,
+      retentionDays: request.retentionDays || null,
+      expiresAt: request.expiresAt || null,
+      dataResidencyRegion: request.dataResidencyRegion || null,
+      watermarkRequired: request.watermarkRequired !== false,
+      downloadAuditRequired: request.downloadAuditRequired !== false,
+      checksum: request.checksum || null,
+    } : null,
+    approvals: {
+      requiredRoles,
+      approvedRoles,
+      rejectedRoles,
+      missingRoles,
+      rows: requestRows
+        .filter((record) => ['approve', 'reject'].includes(record.action))
+        .map((record) => ({
+          id: record.id,
+          action: record.action,
+          decision: record.decision,
+          actorRole: record.actorRole,
+          actorId: record.actorId,
+          createdAt: record.createdAt,
+          checksum: record.checksum,
+        })),
+    },
+    downloadAudit: latestDownloadAudit ? {
+      id: latestDownloadAudit.id,
+      actorRole: latestDownloadAudit.actorRole,
+      actorId: latestDownloadAudit.actorId,
+      createdAt: latestDownloadAudit.createdAt,
+      checksum: latestDownloadAudit.checksum,
+      archiveChecksum: latestDownloadAudit.archiveChecksum,
+    } : null,
+    archive: {
+      archiveId: archive.archiveId || null,
+      schemaVersion: archive.schemaVersion || null,
+      status: archive.status || null,
+      route: archive.backendRoutes?.projectEvidenceArchive || (projectId ? `/projects/${projectId}/project-evidence-archive` : null),
+      requestPinnedChecksum: request?.archiveChecksum || null,
+      currentChecksum: archive.checksum || null,
+      checksumDriftSinceRequest,
+      checksumDriftReason: checksumDriftSinceRequest ? 'Current archive may include export approval/download-audit governance rows added after the original request.' : 'current archive matches request checksum',
+      contentsMode: archive.summary?.contentsMode || archive.contentsMode || null,
+      summary: archive.summary || {},
+      manifest: (archive.manifest || []).map((entry) => ({
+        id: entry.id,
+        label: entry.label,
+        route: entry.route,
+        count: entry.count,
+        ready: Boolean(entry.ready),
+        checksum: entry.checksum,
+      })),
+    },
+    watermark: {
+      required: request?.watermarkRequired !== false,
+      applied: true,
+      text: watermarkText,
+      checksum: persistenceChecksum(watermarkText),
+    },
+    retention: {
+      retentionDays: request?.retentionDays || null,
+      expiresAt: request?.expiresAt || null,
+      expired,
+      dataResidencyRegion: request?.dataResidencyRegion || null,
+    },
+    gates,
+    productionControls: [
+      'encrypted object storage',
+      'signed expiring download URLs',
+      'centralized download audit storage',
+      'watermark enforcement in the generated file',
+      'retention deletion job',
+      'customer-specific data residency controls',
+    ],
+    summary: {
+      manifestEntryCount: archive.summary?.manifestEntryCount || (archive.manifest || []).length,
+      readyManifestEntryCount: archive.summary?.readyManifestEntryCount || (archive.manifest || []).filter((entry) => entry.ready).length,
+      approvalCount: approvedRoles.length,
+      downloadAuditCount: requestRows.filter((record) => record.action === 'download-audit').length,
+      failedGateCount: gates.filter((gate) => !gate.passed).length,
+      archiveChecksum: archive.checksum || null,
+      requestArchiveChecksum: request?.archiveChecksum || null,
+    },
+  });
+  return {
+    ...packageWithoutChecksum,
+    checksum: persistenceChecksum({
+      schemaVersion: packageWithoutChecksum.schemaVersion,
+      packageId,
+      projectId,
+      exportRequestId: requestId,
+      readyForPrivatePilotDownload,
+      archiveChecksum: archive.checksum || null,
+      requestArchiveChecksum: request?.archiveChecksum || null,
+      downloadAuditChecksum: latestDownloadAudit?.checksum || null,
+      watermarkChecksum: packageWithoutChecksum.watermark.checksum,
+      gates: gates.map((gate) => [gate.id, gate.passed]),
+    }),
+  };
+}
+
+function summarizeProjectEvidenceHandoff(project = {}, projectId = project.id || null) {
+  const rows = (project.projectEvidenceExports || [])
+    .filter((record) => record.schemaVersion === 'project-evidence-export/v1')
+    .slice()
+    .sort((a, b) => (Date.parse(b.createdAt) || 0) - (Date.parse(a.createdAt) || 0));
+  const latestPrivatePilotRequest = rows.find((record) => (
+    record.action === 'request'
+    && normalizeProjectEvidenceExportMode(record.mode) === 'private-pilot'
+  )) || null;
+  const exportRequestId = latestPrivatePilotRequest?.exportRequestId || latestPrivatePilotRequest?.id || null;
+  const requestRows = exportRequestId ? rows.filter((record) => record.exportRequestId === exportRequestId || record.id === exportRequestId) : [];
+  const requiredRoles = PROJECT_EVIDENCE_EXPORT_REQUIRED_ROLES['private-pilot'];
+  const latestByRole = new Map();
+  requestRows
+    .filter((record) => ['approve', 'reject'].includes(record.action))
+    .forEach((record) => {
+      const role = normalizeLaunchApproverRole(record.actorRole);
+      if (!latestByRole.has(role)) latestByRole.set(role, record);
+    });
+  const approvedRoles = requiredRoles.filter((role) => latestByRole.get(role)?.decision === 'approved');
+  const rejectedRoles = requiredRoles.filter((role) => latestByRole.get(role)?.decision === 'rejected');
+  const missingRoles = requiredRoles.filter((role) => !approvedRoles.includes(role));
+  const latestDownloadAudit = requestRows.find((record) => record.action === 'download-audit') || null;
+  const packageRoute = projectId && exportRequestId
+    ? `/projects/${projectId}/project-evidence-exports/${encodeURIComponent(exportRequestId)}/package`
+    : null;
+  const readyForPrivatePilotPackage = Boolean(latestPrivatePilotRequest && approvedRoles.length === requiredRoles.length && rejectedRoles.length === 0 && latestDownloadAudit);
+  const gates = [
+    {
+      id: 'evidence-export-request-present',
+      label: 'Evidence export request is present',
+      passed: Boolean(latestPrivatePilotRequest),
+      detail: latestPrivatePilotRequest?.id || 'missing request',
+      apiPath: projectId ? `/projects/${projectId}/project-evidence-exports` : null,
+    },
+    {
+      id: 'evidence-export-approvals-complete',
+      label: 'Evidence export approvals are complete',
+      passed: Boolean(latestPrivatePilotRequest && approvedRoles.length === requiredRoles.length && rejectedRoles.length === 0),
+      detail: approvedRoles.length === requiredRoles.length ? approvedRoles.join(', ') : `missing ${missingRoles.join(', ') || 'approval'}`,
+      apiPath: projectId ? `/projects/${projectId}/project-evidence-exports` : null,
+    },
+    {
+      id: 'evidence-export-download-audit-present',
+      label: 'Evidence export download audit is recorded',
+      passed: Boolean(latestDownloadAudit),
+      detail: latestDownloadAudit?.id || 'missing download audit',
+      apiPath: projectId ? `/projects/${projectId}/project-evidence-exports` : null,
+    },
+  ];
+  return {
+    schemaVersion: 'project-evidence-handoff-summary/v1',
+    projectId,
+    exportRequestId,
+    readyForPrivatePilotPackage,
+    readyForProductionDownload: false,
+    packageRoute,
+    latestRequestChecksum: latestPrivatePilotRequest?.checksum || null,
+    latestDownloadAuditChecksum: latestDownloadAudit?.checksum || null,
+    archiveChecksum: latestDownloadAudit?.archiveChecksum || latestPrivatePilotRequest?.archiveChecksum || null,
+    requiredRoles,
+    approvedRoles,
+    rejectedRoles,
+    missingRoles,
+    gates,
+    failedGates: gates.filter((gate) => !gate.passed),
+    summary: {
+      requestCount: rows.filter((record) => record.action === 'request').length,
+      approvalCount: rows.filter((record) => record.action === 'approve').length,
+      rejectionCount: rows.filter((record) => record.action === 'reject').length,
+      downloadAuditCount: rows.filter((record) => record.action === 'download-audit').length,
+      gateCount: gates.length,
+      passedGateCount: gates.filter((gate) => gate.passed).length,
+      failedGateCount: gates.filter((gate) => !gate.passed).length,
+    },
+    checksum: persistenceChecksum({
+      projectId,
+      exportRequestId,
+      readyForPrivatePilotPackage,
+      latestRequestChecksum: latestPrivatePilotRequest?.checksum || null,
+      latestDownloadAuditChecksum: latestDownloadAudit?.checksum || null,
+      gates: gates.map((gate) => [gate.id, gate.passed]),
     }),
   };
 }
@@ -9119,12 +10338,20 @@ function buildProductionLaunchAuditSnapshot({
   launchApprovalWorkflow = {},
   securityBoundary = {},
   providerReadiness = {},
+  evidenceQualityAudit = {},
+  evidenceSourceReviewWorkflow = {},
   operationsReadiness = {},
   now = nowIso(),
 } = {}) {
   const projectId = project.id || managerDashboard.projectId || pilotLaunchReadiness.projectId || deploymentPreflight.projectId || null;
   const route = (key, fallback = null) => managerDashboard.backendRoutes?.[key] || fallback;
   const routeFor = (key, suffix) => route(key, projectId ? `/projects/${projectId}/${suffix}` : null);
+  const projectEvidenceHandoff = summarizeProjectEvidenceHandoff(project, projectId);
+  const privatePilotHandoffGates = projectEvidenceHandoff.gates.map((gate) => ({
+    ...gate,
+    scope: 'private-pilot-handoff',
+    severity: 'handoff',
+  }));
   const privatePilotGates = [
     {
       id: 'mvp-local-candidate',
@@ -9261,6 +10488,9 @@ function buildProductionLaunchAuditSnapshot({
     { id: 'production-launch-audit', route: projectId ? `/projects/${projectId}/production-launch-audit` : null, ready: true },
     { id: 'project-evidence-archive', route: routeFor('projectEvidenceArchive', 'project-evidence-archive'), ready: Boolean(mvpReadiness.readyForLocalPilot) },
     { id: 'project-evidence-exports', route: routeFor('projectEvidenceExports', 'project-evidence-exports'), ready: true },
+    { id: 'project-evidence-export-package', route: projectEvidenceHandoff.packageRoute, ready: Boolean(projectEvidenceHandoff.readyForPrivatePilotPackage) },
+    { id: 'evidence-quality-audit', route: routeFor('evidenceQualityAudit', 'evidence-quality-audit'), ready: Boolean(evidenceQualityAudit.readyForDecision) },
+    { id: 'evidence-source-review-workflow', route: routeFor('evidenceSourceReviewWorkflow', 'evidence-source-review-workflow'), ready: Boolean(evidenceSourceReviewWorkflow.readyForLocalPilot) },
     { id: 'manager-ready-package', route: routeFor('managerReadyPackage', 'manager-ready-package'), ready: true },
     { id: 'pilot-launch-readiness', route: routeFor('pilotLaunchReadiness', 'pilot-launch-readiness'), ready: pilotLaunchReadiness.schemaVersion === 'pilot-launch-readiness/v1' },
     { id: 'deployment-preflight', route: routeFor('deploymentPreflight', 'deployment-preflight'), ready: deploymentPreflight.schemaVersion === 'deployment-preflight/v1' },
@@ -9313,12 +10543,18 @@ function buildProductionLaunchAuditSnapshot({
     label: privatePilotFailedGates[0].label,
     detail: privatePilotFailedGates[0].detail,
     apiPath: privatePilotFailedGates[0].apiPath || null,
-  } : {
+  } : projectEvidenceHandoff.readyForPrivatePilotPackage ? {
     scope: 'production-hardening',
     id: productionBlockers[0]?.id || failedProductionGates[0]?.id || null,
     label: productionBlockers[0]?.label || failedProductionGates[0]?.label || 'Production hardening',
     detail: productionBlockers[0]?.detail || failedProductionGates[0]?.detail || 'Private pilot evidence is complete; production hardening remains blocked.',
     apiPath: productionBlockers[0]?.apiPath || failedProductionGates[0]?.apiPath || null,
+  } : {
+    scope: 'private-pilot-handoff',
+    id: projectEvidenceHandoff.failedGates[0]?.id || 'evidence-export-package-needed',
+    label: projectEvidenceHandoff.failedGates[0]?.label || 'Evidence export package needs download audit',
+    detail: projectEvidenceHandoff.failedGates[0]?.detail || 'Record a governed download-audit action before customer evidence handoff.',
+    apiPath: projectEvidenceHandoff.failedGates[0]?.apiPath || routeFor('projectEvidenceExports', 'project-evidence-exports'),
   };
   const checksum = persistenceChecksum({
     projectId,
@@ -9327,6 +10563,7 @@ function buildProductionLaunchAuditSnapshot({
     privatePilotGates: privatePilotGates.map((gate) => [gate.id, gate.passed]),
     productionGates: productionGates.map((gate) => [gate.id, gate.passed]),
     auditIntegrityGates: auditIntegrityGates.map((gate) => [gate.id, gate.passed]),
+    privatePilotHandoffGates: privatePilotHandoffGates.map((gate) => [gate.id, gate.passed]),
     productionBlockerIds: productionBlockers.map((blocker) => blocker.id),
     evidenceRoutes: evidenceRoutes.map((row) => [row.id, row.ready]),
   });
@@ -9348,9 +10585,12 @@ function buildProductionLaunchAuditSnapshot({
     privatePilotGates,
     productionGates,
     auditIntegrityGates,
+    privatePilotHandoffGates,
     failedPrivatePilotGates: privatePilotFailedGates,
+    failedPrivatePilotHandoffGates: privatePilotHandoffGates.filter((gate) => !gate.passed),
     failedProductionGates,
     failedAuditIntegrityGates,
+    projectEvidenceHandoff,
     productionBlockers,
     evidenceRoutes,
     releaseModes: [
@@ -9392,6 +10632,11 @@ function buildProductionLaunchAuditSnapshot({
       failedProductionGateCount: failedProductionGates.length,
       auditIntegrityGateCount: auditIntegrityGates.length,
       failedAuditIntegrityGateCount: failedAuditIntegrityGates.length,
+      privatePilotHandoffGateCount: privatePilotHandoffGates.length,
+      privatePilotHandoffPassedGateCount: privatePilotHandoffGates.filter((gate) => gate.passed).length,
+      failedPrivatePilotHandoffGateCount: privatePilotHandoffGates.filter((gate) => !gate.passed).length,
+      projectEvidenceHandoffReady: Boolean(projectEvidenceHandoff.readyForPrivatePilotPackage),
+      projectEvidenceHandoffDownloadAuditCount: projectEvidenceHandoff.summary?.downloadAuditCount || 0,
       productionBlockerCount: productionBlockers.length,
       launchApprovalCount: launchApprovalWorkflow.summary?.approvalCount || 0,
       launchApprovalPrivatePilotReady: Boolean(launchApprovalWorkflow.readyForPrivatePilot),
@@ -9543,6 +10788,8 @@ function buildProjectEvidenceArchive({
   productionLaunchAudit = {},
   securityBoundary = {},
   providerReadiness = {},
+  evidenceQualityAudit = {},
+  evidenceSourceReviewWorkflow = {},
   operationsReadiness = {},
   persistenceSnapshot = {},
   workerQueueSnapshot = {},
@@ -9716,6 +10963,22 @@ function buildProjectEvidenceArchive({
       readyForProduction: Boolean(providerReadiness.readyForProduction),
       summary: providerReadiness.summary || {},
     },
+    evidenceQualityAudit: {
+      schemaVersion: evidenceQualityAudit.schemaVersion || null,
+      status: evidenceQualityAudit.status || null,
+      readyForDecision: Boolean(evidenceQualityAudit.readyForDecision),
+      readyForProduction: Boolean(evidenceQualityAudit.readyForProduction),
+      checksum: evidenceQualityAudit.checksum || null,
+      summary: evidenceQualityAudit.summary || {},
+    },
+    evidenceSourceReviewWorkflow: {
+      schemaVersion: evidenceSourceReviewWorkflow.schemaVersion || null,
+      status: evidenceSourceReviewWorkflow.status || null,
+      readyForLocalPilot: Boolean(evidenceSourceReviewWorkflow.readyForLocalPilot),
+      readyForProduction: Boolean(evidenceSourceReviewWorkflow.readyForProduction),
+      checksum: evidenceSourceReviewWorkflow.checksum || null,
+      summary: evidenceSourceReviewWorkflow.summary || {},
+    },
     operationsReadiness: {
       schemaVersion: operationsReadiness.schemaVersion || null,
       status: operationsReadiness.status || null,
@@ -9763,6 +11026,17 @@ function buildProjectEvidenceArchive({
     finalDeliverables,
     revisions,
     evidenceSearches,
+    evidenceSourceReviewWorkflow: redactSensitiveObject({
+      schemaVersion: evidenceSourceReviewWorkflow.schemaVersion || null,
+      status: evidenceSourceReviewWorkflow.status || null,
+      readyForLocalPilot: Boolean(evidenceSourceReviewWorkflow.readyForLocalPilot),
+      readyForProduction: Boolean(evidenceSourceReviewWorkflow.readyForProduction),
+      reviewItems: evidenceSourceReviewWorkflow.reviewItems || [],
+      reviewQueue: evidenceSourceReviewWorkflow.reviewQueue || [],
+      gates: evidenceSourceReviewWorkflow.gates || [],
+      checksum: evidenceSourceReviewWorkflow.checksum || null,
+      summary: evidenceSourceReviewWorkflow.summary || {},
+    }),
     submissionReviews,
     timeline,
     eventLedger,
@@ -9829,6 +11103,22 @@ function buildProjectEvidenceArchive({
       checksum: persistenceChecksum(evidenceSearches),
     },
     {
+      id: 'evidence-quality-audit',
+      label: 'Evidence quality and source-safety audit',
+      route: backendRoutes.evidenceQualityAudit || (projectId ? `/projects/${projectId}/evidence-quality-audit` : null),
+      count: evidenceQualityAudit.summary?.rowCount || evidenceSearches.length,
+      ready: Boolean(evidenceQualityAudit.readyForDecision),
+      checksum: evidenceQualityAudit.checksum || persistenceChecksum(evidenceQualityAudit || {}),
+    },
+    {
+      id: 'evidence-source-review-workflow',
+      label: 'Evidence source review workflow',
+      route: backendRoutes.evidenceSourceReviewWorkflow || (projectId ? `/projects/${projectId}/evidence-source-review-workflow` : null),
+      count: evidenceSourceReviewWorkflow.summary?.reviewItemCount || 0,
+      ready: Boolean(evidenceSourceReviewWorkflow.readyForLocalPilot),
+      checksum: evidenceSourceReviewWorkflow.checksum || persistenceChecksum(evidenceSourceReviewWorkflow || {}),
+    },
+    {
       id: 'submission-reviews',
       label: 'Reviewer verdicts and requested changes',
       route: backendRoutes.submissionReviews || (projectId ? `/projects/${projectId}/submission-reviews` : null),
@@ -9890,6 +11180,20 @@ function buildProjectEvidenceArchive({
       passed: evidenceSearches.length > 0 && evidenceSearches.some((record) => record.sources?.length || record.evidenceJudgement || record.qualitySummary?.judgement),
       detail: `${evidenceSearches.length} evidence search(es), ${evidenceSearches.reduce((sum, record) => sum + (record.sources?.length || 0), 0)} source(s).`,
       apiPath: backendRoutes.evidenceSearches || null,
+    },
+    {
+      id: 'evidence-quality-audit-ready',
+      label: 'Evidence quality audit is decision-ready',
+      passed: Boolean(evidenceQualityAudit.readyForDecision),
+      detail: `${evidenceQualityAudit.summary?.usableEvidenceCount || 0} usable/strong evidence row(s), quality ${evidenceQualityAudit.summary?.averageQualityScore || 0}, ${evidenceQualityAudit.summary?.sourceSafetyBlockedSourceCount || 0} blocked source(s).`,
+      apiPath: backendRoutes.evidenceQualityAudit || null,
+    },
+    {
+      id: 'evidence-source-review-workflow-ready',
+      label: 'Evidence source review workflow is ready',
+      passed: Boolean(evidenceSourceReviewWorkflow.readyForLocalPilot),
+      detail: `${evidenceSourceReviewWorkflow.summary?.reviewItemCount || 0} source review item(s), ${evidenceSourceReviewWorkflow.summary?.reviewRequiredSourceCount || 0} queued, ${evidenceSourceReviewWorkflow.summary?.blockedSourceCount || 0} blocked source(s).`,
+      apiPath: backendRoutes.evidenceSourceReviewWorkflow || null,
     },
     {
       id: 'transcripts-present',
@@ -9972,6 +11276,15 @@ function buildProjectEvidenceArchive({
       finalDeliverableCount: finalDeliverables.length,
       evidenceSearchCount: evidenceSearches.length,
       evidenceSourceCount: evidenceSearches.reduce((sum, record) => sum + (record.sources?.length || 0), 0),
+      evidenceQualityAuditStatus: evidenceQualityAudit.status || 'unknown',
+      evidenceQualityDecisionReady: Boolean(evidenceQualityAudit.readyForDecision),
+      evidenceQualityAverageScore: evidenceQualityAudit.summary?.averageQualityScore || 0,
+      evidenceQualityFailedGateCount: evidenceQualityAudit.summary?.failedGateCount || 0,
+      evidenceSourceReviewStatus: evidenceSourceReviewWorkflow.status || 'unknown',
+      evidenceSourceReviewReady: Boolean(evidenceSourceReviewWorkflow.readyForLocalPilot),
+      evidenceSourceReviewItemCount: evidenceSourceReviewWorkflow.summary?.reviewItemCount || 0,
+      evidenceSourceReviewQueuedCount: evidenceSourceReviewWorkflow.summary?.reviewRequiredSourceCount || 0,
+      evidenceSourceReviewBlockedSourceCount: evidenceSourceReviewWorkflow.summary?.blockedSourceCount || 0,
       submissionReviewCount: submissionReviews.length,
       revisionCount: revisions.length,
       artifactCount: artifacts.length,
@@ -13743,6 +15056,24 @@ function buildSecurityBoundarySnapshot({
       sensitivity: 'source-refs-search-query-and-provider-output',
     }),
     securityRoutePolicy({
+      routeKey: 'evidence-quality-audit',
+      pathTemplate: '/projects/:projectId/evidence-quality-audit',
+      methods: ['GET'],
+      capability: 'read evidence quality and source-safety audit',
+      sensitivity: 'evidence-quality-source-safety-and-proof-routes',
+      currentControl: 'aggregates redacted evidence searches, per-source quality/safety signals, proof routes, provider provenance, decision gates, and remaining production controls',
+      productionControl: 'requires calibrated source-quality policy, human review policy, immutable provider/source audit storage, and approved external search gateway controls',
+    }),
+    securityRoutePolicy({
+      routeKey: 'evidence-source-review-workflow',
+      pathTemplate: '/projects/:projectId/evidence-source-review-workflow',
+      methods: ['GET'],
+      capability: 'read source review queue and policy gates',
+      sensitivity: 'source-review-policy-quality-signals-and-proof-routes',
+      currentControl: 'derives reviewer-visible source review items from evidence quality rows, links every source to proof routes, and keeps production human-review policy blockers explicit',
+      productionControl: 'requires calibrated human source-review approvals, source snapshot retention, provider receipt storage, and reviewer audit records in managed infrastructure',
+    }),
+    securityRoutePolicy({
       routeKey: 'agent-evidence-search-create',
       pathTemplate: '/projects/:projectId/agents/:agentId/evidence-searches',
       methods: ['POST'],
@@ -14904,6 +16235,7 @@ function buildProviderReadinessSnapshot({
       searchStatus: '/search/status',
       searchTest: '/search/test',
       evidenceSearches: managerDashboard.backendRoutes?.evidenceSearches || (projectId ? `/projects/${projectId}/evidence-searches` : null),
+      evidenceQualityAudit: managerDashboard.backendRoutes?.evidenceQualityAudit || (projectId ? `/projects/${projectId}/evidence-quality-audit` : null),
       providerReadiness: projectId ? `/projects/${projectId}/provider-readiness` : null,
       mvpReadiness: projectId ? `/projects/${projectId}/mvp-readiness` : null,
       securityBoundary: projectId ? `/projects/${projectId}/security-boundary` : null,
@@ -17785,6 +19117,17 @@ export function createAgentProjectService({
         secretVaultStatus: secretVaultStatus(),
         providerControlPolicy: providerControlPolicyStatus(),
       });
+      const evidenceQualityAudit = buildEvidenceQualityAudit({
+        project: store.getProject(projectId),
+        managerDashboard,
+        providerReadiness,
+      });
+      const evidenceSourceReviewWorkflow = buildEvidenceSourceReviewWorkflow({
+        project: store.getProject(projectId),
+        managerDashboard,
+        evidenceQualityAudit,
+        providerReadiness,
+      });
       const persistenceAdapterPlan = this.getPersistenceAdapterPlan(projectId, { language });
       const persistenceAdapterDryRun = this.getPersistenceAdapterDryRun(projectId, { language });
       const workerQueueAdapterPlan = this.getWorkerQueueAdapterPlan(projectId, { language });
@@ -17805,6 +19148,7 @@ export function createAgentProjectService({
         mvpReadiness,
         securityBoundary,
         providerReadiness,
+        evidenceSourceReviewWorkflow,
         operationsReadiness,
         persistenceSnapshot,
         persistenceAdapterPlan,
@@ -17849,6 +19193,8 @@ export function createAgentProjectService({
         launchApprovalWorkflow,
         securityBoundary,
         providerReadiness,
+        evidenceQualityAudit,
+        evidenceSourceReviewWorkflow,
         operationsReadiness,
       });
       const projectEvidenceArchive = buildProjectEvidenceArchive({
@@ -17862,6 +19208,8 @@ export function createAgentProjectService({
         productionLaunchAudit,
         securityBoundary,
         providerReadiness,
+        evidenceQualityAudit,
+        evidenceSourceReviewWorkflow,
         operationsReadiness,
         persistenceSnapshot,
         workerQueueSnapshot,
@@ -17905,6 +19253,8 @@ export function createAgentProjectService({
         backendRoutes: managerDashboard.backendRoutes,
         securityBoundary,
         providerReadiness,
+        evidenceQualityAudit,
+        evidenceSourceReviewWorkflow,
         operationsReadiness,
         persistenceAdapterPlan,
         persistenceAdapterDryRun,
@@ -17967,6 +19317,21 @@ export function createAgentProjectService({
           providerReadinessFailedGateCount: providerReadiness.summary?.failedGateCount || 0,
           providerProductionControlCount: providerReadiness.summary?.productionControlCount || 0,
           providerBackedSearchCount: providerReadiness.summary?.providerBackedSearchCount || 0,
+          evidenceQualityAuditStatus: evidenceQualityAudit.status || 'unknown',
+          evidenceQualityDecisionReady: Boolean(evidenceQualityAudit.readyForDecision),
+          evidenceQualityGateCount: evidenceQualityAudit.summary?.gateCount || 0,
+          evidenceQualityFailedGateCount: evidenceQualityAudit.summary?.failedGateCount || 0,
+          evidenceQualityFailedDecisionGateCount: evidenceQualityAudit.summary?.failedDecisionGateCount || 0,
+          evidenceQualityAverageScore: evidenceQualityAudit.summary?.averageQualityScore || 0,
+          evidenceQualityStrongEvidenceCount: evidenceQualityAudit.summary?.strongEvidenceCount || 0,
+          evidenceQualitySourceSafetyReady: Boolean(evidenceQualityAudit.summary?.sourceSafetyReady),
+          evidenceQualityChecksum: evidenceQualityAudit.checksum || null,
+          evidenceSourceReviewStatus: evidenceSourceReviewWorkflow.status || 'unknown',
+          evidenceSourceReviewReady: Boolean(evidenceSourceReviewWorkflow.readyForLocalPilot),
+          evidenceSourceReviewItemCount: evidenceSourceReviewWorkflow.summary?.reviewItemCount || 0,
+          evidenceSourceReviewQueuedCount: evidenceSourceReviewWorkflow.summary?.reviewRequiredSourceCount || 0,
+          evidenceSourceReviewBlockedSourceCount: evidenceSourceReviewWorkflow.summary?.blockedSourceCount || 0,
+          evidenceSourceReviewChecksum: evidenceSourceReviewWorkflow.checksum || null,
           operationsReadinessStatus: operationsReadiness.status || 'unknown',
           operationsReadinessGateCount: operationsReadiness.summary?.gateCount || 0,
           operationsReadinessFailedGateCount: operationsReadiness.summary?.failedGateCount || 0,
@@ -18018,9 +19383,12 @@ export function createAgentProjectService({
           projectEvidenceArchiveChecksum: projectEvidenceArchive.checksum,
           projectEvidenceExportStatus: projectEvidenceExportWorkflow.status,
           projectEvidenceExportReady: Boolean(projectEvidenceExportWorkflow.readyForPrivatePilotHandoff),
+          projectEvidenceExportDownloadReady: Boolean(projectEvidenceExportWorkflow.readyForPrivatePilotDownload),
           projectEvidenceExportRequestCount: projectEvidenceExportWorkflow.summary?.requestCount || 0,
           projectEvidenceExportApprovalCount: projectEvidenceExportWorkflow.summary?.approvalCount || 0,
+          projectEvidenceExportDownloadAuditCount: projectEvidenceExportWorkflow.summary?.downloadAuditCount || 0,
           projectEvidenceExportFailedGateCount: projectEvidenceExportWorkflow.summary?.failedGateCount || 0,
+          projectEvidenceExportPackageFailedGateCount: projectEvidenceExportWorkflow.summary?.packageFailedGateCount || 0,
           projectEvidenceExportChecksum: projectEvidenceExportWorkflow.checksum,
           persistenceAdapterPlanStatus: persistenceAdapterPlan.status || 'unknown',
           persistenceAdapterDryRunStatus: persistenceAdapterDryRun.status || 'unknown',
@@ -18109,6 +19477,8 @@ export function createAgentProjectService({
         productionLaunchAudit: managerReadyPackage.productionLaunchAudit,
         securityBoundary: managerReadyPackage.securityBoundary,
         providerReadiness: managerReadyPackage.providerReadiness,
+        evidenceQualityAudit: managerReadyPackage.evidenceQualityAudit,
+        evidenceSourceReviewWorkflow: managerReadyPackage.evidenceSourceReviewWorkflow,
         operationsReadiness: managerReadyPackage.operationsReadiness,
         persistenceSnapshot,
         workerQueueSnapshot,
@@ -18118,18 +19488,33 @@ export function createAgentProjectService({
     },
     getProjectEvidenceExportWorkflow(projectId, options = {}) {
       return cachedReadModel('project-evidence-export-workflow', projectId, options, () => {
-      const language = options.language || store.getProject(projectId)?.language || 'en';
-      const archive = this.getProjectEvidenceArchive(projectId, { language });
-      return localizeReadModel(buildProjectEvidenceExportWorkflowSnapshot({
-        project: store.getProject(projectId),
-        archive,
-      }), language);
+        const language = options.language || store.getProject(projectId)?.language || 'en';
+        const archive = this.getProjectEvidenceArchive(projectId, { language });
+        return localizeReadModel(buildProjectEvidenceExportWorkflowSnapshot({
+          project: store.getProject(projectId),
+          archive,
+        }), language);
+      });
+    },
+    getProjectEvidenceExportPackage(projectId, options = {}) {
+      return cachedReadModel('project-evidence-export-package', projectId, options, () => {
+        const language = options.language || store.getProject(projectId)?.language || 'en';
+        const archive = this.getProjectEvidenceArchive(projectId, { language });
+        const project = store.getProject(projectId);
+        const workflow = buildProjectEvidenceExportWorkflowSnapshot({ project, archive });
+        return localizeReadModel(buildProjectEvidenceExportPackage({
+          project,
+          archive,
+          workflow,
+          exportRequestId: options.exportRequestId || options.requestId || '',
+        }), language);
       });
     },
     recordProjectEvidenceExport({ projectId, ...input } = {}) {
       const project = store.getProject(projectId);
       const now = input.now || nowIso();
-      const archive = this.getProjectEvidenceArchive(projectId, { language: input.language || project?.language || 'en' });
+      const language = input.language || project?.language || 'en';
+      const archive = this.getProjectEvidenceArchive(projectId, { language });
       const exportRecord = buildProjectEvidenceExportRecord({
         project,
         input: {
@@ -18203,14 +19588,27 @@ export function createAgentProjectService({
         ],
       }, [event]);
       const savedProject = saveProject(updatedProject);
+      const savedArchive = this.getProjectEvidenceArchive(projectId, { language, fresh: true });
+      const savedWorkflow = buildProjectEvidenceExportWorkflowSnapshot({
+        project: savedProject,
+        archive: savedArchive,
+      });
+      const projectEvidenceExportPackage = exportRecord.action === 'download-audit'
+        ? buildProjectEvidenceExportPackage({
+          project: savedProject,
+          archive: savedArchive,
+          workflow: savedWorkflow,
+          exportRequestId: exportRecord.exportRequestId,
+          downloadAuditRecord: exportRecord,
+          now,
+        })
+        : null;
       return {
         project: savedProject,
         projectEvidenceExport: exportRecord,
-        projectEvidenceExportWorkflow: buildProjectEvidenceExportWorkflowSnapshot({
-          project: savedProject,
-          archive,
-        }),
-        projectEvidenceArchive: archive,
+        projectEvidenceExportWorkflow: savedWorkflow,
+        projectEvidenceExportPackage,
+        projectEvidenceArchive: exportRecord.action === 'request' ? archive : savedArchive,
         log,
       };
     },
@@ -18469,6 +19867,38 @@ export function createAgentProjectService({
         secretVaultStatus: secretVaultStatus(),
         providerControlPolicy: providerControlPolicyStatus(),
       });
+      });
+    },
+    getEvidenceQualityAudit(projectId, options = {}) {
+      return cachedReadModel('evidence-quality-audit', projectId, options, () => {
+        const language = options.language || store.getProject(projectId)?.language || 'en';
+        const project = store.getProject(projectId);
+        const managerDashboard = this.getManagerDashboard(projectId, { language });
+        const providerReadiness = this.getProviderReadiness(projectId, { language });
+        return localizeReadModel(buildEvidenceQualityAudit({
+          project,
+          managerDashboard,
+          providerReadiness,
+        }), language);
+      });
+    },
+    getEvidenceSourceReviewWorkflow(projectId, options = {}) {
+      return cachedReadModel('evidence-source-review-workflow', projectId, options, () => {
+        const language = options.language || store.getProject(projectId)?.language || 'en';
+        const project = store.getProject(projectId);
+        const managerDashboard = this.getManagerDashboard(projectId, { language });
+        const providerReadiness = this.getProviderReadiness(projectId, { language });
+        const evidenceQualityAudit = buildEvidenceQualityAudit({
+          project,
+          managerDashboard,
+          providerReadiness,
+        });
+        return localizeReadModel(buildEvidenceSourceReviewWorkflow({
+          project,
+          managerDashboard,
+          evidenceQualityAudit,
+          providerReadiness,
+        }), language);
       });
     },
     getSecurityAccessAudit(projectId) {

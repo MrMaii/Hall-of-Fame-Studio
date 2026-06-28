@@ -2584,9 +2584,27 @@ export default function EngineWorkspace() {
 
   const applyBackendProjectSnapshot = (payload = {}) => {
     if (!payload.project?.id) return;
-    setProjects(prev => prev.map(project => project.id === payload.project.id ? payload.project : project));
-    if (payload.messages?.length) {
-      setChatMessages(prev => mergeProjectMessages(prev, payload.messages));
+    const snapshotProjectId = String(payload.project.id);
+    setProjects(prev => {
+      let replaced = false;
+      const nextProjects = prev.map(project => {
+        if (String(project.id).toLowerCase() !== snapshotProjectId.toLowerCase()) return project;
+        replaced = true;
+        return payload.project;
+      });
+      return replaced ? nextProjects : [payload.project, ...nextProjects];
+    });
+    const incomingMessages = [
+      ...(Array.isArray(payload.messages) ? payload.messages : []),
+      ...(payload.message ? [payload.message] : []),
+    ]
+      .filter(message => message?.id)
+      .map(message => ({
+        ...message,
+        projectId: message.projectId || payload.project.id,
+      }));
+    if (incomingMessages.length) {
+      setChatMessages(prev => mergeProjectMessages(prev, incomingMessages));
     }
   };
 
@@ -2998,7 +3016,7 @@ export default function EngineWorkspace() {
       await requestAgentBackend(`/projects/${encodeURIComponent(activeProject.id)}`, {
         method: 'PUT',
         body: { project: activeProject },
-        timeoutMs: 1200,
+        timeoutMs: 3000,
       });
       const payload = await requestAgentBackend(`/projects/${encodeURIComponent(activeProject.id)}/agents/${encodeURIComponent(agentId)}/message`, {
         method: 'POST',
@@ -3009,7 +3027,7 @@ export default function EngineWorkspace() {
           now,
           messageId: `manager_ui_agent_message_${agentId}_${Date.parse(now) || Date.now()}`,
         },
-        timeoutMs: 1800,
+        timeoutMs: 6000,
       });
       applyBackendProjectSnapshot(payload);
       setBackendStation(prev => ({
@@ -3043,6 +3061,10 @@ export default function EngineWorkspace() {
       } else {
         syncBackendAgentDashboard(agentId, { silent: true });
       }
+      if (targetAgentId && targetAgentId !== agentId) {
+        syncBackendAgentDashboard(targetAgentId, { silent: true });
+      }
+      syncBackendProjectState({ silent: true });
     } catch (error) {
       setBackendStation(prev => ({
         ...prev,
@@ -6701,6 +6723,8 @@ export default function EngineWorkspace() {
     const backendLaunchApprovalWorkflow = backendManagerReadyPackage?.launchApprovalWorkflow || backendManagerDashboard?.launchApprovalWorkflow || null;
     const backendSecurityBoundary = backendManagerReadyPackage?.securityBoundary || null;
     const backendProviderReadiness = backendManagerReadyPackage?.providerReadiness || null;
+    const backendEvidenceQualityAudit = backendManagerReadyPackage?.evidenceQualityAudit || null;
+    const backendEvidenceSourceReviewWorkflow = backendManagerReadyPackage?.evidenceSourceReviewWorkflow || null;
     const backendOperationsReadiness = backendManagerReadyPackage?.operationsReadiness || null;
     const backendPersistenceAdapterPlan = backendManagerReadyPackage?.persistenceAdapterPlan || null;
     const backendPersistenceAdapterDryRun = backendManagerReadyPackage?.persistenceAdapterDryRun || null;
@@ -10505,7 +10529,14 @@ export default function EngineWorkspace() {
                             ['Archive Leaks', backendProjectEvidenceArchive?.summary?.rawLeakCount ?? backendManagerReadyPackage.summary?.projectEvidenceArchiveRawLeakCount ?? 0],
                             ['Evidence Export', backendProjectEvidenceExportWorkflow?.status || backendManagerReadyPackage.summary?.projectEvidenceExportStatus || 'request-needed'],
                             ['Export Ready', (backendProjectEvidenceExportWorkflow?.readyForPrivatePilotHandoff ?? backendManagerReadyPackage.summary?.projectEvidenceExportReady) ? 'ready' : 'blocked'],
+                            ['Package Ready', (backendProjectEvidenceExportWorkflow?.readyForPrivatePilotDownload ?? backendManagerReadyPackage.summary?.projectEvidenceExportDownloadReady) ? 'ready' : 'audit-needed'],
                             ['Export Approvals', backendProjectEvidenceExportWorkflow?.summary?.approvalCount ?? backendManagerReadyPackage.summary?.projectEvidenceExportApprovalCount ?? 0],
+                            ['Evidence Audit', backendEvidenceQualityAudit?.status || backendManagerReadyPackage.summary?.evidenceQualityAuditStatus || 'unknown'],
+                            ['Evidence Ready', (backendEvidenceQualityAudit?.readyForDecision ?? backendManagerReadyPackage.summary?.evidenceQualityDecisionReady) ? 'ready' : 'review'],
+                            ['Evidence Quality', backendEvidenceQualityAudit?.summary?.averageQualityScore ?? backendManagerReadyPackage.summary?.evidenceQualityAverageScore ?? 0],
+                            ['Evidence Safety', (backendEvidenceQualityAudit?.summary?.sourceSafetyReady ?? backendManagerReadyPackage.summary?.evidenceQualitySourceSafetyReady) ? 'ready' : 'review'],
+                            ['Source Review', backendEvidenceSourceReviewWorkflow?.status || backendManagerReadyPackage.summary?.evidenceSourceReviewStatus || 'unknown'],
+                            ['Source Queue', backendEvidenceSourceReviewWorkflow?.summary?.reviewRequiredSourceCount ?? backendManagerReadyPackage.summary?.evidenceSourceReviewQueuedCount ?? 0],
                             ['Proof Routes', backendManagerReadyPackage.summary?.proofRouteCount ?? 0],
                             ['MVP Core', `${backendManagerReadyPackage.summary?.mvpCorePassedCount ?? backendMvpReadiness?.summary?.corePassedCount ?? 0}/${backendManagerReadyPackage.summary?.mvpCoreTotalCount ?? backendMvpReadiness?.summary?.coreTotalCount ?? 0}`],
                             ['Prod Blockers', backendManagerReadyPackage.summary?.mvpProductionBlockerCount ?? backendMvpReadiness?.summary?.productionBlockerCount ?? 0],
@@ -10581,6 +10612,104 @@ export default function EngineWorkspace() {
                             </div>
                           </div>
                         )}
+                        {backendEvidenceQualityAudit && (
+                          <div data-testid="backend-evidence-quality-audit-snapshot" className="mt-3 border border-[#d8c99f] bg-[#efe2bd]/55 p-2">
+                            <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                              <div className="min-w-0">
+                                <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">Evidence Quality Audit</div>
+                                <div className="font-serif text-base leading-tight">{projectText(backendEvidenceQualityAudit.status || 'unknown')}</div>
+                              </div>
+                              <span className={`node-status-tag ${backendEvidenceQualityAudit.readyForDecision ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
+                                {backendEvidenceQualityAudit.readyForDecision ? projectText('decision ready') : projectText('review needed')}
+                              </span>
+                            </div>
+                            <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2">
+                              {[
+                                [projectText('Evidence Rows'), backendEvidenceQualityAudit.summary?.rowCount ?? 0],
+                                [projectText('Sources'), backendEvidenceQualityAudit.summary?.sourceCount ?? 0],
+                                [projectText('Quality'), backendEvidenceQualityAudit.summary?.averageQualityScore ?? 0],
+                                [projectText('Strong Evidence'), backendEvidenceQualityAudit.summary?.strongEvidenceCount ?? 0],
+                                [projectText('Usable Evidence'), backendEvidenceQualityAudit.summary?.usableEvidenceCount ?? 0],
+                                [projectText('Source Safety'), backendEvidenceQualityAudit.summary?.sourceSafetyReady ? projectText('ready') : projectText('review')],
+                                [projectText('Blocked Sources'), backendEvidenceQualityAudit.summary?.sourceSafetyBlockedSourceCount ?? 0],
+                                [projectText('Proof Routes'), `${backendEvidenceQualityAudit.summary?.readyProofRouteCount ?? 0}/${backendEvidenceQualityAudit.summary?.proofRouteCount ?? 0}`],
+                                [projectText('Decision Gates'), `${(backendEvidenceQualityAudit.summary?.gateCount ?? 0) - (backendEvidenceQualityAudit.summary?.failedGateCount ?? 0)}/${backendEvidenceQualityAudit.summary?.gateCount ?? 0}`],
+                                [projectText('Failed Decision'), backendEvidenceQualityAudit.summary?.failedDecisionGateCount ?? 0],
+                                [projectText('Production Controls'), backendEvidenceQualityAudit.summary?.productionControlCount ?? 0],
+                                [projectText('Packet'), backendEvidenceQualityAudit.checksum || 'missing'],
+                              ].map(([label, value]) => (
+                                <div key={`evidence-quality-audit-${label}`} className="border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                  <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">{label}</div>
+                                  <div className="font-serif text-sm leading-tight break-words">{value}</div>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="mt-2 space-y-1">
+                              {(backendEvidenceQualityAudit.failedDecisionGates?.length ? backendEvidenceQualityAudit.failedDecisionGates : backendEvidenceQualityAudit.requiredProductionControls || []).slice(0, 3).map(row => (
+                                <div key={`evidence-quality-gap-${row.id}`} className="grid grid-cols-[1fr_auto] gap-2 border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                  <div className="min-w-0">
+                                    <div className="font-serif text-sm leading-tight truncate">{row.label}</div>
+                                    <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] truncate">{row.detail}</div>
+                                    {row.apiPath && (
+                                      <div className="font-mono text-[7px] uppercase tracking-widest text-[#9b875c] truncate">Route: {row.apiPath}</div>
+                                    )}
+                                  </div>
+                                  <span className="node-status-tag bg-[#251b13] text-[#efe2bd]">{row.status}</span>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#9b875c]">
+                              Audit route: {backendEvidenceQualityAudit.backendRoutes?.evidenceQualityAudit || backendManagerReadyPackage.backendRoutes?.evidenceQualityAudit || `/projects/${activeProject.id}/evidence-quality-audit`}
+                            </div>
+                          </div>
+                        )}
+                        {backendEvidenceSourceReviewWorkflow && (
+                          <div data-testid="backend-evidence-source-review-workflow-snapshot" className="mt-3 border border-[#d8c99f] bg-[#efe2bd]/55 p-2">
+                            <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                              <div className="min-w-0">
+                                <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">Evidence Source Review Workflow</div>
+                                <div className="font-serif text-base leading-tight">{projectText(backendEvidenceSourceReviewWorkflow.status || 'unknown')}</div>
+                              </div>
+                              <span className={`node-status-tag ${backendEvidenceSourceReviewWorkflow.readyForLocalPilot ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
+                                {backendEvidenceSourceReviewWorkflow.readyForLocalPilot ? projectText('local ready') : projectText('review blocked')}
+                              </span>
+                            </div>
+                            <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2">
+                              {[
+                                [projectText('Review Items'), backendEvidenceSourceReviewWorkflow.summary?.reviewItemCount ?? 0],
+                                [projectText('Queued'), backendEvidenceSourceReviewWorkflow.summary?.reviewRequiredSourceCount ?? 0],
+                                [projectText('Auto Cleared'), backendEvidenceSourceReviewWorkflow.summary?.autoClearedSourceCount ?? 0],
+                                [projectText('Blocked Sources'), backendEvidenceSourceReviewWorkflow.summary?.blockedSourceCount ?? 0],
+                                [projectText('Proof Routes'), `${backendEvidenceSourceReviewWorkflow.summary?.proofedReviewItemCount ?? 0}/${backendEvidenceSourceReviewWorkflow.summary?.reviewItemCount ?? 0}`],
+                                [projectText('Decision Gates'), `${(backendEvidenceSourceReviewWorkflow.summary?.gateCount ?? 0) - (backendEvidenceSourceReviewWorkflow.summary?.failedGateCount ?? 0)}/${backendEvidenceSourceReviewWorkflow.summary?.gateCount ?? 0}`],
+                                [projectText('Source Safety'), backendEvidenceSourceReviewWorkflow.summary?.sourceSafetyReady ? projectText('ready') : projectText('review')],
+                                [projectText('Packet'), backendEvidenceSourceReviewWorkflow.checksum || 'missing'],
+                              ].map(([label, value]) => (
+                                <div key={`evidence-source-review-${label}`} className="border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                  <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">{label}</div>
+                                  <div className="font-serif text-sm leading-tight break-words">{value}</div>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="mt-2 space-y-1">
+                              {(backendEvidenceSourceReviewWorkflow.reviewQueue?.length ? backendEvidenceSourceReviewWorkflow.reviewQueue : backendEvidenceSourceReviewWorkflow.requiredProductionControls || []).slice(0, 3).map(row => (
+                                <div key={`evidence-source-review-gap-${row.id}`} className="grid grid-cols-[1fr_auto] gap-2 border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                  <div className="min-w-0">
+                                    <div className="font-serif text-sm leading-tight truncate">{row.title || row.label || row.id}</div>
+                                    <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] truncate">{row.reviewerAction || row.detail}</div>
+                                    {(row.proofRoute?.apiPath || row.apiPath) && (
+                                      <div className="font-mono text-[7px] uppercase tracking-widest text-[#9b875c] truncate">Route: {row.proofRoute?.apiPath || row.apiPath}</div>
+                                    )}
+                                  </div>
+                                  <span className="node-status-tag bg-[#251b13] text-[#efe2bd]">{row.status}</span>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#9b875c]">
+                              Source review route: {backendEvidenceSourceReviewWorkflow.backendRoutes?.evidenceSourceReviewWorkflow || backendManagerReadyPackage.backendRoutes?.evidenceSourceReviewWorkflow || `/projects/${activeProject.id}/evidence-source-review-workflow`}
+                            </div>
+                          </div>
+                        )}
                         {backendProjectEvidenceExportWorkflow && (
                           <div data-testid="backend-project-evidence-export-workflow-snapshot" className="mt-3 border border-[#d8c99f] bg-[#efe2bd]/55 p-2">
                             <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
@@ -10597,8 +10726,10 @@ export default function EngineWorkspace() {
                                 [projectText('Requests'), backendProjectEvidenceExportWorkflow.summary?.requestCount ?? 0],
                                 [projectText('Approvals'), backendProjectEvidenceExportWorkflow.summary?.approvalCount ?? 0],
                                 [projectText('Download Audits'), backendProjectEvidenceExportWorkflow.summary?.downloadAuditCount ?? 0],
+                                [projectText('Package Gates'), `${backendProjectEvidenceExportWorkflow.summary?.packagePassedGateCount ?? 0}/${backendProjectEvidenceExportWorkflow.summary?.packageGateCount ?? 0}`],
                                 [projectText('Failed Gates'), backendProjectEvidenceExportWorkflow.summary?.failedGateCount ?? 0],
                                 [projectText('Private Pilot'), backendProjectEvidenceExportWorkflow.readyForPrivatePilotHandoff ? projectText('ready') : projectText('blocked')],
+                                [projectText('Local Package'), backendProjectEvidenceExportWorkflow.readyForPrivatePilotDownload ? projectText('ready') : projectText('audit-needed')],
                                 [projectText('Production Export'), backendProjectEvidenceExportWorkflow.readyForProductionExport ? projectText('ready') : projectText('blocked')],
                                 [projectText('Archive'), backendProjectEvidenceExportWorkflow.summary?.archiveChecksum || 'missing'],
                                 [projectText('Packet'), backendProjectEvidenceExportWorkflow.checksum || 'missing'],
@@ -10636,6 +10767,8 @@ export default function EngineWorkspace() {
                                 [projectText('Production Approval'), backendProductionLaunchAudit.summary?.launchApprovalProductionReady ? projectText('ready') : projectText('blocked')],
                                 [projectText('Evidence Routes'), `${backendProductionLaunchAudit.summary?.readyEvidenceRouteCount ?? 0}/${backendProductionLaunchAudit.summary?.evidenceRouteCount ?? 0}`],
                                 [projectText('Production Blockers'), backendProductionLaunchAudit.summary?.productionBlockerCount ?? 0],
+                                [projectText('Handoff Package'), backendProductionLaunchAudit.summary?.projectEvidenceHandoffReady ? projectText('ready') : projectText('audit-needed')],
+                                [projectText('Handoff Gates'), `${backendProductionLaunchAudit.summary?.privatePilotHandoffPassedGateCount ?? 0}/${backendProductionLaunchAudit.summary?.privatePilotHandoffGateCount ?? 0}`],
                                 [projectText('Packet'), backendProductionLaunchAudit.checksum || 'missing'],
                                 [projectText('Next Gap'), backendProductionLaunchAudit.nextShortestPath?.id || 'none'],
                               ].map(([label, value]) => (
@@ -11068,6 +11201,7 @@ export default function EngineWorkspace() {
                         </div>
                         <div data-testid="backend-manager-evidence-searches-route" className="mt-1 font-mono text-[8px] uppercase tracking-widest text-[#9b875c]">
                           Evidence route: {backendManagerDashboard.backendRoutes?.evidenceSearches || `/projects/${activeProject.id}/evidence-searches`} / {backendManagerDashboard.evidenceSearches?.count ?? 0} searches
+                          {' '} / Audit route: {backendManagerDashboard.backendRoutes?.evidenceQualityAudit || `/projects/${activeProject.id}/evidence-quality-audit`}
                         </div>
                         <div data-testid="backend-manager-submission-reviews-route" className="mt-1 font-mono text-[8px] uppercase tracking-widest text-[#9b875c]">
                           Review route: {backendManagerDashboard.backendRoutes?.submissionReviews || `/projects/${activeProject.id}/submission-reviews`} / {backendManagerDashboard.submissionReviews?.count ?? 0} reviews

@@ -780,6 +780,24 @@ export function classifyAccessRequest({ method = 'GET', path = '/', body = {} } 
       allowedRoles: ['manager', 'runtime-platform', 'security-admin'],
     });
   }
+  if (action === 'evidence-quality-audit') {
+    return accessRoute({
+      routeKey: 'evidence-quality-audit',
+      capability: 'read evidence quality and source-safety audit',
+      sensitivity: 'evidence-quality-and-source-safety-audit',
+      projectId,
+      allowedRoles: ['manager', 'security-admin', 'observer'],
+    });
+  }
+  if (action === 'evidence-source-review-workflow') {
+    return accessRoute({
+      routeKey: 'evidence-source-review-workflow',
+      capability: 'read evidence source review workflow',
+      sensitivity: 'evidence-source-review-policy-and-proof-routes',
+      projectId,
+      allowedRoles: ['manager', 'security-admin', 'observer'],
+    });
+  }
   if (action === 'launch-approvals') {
     return accessRoute({
       routeKey: 'launch-approvals',
@@ -1139,6 +1157,8 @@ export function buildAccessControlPolicySnapshot() {
       { id: 'production-launch-audit-read', roles: ['manager', 'security-admin', 'observer'], examples: ['/projects/:id/production-launch-audit'] },
       { id: 'project-evidence-archive-export', roles: ['manager', 'security-admin', 'observer'], examples: ['/projects/:id/project-evidence-archive'] },
       { id: 'project-evidence-export-approval', roles: ['manager', 'security-admin', 'operations-owner'], examples: ['/projects/:id/project-evidence-exports'] },
+      { id: 'evidence-quality-audit-read', roles: ['manager', 'security-admin', 'observer'], examples: ['/projects/:id/evidence-quality-audit'] },
+      { id: 'evidence-source-review-workflow-read', roles: ['manager', 'security-admin', 'observer'], examples: ['/projects/:id/evidence-source-review-workflow'] },
       { id: 'launch-approval-workflow', roles: ['manager', 'security-admin'], examples: ['/projects/:id/launch-approvals'] },
       { id: 'operations-readiness-read', roles: ['manager', 'runtime-platform', 'security-admin'], examples: ['/projects/:id/operations-readiness'] },
       { id: 'queue-adapter-read', roles: ['manager', 'runtime-platform', 'security-admin'], examples: ['/projects/:id/worker-queue-adapter-plan', '/projects/:id/worker-queue-adapter-dry-run'] },
