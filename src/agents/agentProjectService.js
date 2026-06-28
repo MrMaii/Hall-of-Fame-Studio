@@ -5903,6 +5903,13 @@ function buildReadinessProofMap({ project = {}, messages = [] } = {}) {
   const submissionProofIds = uniqueStrings(submissionRecords.map((submission) => submission.messageId));
   const submissionLogIds = uniqueStrings(submissionRecords.map((submission) => submission.timelineLogId));
   const submissionEventIds = uniqueStrings(submissionRecords.map((submission) => submission.eventId));
+  const brainstormSubmissionRecords = submissionRecords.filter((submission) => submission.artifactType === 'brainstorm-board');
+  const brainstormProofIds = uniqueStrings(brainstormSubmissionRecords.map((submission) => submission.messageId));
+  const brainstormLogIds = uniqueStrings(brainstormSubmissionRecords.map((submission) => submission.timelineLogId));
+  const brainstormEventIds = uniqueStrings(brainstormSubmissionRecords.map((submission) => submission.eventId));
+  const brainstormAlternativeCount = brainstormSubmissionRecords.reduce((sum, submission) => (
+    sum + extractBrainstormAlternatives(`${submission.body || ''}\n${submission.summary || ''}`).length
+  ), 0);
   const revisionRecords = submissionRecords.filter((submission) => (
     submission.revisesSubmissionId
     || submission.respondsToReviewId
@@ -5993,6 +6000,7 @@ function buildReadinessProofMap({ project = {}, messages = [] } = {}) {
     record.timelineLogId,
     ...(record.timelineLogIds || []),
   ].filter(Boolean)));
+  const productionEvidenceIntegrityAudit = buildProductionEvidenceIntegrityAudit({ project });
   const privatePilotReleaseCandidateRecords = project.privatePilotReleaseCandidates || [];
   const privatePilotReleaseCandidateProofIds = uniqueStrings(privatePilotReleaseCandidateRecords.flatMap((record) => [
     record.id,
@@ -6290,6 +6298,31 @@ function buildReadinessProofMap({ project = {}, messages = [] } = {}) {
       artifactTypes: uniqueStrings(submissionRecords.map((submission) => submission.artifactType)),
       revisionCount: revisionRecords.length,
       supersededCount: submissionRecords.filter((submission) => submission.status === 'superseded').length,
+    },
+    brainstormLayerRoutes: projectId ? [{
+      proofKind: 'brainstorm-layer',
+      proofLabel: 'Brainstorm alternatives and synthesis layer',
+      apiPath: `/projects/${projectId}/brainstorm-layer`,
+      channelId: 'main',
+      proofIds: brainstormProofIds,
+      timelineLogIds: brainstormLogIds,
+      eventIds: brainstormEventIds,
+      taskIds: uniqueStrings(brainstormSubmissionRecords.map((submission) => submission.taskId).filter(Boolean)),
+      agentIds: uniqueStrings(brainstormSubmissionRecords.map((submission) => submission.agentId).filter(Boolean)),
+      brainstormBoardCount: brainstormSubmissionRecords.length,
+      alternativeCount: brainstormAlternativeCount,
+      readyForPrivatePilotBrainstorm: Boolean(brainstormSubmissionRecords.length && brainstormAlternativeCount >= 2),
+      productionBrainstormReady: false,
+    }] : [],
+    brainstormLayerSummary: {
+      count: brainstormSubmissionRecords.length,
+      alternativeCount: brainstormAlternativeCount,
+      proofIds: brainstormProofIds,
+      timelineLogIds: brainstormLogIds,
+      eventIds: brainstormEventIds,
+      participantCount: uniqueStrings(brainstormSubmissionRecords.map((submission) => submission.agentId).filter(Boolean)).length,
+      readyForPrivatePilotBrainstorm: Boolean(brainstormSubmissionRecords.length && brainstormAlternativeCount >= 2),
+      productionBrainstormReady: false,
     },
     revisionRoutes: revisionRecords.map((submission) => ({
       proofKind: 'artifact-revision',
@@ -7040,6 +7073,10 @@ function buildReadinessProofMap({ project = {}, messages = [] } = {}) {
       productionDeploymentControlsReady: productionDeploymentControlReceiptRecords.some((record) => record.readyForProductionDeployment),
       productionSecurityControlsReady: (project.productionSecurityControlReceipts || []).some((record) => record.readyForProductionSecurity),
       productionProviderControlsReady: productionProviderControlReceiptRecords.some((record) => record.readyForProductionProvider),
+      productionEvidenceIntegrityReady: Boolean(productionEvidenceIntegrityAudit.readyForManagedProductionEvidence),
+      productionEvidenceIntegrityManagedControlCount: productionEvidenceIntegrityAudit.summary?.managedProductionControlCount || 0,
+      productionEvidenceIntegrityLocalControlCount: productionEvidenceIntegrityAudit.summary?.localRehearsalControlCount || 0,
+      productionEvidenceIntegrityMissingControlCount: productionEvidenceIntegrityAudit.summary?.missingControlCount || 0,
       productionApprovalReady: (project.launchApprovals || []).some((record) => normalizeLaunchApprovalMode(record.mode) === 'production' && record.decision === 'approved'),
       readyForProduction: false,
     }] : [],
@@ -7050,6 +7087,10 @@ function buildReadinessProofMap({ project = {}, messages = [] } = {}) {
       productionDeploymentControlsReady: productionDeploymentControlReceiptRecords.some((record) => record.readyForProductionDeployment),
       productionSecurityControlsReady: (project.productionSecurityControlReceipts || []).some((record) => record.readyForProductionSecurity),
       productionProviderControlsReady: productionProviderControlReceiptRecords.some((record) => record.readyForProductionProvider),
+      productionEvidenceIntegrityReady: Boolean(productionEvidenceIntegrityAudit.readyForManagedProductionEvidence),
+      productionEvidenceIntegrityManagedControlCount: productionEvidenceIntegrityAudit.summary?.managedProductionControlCount || 0,
+      productionEvidenceIntegrityLocalControlCount: productionEvidenceIntegrityAudit.summary?.localRehearsalControlCount || 0,
+      productionEvidenceIntegrityMissingControlCount: productionEvidenceIntegrityAudit.summary?.missingControlCount || 0,
       productionApprovalCount: (project.launchApprovals || []).filter((record) => normalizeLaunchApprovalMode(record.mode) === 'production').length,
       proofIds: uniqueStrings([
         ...privatePilotReleaseCandidateProofIds,
@@ -7088,6 +7129,157 @@ function buildReadinessProofMap({ project = {}, messages = [] } = {}) {
         ...productionProviderControlReceiptEventIds,
       ]),
       readyForProduction: false,
+    },
+    productionLaunchEvidenceDossierRoutes: projectId ? [{
+      proofKind: 'production-launch-evidence-dossier',
+      proofLabel: 'Production launch evidence dossier',
+      apiPath: `/projects/${projectId}/production-launch-evidence-dossier`,
+      channelId: null,
+      proofIds: uniqueStrings([
+        ...privatePilotReleaseCandidateProofIds,
+        ...privatePilotLaunchRunProofIds,
+        ...privatePilotLaunchHealthCheckProofIds,
+        ...privatePilotAcceptanceReportProofIds,
+        ...(project.productionOperationsControlReceipts || []).flatMap((record) => [
+          record.id,
+          record.checksum,
+          record.productionOperationsReadinessChecksum,
+          ...(record.proofIds || []),
+        ]),
+        ...productionDeploymentControlReceiptProofIds,
+        ...(project.productionSecurityControlReceipts || []).flatMap((record) => [
+          record.id,
+          record.checksum,
+          record.securityBoundaryChecksum,
+          ...(record.proofIds || []),
+        ]),
+        ...productionProviderControlReceiptProofIds,
+        ...(productionEvidenceIntegrityAudit.proofIds || []),
+      ].filter(Boolean)),
+      timelineLogIds: uniqueStrings([
+        ...privatePilotReleaseCandidateLogIds,
+        ...privatePilotLaunchRunLogIds,
+        ...privatePilotLaunchHealthCheckLogIds,
+        ...privatePilotAcceptanceReportLogIds,
+        ...(project.productionOperationsControlReceipts || []).flatMap((record) => [
+          record.timelineLogId,
+          ...(record.timelineLogIds || []),
+        ]),
+        ...productionDeploymentControlReceiptLogIds,
+        ...(project.productionSecurityControlReceipts || []).flatMap((record) => [
+          record.timelineLogId,
+          ...(record.timelineLogIds || []),
+        ]),
+        ...productionProviderControlReceiptLogIds,
+        ...(productionEvidenceIntegrityAudit.timelineLogIds || []),
+      ].filter(Boolean)),
+      eventIds: uniqueStrings([
+        ...privatePilotReleaseCandidateEventIds,
+        ...privatePilotLaunchRunEventIds,
+        ...privatePilotLaunchHealthCheckEventIds,
+        ...privatePilotAcceptanceReportEventIds,
+        ...(project.productionOperationsControlReceipts || []).flatMap((record) => [
+          record.eventId,
+          ...(record.eventIds || []),
+        ]),
+        ...productionDeploymentControlReceiptEventIds,
+        ...(project.productionSecurityControlReceipts || []).flatMap((record) => [
+          record.eventId,
+          ...(record.eventIds || []),
+        ]),
+        ...productionProviderControlReceiptEventIds,
+        ...(productionEvidenceIntegrityAudit.eventIds || []),
+      ].filter(Boolean)),
+      taskIds: uniqueStrings([
+        ...evidenceSearchRecords.map((search) => search.taskId),
+        ...submissionRecords.map((submission) => submission.taskId),
+      ].filter(Boolean)),
+      agentIds: uniqueStrings([
+        ...submissionRecords.map((submission) => submission.agentId),
+        ...evidenceSearchRecords.map((search) => search.agentId),
+      ].filter(Boolean)),
+      privatePilotAccepted: privatePilotAcceptanceReportRecords.some((record) => record.readyForPrivatePilotAcceptance),
+      readyForPrivatePilotDossier: privatePilotAcceptanceReportRecords.some((record) => record.readyForPrivatePilotAcceptance),
+      managedProductionEvidenceReady: Boolean(productionEvidenceIntegrityAudit.readyForManagedProductionEvidence),
+      readyForProduction: false,
+    }] : [],
+    productionLaunchEvidenceDossierSummary: {
+      count: projectId ? 1 : 0,
+      privatePilotAccepted: privatePilotAcceptanceReportRecords.some((record) => record.readyForPrivatePilotAcceptance),
+      managedProductionEvidenceReady: Boolean(productionEvidenceIntegrityAudit.readyForManagedProductionEvidence),
+      productionOperationsControlsReady: (project.productionOperationsControlReceipts || []).some((record) => record.readyForProductionOperations),
+      productionDeploymentControlsReady: productionDeploymentControlReceiptRecords.some((record) => record.readyForProductionDeployment),
+      productionSecurityControlsReady: (project.productionSecurityControlReceipts || []).some((record) => record.readyForProductionSecurity),
+      productionProviderControlsReady: productionProviderControlReceiptRecords.some((record) => record.readyForProductionProvider),
+      manifestEntryCount: 9,
+      proofIds: uniqueStrings([
+        ...privatePilotReleaseCandidateProofIds,
+        ...privatePilotLaunchRunProofIds,
+        ...privatePilotLaunchHealthCheckProofIds,
+        ...privatePilotAcceptanceReportProofIds,
+        ...productionDeploymentControlReceiptProofIds,
+        ...productionProviderControlReceiptProofIds,
+        ...(productionEvidenceIntegrityAudit.proofIds || []),
+      ].filter(Boolean)),
+      timelineLogIds: uniqueStrings([
+        ...privatePilotReleaseCandidateLogIds,
+        ...privatePilotLaunchRunLogIds,
+        ...privatePilotLaunchHealthCheckLogIds,
+        ...privatePilotAcceptanceReportLogIds,
+        ...productionDeploymentControlReceiptLogIds,
+        ...productionProviderControlReceiptLogIds,
+        ...(productionEvidenceIntegrityAudit.timelineLogIds || []),
+      ]),
+      eventIds: uniqueStrings([
+        ...privatePilotReleaseCandidateEventIds,
+        ...privatePilotLaunchRunEventIds,
+        ...privatePilotLaunchHealthCheckEventIds,
+        ...privatePilotAcceptanceReportEventIds,
+        ...productionDeploymentControlReceiptEventIds,
+        ...productionProviderControlReceiptEventIds,
+        ...(productionEvidenceIntegrityAudit.eventIds || []),
+      ]),
+      readyForProduction: false,
+    },
+    productionEvidenceIntegrityRoutes: projectId ? [{
+      proofKind: 'production-evidence-integrity-audit',
+      proofLabel: 'Production evidence integrity audit',
+      apiPath: `/projects/${projectId}/production-evidence-integrity-audit`,
+      channelId: null,
+      proofIds: productionEvidenceIntegrityAudit.proofIds || [],
+      timelineLogIds: productionEvidenceIntegrityAudit.timelineLogIds || [],
+      eventIds: productionEvidenceIntegrityAudit.eventIds || [],
+      taskIds: uniqueStrings([
+        ...evidenceSearchRecords.map((search) => search.taskId),
+        ...submissionRecords.map((submission) => submission.taskId),
+      ].filter(Boolean)),
+      agentIds: uniqueStrings([
+        ...submissionRecords.map((submission) => submission.agentId),
+        ...evidenceSearchRecords.map((search) => search.agentId),
+      ].filter(Boolean)),
+      requiredControlCount: productionEvidenceIntegrityAudit.summary?.requiredControlCount || 0,
+      verifiedControlCount: productionEvidenceIntegrityAudit.summary?.verifiedControlCount || 0,
+      managedProductionControlCount: productionEvidenceIntegrityAudit.summary?.managedProductionControlCount || 0,
+      localRehearsalControlCount: productionEvidenceIntegrityAudit.summary?.localRehearsalControlCount || 0,
+      missingControlCount: productionEvidenceIntegrityAudit.summary?.missingControlCount || 0,
+      readyForManagedProductionEvidence: Boolean(productionEvidenceIntegrityAudit.readyForManagedProductionEvidence),
+      readyForProduction: Boolean(productionEvidenceIntegrityAudit.readyForProduction),
+    }] : [],
+    productionEvidenceIntegritySummary: {
+      count: projectId ? 1 : 0,
+      status: productionEvidenceIntegrityAudit.status,
+      requiredControlCount: productionEvidenceIntegrityAudit.summary?.requiredControlCount || 0,
+      verifiedControlCount: productionEvidenceIntegrityAudit.summary?.verifiedControlCount || 0,
+      managedProductionControlCount: productionEvidenceIntegrityAudit.summary?.managedProductionControlCount || 0,
+      localRehearsalControlCount: productionEvidenceIntegrityAudit.summary?.localRehearsalControlCount || 0,
+      externalUnattestedControlCount: productionEvidenceIntegrityAudit.summary?.externalUnattestedControlCount || 0,
+      missingControlCount: productionEvidenceIntegrityAudit.summary?.missingControlCount || 0,
+      proofIds: productionEvidenceIntegrityAudit.proofIds || [],
+      timelineLogIds: productionEvidenceIntegrityAudit.timelineLogIds || [],
+      eventIds: productionEvidenceIntegrityAudit.eventIds || [],
+      checksum: productionEvidenceIntegrityAudit.checksum,
+      readyForManagedProductionEvidence: Boolean(productionEvidenceIntegrityAudit.readyForManagedProductionEvidence),
+      readyForProduction: Boolean(productionEvidenceIntegrityAudit.readyForProduction),
     },
     productionOperationsReadinessRoutes: projectId ? [{
       proofKind: 'production-operations-readiness',
@@ -7406,6 +7598,78 @@ function buildAgentDashboardSnapshot({ project = {}, messages = [], agentId } = 
       roleInReview: review.reviewerAgentId === agent.id ? 'reviewer' : 'submitter',
       backendPath: projectId ? `/projects/${projectId}/submission-reviews/${review.id}` : null,
     }));
+  const ownedBrainstormSubmissions = ownedSubmissions
+    .filter((submission) => submission.agentId === agent.id && submission.artifactType === 'brainstorm-board');
+  const downstreamBrainstormArtifacts = (project.agentSubmissions || [])
+    .filter((submission) => [
+      'product-brief',
+      'decision-proposal',
+      'risk-review',
+      'implementation-plan',
+      'final-deliverable',
+    ].includes(submission.artifactType));
+  const ownedBrainstormContributions = ownedBrainstormSubmissions.map((submission) => {
+    const alternatives = extractBrainstormAlternatives(`${submission.body || ''}\n${submission.summary || ''}`);
+    const linkedEvidenceSearches = (project.evidenceSearches || []).filter((record) => (
+      (submission.evidenceSearchIds || []).includes(record.id)
+      || (record.taskId && submission.taskId && String(record.taskId) === String(submission.taskId))
+      || (record.submissionId && String(record.submissionId) === String(submission.id))
+    ));
+    const linkedDownstreamSubmissions = downstreamBrainstormArtifacts.filter((record) => (
+      (record.sourceSubmissionIds || []).includes(submission.id)
+      || (record.revisesSubmissionId && String(record.revisesSubmissionId) === String(submission.id))
+      || (record.supersedesSubmissionIds || []).includes(submission.id)
+    ));
+    return {
+      id: `agent-brainstorm-${submission.id}`,
+      submissionId: submission.id,
+      title: submission.title || 'Brainstorm board',
+      summary: submission.summary || '',
+      taskId: submission.taskId || null,
+      status: submission.status || 'submitted',
+      reviewStatus: submission.reviewStatus || null,
+      alternativeCount: alternatives.length,
+      alternatives: alternatives.slice(0, 8),
+      linkedEvidenceSearchIds: uniqueStrings(linkedEvidenceSearches.map((record) => record.id)),
+      linkedDownstreamSubmissionIds: uniqueStrings(linkedDownstreamSubmissions.map((record) => record.id)),
+      proofIds: uniqueStrings([submission.messageId].filter(Boolean)),
+      timelineLogIds: uniqueStrings([submission.timelineLogId].filter(Boolean)),
+      eventIds: uniqueStrings([submission.eventId].filter(Boolean)),
+      backendPath: projectId ? `/projects/${projectId}/submissions/${submission.id}` : null,
+    };
+  });
+  const brainstormContributionProofIds = uniqueStrings(ownedBrainstormContributions.flatMap((row) => row.proofIds || []));
+  const brainstormContributionTimelineLogIds = uniqueStrings(ownedBrainstormContributions.flatMap((row) => row.timelineLogIds || []));
+  const brainstormContributionEventIds = uniqueStrings(ownedBrainstormContributions.flatMap((row) => row.eventIds || []));
+  const brainstormContributionAlternativeCount = ownedBrainstormContributions.reduce((sum, row) => sum + (row.alternativeCount || 0), 0);
+  const brainstormContribution = {
+    schemaVersion: 'agent-brainstorm-contribution/v1',
+    status: ownedBrainstormContributions.length ? 'brainstorm-contribution-visible' : 'no-brainstorm-contribution',
+    readyForPrivatePilotContribution: Boolean(ownedBrainstormContributions.length && brainstormContributionAlternativeCount >= 2 && brainstormContributionProofIds.length),
+    readyForProduction: false,
+    rows: ownedBrainstormContributions,
+    proofIds: brainstormContributionProofIds,
+    timelineLogIds: brainstormContributionTimelineLogIds,
+    eventIds: brainstormContributionEventIds,
+    backendRoutes: {
+      agentDashboard: projectId ? `/projects/${projectId}/agents/${agent.id}/dashboard` : null,
+      brainstormLayer: projectId ? `/projects/${projectId}/brainstorm-layer` : null,
+      submissions: projectId ? `/projects/${projectId}/submissions` : null,
+      evidenceSearches: projectId ? `/projects/${projectId}/evidence-searches` : null,
+      managerFlowGraph: projectId ? `/projects/${projectId}/manager-flow-graph` : null,
+    },
+    summary: {
+      brainstormBoardCount: ownedBrainstormContributions.length,
+      alternativeCount: brainstormContributionAlternativeCount,
+      directEvidenceLinkCount: uniqueStrings(ownedBrainstormContributions.flatMap((row) => row.linkedEvidenceSearchIds || [])).length,
+      directDownstreamLinkCount: uniqueStrings(ownedBrainstormContributions.flatMap((row) => row.linkedDownstreamSubmissionIds || [])).length,
+      projectEvidenceSearchCount: (project.evidenceSearches || []).length,
+      projectDownstreamArtifactCount: downstreamBrainstormArtifacts.length,
+      proofIdCount: brainstormContributionProofIds.length,
+      timelineLogIdCount: brainstormContributionTimelineLogIds.length,
+      eventIdCount: brainstormContributionEventIds.length,
+    },
+  };
 
   const ownedTaskIds = new Set(ownedTasks.map((task) => String(task.id || '')));
   const agentTokens = new Set([agent.id, agent.name].filter(Boolean).map(String));
@@ -7558,6 +7822,8 @@ function buildAgentDashboardSnapshot({ project = {}, messages = [], agentId } = 
     ownedEvidenceSearches,
     ownedEvidenceSourceReviews,
     ownedSubmissionReviews,
+    ownedBrainstormContributions,
+    brainstormContribution,
     openTaskCount: ownedTasks.filter((task) => task.status !== 'done').length,
     messages: relevantMessages,
     timeline: {
@@ -7573,6 +7839,8 @@ function buildAgentDashboardSnapshot({ project = {}, messages = [], agentId } = 
       eventIds: uniqueStrings(relevantEvents.map((event) => event.id)),
       taskIds: uniqueStrings(ownedTasks.map((task) => task.id)),
       submissionIds: uniqueStrings(ownedSubmissions.map((submission) => submission.id)),
+      brainstormSubmissionIds: uniqueStrings(ownedBrainstormContributions.map((row) => row.submissionId)),
+      brainstormAlternativeCount: brainstormContributionAlternativeCount,
       evidenceSearchIds: uniqueStrings(ownedEvidenceSearches.map((record) => record.id)),
       evidenceSourceReviewIds: uniqueStrings(ownedEvidenceSourceReviews.map((review) => review.id)),
       submissionReviewIds: uniqueStrings(ownedSubmissionReviews.map((review) => review.id)),
@@ -7586,6 +7854,7 @@ function buildAgentDashboardSnapshot({ project = {}, messages = [], agentId } = 
       plan: projectId ? `/projects/${projectId}/agents/${agent.id}/plan` : null,
       tasks: projectId ? `/projects/${projectId}/tasks` : null,
       submissions: projectId ? `/projects/${projectId}/submissions` : null,
+      brainstormLayer: projectId ? `/projects/${projectId}/brainstorm-layer` : null,
       evidenceSearches: projectId ? `/projects/${projectId}/evidence-searches` : null,
       evidenceSourceReviews: projectId ? `/projects/${projectId}/evidence-source-review-workflow` : null,
       submissionReviews: projectId ? `/projects/${projectId}/submission-reviews` : null,
@@ -8084,6 +8353,10 @@ function buildManagerDashboardSnapshot({ project = {}, messages = [] } = {}) {
     providerReceiptId: record.providerReceiptId || record.providerReceipt?.id || null,
     providerReceiptRoute: record.providerReceiptId && projectId ? `/projects/${projectId}/evidence-searches/${record.id}#${record.providerReceiptId}` : null,
   }));
+  const brainstormRows = submissionRows.filter((row) => row.artifactType === 'brainstorm-board');
+  const brainstormAlternativeCount = brainstormRows.reduce((sum, row) => (
+    sum + extractBrainstormAlternatives(`${row.body || ''}\n${row.summary || ''}`).length
+  ), 0);
   const submissionReviewRows = (project.submissionReviews || []).slice(0, 40).map((review) => ({
     ...review,
     reviewerAgentName: review.reviewerAgentName || agentNameById[review.reviewerAgentId] || review.reviewerAgentId,
@@ -10026,6 +10299,29 @@ function buildManagerDashboardSnapshot({ project = {}, messages = [] } = {}) {
       artifactTypes: uniqueStrings(submissionRows.map((row) => row.artifactType)),
       rows: submissionRows,
     },
+    brainstormLayer: {
+      schemaVersion: 'brainstorm-layer/v1',
+      status: brainstormRows.length && brainstormAlternativeCount >= 2 ? 'brainstorm-layer-ready' : 'brainstorm-layer-needs-work',
+      readyForPrivatePilotBrainstorm: Boolean(brainstormRows.length && brainstormAlternativeCount >= 2),
+      readyForProduction: false,
+      brainstormBoardCount: brainstormRows.length,
+      alternativeCount: brainstormAlternativeCount,
+      participantCount: uniqueStrings(brainstormRows.map((row) => row.agentId).filter(Boolean)).length,
+      proofIds: uniqueStrings(brainstormRows.map((row) => row.messageId).filter(Boolean)),
+      timelineLogIds: uniqueStrings(brainstormRows.map((row) => row.timelineLogId).filter(Boolean)),
+      eventIds: uniqueStrings(brainstormRows.map((row) => row.eventId).filter(Boolean)),
+      route: projectId ? `/projects/${projectId}/brainstorm-layer` : null,
+      rows: brainstormRows.map((row) => ({
+        id: row.id,
+        title: row.title,
+        summary: row.summary,
+        agentId: row.agentId,
+        agentName: row.agentName,
+        taskId: row.taskId,
+        alternativeCount: extractBrainstormAlternatives(`${row.body || ''}\n${row.summary || ''}`).length,
+        proofRoute: row.proofRoute,
+      })),
+    },
     evidenceSearches: {
       count: evidenceSearchRows.length,
       completedCount: evidenceSearchRows.filter((row) => row.status === 'completed').length,
@@ -10090,6 +10386,8 @@ function buildManagerDashboardSnapshot({ project = {}, messages = [] } = {}) {
       privatePilotGoLiveReadiness: projectId ? `/projects/${projectId}/private-pilot-go-live-readiness` : null,
       productionLaunchGapRegister: projectId ? `/projects/${projectId}/production-launch-gap-register` : null,
       productionLaunchControlCenter: projectId ? `/projects/${projectId}/production-launch-control-center` : null,
+      productionLaunchEvidenceDossier: projectId ? `/projects/${projectId}/production-launch-evidence-dossier` : null,
+      productionEvidenceIntegrityAudit: projectId ? `/projects/${projectId}/production-evidence-integrity-audit` : null,
       productionDeploymentControlReceipts: projectId ? `/projects/${projectId}/production-deployment-control-receipts` : null,
       productionSecurityControlReceipts: projectId ? `/projects/${projectId}/production-security-control-receipts` : null,
       productionProviderControlReceipts: projectId ? `/projects/${projectId}/production-provider-control-receipts` : null,
@@ -10135,6 +10433,7 @@ function buildManagerDashboardSnapshot({ project = {}, messages = [] } = {}) {
       agentDashboardTemplate: projectId ? `/projects/${projectId}/agents/:agentId/dashboard` : null,
       tasks: projectId ? `/projects/${projectId}/tasks` : null,
       submissions: projectId ? `/projects/${projectId}/submissions` : null,
+      brainstormLayer: projectId ? `/projects/${projectId}/brainstorm-layer` : null,
       artifactQualityAudit: projectId ? `/projects/${projectId}/artifact-quality-audit` : null,
       evidenceSearches: projectId ? `/projects/${projectId}/evidence-searches` : null,
       submissionReviewWorkflow: projectId ? `/projects/${projectId}/submission-review-workflow` : null,
@@ -11651,6 +11950,233 @@ function idsFromRoutes(routes = [], field = 'proofIds') {
   return uniqueStrings((routes || []).flatMap((route) => route?.[field] || [])).slice(0, 12);
 }
 
+function extractBrainstormAlternatives(text = '') {
+  return String(text || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => /^([-*]|\d+[.)])\s+/.test(line))
+    .map((line, index) => {
+      const label = line.replace(/^([-*]|\d+[.)])\s+/, '').trim();
+      return {
+        id: `alternative-${index + 1}`,
+        label: label.slice(0, 160),
+      };
+    })
+    .filter((row) => row.label);
+}
+
+function buildBrainstormLayer({
+  project = {},
+  managerDashboard = {},
+  managerFlowGraph = {},
+  now = nowIso(),
+} = {}) {
+  const projectId = project.id || managerDashboard.projectId || managerDashboard.project?.id || null;
+  const proofMap = managerDashboard.readinessProofMap || {};
+  const submissionRecords = project.agentSubmissions || managerDashboard.submissions?.rows || [];
+  const evidenceSearchRecords = project.evidenceSearches || managerDashboard.evidenceSearches?.rows || [];
+  const submissionRoutes = proofMap.submissionRoutes || [];
+  const routeForSubmission = (submission = {}) => submissionRoutes.find((route) => (
+    route.apiPath && submission.id && String(route.apiPath).includes(encodeURIComponent(submission.id))
+  )) || submissionRoutes.find((route) => (
+    route.artifactType === submission.artifactType && route.proofLabel === submission.title
+  )) || null;
+  const brainstormSubmissions = submissionRecords.filter((submission) => submission.artifactType === 'brainstorm-board');
+  const downstreamSubmissions = submissionRecords.filter((submission) => [
+    'product-brief',
+    'decision-proposal',
+    'risk-review',
+    'implementation-plan',
+    'final-deliverable',
+  ].includes(submission.artifactType));
+  const discoverySubmissions = submissionRecords.filter((submission) => submission.artifactType === 'discovery-report');
+  const evidencePacketSubmissions = submissionRecords.filter((submission) => submission.artifactType === 'evidence-packet');
+  const rows = brainstormSubmissions.map((submission) => {
+    const route = routeForSubmission(submission);
+    const alternatives = extractBrainstormAlternatives(`${submission.body || ''}\n${submission.summary || ''}`);
+    const linkedEvidence = evidenceSearchRecords.filter((record) => (
+      (submission.evidenceSearchIds || []).includes(record.id)
+      || (record.taskId && submission.taskId && String(record.taskId) === String(submission.taskId))
+      || (record.submissionId && String(record.submissionId) === String(submission.id))
+    ));
+    const linkedDownstream = downstreamSubmissions.filter((record) => (
+      (record.taskId && submission.taskId && String(record.taskId) === String(submission.taskId))
+      || (record.sourceSubmissionIds || []).includes(submission.id)
+      || (record.revisesSubmissionId && String(record.revisesSubmissionId) === String(submission.id))
+      || (record.supersedesSubmissionIds || []).includes(submission.id)
+    ));
+    return {
+      id: `brainstorm-${submission.id}`,
+      submissionId: submission.id,
+      artifactType: submission.artifactType,
+      title: submission.title || 'Brainstorm board',
+      summary: submission.summary || '',
+      agentId: submission.agentId || null,
+      agentName: submission.agentName || null,
+      taskId: submission.taskId || null,
+      status: submission.status || 'submitted',
+      reviewStatus: submission.reviewStatus || null,
+      alternativeCount: alternatives.length,
+      alternatives: alternatives.slice(0, 8),
+      linkedEvidenceSearchIds: uniqueStrings(linkedEvidence.map((record) => record.id)),
+      linkedDownstreamSubmissionIds: uniqueStrings(linkedDownstream.map((record) => record.id)),
+      proofIds: uniqueStrings([
+        submission.messageId,
+        ...(route?.proofIds || []),
+        ...(linkedEvidence || []).map((record) => record.messageId),
+      ].filter(Boolean)),
+      timelineLogIds: uniqueStrings([
+        submission.timelineLogId,
+        ...(route?.timelineLogIds || []),
+        ...(linkedEvidence || []).map((record) => record.timelineLogId),
+      ].filter(Boolean)),
+      eventIds: uniqueStrings([
+        submission.eventId,
+        ...(route?.eventIds || []),
+        ...(linkedEvidence || []).map((record) => record.eventId),
+      ].filter(Boolean)),
+      artifactPath: submission.artifactPath || submission.workspacePath || null,
+      apiPath: route?.apiPath || (projectId ? `/projects/${projectId}/submissions/${encodeURIComponent(submission.id)}` : null),
+    };
+  });
+  const proofIds = uniqueStrings(rows.flatMap((row) => row.proofIds || []));
+  const timelineLogIds = uniqueStrings(rows.flatMap((row) => row.timelineLogIds || []));
+  const eventIds = uniqueStrings(rows.flatMap((row) => row.eventIds || []));
+  const gate = ({ id, label, passed, detail, apiPath = null, proofIds: gateProofIds = [], timelineLogIds: gateTimelineLogIds = [], eventIds: gateEventIds = [] }) => ({
+    id,
+    label,
+    passed: Boolean(passed),
+    status: passed ? 'passed' : 'missing',
+    detail,
+    apiPath,
+    proofIds: uniqueStrings(gateProofIds).slice(0, 12),
+    timelineLogIds: uniqueStrings(gateTimelineLogIds).slice(0, 12),
+    eventIds: uniqueStrings(gateEventIds).slice(0, 12),
+  });
+  const alternativeCount = rows.reduce((sum, row) => sum + (row.alternativeCount || 0), 0);
+  const graphNodes = managerFlowGraph.nodes || [];
+  const brainstormGraphNodes = graphNodes.filter((node) => node.subtype === 'brainstorm-board' || node.id === 'brainstorm-layer');
+  const gates = [
+    gate({
+      id: 'brainstorm-board-submitted',
+      label: 'Brainstorm board submitted',
+      passed: rows.length > 0,
+      detail: `${rows.length} brainstorm board submission(s).`,
+      apiPath: projectId ? `/projects/${projectId}/submissions` : null,
+      proofIds,
+      timelineLogIds,
+      eventIds,
+    }),
+    gate({
+      id: 'brainstorm-alternatives-visible',
+      label: 'Alternative directions are visible',
+      passed: alternativeCount >= 2,
+      detail: `${alternativeCount} alternative direction(s) parsed from brainstorm boards.`,
+      apiPath: projectId ? `/projects/${projectId}/brainstorm-layer` : null,
+      proofIds,
+      timelineLogIds,
+      eventIds,
+    }),
+    gate({
+      id: 'brainstorm-evidence-connected',
+      label: 'Brainstorm connects to discovery/evidence',
+      passed: discoverySubmissions.length > 0 && (evidenceSearchRecords.length > 0 || evidencePacketSubmissions.length > 0),
+      detail: `${discoverySubmissions.length} discovery report(s), ${evidenceSearchRecords.length} evidence search(es), ${evidencePacketSubmissions.length} evidence packet(s).`,
+      apiPath: managerDashboard.backendRoutes?.evidenceSearches || (projectId ? `/projects/${projectId}/evidence-searches` : null),
+      proofIds: uniqueStrings([
+        ...proofIds,
+        ...evidenceSearchRecords.map((record) => record.messageId),
+        ...evidencePacketSubmissions.map((submission) => submission.messageId),
+      ].filter(Boolean)),
+      timelineLogIds: uniqueStrings([
+        ...timelineLogIds,
+        ...evidenceSearchRecords.map((record) => record.timelineLogId),
+      ].filter(Boolean)),
+      eventIds: uniqueStrings([
+        ...eventIds,
+        ...evidenceSearchRecords.map((record) => record.eventId),
+      ].filter(Boolean)),
+    }),
+    gate({
+      id: 'brainstorm-decision-followthrough',
+      label: 'Brainstorm feeds decision and delivery artifacts',
+      passed: downstreamSubmissions.some((submission) => submission.artifactType === 'decision-proposal')
+        && downstreamSubmissions.some((submission) => submission.artifactType === 'final-deliverable'),
+      detail: `${downstreamSubmissions.length} downstream decision/delivery artifact(s).`,
+      apiPath: projectId ? `/projects/${projectId}/submissions` : null,
+      proofIds: uniqueStrings([
+        ...proofIds,
+        ...downstreamSubmissions.map((submission) => submission.messageId),
+      ].filter(Boolean)),
+      timelineLogIds: uniqueStrings([
+        ...timelineLogIds,
+        ...downstreamSubmissions.map((submission) => submission.timelineLogId),
+      ].filter(Boolean)),
+      eventIds: uniqueStrings([
+        ...eventIds,
+        ...downstreamSubmissions.map((submission) => submission.eventId),
+      ].filter(Boolean)),
+    }),
+    gate({
+      id: 'brainstorm-flow-graph-proofed',
+      label: 'Brainstorm appears in the Flow Graph',
+      passed: brainstormGraphNodes.length > 0,
+      detail: `${brainstormGraphNodes.length} brainstorm Flow Graph node(s).`,
+      apiPath: managerDashboard.backendRoutes?.managerFlowGraph || (projectId ? `/projects/${projectId}/manager-flow-graph` : null),
+      proofIds,
+      timelineLogIds,
+      eventIds,
+    }),
+  ];
+  const failedGates = gates.filter((row) => !row.passed);
+  const readyForPrivatePilotBrainstorm = failedGates.length === 0;
+  const checksum = persistenceChecksum({
+    schemaVersion: 'brainstorm-layer/v1',
+    projectId,
+    rows: rows.map((row) => [row.submissionId, row.alternativeCount, row.status]),
+    gates: gates.map((row) => [row.id, row.passed]),
+    proofIds,
+  });
+  return redactSensitiveObject({
+    projectId,
+    generatedAt: now,
+    schemaVersion: 'brainstorm-layer/v1',
+    status: readyForPrivatePilotBrainstorm ? 'brainstorm-layer-ready' : 'brainstorm-layer-needs-work',
+    readyForPrivatePilotBrainstorm,
+    readyForProduction: false,
+    rows,
+    gates,
+    failedGates,
+    proofIds,
+    timelineLogIds,
+    eventIds,
+    backendRoutes: {
+      brainstormLayer: projectId ? `/projects/${projectId}/brainstorm-layer` : null,
+      submissions: projectId ? `/projects/${projectId}/submissions` : null,
+      evidenceSearches: managerDashboard.backendRoutes?.evidenceSearches || (projectId ? `/projects/${projectId}/evidence-searches` : null),
+      readinessProofMap: managerDashboard.backendRoutes?.readinessProofMap || (projectId ? `/projects/${projectId}/readiness-proof-map` : null),
+      managerFlowGraph: managerDashboard.backendRoutes?.managerFlowGraph || (projectId ? `/projects/${projectId}/manager-flow-graph` : null),
+    },
+    summary: {
+      brainstormBoardCount: rows.length,
+      alternativeCount,
+      discoveryReportCount: discoverySubmissions.length,
+      evidenceSearchCount: evidenceSearchRecords.length,
+      evidencePacketCount: evidencePacketSubmissions.length,
+      downstreamArtifactCount: downstreamSubmissions.length,
+      participantCount: uniqueStrings(rows.map((row) => row.agentId).filter(Boolean)).length,
+      proofIdCount: proofIds.length,
+      timelineLogIdCount: timelineLogIds.length,
+      eventIdCount: eventIds.length,
+      gateCount: gates.length,
+      failedGateCount: failedGates.length,
+      readyForPrivatePilotBrainstorm,
+      checksum,
+    },
+    checksum,
+  });
+}
+
 function buildMvpReadiness({ managerDashboard = {}, managerFlowGraph = {} } = {}) {
   const projectId = managerDashboard.project?.id || managerDashboard.projectId || null;
   const proofMap = managerDashboard.readinessProofMap || {};
@@ -12586,6 +13112,7 @@ function normalizeProductionDeploymentControlRows(input = {}) {
       evidenceRoute: input.evidenceRoute || input.route,
       evidenceId: input.evidenceId || input.receiptId,
       evidenceChecksum: input.evidenceChecksum || input.checksum,
+      evidenceEnvironment: input.evidenceEnvironment || input.environment,
       completedAt: input.completedAt,
       ownerRole: input.ownerRole || input.actorRole,
       detail: input.detail || input.reason,
@@ -12599,6 +13126,7 @@ function normalizeProductionDeploymentControlRows(input = {}) {
       const evidenceChecksum = row.evidenceChecksum || row.checksum || row.receiptChecksum || null;
       const evidenceId = row.evidenceId || row.receiptId || row.id || null;
       const evidenceRoute = row.evidenceRoute || row.route || row.url || null;
+      const evidenceEnvironment = row.evidenceEnvironment || row.environment || null;
       const verified = approvedStatuses.has(status) && Boolean(evidenceChecksum || evidenceId || evidenceRoute || row.completedAt);
       return {
         controlId,
@@ -12608,6 +13136,7 @@ function normalizeProductionDeploymentControlRows(input = {}) {
         evidenceId: evidenceId ? String(evidenceId) : null,
         evidenceRoute: evidenceRoute ? redactUrl(evidenceRoute) : null,
         evidenceChecksum: evidenceChecksum ? String(evidenceChecksum) : null,
+        evidenceEnvironment: evidenceEnvironment ? String(evidenceEnvironment).trim().toLowerCase().replace(/_/g, '-') : null,
         completedAt: row.completedAt || null,
         ownerRole: row.ownerRole || row.actorRole || 'runtime-platform',
         detail: redactSensitiveText(row.detail || row.reason || row.summary || ''),
@@ -12642,7 +13171,7 @@ function buildProductionDeploymentControlReceipt({
     projectId,
     schemaVersion: 'production-deployment-control-receipt/v1',
     actorRole,
-    controls: controls.map((control) => [control.controlId, control.status, control.evidenceChecksum || control.evidenceId]),
+    controls: controls.map((control) => [control.controlId, control.status, control.evidenceChecksum || control.evidenceId, control.evidenceEnvironment || null]),
     readyForPrivatePilotDeployment,
     readyForProductionDeploymentControls,
     deploymentPreflightChecksum: deploymentPreflight.checksum || null,
@@ -13516,6 +14045,10 @@ function buildProductionLaunchAuditSnapshot({
   pilotLaunchReadiness = {},
   deploymentPreflight = {},
   productionDeploymentControlReceiptWorkflow = {},
+  productionOperationsControlReceiptWorkflow = {},
+  productionSecurityControlReceiptWorkflow = {},
+  productionProviderControlReceiptWorkflow = {},
+  productionEvidenceIntegrityAudit = null,
   launchApprovalWorkflow = {},
   securityBoundary = {},
   providerReadiness = {},
@@ -13623,6 +14156,31 @@ function buildProductionLaunchAuditSnapshot({
       apiPath: productionDeploymentControlReceiptWorkflow.backendRoutes?.productionDeploymentControlReceipts
         || routeFor('deploymentPreflight', 'deployment-preflight'),
     }));
+  const managedProductionEvidenceAudit = productionEvidenceIntegrityAudit || buildProductionEvidenceIntegrityAudit({
+    project,
+    managerReadyPackage: {
+      productionOperationsControlReceiptWorkflow,
+      productionDeploymentControlReceiptWorkflow,
+      productionSecurityControlReceiptWorkflow,
+      productionProviderControlReceiptWorkflow,
+    },
+    now,
+  });
+  const managedProductionEvidenceRoute = managedProductionEvidenceAudit.backendRoutes?.productionEvidenceIntegrityAudit
+    || routeFor('productionEvidenceIntegrityAudit', 'production-evidence-integrity-audit');
+  const managedProductionEvidenceBlockers = managedProductionEvidenceAudit.readyForManagedProductionEvidence ? [] : [{
+    id: 'managed-production-evidence-integrity',
+    label: 'Managed production evidence integrity is verified',
+    status: 'blocked',
+    severity: 'production-blocker',
+    owner: 'runtime-platform',
+    domain: 'audit-and-custody',
+    source: 'production-evidence-integrity-audit',
+    detail: `${managedProductionEvidenceAudit.summary?.managedProductionControlCount || 0}/${managedProductionEvidenceAudit.summary?.requiredControlCount || 0} required production control(s) have explicit managed-production evidence; ${managedProductionEvidenceAudit.summary?.localRehearsalControlCount || 0} remain local rehearsal and ${managedProductionEvidenceAudit.summary?.missingControlCount || 0} are missing.`,
+    apiPath: managedProductionEvidenceRoute,
+    proofIds: managedProductionEvidenceAudit.proofIds || [],
+    checksum: managedProductionEvidenceAudit.checksum || null,
+  }];
   const productionBlockerRows = [
     ...(pilotLaunchReadiness.productionBlockers || []),
     ...(artifactQualityAudit.requiredProductionControls || []).filter((control) => control.status === 'blocked').map((control) => ({
@@ -13636,6 +14194,7 @@ function buildProductionLaunchAuditSnapshot({
       apiPath: control.apiPath || routeFor('evidenceCustodyReadiness', 'evidence-custody-readiness'),
     })),
     ...deploymentProductionControls,
+    ...managedProductionEvidenceBlockers,
   ];
   const productionBlockers = [];
   const seenProductionBlockers = new Set();
@@ -13677,6 +14236,17 @@ function buildProductionLaunchAuditSnapshot({
       apiPath: routeFor('managerReadyPackage', 'manager-ready-package'),
     },
     {
+      id: 'managed-production-evidence-integrity',
+      label: 'Managed production evidence integrity is verified',
+      scope: 'production',
+      severity: 'production-blocker',
+      passed: Boolean(managedProductionEvidenceAudit.readyForManagedProductionEvidence),
+      detail: managedProductionEvidenceAudit.readyForManagedProductionEvidence
+        ? 'All required production control receipts point to explicit managed-production evidence.'
+        : `${managedProductionEvidenceAudit.summary?.managedProductionControlCount || 0}/${managedProductionEvidenceAudit.summary?.requiredControlCount || 0} required controls have managed-production evidence; ${managedProductionEvidenceAudit.summary?.localRehearsalControlCount || 0} local rehearsal control(s), ${managedProductionEvidenceAudit.summary?.missingControlCount || 0} missing control(s).`,
+      apiPath: managedProductionEvidenceRoute,
+    },
+    {
       id: 'production-launch-decision-go',
       label: 'Production launch decision is approved',
       scope: 'production',
@@ -13705,6 +14275,7 @@ function buildProductionLaunchAuditSnapshot({
     { id: 'pilot-launch-readiness', route: routeFor('pilotLaunchReadiness', 'pilot-launch-readiness'), ready: pilotLaunchReadiness.schemaVersion === 'pilot-launch-readiness/v1' },
     { id: 'deployment-preflight', route: routeFor('deploymentPreflight', 'deployment-preflight'), ready: deploymentPreflight.schemaVersion === 'deployment-preflight/v1' },
     { id: 'launch-approvals', route: routeFor('launchApprovals', 'launch-approvals'), ready: launchApprovalWorkflow.schemaVersion === 'launch-approval-workflow/v1' },
+    { id: 'production-evidence-integrity-audit', route: managedProductionEvidenceRoute, ready: Boolean(managedProductionEvidenceAudit.readyForManagedProductionEvidence) },
     { id: 'mvp-readiness', route: routeFor('mvpReadiness', 'mvp-readiness'), ready: Boolean(mvpReadiness.schemaVersion) },
     { id: 'security-boundary', route: routeFor('securityBoundary', 'security-boundary'), ready: securityBoundary.status === 'local-boundary-ready' },
     { id: 'provider-readiness', route: routeFor('providerReadiness', 'provider-readiness'), ready: providerReadiness.status === 'local-provider-contract-ready' },
@@ -13835,6 +14406,7 @@ function buildProductionLaunchAuditSnapshot({
       artifactQualityAudit: routeFor('artifactQualityAudit', 'artifact-quality-audit'),
       evidenceCustodyReadiness: routeFor('evidenceCustodyReadiness', 'evidence-custody-readiness'),
       operationsReadiness: routeFor('operationsReadiness', 'operations-readiness'),
+      productionEvidenceIntegrityAudit: managedProductionEvidenceRoute,
     },
     summary: {
       privatePilotGateCount: privatePilotGates.length,
@@ -13851,6 +14423,11 @@ function buildProductionLaunchAuditSnapshot({
       projectEvidenceHandoffReady: Boolean(projectEvidenceHandoff.readyForPrivatePilotPackage),
       projectEvidenceHandoffDownloadAuditCount: projectEvidenceHandoff.summary?.downloadAuditCount || 0,
       productionBlockerCount: productionBlockers.length,
+      managedProductionEvidenceIntegrityStatus: managedProductionEvidenceAudit.status,
+      managedProductionEvidenceIntegrityReady: Boolean(managedProductionEvidenceAudit.readyForManagedProductionEvidence),
+      managedProductionEvidenceControlCount: managedProductionEvidenceAudit.summary?.managedProductionControlCount || 0,
+      managedProductionEvidenceLocalControlCount: managedProductionEvidenceAudit.summary?.localRehearsalControlCount || 0,
+      managedProductionEvidenceMissingControlCount: managedProductionEvidenceAudit.summary?.missingControlCount || 0,
       evidenceCustodyReady: Boolean(evidenceCustodyReadiness.readyForPrivatePilot),
       evidenceCustodyProductionReady: Boolean(evidenceCustodyReadiness.readyForProduction),
       evidenceCustodyFailedGateCount: evidenceCustodyReadiness.summary?.failedGateCount || 0,
@@ -15238,6 +15815,7 @@ function normalizeProductionSecurityControlRows(input = {}) {
       evidenceRoute: input.evidenceRoute || input.route,
       evidenceId: input.evidenceId || input.receiptId,
       evidenceChecksum: input.evidenceChecksum || input.checksum,
+      evidenceEnvironment: input.evidenceEnvironment || input.environment,
       completedAt: input.completedAt,
       ownerRole: input.ownerRole || input.actorRole,
       detail: input.detail || input.reason,
@@ -15251,6 +15829,7 @@ function normalizeProductionSecurityControlRows(input = {}) {
       const evidenceChecksum = row.evidenceChecksum || row.checksum || row.receiptChecksum || null;
       const evidenceId = row.evidenceId || row.receiptId || row.id || null;
       const evidenceRoute = row.evidenceRoute || row.route || row.url || null;
+      const evidenceEnvironment = row.evidenceEnvironment || row.environment || null;
       const verified = approvedStatuses.has(status) && Boolean(evidenceChecksum || evidenceId || evidenceRoute || row.completedAt);
       return {
         controlId,
@@ -15260,6 +15839,7 @@ function normalizeProductionSecurityControlRows(input = {}) {
         evidenceId: evidenceId ? String(evidenceId) : null,
         evidenceRoute: evidenceRoute ? redactUrl(evidenceRoute) : null,
         evidenceChecksum: evidenceChecksum ? String(evidenceChecksum) : null,
+        evidenceEnvironment: evidenceEnvironment ? String(evidenceEnvironment).trim().toLowerCase().replace(/_/g, '-') : null,
         completedAt: row.completedAt || null,
         ownerRole: row.ownerRole || row.actorRole || 'security-admin',
         detail: redactSensitiveText(row.detail || row.reason || row.summary || ''),
@@ -15289,7 +15869,7 @@ function buildProductionSecurityControlReceipt({
     projectId,
     schemaVersion: 'production-security-control-receipt/v1',
     actorRole,
-    controls: controls.map((control) => [control.controlId, control.status, control.evidenceChecksum || control.evidenceId]),
+    controls: controls.map((control) => [control.controlId, control.status, control.evidenceChecksum || control.evidenceId, control.evidenceEnvironment || null]),
     readyForProductionSecurityControls,
     securityBoundaryChecksum: securityBoundary.checksum || readModelChecksum(securityBoundary),
   });
@@ -15504,6 +16084,7 @@ function normalizeProductionOperationsControlRows(input = {}) {
       evidenceRoute: input.evidenceRoute || input.route,
       evidenceId: input.evidenceId || input.receiptId,
       evidenceChecksum: input.evidenceChecksum || input.checksum,
+      evidenceEnvironment: input.evidenceEnvironment || input.environment,
       completedAt: input.completedAt,
       ownerRole: input.ownerRole || input.actorRole,
       detail: input.detail || input.reason,
@@ -15517,6 +16098,7 @@ function normalizeProductionOperationsControlRows(input = {}) {
       const evidenceChecksum = row.evidenceChecksum || row.checksum || row.receiptChecksum || null;
       const evidenceId = row.evidenceId || row.receiptId || row.id || null;
       const evidenceRoute = row.evidenceRoute || row.route || row.url || null;
+      const evidenceEnvironment = row.evidenceEnvironment || row.environment || null;
       const verified = approvedStatuses.has(status) && Boolean(evidenceChecksum || evidenceId || evidenceRoute || row.completedAt);
       return {
         controlId,
@@ -15526,6 +16108,7 @@ function normalizeProductionOperationsControlRows(input = {}) {
         evidenceId: evidenceId ? String(evidenceId) : null,
         evidenceRoute: evidenceRoute ? redactUrl(evidenceRoute) : null,
         evidenceChecksum: evidenceChecksum ? String(evidenceChecksum) : null,
+        evidenceEnvironment: evidenceEnvironment ? String(evidenceEnvironment).trim().toLowerCase().replace(/_/g, '-') : null,
         completedAt: row.completedAt || null,
         ownerRole: row.ownerRole || row.actorRole || 'operations-owner',
         detail: redactSensitiveText(row.detail || row.reason || row.summary || ''),
@@ -15558,7 +16141,7 @@ function buildProductionOperationsControlReceipt({
     projectId,
     schemaVersion: 'production-operations-control-receipt/v1',
     actorRole,
-    controls: controls.map((control) => [control.controlId, control.status, control.evidenceChecksum || control.evidenceId]),
+    controls: controls.map((control) => [control.controlId, control.status, control.evidenceChecksum || control.evidenceId, control.evidenceEnvironment || null]),
     readyForProductionOperationsControls,
     readinessChecksum: productionOperationsReadiness.checksum || null,
   });
@@ -16085,6 +16668,11 @@ function buildProductionLaunchGapRegister({
   const productionOperationsControlReceiptWorkflow = managerReadyPackage.productionOperationsControlReceiptWorkflow || {};
   const productionSecurityControlReceiptWorkflow = managerReadyPackage.productionSecurityControlReceiptWorkflow || {};
   const productionProviderControlReceiptWorkflow = managerReadyPackage.productionProviderControlReceiptWorkflow || {};
+  const productionEvidenceIntegrityAudit = managerReadyPackage.productionEvidenceIntegrityAudit || buildProductionEvidenceIntegrityAudit({
+    project,
+    managerReadyPackage,
+    now,
+  });
   const deploymentPreflight = managerReadyPackage.deploymentPreflight || {};
   const securityBoundary = managerReadyPackage.securityBoundary || {};
   const providerReadiness = managerReadyPackage.providerReadiness || {};
@@ -16108,6 +16696,7 @@ function buildProductionLaunchGapRegister({
     return 'manager';
   };
   const domainForGap = (row = {}) => {
+    if (['security-boundary', 'managed-infrastructure', 'operations', 'provider-rollout', 'audit-and-custody', 'quality-governance', 'release-governance', 'production-hardening'].includes(row.domain)) return row.domain;
     const id = String(row.id || '').toLowerCase();
     const source = String(row.source || '').toLowerCase();
     const label = String(row.label || '').toLowerCase();
@@ -16129,6 +16718,7 @@ function buildProductionLaunchGapRegister({
   };
   const actionForGap = (row = {}) => {
     const id = String(row.id || '').toLowerCase();
+    if (id.includes('managed-production-evidence-integrity')) return 'Replace local/test production-control receipts with explicit managed-production evidence receipts, then re-run the production evidence integrity audit.';
     if (id.includes('centralized-logs') || id.includes('centralized-metrics') || id.includes('centralized-traces')) return 'Connect centralized observability endpoints and attach the control receipt.';
     if (id.includes('alert-routing')) return 'Configure managed alert routing and record the operations control receipt.';
     if (id.includes('on-call')) return 'Assign an on-call owner/schedule and record the production operations receipt.';
@@ -16145,6 +16735,19 @@ function buildProductionLaunchGapRegister({
   const sourceRows = [
     ...(productionLaunchAudit.productionBlockers || []).map((row) => ({ ...row, source: row.source || 'production-launch-audit' })),
     ...(productionLaunchAudit.failedProductionGates || []).map((row) => ({ ...row, source: row.source || 'production-launch-audit', status: 'blocked' })),
+    ...(productionEvidenceIntegrityAudit.readyForManagedProductionEvidence ? [] : [{
+      id: 'managed-production-evidence-integrity',
+      label: 'Managed production evidence integrity is verified',
+      source: 'production-evidence-integrity-audit',
+      status: 'blocked',
+      severity: 'production-blocker',
+      owner: 'runtime-platform',
+      domain: 'audit-and-custody',
+      detail: `${productionEvidenceIntegrityAudit.summary?.managedProductionControlCount || 0}/${productionEvidenceIntegrityAudit.summary?.requiredControlCount || 0} required production control(s) have explicit managed-production evidence; ${productionEvidenceIntegrityAudit.summary?.localRehearsalControlCount || 0} remain local rehearsal and ${productionEvidenceIntegrityAudit.summary?.missingControlCount || 0} are missing.`,
+      apiPath: route('production-evidence-integrity-audit'),
+      proofIds: productionEvidenceIntegrityAudit.proofIds || [],
+      checksum: productionEvidenceIntegrityAudit.checksum || null,
+    }]),
     ...(productionOperationsReadiness.requiredProductionControls || []).map((row) => ({ ...row, source: row.source || 'production-operations-readiness' })),
     ...(productionOperationsReadiness.failedProductionControlGates || []).map((row) => ({ ...row, source: row.source || 'production-operations-readiness', status: 'blocked' })),
     ...(securityBoundary.production?.rows || []).filter((row) => row.status !== 'verified' && row.ready !== true).map((row) => ({ ...row, source: row.source || 'security-boundary', status: row.status === 'local-control-ready' ? 'blocked' : row.status || 'blocked' })),
@@ -16159,6 +16762,7 @@ function buildProductionLaunchGapRegister({
   ];
   const apiPathForSource = (row = {}) => row.apiPath || ({
     'production-launch-audit': route('production-launch-audit'),
+    'production-evidence-integrity-audit': route('production-evidence-integrity-audit'),
     'production-operations-readiness': route('production-operations-readiness'),
     'security-boundary': route('security-boundary'),
     'production-security-control-receipts': route('production-security-control-receipts'),
@@ -16235,6 +16839,7 @@ function buildProductionLaunchGapRegister({
     productionOperationsControlReceiptWorkflow.checksum,
     productionSecurityControlReceiptWorkflow.checksum,
     productionProviderControlReceiptWorkflow.checksum,
+    productionEvidenceIntegrityAudit.checksum,
     deploymentPreflight.checksum,
     securityBoundary.checksum,
     providerReadiness.checksum,
@@ -16245,6 +16850,7 @@ function buildProductionLaunchGapRegister({
     ...(project.productionOperationsControlReceipts || []).flatMap((record) => [record.id, record.checksum, ...(record.proofIds || [])]),
     ...(project.productionDeploymentControlReceipts || []).flatMap((record) => [record.id, record.checksum, ...(record.proofIds || [])]),
     ...(project.productionProviderControlReceipts || []).flatMap((record) => [record.id, record.checksum, ...(record.proofIds || [])]),
+    ...(productionEvidenceIntegrityAudit.proofIds || []),
   ].filter(Boolean));
   const timelineLogIds = uniqueStrings([
     ...(project.productionOperationsControlReceipts || []).flatMap((record) => [
@@ -16299,6 +16905,7 @@ function buildProductionLaunchGapRegister({
     backendRoutes: {
       productionLaunchGapRegister: route('production-launch-gap-register'),
       productionLaunchAudit: route('production-launch-audit'),
+      productionEvidenceIntegrityAudit: route('production-evidence-integrity-audit'),
       productionOperationsReadiness: route('production-operations-readiness'),
       productionDeploymentControlReceipts: route('production-deployment-control-receipts'),
       productionOperationsControlReceipts: route('production-operations-control-receipts'),
@@ -16319,6 +16926,7 @@ function buildProductionLaunchGapRegister({
       productionOperationsControlReceiptWorkflow: productionOperationsControlReceiptWorkflow.checksum || null,
       productionSecurityControlReceiptWorkflow: productionSecurityControlReceiptWorkflow.checksum || null,
       productionProviderControlReceiptWorkflow: productionProviderControlReceiptWorkflow.checksum || null,
+      productionEvidenceIntegrityAudit: productionEvidenceIntegrityAudit.checksum || null,
       deploymentPreflight: deploymentPreflight.checksum || null,
       providerReadiness: providerReadiness.checksum || null,
       securityBoundary: securityBoundary.checksum || null,
@@ -16335,6 +16943,12 @@ function buildProductionLaunchGapRegister({
       operationsGapCount: sortedGapRows.filter((row) => row.domain === 'operations').length,
       providerGapCount: sortedGapRows.filter((row) => row.domain === 'provider-rollout').length,
       qualityGapCount: sortedGapRows.filter((row) => row.domain === 'quality-governance').length,
+      managedProductionEvidenceIntegrityStatus: productionEvidenceIntegrityAudit.status,
+      managedProductionEvidenceIntegrityReady: Boolean(productionEvidenceIntegrityAudit.readyForManagedProductionEvidence),
+      managedProductionEvidenceGapOpen: !productionEvidenceIntegrityAudit.readyForManagedProductionEvidence,
+      managedProductionEvidenceControlCount: productionEvidenceIntegrityAudit.summary?.managedProductionControlCount || 0,
+      managedProductionEvidenceLocalControlCount: productionEvidenceIntegrityAudit.summary?.localRehearsalControlCount || 0,
+      managedProductionEvidenceMissingControlCount: productionEvidenceIntegrityAudit.summary?.missingControlCount || 0,
       productionOperationsControlReceiptCount: productionOperationsControlReceiptWorkflow.summary?.receiptCount || 0,
       productionOperationsVerifiedControlCount: productionOperationsControlReceiptWorkflow.summary?.verifiedControlCount || 0,
       productionDeploymentControlReceiptCount: productionDeploymentControlReceiptWorkflow.summary?.receiptCount || 0,
@@ -16377,6 +16991,11 @@ function buildProductionLaunchControlCenter({
   const evidenceCustodyReadiness = managerReadyPackage.evidenceCustodyReadiness || {};
   const artifactQualityAudit = managerReadyPackage.artifactQualityAudit || {};
   const readinessProofMap = managerReadyPackage.readinessProofMap || {};
+  const productionEvidenceIntegrityAudit = managerReadyPackage.productionEvidenceIntegrityAudit || buildProductionEvidenceIntegrityAudit({
+    project,
+    managerReadyPackage,
+    now,
+  });
   const openGapRows = productionLaunchGapRegister.gapRows || [];
   const latestGap = productionLaunchGapRegister.nextAction || openGapRows[0] || null;
   const productionApprovalMode = (launchApprovalWorkflow.modes || []).find((mode) => mode.id === 'production') || {};
@@ -16390,6 +17009,7 @@ function buildProductionLaunchControlCenter({
     productionDeploymentControlReceiptWorkflow.checksum,
     productionSecurityControlReceiptWorkflow.checksum,
     productionProviderControlReceiptWorkflow.checksum,
+    productionEvidenceIntegrityAudit.checksum,
     launchApprovalWorkflow.summary?.latestApprovalChecksum,
     deploymentPreflight.checksum,
     providerReadiness.checksum,
@@ -16401,6 +17021,8 @@ function buildProductionLaunchControlCenter({
     ...(readinessProofMap.productionOperationsControlReceiptSummary?.proofIds || []),
     ...(readinessProofMap.productionDeploymentControlReceiptSummary?.proofIds || []),
     ...(readinessProofMap.productionProviderControlReceiptSummary?.proofIds || []),
+    ...(productionEvidenceIntegrityAudit.proofIds || []),
+    ...(readinessProofMap.productionEvidenceIntegritySummary?.proofIds || []),
   ].filter(Boolean));
   const timelineLogIds = uniqueStrings([
     ...(productionLaunchGapRegister.timelineLogIds || []),
@@ -16408,6 +17030,8 @@ function buildProductionLaunchControlCenter({
     ...(readinessProofMap.productionOperationsControlReceiptSummary?.timelineLogIds || []),
     ...(readinessProofMap.productionDeploymentControlReceiptSummary?.timelineLogIds || []),
     ...(readinessProofMap.productionProviderControlReceiptSummary?.timelineLogIds || []),
+    ...(productionEvidenceIntegrityAudit.timelineLogIds || []),
+    ...(readinessProofMap.productionEvidenceIntegritySummary?.timelineLogIds || []),
   ].filter(Boolean));
   const eventIds = uniqueStrings([
     ...(productionLaunchGapRegister.eventIds || []),
@@ -16415,6 +17039,8 @@ function buildProductionLaunchControlCenter({
     ...(readinessProofMap.productionOperationsControlReceiptSummary?.eventIds || []),
     ...(readinessProofMap.productionDeploymentControlReceiptSummary?.eventIds || []),
     ...(readinessProofMap.productionProviderControlReceiptSummary?.eventIds || []),
+    ...(productionEvidenceIntegrityAudit.eventIds || []),
+    ...(readinessProofMap.productionEvidenceIntegritySummary?.eventIds || []),
   ].filter(Boolean));
   const control = ({
     id,
@@ -16519,6 +17145,21 @@ function buildProductionLaunchControlCenter({
       missing: productionSecurityControlReceiptWorkflow.missingControlIds || securityBoundary.production?.missingControlIds || [],
     }),
     control({
+      id: 'managed-production-evidence-integrity',
+      label: 'Managed production evidence integrity',
+      owner: 'runtime-platform',
+      domain: 'release-governance',
+      ready: Boolean(productionEvidenceIntegrityAudit.readyForManagedProductionEvidence),
+      detail: productionEvidenceIntegrityAudit.readyForManagedProductionEvidence
+        ? 'All production control receipts point to explicit managed-production evidence.'
+        : `${productionEvidenceIntegrityAudit.summary?.managedProductionControlCount || 0}/${productionEvidenceIntegrityAudit.summary?.requiredControlCount || 0} required controls have managed-production evidence; ${productionEvidenceIntegrityAudit.summary?.localRehearsalControlCount || 0} are still local rehearsal and ${productionEvidenceIntegrityAudit.summary?.missingControlCount || 0} are missing.`,
+      apiPath: route('production-evidence-integrity-audit'),
+      missing: (productionEvidenceIntegrityAudit.rows || [])
+        .filter((row) => !row.managedProductionReady)
+        .slice(0, 12)
+        .map((row) => row.id),
+    }),
+    control({
       id: 'custody-and-quality-production-proof',
       label: 'Custody and quality production proof',
       owner: 'reviewer-agent',
@@ -16568,6 +17209,12 @@ function buildProductionLaunchControlCenter({
       label: 'Production hardening',
       ready: blockedRows.length === 0,
       apiPath: route('production-launch-gap-register'),
+    },
+    {
+      id: 'managed-production-evidence',
+      label: 'Managed-production evidence',
+      ready: Boolean(productionEvidenceIntegrityAudit.readyForManagedProductionEvidence),
+      apiPath: route('production-evidence-integrity-audit'),
     },
     {
       id: 'production-approval',
@@ -16635,6 +17282,7 @@ function buildProductionLaunchControlCenter({
       productionDeploymentControlReceipts: route('production-deployment-control-receipts'),
       productionSecurityControlReceipts: route('production-security-control-receipts'),
       productionProviderControlReceipts: route('production-provider-control-receipts'),
+      productionEvidenceIntegrityAudit: route('production-evidence-integrity-audit'),
       launchApprovals: route('launch-approvals'),
       deploymentPreflight: route('deployment-preflight'),
       providerReadiness: route('provider-readiness'),
@@ -16651,6 +17299,7 @@ function buildProductionLaunchControlCenter({
       productionDeploymentControlReceiptWorkflow: productionDeploymentControlReceiptWorkflow.checksum || null,
       productionSecurityControlReceiptWorkflow: productionSecurityControlReceiptWorkflow.checksum || null,
       productionProviderControlReceiptWorkflow: productionProviderControlReceiptWorkflow.checksum || null,
+      productionEvidenceIntegrityAudit: productionEvidenceIntegrityAudit.checksum || null,
       deploymentPreflight: deploymentPreflight.checksum || null,
       providerReadiness: providerReadiness.checksum || null,
       securityBoundary: securityBoundary.checksum || null,
@@ -16670,8 +17319,512 @@ function buildProductionLaunchControlCenter({
       productionSecurityVerifiedControlCount: productionSecurityControlReceiptWorkflow.summary?.verifiedControlCount || 0,
       productionProviderVerifiedControlCount: productionProviderControlReceiptWorkflow.summary?.verifiedControlCount || 0,
       productionProviderReadyForProduction: Boolean(productionProviderControlReceiptWorkflow.readyForProductionProvider),
+      productionEvidenceIntegrityStatus: productionEvidenceIntegrityAudit.status,
+      productionEvidenceIntegrityReady: Boolean(productionEvidenceIntegrityAudit.readyForManagedProductionEvidence),
+      productionEvidenceIntegrityManagedControlCount: productionEvidenceIntegrityAudit.summary?.managedProductionControlCount || 0,
+      productionEvidenceIntegrityLocalControlCount: productionEvidenceIntegrityAudit.summary?.localRehearsalControlCount || 0,
+      productionEvidenceIntegrityMissingControlCount: productionEvidenceIntegrityAudit.summary?.missingControlCount || 0,
       productionApprovalReady: Boolean(launchApprovalWorkflow.readyForProduction),
       privatePilotAccepted: Boolean(privatePilotGoLiveReadiness.readyForPrivatePilotAcceptance),
+      proofIdCount: proofIds.length,
+      timelineLogIdCount: timelineLogIds.length,
+      eventIdCount: eventIds.length,
+      checksum,
+    },
+    checksum,
+  });
+}
+
+function buildProductionLaunchEvidenceDossier({
+  project = {},
+  managerReadyPackage = {},
+  now = nowIso(),
+} = {}) {
+  const projectId = project.id || managerReadyPackage.projectId || null;
+  const route = (suffix) => (projectId ? `/projects/${projectId}/${suffix}` : null);
+  const productionLaunchAudit = managerReadyPackage.productionLaunchAudit || {};
+  const productionLaunchGapRegister = managerReadyPackage.productionLaunchGapRegister || {};
+  const productionLaunchControlCenter = managerReadyPackage.productionLaunchControlCenter || {};
+  const productionEvidenceIntegrityAudit = managerReadyPackage.productionEvidenceIntegrityAudit || buildProductionEvidenceIntegrityAudit({
+    project,
+    managerReadyPackage,
+    now,
+  });
+  const productionOperationsControlReceiptWorkflow = managerReadyPackage.productionOperationsControlReceiptWorkflow || {};
+  const productionDeploymentControlReceiptWorkflow = managerReadyPackage.productionDeploymentControlReceiptWorkflow || {};
+  const productionSecurityControlReceiptWorkflow = managerReadyPackage.productionSecurityControlReceiptWorkflow || {};
+  const productionProviderControlReceiptWorkflow = managerReadyPackage.productionProviderControlReceiptWorkflow || {};
+  const privatePilotGoLiveReadiness = managerReadyPackage.privatePilotGoLiveReadiness || {};
+  const launchApprovalWorkflow = managerReadyPackage.launchApprovalWorkflow || {};
+  const deploymentPreflight = managerReadyPackage.deploymentPreflight || {};
+  const securityBoundary = managerReadyPackage.securityBoundary || {};
+  const providerReadiness = managerReadyPackage.providerReadiness || {};
+  const operationsReadiness = managerReadyPackage.operationsReadiness || {};
+  const persistenceAdapterDryRun = managerReadyPackage.persistenceAdapterDryRun || {};
+  const workerQueueAdapterDryRun = managerReadyPackage.workerQueueAdapterDryRun || {};
+  const workflowRow = ({
+    id,
+    label,
+    owner,
+    workflow = {},
+    route: apiPath,
+    domainRows = [],
+  }) => ({
+    id,
+    label,
+    owner,
+    apiPath,
+    schemaVersion: workflow.schemaVersion || null,
+    status: workflow.status || 'unknown',
+    readyForProduction: Boolean(workflow.readyForProduction || workflow.readyForProductionOperations || workflow.readyForProductionDeployment || workflow.readyForProductionSecurity || workflow.readyForProductionProvider),
+    receiptCount: workflow.summary?.receiptCount || workflow.rows?.length || 0,
+    requiredControlCount: workflow.summary?.requiredControlCount || workflow.requiredControlIds?.length || 0,
+    verifiedControlCount: workflow.summary?.verifiedControlCount || workflow.verifiedControlIds?.length || 0,
+    missingControlCount: workflow.summary?.missingControlCount || workflow.missingControlIds?.length || 0,
+    latestReceiptId: workflow.latestReceipt?.id || workflow.rows?.[0]?.id || null,
+    latestReceiptChecksum: workflow.latestReceipt?.checksum || workflow.rows?.[0]?.checksum || null,
+    proofIds: uniqueStrings([
+      workflow.checksum,
+      ...(workflow.proofIds || []),
+      ...(workflow.rows || []).flatMap((record) => [record.id, record.checksum, ...(record.proofIds || [])]),
+    ].filter(Boolean)).slice(0, 40),
+    timelineLogIds: uniqueStrings([
+      ...(workflow.timelineLogIds || []),
+      ...(workflow.rows || []).flatMap((record) => [record.timelineLogId, ...(record.timelineLogIds || [])]),
+    ].filter(Boolean)).slice(0, 40),
+    eventIds: uniqueStrings([
+      ...(workflow.eventIds || []),
+      ...(workflow.rows || []).flatMap((record) => [record.eventId, ...(record.eventIds || [])]),
+    ].filter(Boolean)).slice(0, 40),
+    domainRows,
+    checksum: workflow.checksum || readModelChecksum(workflow),
+  });
+  const controlDomainRows = [
+    workflowRow({
+      id: 'operations',
+      label: 'Production operations controls',
+      owner: 'operations-owner',
+      workflow: productionOperationsControlReceiptWorkflow,
+      route: route('production-operations-control-receipts'),
+    }),
+    workflowRow({
+      id: 'deployment',
+      label: 'Production deployment controls',
+      owner: 'runtime-platform',
+      workflow: productionDeploymentControlReceiptWorkflow,
+      route: route('production-deployment-control-receipts'),
+    }),
+    workflowRow({
+      id: 'security',
+      label: 'Production security controls',
+      owner: 'security-admin',
+      workflow: productionSecurityControlReceiptWorkflow,
+      route: route('production-security-control-receipts'),
+    }),
+    workflowRow({
+      id: 'provider',
+      label: 'Production provider controls',
+      owner: 'runtime-platform',
+      workflow: productionProviderControlReceiptWorkflow,
+      route: route('production-provider-control-receipts'),
+    }),
+  ];
+  const managedEvidenceRows = productionEvidenceIntegrityAudit.domainRows || [];
+  const controlRowsWithEvidence = controlDomainRows.map((row) => {
+    const evidenceRow = managedEvidenceRows.find((item) => item.domain === row.id) || null;
+    return {
+      ...row,
+      evidenceTierStatus: evidenceRow?.status || 'missing',
+      managedProductionControlCount: evidenceRow?.managedProductionCount || evidenceRow?.managedProductionControlCount || 0,
+      localRehearsalControlCount: evidenceRow?.localRehearsalCount || evidenceRow?.localRehearsalControlCount || 0,
+      externalUnattestedControlCount: evidenceRow?.externalUnattestedCount || evidenceRow?.externalUnattestedControlCount || 0,
+      missingEvidenceControlCount: evidenceRow?.missingCount || evidenceRow?.missingControlCount || row.missingControlCount || 0,
+    };
+  });
+  const manifestEntry = ({ id, label, model = {}, apiPath }) => ({
+    id,
+    label,
+    apiPath,
+    schemaVersion: model.schemaVersion || null,
+    status: model.status || model.productionDecision || 'unknown',
+    ready: Boolean(model.readyForProduction || model.readyForPrivatePilot || model.readyForPrivatePilotAcceptance || model.readyForManagedProductionEvidence),
+    checksum: model.checksum || readModelChecksum(model),
+    proofIds: uniqueStrings([
+      model.checksum,
+      ...(model.proofIds || []),
+    ].filter(Boolean)).slice(0, 20),
+  });
+  const manifest = [
+    manifestEntry({
+      id: 'production-launch-audit',
+      label: 'Production launch audit',
+      model: productionLaunchAudit,
+      apiPath: route('production-launch-audit'),
+    }),
+    manifestEntry({
+      id: 'production-launch-gap-register',
+      label: 'Production launch gap register',
+      model: productionLaunchGapRegister,
+      apiPath: route('production-launch-gap-register'),
+    }),
+    manifestEntry({
+      id: 'production-launch-control-center',
+      label: 'Production launch control center',
+      model: productionLaunchControlCenter,
+      apiPath: route('production-launch-control-center'),
+    }),
+    manifestEntry({
+      id: 'production-evidence-integrity-audit',
+      label: 'Production evidence integrity audit',
+      model: productionEvidenceIntegrityAudit,
+      apiPath: route('production-evidence-integrity-audit'),
+    }),
+    manifestEntry({
+      id: 'private-pilot-go-live-readiness',
+      label: 'Private-pilot go-live readiness',
+      model: privatePilotGoLiveReadiness,
+      apiPath: route('private-pilot-go-live-readiness'),
+    }),
+    manifestEntry({
+      id: 'deployment-preflight',
+      label: 'Deployment preflight',
+      model: deploymentPreflight,
+      apiPath: route('deployment-preflight'),
+    }),
+    manifestEntry({
+      id: 'security-boundary',
+      label: 'Security boundary',
+      model: securityBoundary,
+      apiPath: route('security-boundary'),
+    }),
+    manifestEntry({
+      id: 'provider-readiness',
+      label: 'Provider readiness',
+      model: providerReadiness,
+      apiPath: route('provider-readiness'),
+    }),
+    manifestEntry({
+      id: 'operations-readiness',
+      label: 'Operations readiness',
+      model: operationsReadiness,
+      apiPath: route('operations-readiness'),
+    }),
+  ];
+  const allOpenGapRows = productionLaunchGapRegister.gapRows || productionLaunchGapRegister.blockedRows || [];
+  const seenOpenGapRows = new Set();
+  const prioritizedOpenGapRows = [
+    ...allOpenGapRows.filter((row) => row.id === 'managed-production-evidence-integrity'),
+    ...allOpenGapRows,
+  ].filter((row) => {
+    const key = row.id || `${row.domain || 'gap'}:${row.label || row.title || ''}`;
+    if (seenOpenGapRows.has(key)) return false;
+    seenOpenGapRows.add(key);
+    return true;
+  }).slice(0, 24);
+  const openGapRows = prioritizedOpenGapRows.map((row) => ({
+    id: row.id,
+    label: row.label || row.title || row.id,
+    domain: row.domain || 'production-hardening',
+    owner: row.owner || row.ownerRole || 'manager',
+    severity: row.severity || 'blocker',
+    action: row.action || row.detail || 'Attach production evidence and rerun launch audit.',
+    apiPath: row.apiPath || row.route || null,
+    proofIds: uniqueStrings([row.id, row.checksum, ...(row.proofIds || [])].filter(Boolean)).slice(0, 12),
+  }));
+  const proofIds = uniqueStrings([
+    ...manifest.flatMap((row) => [row.checksum, ...(row.proofIds || [])]),
+    ...controlRowsWithEvidence.flatMap((row) => [row.checksum, ...(row.proofIds || [])]),
+    ...(productionEvidenceIntegrityAudit.proofIds || []),
+    ...(productionLaunchControlCenter.proofIds || []),
+    ...(productionLaunchGapRegister.proofIds || []),
+  ].filter(Boolean));
+  const timelineLogIds = uniqueStrings([
+    ...controlRowsWithEvidence.flatMap((row) => row.timelineLogIds || []),
+    ...(productionEvidenceIntegrityAudit.timelineLogIds || []),
+    ...(productionLaunchControlCenter.timelineLogIds || []),
+  ].filter(Boolean));
+  const eventIds = uniqueStrings([
+    ...controlRowsWithEvidence.flatMap((row) => row.eventIds || []),
+    ...(productionEvidenceIntegrityAudit.eventIds || []),
+    ...(productionLaunchControlCenter.eventIds || []),
+  ].filter(Boolean));
+  const readyDomainCount = controlRowsWithEvidence.filter((row) => row.readyForProduction).length;
+  const managedProductionDomainCount = controlRowsWithEvidence.filter((row) => row.missingEvidenceControlCount === 0 && row.localRehearsalControlCount === 0).length;
+  const readyForPrivatePilotDossier = Boolean(
+    productionLaunchAudit.readyForPrivatePilot
+    || privatePilotGoLiveReadiness.readyForPrivatePilotAcceptance
+    || privatePilotGoLiveReadiness.readyForPrivatePilotGoLive
+  );
+  const readyForProduction = Boolean(
+    productionLaunchControlCenter.readyForProduction
+    && productionEvidenceIntegrityAudit.readyForProduction
+    && controlRowsWithEvidence.every((row) => row.readyForProduction)
+  );
+  const checksum = persistenceChecksum({
+    schemaVersion: 'production-launch-evidence-dossier/v1',
+    projectId,
+    readyForPrivatePilotDossier,
+    readyForProduction,
+    controlRows: controlRowsWithEvidence.map((row) => [row.id, row.verifiedControlCount, row.missingControlCount, row.evidenceTierStatus]),
+    manifest: manifest.map((row) => [row.id, row.checksum]),
+    proofIds,
+  });
+  return redactSensitiveObject({
+    projectId,
+    generatedAt: now,
+    schemaVersion: 'production-launch-evidence-dossier/v1',
+    status: readyForProduction
+      ? 'production-evidence-dossier-ready'
+      : readyForPrivatePilotDossier
+        ? 'private-pilot-dossier-ready-production-evidence-needed'
+        : 'production-evidence-dossier-building',
+    readyForPrivatePilotDossier,
+    readyForProduction,
+    productionDecision: readyForProduction ? 'go' : 'no-go',
+    controlDomainRows: controlRowsWithEvidence,
+    manifest,
+    openGapRows,
+    evidenceTierSummary: {
+      status: productionEvidenceIntegrityAudit.status || 'unknown',
+      readyForManagedProductionEvidence: Boolean(productionEvidenceIntegrityAudit.readyForManagedProductionEvidence),
+      requiredControlCount: productionEvidenceIntegrityAudit.summary?.requiredControlCount || 0,
+      managedProductionControlCount: productionEvidenceIntegrityAudit.summary?.managedProductionControlCount || 0,
+      localRehearsalControlCount: productionEvidenceIntegrityAudit.summary?.localRehearsalControlCount || 0,
+      externalUnattestedControlCount: productionEvidenceIntegrityAudit.summary?.externalUnattestedControlCount || 0,
+      missingControlCount: productionEvidenceIntegrityAudit.summary?.missingControlCount || 0,
+    },
+    launchState: {
+      privatePilotAccepted: Boolean(privatePilotGoLiveReadiness.readyForPrivatePilotAcceptance),
+      privatePilotReady: Boolean(productionLaunchAudit.readyForPrivatePilot || privatePilotGoLiveReadiness.readyForPrivatePilotGoLive),
+      productionLaunchAuditDecision: productionLaunchAudit.productionDecision || 'no-go',
+      productionControlCenterDecision: productionLaunchControlCenter.productionDecision || 'no-go',
+      productionApprovalReady: Boolean(launchApprovalWorkflow.readyForProduction),
+    },
+    proofIds,
+    timelineLogIds,
+    eventIds,
+    backendRoutes: {
+      productionLaunchEvidenceDossier: route('production-launch-evidence-dossier'),
+      productionLaunchAudit: route('production-launch-audit'),
+      productionLaunchGapRegister: route('production-launch-gap-register'),
+      productionLaunchControlCenter: route('production-launch-control-center'),
+      productionEvidenceIntegrityAudit: route('production-evidence-integrity-audit'),
+      productionOperationsControlReceipts: route('production-operations-control-receipts'),
+      productionDeploymentControlReceipts: route('production-deployment-control-receipts'),
+      productionSecurityControlReceipts: route('production-security-control-receipts'),
+      productionProviderControlReceipts: route('production-provider-control-receipts'),
+      readinessProofMap: route('readiness-proof-map'),
+      managerFlowGraph: route('manager-flow-graph'),
+    },
+    summary: {
+      manifestEntryCount: manifest.length,
+      controlDomainCount: controlRowsWithEvidence.length,
+      readyDomainCount,
+      managedProductionDomainCount,
+      openGapCount: openGapRows.length,
+      proofIdCount: proofIds.length,
+      timelineLogIdCount: timelineLogIds.length,
+      eventIdCount: eventIds.length,
+      readyForPrivatePilotDossier,
+      readyForProduction,
+      checksum,
+    },
+    checksum,
+  });
+}
+
+function inferProductionEvidenceTier(control = {}, receipt = {}) {
+  if (!control?.verified) return 'missing';
+  const explicitEnvironment = String(
+    control.evidenceEnvironment
+    || control.environment
+    || receipt.evidenceEnvironment
+    || receipt.environment
+    || '',
+  ).trim().toLowerCase().replace(/_/g, '-');
+  if (['managed-production', 'production-managed', 'public-production'].includes(explicitEnvironment)) {
+    return 'managed-production';
+  }
+  const route = String(control.evidenceRoute || '').toLowerCase();
+  const detail = `${control.detail || ''} ${receipt.reason || ''} ${receipt.source || ''}`.toLowerCase();
+  const localHints = ['localhost', '127.0.0.1', '.test', 'example.', '/projects/', 'local', 'shadow', 'dry-run', 'rehearsal', 'validation', 'fixture', 'deterministic'];
+  if (!route || localHints.some((hint) => route.includes(hint) || detail.includes(hint))) {
+    return 'local-rehearsal';
+  }
+  if (route.startsWith('https://')) return 'external-unattested';
+  return 'local-rehearsal';
+}
+
+function buildProductionEvidenceIntegrityAudit({
+  project = {},
+  managerReadyPackage = {},
+  now = nowIso(),
+} = {}) {
+  const projectId = project.id || managerReadyPackage.projectId || null;
+  const route = (suffix) => (projectId ? `/projects/${projectId}/${suffix}` : null);
+  const groups = [
+    {
+      domain: 'operations',
+      owner: 'operations-owner',
+      apiPath: route('production-operations-control-receipts'),
+      workflow: managerReadyPackage.productionOperationsControlReceiptWorkflow || {},
+      records: project.productionOperationsControlReceipts || [],
+      requiredControlIds: PRODUCTION_OPERATIONS_CONTROL_IDS,
+    },
+    {
+      domain: 'deployment',
+      owner: 'runtime-platform',
+      apiPath: route('production-deployment-control-receipts'),
+      workflow: managerReadyPackage.productionDeploymentControlReceiptWorkflow || {},
+      records: project.productionDeploymentControlReceipts || [],
+      requiredControlIds: PRODUCTION_DEPLOYMENT_CONTROL_IDS,
+    },
+    {
+      domain: 'security',
+      owner: 'security-admin',
+      apiPath: route('production-security-control-receipts'),
+      workflow: managerReadyPackage.productionSecurityControlReceiptWorkflow || {},
+      records: project.productionSecurityControlReceipts || [],
+      requiredControlIds: PRODUCTION_SECURITY_CONTROL_IDS,
+    },
+    {
+      domain: 'provider',
+      owner: 'runtime-platform',
+      apiPath: route('production-provider-control-receipts'),
+      workflow: managerReadyPackage.productionProviderControlReceiptWorkflow || {},
+      records: project.productionProviderControlReceipts || [],
+      requiredControlIds: PRODUCTION_PROVIDER_CONTROL_IDS,
+    },
+  ];
+  const rows = groups.flatMap((group) => {
+    const latestReceiptByControl = new Map();
+    group.records
+      .slice()
+      .sort((a, b) => (Date.parse(b.createdAt) || 0) - (Date.parse(a.createdAt) || 0))
+      .forEach((receipt) => {
+        (receipt.controls || []).forEach((control) => {
+          const controlId = control.controlId || control.id;
+          if (!group.requiredControlIds.includes(controlId) || latestReceiptByControl.has(controlId)) return;
+          latestReceiptByControl.set(controlId, { receipt, control });
+        });
+      });
+    return group.requiredControlIds.map((controlId) => {
+      const latest = latestReceiptByControl.get(controlId) || {};
+      const receipt = latest.receipt || {};
+      const control = latest.control || {};
+      const evidenceTier = inferProductionEvidenceTier(control, receipt);
+      const managedProductionReady = evidenceTier === 'managed-production';
+      const verified = Boolean(control.verified);
+      return {
+        id: `${group.domain}:${controlId}`,
+        domain: group.domain,
+        owner: control.ownerRole || receipt.actorRole || group.owner,
+        controlId,
+        label: control.label || controlId,
+        status: managedProductionReady ? 'managed-production-ready' : verified ? evidenceTier : 'missing',
+        verified,
+        managedProductionReady,
+        evidenceTier,
+        receiptId: receipt.id || null,
+        receiptChecksum: receipt.checksum || null,
+        receiptCreatedAt: receipt.createdAt || null,
+        evidenceId: control.evidenceId || null,
+        evidenceRoute: control.evidenceRoute || null,
+        evidenceChecksum: control.evidenceChecksum || null,
+        evidenceEnvironment: control.evidenceEnvironment || receipt.evidenceEnvironment || null,
+        apiPath: group.apiPath,
+        detail: managedProductionReady
+          ? 'Control has explicit managed-production evidence.'
+          : verified
+            ? 'Control is locally receipted, but managed-production evidence is not explicit yet.'
+            : 'Control has no verified receipt evidence.',
+      };
+    });
+  });
+  const proofIds = uniqueStrings(rows.flatMap((row) => [
+    row.receiptId,
+    row.receiptChecksum,
+    row.evidenceId,
+    row.evidenceChecksum,
+  ]).filter(Boolean));
+  const timelineLogIds = uniqueStrings(groups.flatMap((group) => (
+    group.records.flatMap((record) => [
+      record.timelineLogId,
+      ...(record.timelineLogIds || []),
+    ])
+  )).filter(Boolean));
+  const eventIds = uniqueStrings(groups.flatMap((group) => (
+    group.records.flatMap((record) => [
+      record.eventId,
+      ...(record.eventIds || []),
+    ])
+  )).filter(Boolean));
+  const domainRows = groups.map((group) => {
+    const domainRowsForGroup = rows.filter((row) => row.domain === group.domain);
+    const verifiedControlCount = domainRowsForGroup.filter((row) => row.verified).length;
+    const managedProductionControlCount = domainRowsForGroup.filter((row) => row.managedProductionReady).length;
+    return {
+      domain: group.domain,
+      owner: group.owner,
+      apiPath: group.apiPath,
+      requiredControlCount: group.requiredControlIds.length,
+      verifiedControlCount,
+      managedProductionControlCount,
+      localRehearsalControlCount: domainRowsForGroup.filter((row) => row.evidenceTier === 'local-rehearsal').length,
+      externalUnattestedControlCount: domainRowsForGroup.filter((row) => row.evidenceTier === 'external-unattested').length,
+      missingControlCount: domainRowsForGroup.filter((row) => !row.verified).length,
+      readyForManagedProductionEvidence: managedProductionControlCount === group.requiredControlIds.length,
+      workflowChecksum: group.workflow.checksum || null,
+    };
+  });
+  const requiredControlCount = rows.length;
+  const verifiedControlCount = rows.filter((row) => row.verified).length;
+  const managedProductionControlCount = rows.filter((row) => row.managedProductionReady).length;
+  const localRehearsalControlCount = rows.filter((row) => row.evidenceTier === 'local-rehearsal').length;
+  const externalUnattestedControlCount = rows.filter((row) => row.evidenceTier === 'external-unattested').length;
+  const missingControlCount = rows.filter((row) => !row.verified).length;
+  const readyForManagedProductionEvidence = requiredControlCount > 0
+    && managedProductionControlCount === requiredControlCount
+    && missingControlCount === 0;
+  const checksum = persistenceChecksum({
+    schemaVersion: 'production-evidence-integrity-audit/v1',
+    projectId,
+    rows: rows.map((row) => [row.id, row.status, row.receiptChecksum, row.evidenceChecksum, row.evidenceEnvironment || null]),
+    readyForManagedProductionEvidence,
+  });
+  return redactSensitiveObject({
+    projectId,
+    generatedAt: now,
+    schemaVersion: 'production-evidence-integrity-audit/v1',
+    status: readyForManagedProductionEvidence
+      ? 'managed-production-evidence-ready'
+      : verifiedControlCount > 0
+        ? 'managed-production-evidence-needed'
+        : 'production-control-receipts-needed',
+    readyForPrivatePilotEvidence: verifiedControlCount > 0,
+    readyForManagedProductionEvidence,
+    readyForProduction: readyForManagedProductionEvidence,
+    rows,
+    domainRows,
+    proofIds,
+    timelineLogIds,
+    eventIds,
+    backendRoutes: {
+      productionEvidenceIntegrityAudit: route('production-evidence-integrity-audit'),
+      productionOperationsControlReceipts: route('production-operations-control-receipts'),
+      productionDeploymentControlReceipts: route('production-deployment-control-receipts'),
+      productionSecurityControlReceipts: route('production-security-control-receipts'),
+      productionProviderControlReceipts: route('production-provider-control-receipts'),
+      productionLaunchControlCenter: route('production-launch-control-center'),
+    },
+    summary: {
+      domainCount: domainRows.length,
+      requiredControlCount,
+      verifiedControlCount,
+      managedProductionControlCount,
+      localRehearsalControlCount,
+      externalUnattestedControlCount,
+      missingControlCount,
       proofIdCount: proofIds.length,
       timelineLogIdCount: timelineLogIds.length,
       eventIdCount: eventIds.length,
@@ -21970,6 +23123,14 @@ function buildSecurityBoundarySnapshot({
       sensitivity: 'project-proof-surface',
     }),
     securityRoutePolicy({
+      routeKey: 'brainstorm-layer',
+      pathTemplate: '/projects/:projectId/brainstorm-layer',
+      capability: 'read brainstorm alternatives and synthesis layer',
+      sensitivity: 'brainstorm-artifacts-and-product-team-synthesis',
+      currentControl: 'read-only Manager route returns redacted brainstorm-board submissions, alternatives, linked evidence, downstream artifacts, proof ids, timeline ids, event ids, and checksum',
+      productionControl: 'requires authenticated project membership, role-based access enforcement, audit-stream receipts, retention policy, and customer export controls before production use',
+    }),
+    securityRoutePolicy({
       routeKey: 'project-evidence-archive',
       pathTemplate: '/projects/:projectId/project-evidence-archive',
       capability: 'export manager-verifiable project evidence archive',
@@ -22048,6 +23209,24 @@ function buildSecurityBoundarySnapshot({
       sensitivity: 'production-launch-control-and-approval-metadata',
       currentControl: 'aggregates the production launch gap register, production operations receipts, launch approvals, deployment preflight, provider readiness, security boundary, custody, quality, and launch audit into a Manager-readable public-production control view',
       productionControl: 'must remain a read-only no-go control surface until managed identity, KMS, database, queue, provider rollout, centralized audit, observability, incident, restore, and production approval evidence are all closed',
+    }),
+    securityRoutePolicy({
+      routeKey: 'production-launch-evidence-dossier',
+      pathTemplate: '/projects/:projectId/production-launch-evidence-dossier',
+      methods: ['GET'],
+      capability: 'read production launch evidence dossier, manifest, receipt summaries, gaps, and proof chain',
+      sensitivity: 'production-launch-evidence-dossier',
+      currentControl: 'packages launch audit, gap register, control center, production evidence integrity, private-pilot go-live proof, operations/deployment/security/provider receipt summaries, proof ids, routes, and checksums without exposing raw secrets',
+      productionControl: 'requires authenticated release authority, immutable managed evidence storage, signed export controls, centralized audit retention, and customer-specific data residency before public-production or external handoff use',
+    }),
+    securityRoutePolicy({
+      routeKey: 'production-evidence-integrity-audit',
+      pathTemplate: '/projects/:projectId/production-evidence-integrity-audit',
+      methods: ['GET'],
+      capability: 'read managed-production evidence integrity audit for production control receipts',
+      sensitivity: 'production-control-receipt-evidence-integrity',
+      currentControl: 'classifies operations, deployment, security, and provider control receipt evidence as missing, local rehearsal, external unattested, or explicit managed-production proof',
+      productionControl: 'must remain blocked until every production control receipt points at explicit managed-production evidence rather than local rehearsal or unattested external placeholders',
     }),
     securityRoutePolicy({
       routeKey: 'production-operations-readiness',
@@ -24346,6 +25525,7 @@ function normalizeProductionProviderControlRows(input = {}) {
       evidenceRoute: input.evidenceRoute || input.route,
       evidenceId: input.evidenceId || input.receiptId,
       evidenceChecksum: input.evidenceChecksum || input.checksum,
+      evidenceEnvironment: input.evidenceEnvironment || input.environment,
       completedAt: input.completedAt,
       ownerRole: input.ownerRole || input.actorRole,
       detail: input.detail || input.reason,
@@ -24359,6 +25539,7 @@ function normalizeProductionProviderControlRows(input = {}) {
       const evidenceChecksum = row.evidenceChecksum || row.checksum || row.receiptChecksum || null;
       const evidenceId = row.evidenceId || row.receiptId || row.id || null;
       const evidenceRoute = row.evidenceRoute || row.route || row.url || null;
+      const evidenceEnvironment = row.evidenceEnvironment || row.environment || null;
       const verified = approvedStatuses.has(status) && Boolean(evidenceChecksum || evidenceId || evidenceRoute || row.completedAt);
       return {
         controlId,
@@ -24368,6 +25549,7 @@ function normalizeProductionProviderControlRows(input = {}) {
         evidenceId: evidenceId ? String(evidenceId) : null,
         evidenceRoute: evidenceRoute ? redactUrl(evidenceRoute) : null,
         evidenceChecksum: evidenceChecksum ? String(evidenceChecksum) : null,
+        evidenceEnvironment: evidenceEnvironment ? String(evidenceEnvironment).trim().toLowerCase().replace(/_/g, '-') : null,
         completedAt: row.completedAt || null,
         ownerRole: row.ownerRole || row.actorRole || 'runtime-platform',
         detail: redactSensitiveText(row.detail || row.reason || row.summary || ''),
@@ -24405,7 +25587,7 @@ function buildProductionProviderControlReceipt({
     projectId,
     schemaVersion: 'production-provider-control-receipt/v1',
     actorRole,
-    controls: controls.map((control) => [control.controlId, control.status, control.evidenceChecksum || control.evidenceId]),
+    controls: controls.map((control) => [control.controlId, control.status, control.evidenceChecksum || control.evidenceId, control.evidenceEnvironment || null]),
     readyForPrivatePilotProvider,
     readyForProductionProviderControls,
     providerReadinessChecksum: providerReadiness.checksum || readModelChecksum(providerReadiness),
@@ -25526,6 +26708,89 @@ function buildManagerFlowGraphSnapshot({ project = {}, messages = [] } = {}) {
       importance: submission.artifactType === 'final-deliverable' ? 'critical' : 'major',
     });
   });
+
+  {
+    const brainstormSubmissions = (project.agentSubmissions || []).filter((submission) => submission.artifactType === 'brainstorm-board');
+    if (brainstormSubmissions.length) {
+      const alternativeCount = brainstormSubmissions.reduce((sum, submission) => (
+        sum + extractBrainstormAlternatives(`${submission.body || ''}\n${submission.summary || ''}`).length
+      ), 0);
+      const downstreamSubmissions = (project.agentSubmissions || []).filter((submission) => [
+        'product-brief',
+        'decision-proposal',
+        'risk-review',
+        'implementation-plan',
+        'final-deliverable',
+      ].includes(submission.artifactType));
+      addNode({
+        id: 'brainstorm-layer',
+        category: 'coordination',
+        subtype: 'brainstorm-layer',
+        title: 'Brainstorm Layer',
+        time: brainstormSubmissions[0]?.createdAt || brainstormSubmissions[0]?.updatedAt || null,
+        summary: `${brainstormSubmissions.length} brainstorm board(s), ${alternativeCount} visible alternative(s), ${downstreamSubmissions.length} downstream artifact(s).`,
+        status: alternativeCount >= 2 ? 'confirmed' : 'published',
+        importance: 'major',
+        source: 'brainstormLayer',
+        proofIds: uniqueStrings(brainstormSubmissions.map((submission) => submission.messageId).filter(Boolean)),
+        timelineLogIds: uniqueStrings(brainstormSubmissions.map((submission) => submission.timelineLogId).filter(Boolean)),
+        eventIds: uniqueStrings(brainstormSubmissions.map((submission) => submission.eventId).filter(Boolean)),
+        affectedAgentIds: uniqueStrings(brainstormSubmissions.map((submission) => submission.agentId).filter(Boolean)),
+        affectedTaskIds: uniqueStrings(brainstormSubmissions.map((submission) => submission.taskId).filter(Boolean)),
+        participantIds: uniqueStrings(brainstormSubmissions.map((submission) => submission.agentId).filter(Boolean)),
+        relationshipRoles: Object.fromEntries(uniqueStrings(brainstormSubmissions.map((submission) => submission.agentId).filter(Boolean)).map((agentId) => [agentId, 'brainstorm-contributor'])),
+        submissionIntent: 'Summarize brainstorm alternatives as a manager-visible product-team coordination layer.',
+        attachmentType: 'brainstorm-layer',
+        attachmentTitle: 'Brainstorm alternatives and synthesis layer',
+        attachmentSummary: 'Aggregates brainstorm-board submissions with proof links into a reusable product-team brainstorm layer.',
+        attachments: brainstormSubmissions.map((submission) => ({
+          id: submission.artifactId || submission.id,
+          type: submission.artifactType || 'brainstorm-board',
+          title: submission.title || 'Brainstorm board',
+          summary: submission.summary || '',
+          source: 'agentSubmissions',
+          route: projectId ? `/projects/${projectId}/submissions/${encodeURIComponent(submission.id)}` : null,
+          proofIds: [submission.messageId].filter(Boolean),
+          timelineLogIds: [submission.timelineLogId].filter(Boolean),
+          eventIds: [submission.eventId].filter(Boolean),
+          taskId: submission.taskId || null,
+          alternativeCount: extractBrainstormAlternatives(`${submission.body || ''}\n${submission.summary || ''}`).length,
+        })),
+        relatedNodeIds: brainstormSubmissions.map((submission) => `agent-submission-${submission.id}`).filter((nodeId) => nodesById.has(nodeId)),
+        route: projectId ? `/projects/${projectId}/brainstorm-layer` : null,
+      });
+      brainstormSubmissions.forEach((submission) => {
+        const submissionNodeId = `agent-submission-${submission.id}`;
+        if (!nodesById.has(submissionNodeId)) return;
+        addEdge({
+          type: 'synthesis',
+          fromNodeId: submissionNodeId,
+          toNodeId: 'brainstorm-layer',
+          label: 'Contributes alternatives',
+          source: 'brainstormLayer',
+          proofIds: [submission.messageId].filter(Boolean),
+          timelineLogIds: [submission.timelineLogId].filter(Boolean),
+          eventIds: [submission.eventId].filter(Boolean),
+          importance: 'major',
+        });
+      });
+      downstreamSubmissions.forEach((submission) => {
+        const downstreamNodeId = `agent-submission-${submission.id}`;
+        if (!nodesById.has(downstreamNodeId)) return;
+        addEdge({
+          type: 'synthesis',
+          fromNodeId: 'brainstorm-layer',
+          toNodeId: downstreamNodeId,
+          label: 'Feeds downstream artifact',
+          source: 'brainstormLayer',
+          proofIds: [submission.messageId].filter(Boolean),
+          timelineLogIds: [submission.timelineLogId].filter(Boolean),
+          eventIds: [submission.eventId].filter(Boolean),
+          importance: submission.artifactType === 'final-deliverable' ? 'critical' : 'major',
+        });
+      });
+    }
+  }
 
   (project.evidenceSearches || []).forEach((record) => {
     const nodeId = `evidence-search-${record.id}`;
@@ -27289,7 +28554,9 @@ function buildManagerFlowGraphSnapshot({ project = {}, messages = [] } = {}) {
     const latestAcceptanceReport = (project.privatePilotAcceptanceReports || [])[0] || null;
     const latestProductionOpsControlReceipt = (project.productionOperationsControlReceipts || [])[0] || null;
     const latestProductionDeploymentControlReceipt = (project.productionDeploymentControlReceipts || [])[0] || null;
+    const latestProductionSecurityControlReceipt = (project.productionSecurityControlReceipts || [])[0] || null;
     const latestProductionProviderControlReceipt = (project.productionProviderControlReceipts || [])[0] || null;
+    const productionEvidenceIntegrityAudit = buildProductionEvidenceIntegrityAudit({ project });
     const goLiveProofIds = uniqueStrings([
       latestCandidate?.id,
       latestCandidate?.checksum,
@@ -27309,6 +28576,9 @@ function buildManagerFlowGraphSnapshot({ project = {}, messages = [] } = {}) {
       latestProductionDeploymentControlReceipt?.id,
       latestProductionDeploymentControlReceipt?.checksum,
       ...(latestProductionDeploymentControlReceipt?.proofIds || []),
+      latestProductionSecurityControlReceipt?.id,
+      latestProductionSecurityControlReceipt?.checksum,
+      ...(latestProductionSecurityControlReceipt?.proofIds || []),
       latestProductionProviderControlReceipt?.id,
       latestProductionProviderControlReceipt?.checksum,
       ...(latestProductionProviderControlReceipt?.proofIds || []),
@@ -27326,6 +28596,8 @@ function buildManagerFlowGraphSnapshot({ project = {}, messages = [] } = {}) {
       ...(latestProductionOpsControlReceipt?.timelineLogIds || []),
       latestProductionDeploymentControlReceipt?.timelineLogId,
       ...(latestProductionDeploymentControlReceipt?.timelineLogIds || []),
+      latestProductionSecurityControlReceipt?.timelineLogId,
+      ...(latestProductionSecurityControlReceipt?.timelineLogIds || []),
       latestProductionProviderControlReceipt?.timelineLogId,
       ...(latestProductionProviderControlReceipt?.timelineLogIds || []),
     ].filter(Boolean));
@@ -27342,6 +28614,8 @@ function buildManagerFlowGraphSnapshot({ project = {}, messages = [] } = {}) {
       ...(latestProductionOpsControlReceipt?.eventIds || []),
       latestProductionDeploymentControlReceipt?.eventId,
       ...(latestProductionDeploymentControlReceipt?.eventIds || []),
+      latestProductionSecurityControlReceipt?.eventId,
+      ...(latestProductionSecurityControlReceipt?.eventIds || []),
       latestProductionProviderControlReceipt?.eventId,
       ...(latestProductionProviderControlReceipt?.eventIds || []),
     ].filter(Boolean));
@@ -27396,6 +28670,7 @@ function buildManagerFlowGraphSnapshot({ project = {}, messages = [] } = {}) {
       latestAcceptanceReport ? `private-pilot-acceptance-report-${latestAcceptanceReport.id}` : null,
       latestProductionOpsControlReceipt ? `production-operations-control-receipt-${latestProductionOpsControlReceipt.id}` : null,
       latestProductionDeploymentControlReceipt ? `production-deployment-control-receipt-${latestProductionDeploymentControlReceipt.id}` : null,
+      latestProductionSecurityControlReceipt ? `production-security-control-receipt-${latestProductionSecurityControlReceipt.id}` : null,
       latestProductionProviderControlReceipt ? `production-provider-control-receipt-${latestProductionProviderControlReceipt.id}` : null,
     ].filter(Boolean).forEach((fromNodeId) => {
       addEdge({
@@ -27495,6 +28770,137 @@ function buildManagerFlowGraphSnapshot({ project = {}, messages = [] } = {}) {
         proofIds: goLiveProofIds,
         timelineLogIds: goLiveLogIds,
         eventIds: goLiveEventIds,
+        importance: 'critical',
+      });
+    });
+    addNode({
+      id: 'production-evidence-integrity-audit',
+      category: 'decision',
+      subtype: 'production-evidence-integrity-audit',
+      title: 'Production evidence integrity audit',
+      summary: productionEvidenceIntegrityAudit.readyForManagedProductionEvidence
+        ? 'Every required production control has explicit managed-production evidence; the broader launch control center still owns final go/no-go.'
+        : 'Production control receipts are not yet explicit managed-production evidence, so public-production evidence remains blocked.',
+      status: productionEvidenceIntegrityAudit.readyForManagedProductionEvidence ? 'confirmed' : 'blocked',
+      importance: 'critical',
+      source: 'productionEvidenceIntegrityAudit',
+      eventIds: productionEvidenceIntegrityAudit.eventIds || [],
+      timelineLogIds: productionEvidenceIntegrityAudit.timelineLogIds || [],
+      proofIds: productionEvidenceIntegrityAudit.proofIds || [],
+      participantIds: uniqueStrings((project.team || []).map((agent) => agent.id)),
+      submissionIntent: 'Inspect whether production operations, deployment, security, and provider receipts are local rehearsal proof or explicit managed-production evidence.',
+      attachmentType: 'production-evidence-integrity-audit',
+      attachmentTitle: 'Production evidence integrity audit',
+      route: `/projects/${projectId}/production-evidence-integrity-audit`,
+      attachments: [
+        {
+          id: 'production-evidence-integrity-audit_rows',
+          type: 'production-evidence-integrity-audit',
+          title: 'Production receipt evidence tiers',
+          summary: `${productionEvidenceIntegrityAudit.summary?.managedProductionControlCount || 0}/${productionEvidenceIntegrityAudit.summary?.requiredControlCount || 0} managed-production controls; ${productionEvidenceIntegrityAudit.summary?.localRehearsalControlCount || 0} local rehearsal controls; ${productionEvidenceIntegrityAudit.summary?.missingControlCount || 0} missing controls.`,
+          proofIds: productionEvidenceIntegrityAudit.proofIds || [],
+          eventIds: productionEvidenceIntegrityAudit.eventIds || [],
+          timelineLogIds: productionEvidenceIntegrityAudit.timelineLogIds || [],
+        },
+      ],
+    });
+    [
+      latestProductionOpsControlReceipt ? `production-operations-control-receipt-${latestProductionOpsControlReceipt.id}` : null,
+      latestProductionDeploymentControlReceipt ? `production-deployment-control-receipt-${latestProductionDeploymentControlReceipt.id}` : null,
+      latestProductionSecurityControlReceipt ? `production-security-control-receipt-${latestProductionSecurityControlReceipt.id}` : null,
+      latestProductionProviderControlReceipt ? `production-provider-control-receipt-${latestProductionProviderControlReceipt.id}` : null,
+    ].filter(Boolean).forEach((fromNodeId) => {
+      addEdge({
+        type: 'decision',
+        fromNodeId,
+        toNodeId: 'production-evidence-integrity-audit',
+        label: 'Production evidence integrity',
+        source: 'productionEvidenceIntegrityAudit',
+        proofIds: productionEvidenceIntegrityAudit.proofIds || [],
+        timelineLogIds: productionEvidenceIntegrityAudit.timelineLogIds || [],
+        eventIds: productionEvidenceIntegrityAudit.eventIds || [],
+        importance: 'critical',
+      });
+    });
+    addEdge({
+      type: 'decision',
+      fromNodeId: 'production-evidence-integrity-audit',
+      toNodeId: 'production-launch-control-center',
+      label: 'Production evidence guardrail',
+      source: 'productionEvidenceIntegrityAudit',
+      proofIds: productionEvidenceIntegrityAudit.proofIds || [],
+      timelineLogIds: productionEvidenceIntegrityAudit.timelineLogIds || [],
+      eventIds: productionEvidenceIntegrityAudit.eventIds || [],
+      importance: 'critical',
+    });
+    addNode({
+      id: 'production-launch-evidence-dossier',
+      category: 'decision',
+      subtype: 'production-launch-evidence-dossier',
+      title: 'Production launch evidence dossier',
+      summary: acceptanceReady
+        ? 'Private-pilot evidence is accepted locally; this dossier packages production launch audit, control receipts, evidence integrity, gap register, and control-center proof for managed-production review.'
+        : 'The production launch evidence dossier is building while private-pilot acceptance and managed-production control evidence are still closing.',
+      status: productionEvidenceIntegrityAudit.readyForManagedProductionEvidence && acceptanceReady ? 'confirmed' : 'blocked',
+      importance: 'critical',
+      source: 'productionLaunchEvidenceDossier',
+      eventIds: uniqueStrings([
+        ...goLiveEventIds,
+        ...(productionEvidenceIntegrityAudit.eventIds || []),
+      ]),
+      timelineLogIds: uniqueStrings([
+        ...goLiveLogIds,
+        ...(productionEvidenceIntegrityAudit.timelineLogIds || []),
+      ]),
+      proofIds: uniqueStrings([
+        ...goLiveProofIds,
+        ...(productionEvidenceIntegrityAudit.proofIds || []),
+      ]),
+      participantIds: uniqueStrings((project.team || []).map((agent) => agent.id)),
+      submissionIntent: 'Review the production launch evidence dossier before approving any public-production launch decision.',
+      attachmentType: 'production-launch-evidence-dossier',
+      attachmentTitle: 'Production launch evidence dossier',
+      route: `/projects/${projectId}/production-launch-evidence-dossier`,
+      attachments: [
+        {
+          id: 'production-launch-evidence-dossier_manifest',
+          type: 'production-launch-evidence-dossier',
+          title: 'Launch evidence manifest',
+          summary: 'Packages launch audit, gap register, control center, evidence integrity audit, private-pilot go-live readiness, deployment preflight, security boundary, provider readiness, and operations readiness.',
+          proofIds: uniqueStrings([
+            ...goLiveProofIds,
+            ...(productionEvidenceIntegrityAudit.proofIds || []),
+          ]),
+          eventIds: uniqueStrings([
+            ...goLiveEventIds,
+            ...(productionEvidenceIntegrityAudit.eventIds || []),
+          ]),
+          timelineLogIds: uniqueStrings([
+            ...goLiveLogIds,
+            ...(productionEvidenceIntegrityAudit.timelineLogIds || []),
+          ]),
+        },
+      ],
+    });
+    ['production-launch-control-center', 'production-evidence-integrity-audit', 'production-launch-gap-register'].forEach((fromNodeId) => {
+      addEdge({
+        type: 'decision',
+        fromNodeId,
+        toNodeId: 'production-launch-evidence-dossier',
+        label: 'Production launch evidence dossier',
+        source: 'productionLaunchEvidenceDossier',
+        proofIds: uniqueStrings([
+          ...goLiveProofIds,
+          ...(productionEvidenceIntegrityAudit.proofIds || []),
+        ]),
+        timelineLogIds: uniqueStrings([
+          ...goLiveLogIds,
+          ...(productionEvidenceIntegrityAudit.timelineLogIds || []),
+        ]),
+        eventIds: uniqueStrings([
+          ...goLiveEventIds,
+          ...(productionEvidenceIntegrityAudit.eventIds || []),
+        ]),
         importance: 'critical',
       });
     });
@@ -28732,6 +30138,11 @@ export function createAgentProjectService({
       const managerDashboard = this.getManagerDashboard(projectId, { language });
       const managerFlowGraph = this.getManagerFlowGraph(projectId, { language });
       const mvpReadiness = buildMvpReadiness({ managerDashboard, managerFlowGraph });
+      const brainstormLayer = buildBrainstormLayer({
+        project: store.getProject(projectId),
+        managerDashboard,
+        managerFlowGraph,
+      });
       const securityBoundary = buildSecurityBoundarySnapshot({
         project: store.getProject(projectId),
         messages: store.getMessages(projectId),
@@ -28885,7 +30296,7 @@ export function createAgentProjectService({
       const launchApprovalWorkflow = buildLaunchApprovalWorkflowSnapshot({
         project: store.getProject(projectId),
       });
-      const productionLaunchAudit = buildProductionLaunchAuditSnapshot({
+      let productionLaunchAudit = buildProductionLaunchAuditSnapshot({
         project: store.getProject(projectId),
         managerDashboard,
         mvpReadiness,
@@ -28907,6 +30318,7 @@ export function createAgentProjectService({
         managerDashboard,
         managerFlowGraph,
         mvpReadiness,
+        brainstormLayer,
         pilotLaunchReadiness,
         deploymentPreflight,
         productionLaunchAudit,
@@ -28940,6 +30352,7 @@ export function createAgentProjectService({
         managerDashboard,
         managerFlowGraph,
         mvpReadiness,
+        brainstormLayer,
         pilotLaunchReadiness,
         deploymentPreflight,
         adapterGatewayPreflight,
@@ -28953,6 +30366,7 @@ export function createAgentProjectService({
         providerControlledRun,
         providerEvalRunWorkflow,
         productionProviderControlReceiptWorkflow,
+        brainstormLayer,
         artifactQualityAudit,
         submissionReviewWorkflow,
         evidenceQualityAudit,
@@ -29025,30 +30439,57 @@ export function createAgentProjectService({
           summary: null,
         },
       });
-      const productionLaunchGapRegister = buildProductionLaunchGapRegister({
+      const productionEvidenceIntegrityAudit = buildProductionEvidenceIntegrityAudit({
         project: store.getProject(projectId),
         managerReadyPackage: {
-          ...productionOperationsReadinessContext,
-          productionOperationsReadiness,
           productionOperationsControlReceiptWorkflow,
+          productionDeploymentControlReceiptWorkflow,
           productionSecurityControlReceiptWorkflow,
           productionProviderControlReceiptWorkflow,
-          privatePilotGoLiveReadiness,
           summary: null,
         },
+      });
+      productionLaunchAudit = buildProductionLaunchAuditSnapshot({
+        project: store.getProject(projectId),
+        managerDashboard,
+        mvpReadiness,
+        pilotLaunchReadiness,
+        deploymentPreflight,
+        productionDeploymentControlReceiptWorkflow,
+        productionOperationsControlReceiptWorkflow,
+        productionSecurityControlReceiptWorkflow,
+        productionProviderControlReceiptWorkflow,
+        productionEvidenceIntegrityAudit,
+        launchApprovalWorkflow,
+        securityBoundary,
+        providerReadiness,
+        artifactQualityAudit,
+        evidenceCustodyReadiness,
+        evidenceQualityAudit,
+        evidenceSourceReviewWorkflow,
+        operationsReadiness,
+      });
+      const productionReleaseGovernanceContext = {
+        ...productionOperationsReadinessContext,
+        productionLaunchAudit,
+        productionOperationsReadiness,
+        productionDeploymentControlReceiptWorkflow,
+        productionOperationsControlReceiptWorkflow,
+        productionSecurityControlReceiptWorkflow,
+        productionProviderControlReceiptWorkflow,
+        productionEvidenceIntegrityAudit,
+        privatePilotGoLiveReadiness,
+        summary: null,
+      };
+      const productionLaunchGapRegister = buildProductionLaunchGapRegister({
+        project: store.getProject(projectId),
+        managerReadyPackage: productionReleaseGovernanceContext,
       });
       const productionLaunchControlCenter = buildProductionLaunchControlCenter({
         project: store.getProject(projectId),
         managerReadyPackage: {
-          ...productionOperationsReadinessContext,
-          productionLaunchAudit,
-          privatePilotGoLiveReadiness,
+          ...productionReleaseGovernanceContext,
           productionLaunchGapRegister,
-          productionOperationsReadiness,
-          productionDeploymentControlReceiptWorkflow,
-          productionOperationsControlReceiptWorkflow,
-          productionSecurityControlReceiptWorkflow,
-          productionProviderControlReceiptWorkflow,
           deploymentPreflight,
           providerReadiness,
           securityBoundary,
@@ -29056,6 +30497,22 @@ export function createAgentProjectService({
           artifactQualityAudit,
           launchApprovalWorkflow,
           readinessProofMap: managerDashboard.readinessProofMap,
+          summary: null,
+        },
+      });
+      const productionLaunchEvidenceDossier = buildProductionLaunchEvidenceDossier({
+        project: store.getProject(projectId),
+        managerReadyPackage: {
+          ...productionReleaseGovernanceContext,
+          productionLaunchGapRegister,
+          productionLaunchControlCenter,
+          deploymentPreflight,
+          providerReadiness,
+          securityBoundary,
+          operationsReadiness,
+          persistenceAdapterDryRun,
+          workerQueueAdapterDryRun,
+          launchApprovalWorkflow,
           summary: null,
         },
       });
@@ -29071,6 +30528,7 @@ export function createAgentProjectService({
         managerDashboard,
         managerFlowGraph,
         mvpReadiness,
+        brainstormLayer,
         pilotLaunchReadiness,
         deploymentPreflight,
         productionDeploymentControlReceiptWorkflow,
@@ -29086,6 +30544,8 @@ export function createAgentProjectService({
         privatePilotGoLiveReadiness,
         productionLaunchGapRegister,
         productionLaunchControlCenter,
+        productionLaunchEvidenceDossier,
+        productionEvidenceIntegrityAudit,
         productionOperationsReadiness,
         productionOperationsControlReceiptWorkflow,
         productionSecurityControlReceiptWorkflow,
@@ -29195,6 +30655,12 @@ export function createAgentProjectService({
           productionProviderMissingControlCount: productionProviderControlReceiptWorkflow.summary?.missingControlCount || 0,
           productionProviderReadyForProduction: Boolean(productionProviderControlReceiptWorkflow.readyForProductionProvider),
           productionProviderControlReceiptChecksum: productionProviderControlReceiptWorkflow.checksum || null,
+          brainstormLayerStatus: brainstormLayer.status || 'unknown',
+          brainstormLayerReady: Boolean(brainstormLayer.readyForPrivatePilotBrainstorm),
+          brainstormLayerBoardCount: brainstormLayer.summary?.brainstormBoardCount || 0,
+          brainstormLayerAlternativeCount: brainstormLayer.summary?.alternativeCount || 0,
+          brainstormLayerFailedGateCount: brainstormLayer.summary?.failedGateCount || 0,
+          brainstormLayerChecksum: brainstormLayer.checksum || null,
           artifactQualityAuditStatus: artifactQualityAudit.status || 'unknown',
           artifactQualityReady: Boolean(artifactQualityAudit.readyForLocalPilot),
           artifactQualityGateCount: artifactQualityAudit.summary?.gateCount || 0,
@@ -29354,6 +30820,18 @@ export function createAgentProjectService({
           productionLaunchControlReadyCount: productionLaunchControlCenter.summary?.readyControlCount || 0,
           productionLaunchControlNextActionId: productionLaunchControlCenter.nextAction?.id || null,
           productionLaunchControlChecksum: productionLaunchControlCenter.checksum,
+          productionLaunchEvidenceDossierStatus: productionLaunchEvidenceDossier.status,
+          productionLaunchEvidenceDossierReady: Boolean(productionLaunchEvidenceDossier.readyForPrivatePilotDossier),
+          productionLaunchEvidenceDossierManifestEntryCount: productionLaunchEvidenceDossier.summary?.manifestEntryCount || 0,
+          productionLaunchEvidenceDossierOpenGapCount: productionLaunchEvidenceDossier.summary?.openGapCount || 0,
+          productionLaunchEvidenceDossierReadyForProduction: Boolean(productionLaunchEvidenceDossier.readyForProduction),
+          productionLaunchEvidenceDossierChecksum: productionLaunchEvidenceDossier.checksum,
+          productionEvidenceIntegrityStatus: productionEvidenceIntegrityAudit.status,
+          productionEvidenceIntegrityManagedControlCount: productionEvidenceIntegrityAudit.summary?.managedProductionControlCount || 0,
+          productionEvidenceIntegrityLocalControlCount: productionEvidenceIntegrityAudit.summary?.localRehearsalControlCount || 0,
+          productionEvidenceIntegrityMissingControlCount: productionEvidenceIntegrityAudit.summary?.missingControlCount || 0,
+          productionEvidenceIntegrityReadyForProduction: Boolean(productionEvidenceIntegrityAudit.readyForProduction),
+          productionEvidenceIntegrityChecksum: productionEvidenceIntegrityAudit.checksum,
           productionOperationsStatus: productionOperationsReadiness.status,
           productionOperationsReadyForPrivatePilot: Boolean(productionOperationsReadiness.readyForPrivatePilotOperations),
           productionOperationsReadyForProduction: Boolean(productionOperationsReadiness.readyForProductionOperations),
@@ -29852,6 +31330,26 @@ export function createAgentProjectService({
         const language = options.language || store.getProject(projectId)?.language || 'en';
         const managerReadyPackage = this.getManagerReadyPackage(projectId, { language });
         return localizeReadModel(managerReadyPackage.productionLaunchControlCenter || buildProductionLaunchControlCenter({
+          project: store.getProject(projectId),
+          managerReadyPackage,
+        }), language);
+      });
+    },
+    getProductionLaunchEvidenceDossier(projectId, options = {}) {
+      return cachedReadModel('production-launch-evidence-dossier', projectId, options, () => {
+        const language = options.language || store.getProject(projectId)?.language || 'en';
+        const managerReadyPackage = this.getManagerReadyPackage(projectId, { language });
+        return localizeReadModel(managerReadyPackage.productionLaunchEvidenceDossier || buildProductionLaunchEvidenceDossier({
+          project: store.getProject(projectId),
+          managerReadyPackage,
+        }), language);
+      });
+    },
+    getProductionEvidenceIntegrityAudit(projectId, options = {}) {
+      return cachedReadModel('production-evidence-integrity-audit', projectId, options, () => {
+        const language = options.language || store.getProject(projectId)?.language || 'en';
+        const managerReadyPackage = this.getManagerReadyPackage(projectId, { language });
+        return localizeReadModel(managerReadyPackage.productionEvidenceIntegrityAudit || buildProductionEvidenceIntegrityAudit({
           project: store.getProject(projectId),
           managerReadyPackage,
         }), language);
@@ -30533,6 +32031,19 @@ export function createAgentProjectService({
           project,
           managerDashboard,
           providerReadiness,
+        }), language);
+      });
+    },
+    getBrainstormLayer(projectId, options = {}) {
+      return cachedReadModel('brainstorm-layer', projectId, options, () => {
+        const language = options.language || store.getProject(projectId)?.language || 'en';
+        const project = store.getProject(projectId);
+        const managerDashboard = this.getManagerDashboard(projectId, { language });
+        const managerFlowGraph = this.getManagerFlowGraph(projectId, { language });
+        return localizeReadModel(buildBrainstormLayer({
+          project,
+          managerDashboard,
+          managerFlowGraph,
         }), language);
       });
     },

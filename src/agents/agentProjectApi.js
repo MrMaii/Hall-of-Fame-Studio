@@ -714,6 +714,9 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
         if (method === 'GET' && route.action === 'evidence-quality-audit') {
           return json(200, { evidenceQualityAudit: service.getEvidenceQualityAudit(route.projectId, { language }) });
         }
+        if (method === 'GET' && route.action === 'brainstorm-layer') {
+          return json(200, { brainstormLayer: service.getBrainstormLayer(route.projectId, { language }) });
+        }
         if (method === 'GET' && route.action === 'artifact-quality-audit') {
           return json(200, { artifactQualityAudit: service.getArtifactQualityAudit(route.projectId, { language }) });
         }
@@ -1026,6 +1029,16 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
         if (method === 'GET' && route.action === 'production-launch-control-center') {
           return json(200, {
             productionLaunchControlCenter: service.getProductionLaunchControlCenter(route.projectId, { language }),
+          });
+        }
+        if (method === 'GET' && route.action === 'production-launch-evidence-dossier') {
+          return json(200, {
+            productionLaunchEvidenceDossier: service.getProductionLaunchEvidenceDossier(route.projectId, { language }),
+          });
+        }
+        if (method === 'GET' && route.action === 'production-evidence-integrity-audit') {
+          return json(200, {
+            productionEvidenceIntegrityAudit: service.getProductionEvidenceIntegrityAudit(route.projectId, { language }),
           });
         }
         if (route.action === 'launch-approvals') {

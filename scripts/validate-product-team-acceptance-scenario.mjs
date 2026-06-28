@@ -70,6 +70,12 @@ const enforcedJobsAgentHeaders = {
   'x-hofs-agent-id': 'jobs',
   'x-hofs-user-id': 'agent-runtime-jobs',
 };
+const enforcedDaVinciAgentHeaders = {
+  'x-hofs-access-mode': 'enforced',
+  'x-hofs-role': 'agent',
+  'x-hofs-agent-id': 'da_vinci',
+  'x-hofs-user-id': 'agent-runtime-da_vinci',
+};
 const enforcedCurieReviewerHeaders = {
   'x-hofs-access-mode': 'enforced',
   'x-hofs-role': 'reviewer-agent',
@@ -98,7 +104,10 @@ assert(appSource.includes('backend-manager-submissions-snapshot'), 'Manager Dash
 assert(appSource.includes('backend-manager-artifact-drafts-route') && appSource.includes('backend-manager-artifact-drafts-snapshot'), 'Manager Dashboard UI must expose generated artifact draft routes and rows.');
 assert(appSource.includes('agent-focus-submissions-'), 'Agent Dashboard UI must expose owned submissions.');
 assert(appSource.includes('agent-focus-artifact-draft-'), 'Agent Dashboard UI must expose generated artifact draft metadata.');
+assert(appSource.includes('agent-focus-brainstorm-contribution-') && appSource.includes('Brainstorm Contribution'), 'Agent Dashboard UI must expose personal brainstorm contribution evidence.');
 assert(appSource.includes('backend-manager-evidence-searches-snapshot'), 'Manager Dashboard UI must expose evidence searches.');
+assert(appSource.includes('backend-brainstorm-layer-snapshot'), 'Manager Ready Package UI must expose the brainstorm layer.');
+assert(appSource.includes('/brainstorm-layer') && appSource.includes('Brainstorm Layer') && appSource.includes('Brainstorm route'), 'Manager UI must expose the brainstorm layer route and status.');
 assert(appSource.includes('backend-artifact-quality-audit-snapshot'), 'Manager Ready Package UI must expose the artifact quality audit.');
 assert(appSource.includes('/artifact-quality-audit') && appSource.includes('Artifact Quality Audit') && appSource.includes('Artifact Ready'), 'Manager UI must expose the artifact quality audit route, status, and readiness.');
 assert(appSource.includes('backend-submission-review-workflow-snapshot'), 'Manager Ready Package UI must expose the submission review workflow.');
@@ -130,6 +139,11 @@ assert(appSource.includes('backend-production-launch-gap-register-snapshot'), 'M
 assert(appSource.includes('/production-launch-gap-register') && appSource.includes('Production Launch Gap Register') && appSource.includes('Gap register route'), 'Manager UI must expose the production launch gap register route and next action.');
 assert(appSource.includes('backend-production-launch-control-center-snapshot'), 'Manager Ready Package UI must expose the production launch control center.');
 assert(appSource.includes('/production-launch-control-center') && appSource.includes('Production Launch Control Center') && appSource.includes('Control center route'), 'Manager UI must expose the production launch control center route and no-go decision.');
+assert(appSource.includes('managed-production-evidence-integrity') && appSource.includes('Managed production evidence integrity'), 'Manager UI must include managed-production evidence integrity as a production launch control row.');
+assert(appSource.includes('backend-production-launch-evidence-dossier-snapshot'), 'Manager Ready Package UI must expose the production launch evidence dossier.');
+assert(appSource.includes('/production-launch-evidence-dossier') && appSource.includes('Production Launch Evidence Dossier') && appSource.includes('Dossier route'), 'Manager UI must expose the production launch evidence dossier route, manifest, and no-go decision.');
+assert(appSource.includes('backend-production-evidence-integrity-audit-snapshot'), 'Manager Ready Package UI must expose production evidence integrity audit.');
+assert(appSource.includes('/production-evidence-integrity-audit') && appSource.includes('Production Evidence Integrity Audit') && appSource.includes('Evidence integrity route'), 'Manager UI must expose the production evidence integrity audit route, managed proof counts, and no-go status.');
 assert(appSource.includes('backend-private-pilot-release-candidate-workflow-snapshot'), 'Manager Ready Package UI must expose private-pilot release candidate readiness.');
 assert(appSource.includes('/private-pilot-release-candidates') && appSource.includes('Private Pilot Release Candidate') && appSource.includes('Candidate route'), 'Manager UI must expose the private-pilot release candidate route, gates, and status.');
 assert(appSource.includes('backend-private-pilot-launch-run-workflow-snapshot'), 'Manager Ready Package UI must expose private-pilot launch run readiness.');
@@ -651,6 +665,14 @@ assert(response.body.evidenceQualityAudit.gates.some((gate) => gate.id === 'prov
 assert(response.body.evidenceQualityAudit.requiredProductionControls.some((control) => control.id === 'calibrated-source-quality-policy'), 'Evidence quality audit must keep calibrated source-quality policy as an explicit production control.');
 assert(response.body.evidenceQualityAudit.backendRoutes.evidenceQualityAudit?.endsWith('/evidence-quality-audit'), 'Evidence quality audit must expose its own backend route.');
 
+response = api.handle({ method: 'GET', path: `/projects/${projectId}/brainstorm-layer` });
+assert(response.status === 200 && response.body.brainstormLayer?.schemaVersion === 'brainstorm-layer/v1', 'Project API must expose a standalone brainstorm layer contract.');
+assert(response.body.brainstormLayer.readyForPrivatePilotBrainstorm === true && response.body.brainstormLayer.readyForProduction === false, 'Brainstorm layer must be private-pilot ready without production overclaim.');
+assert(response.body.brainstormLayer.summary?.brainstormBoardCount === 1 && response.body.brainstormLayer.summary?.alternativeCount >= 3, 'Brainstorm layer must summarize board count and visible alternatives.');
+assert(response.body.brainstormLayer.gates.every((gate) => gate.passed), 'Brainstorm layer must pass all local generic brainstorm gates for the acceptance sample.');
+assert(response.body.brainstormLayer.rows.some((row) => row.artifactType === 'brainstorm-board' && row.proofIds.length && row.timelineLogIds.length && row.eventIds.length), 'Brainstorm layer rows must preserve chat, timeline, and event proof.');
+assert(response.body.brainstormLayer.backendRoutes.brainstormLayer?.endsWith('/brainstorm-layer'), 'Brainstorm layer must expose its own backend route.');
+
 response = api.handle({ method: 'GET', path: `/projects/${projectId}/artifact-quality-audit` });
 assert(response.status === 200 && response.body.artifactQualityAudit?.schemaVersion === 'artifact-quality-audit/v1', 'Project API must expose a standalone artifact quality audit contract.');
 assert(response.body.artifactQualityAudit.readyForLocalPilot === true && response.body.artifactQualityAudit.readyForProduction === false, 'Artifact quality audit must be locally ready without production overclaim.');
@@ -739,6 +761,7 @@ assert(response.body.evidenceSearches.sourceSnapshotCount === 3 && response.body
 assert(response.body.evidenceSourceReviews.count === 3 && response.body.evidenceSourceReviews.approvedCount === 3, 'Manager Dashboard must expose evidence source review decisions.');
 assert(response.body.evidenceSourceReviews.rows.every((row) => row.proofRoute?.includes('/evidence-source-review-workflow#') && row.evidenceSearchRoute?.includes('/evidence-searches/')), 'Manager Dashboard source review rows must expose proof and evidence search routes.');
 assert(response.body.submissionReviews.acceptedCount === 1 && response.body.submissionReviews.changesRequestedCount === 1, 'Manager Dashboard must expose review summary.');
+assert(response.body.brainstormLayer?.schemaVersion === 'brainstorm-layer/v1' && response.body.brainstormLayer?.readyForPrivatePilotBrainstorm === true && response.body.brainstormLayer?.route?.endsWith('/brainstorm-layer'), 'Manager Dashboard must expose a ready generic brainstorm layer summary and route.');
 
 progress('initial manager ready package read starting');
 response = api.handle({ method: 'GET', path: `/projects/${projectId}/manager-ready-package` });
@@ -765,6 +788,8 @@ assert(response.body.securityBoundary?.production?.missingControlIds?.includes('
 assert(response.body.productionSecurityControlReceiptWorkflow?.schemaVersion === 'production-security-control-receipt-workflow/v1', 'Manager Ready Package must include production security control receipt workflow.');
 assert(response.body.productionSecurityControlReceiptWorkflow?.readyForProductionSecurity === false && response.body.productionSecurityControlReceiptWorkflow?.summary?.missingControlCount > 0, 'Production security control receipt workflow must require managed identity, KMS, RBAC, audit, and replay hardening evidence.');
 assert(response.body.summary?.productionSecurityMissingControlCount === response.body.productionSecurityControlReceiptWorkflow?.summary?.missingControlCount, 'Manager Ready Package summary must expose missing production security control counts.');
+assert(response.body.brainstormLayer?.schemaVersion === 'brainstorm-layer/v1' && response.body.brainstormLayer?.readyForPrivatePilotBrainstorm === true, 'Manager Ready Package must embed the generic brainstorm layer contract.');
+assert(response.body.summary?.brainstormLayerReady === true && response.body.summary?.brainstormLayerAlternativeCount >= 3, 'Manager Ready Package summary must expose brainstorm layer readiness and alternatives.');
 assert(response.body.artifactQualityAudit?.schemaVersion === 'artifact-quality-audit/v1', 'Manager Ready Package must include the artifact quality audit contract.');
 assert(response.body.artifactQualityAudit?.status === 'local-artifact-quality-ready' && response.body.artifactQualityAudit?.readyForLocalPilot === true && response.body.artifactQualityAudit?.readyForProduction === false, 'Artifact quality audit must pass locally without production overclaim.');
 assert(response.body.artifactQualityAudit?.summary?.submissionCount === expectedSubmissionCount && response.body.artifactQualityAudit?.summary?.missingArtifactTypeCount === 0, 'Artifact quality audit must cover all generic product-team submission types.');
@@ -783,11 +808,22 @@ assert(response.body.summary?.privatePilotGoLiveStatus === response.body.private
 assert(response.body.productionLaunchGapRegister?.schemaVersion === 'production-launch-gap-register/v1', 'Manager Ready Package must include the production launch gap register.');
 assert(response.body.productionLaunchGapRegister?.readyForProduction === false && response.body.productionLaunchGapRegister?.gapRows?.length >= 5, 'Production launch gap register must keep production blocked with actionable gap rows.');
 assert(response.body.productionLaunchGapRegister?.nextAction?.apiPath && response.body.productionLaunchGapRegister?.summary?.openGapCount === response.body.productionLaunchGapRegister?.gapRows?.length, 'Production launch gap register must expose routed next action and open gap count.');
+assert(response.body.productionLaunchGapRegister?.gapRows?.some((row) => row.id === 'managed-production-evidence-integrity' && row.apiPath?.endsWith('/production-evidence-integrity-audit')), 'Production launch gap register must expose managed-production evidence integrity as a routed production gap.');
 assert(response.body.summary?.productionLaunchGapStatus === response.body.productionLaunchGapRegister?.status && response.body.summary?.productionLaunchGapOpenCount === response.body.productionLaunchGapRegister?.summary?.openGapCount, 'Manager Ready Package summary must expose production launch gap status and counts.');
 assert(response.body.productionLaunchControlCenter?.schemaVersion === 'production-launch-control-center/v1', 'Manager Ready Package must include the production launch control center.');
 assert(response.body.productionLaunchControlCenter?.readyForProduction === false && response.body.productionLaunchControlCenter?.productionDecision === 'no-go', 'Production launch control center must keep public production blocked.');
 assert(response.body.productionLaunchControlCenter?.controlRows?.length >= 8 && response.body.productionLaunchControlCenter?.nextAction?.apiPath, 'Production launch control center must expose release controls and a routed next action.');
+assert(response.body.productionLaunchControlCenter?.controlRows?.some((row) => row.id === 'managed-production-evidence-integrity' && row.ready === false && row.apiPath?.endsWith('/production-evidence-integrity-audit')), 'Production launch control center must include managed-production evidence integrity as a blocked launch control before production evidence exists.');
 assert(response.body.summary?.productionLaunchControlStatus === response.body.productionLaunchControlCenter?.status && response.body.summary?.productionLaunchControlBlockedCount === response.body.productionLaunchControlCenter?.summary?.blockedControlCount, 'Manager Ready Package summary must expose production launch control status and blocked count.');
+assert(response.body.productionLaunchEvidenceDossier?.schemaVersion === 'production-launch-evidence-dossier/v1', 'Manager Ready Package must include the production launch evidence dossier.');
+assert(response.body.productionLaunchEvidenceDossier?.readyForProduction === false && response.body.productionLaunchEvidenceDossier?.productionDecision === 'no-go', 'Production launch evidence dossier must not overclaim production readiness.');
+assert(response.body.productionLaunchEvidenceDossier?.summary?.manifestEntryCount >= 9 && response.body.productionLaunchEvidenceDossier?.manifest?.some((row) => row.id === 'production-launch-control-center') && response.body.productionLaunchEvidenceDossier?.manifest?.some((row) => row.id === 'production-evidence-integrity-audit'), 'Production launch evidence dossier must aggregate the launch manifest.');
+assert(response.body.productionLaunchEvidenceDossier?.controlDomainRows?.length === 4 && ['operations', 'deployment', 'security', 'provider'].every((domain) => response.body.productionLaunchEvidenceDossier.controlDomainRows.some((row) => row.id === domain)), 'Production launch evidence dossier must expose every production control domain.');
+assert(response.body.productionLaunchEvidenceDossier?.backendRoutes?.productionLaunchEvidenceDossier?.endsWith('/production-launch-evidence-dossier'), 'Production launch evidence dossier must expose its standalone backend route.');
+assert(response.body.summary?.productionLaunchEvidenceDossierManifestEntryCount >= 9 && response.body.summary?.productionLaunchEvidenceDossierReadyForProduction === false, 'Manager Ready Package summary must expose production launch evidence dossier coverage without production overclaim.');
+assert(response.body.productionEvidenceIntegrityAudit?.schemaVersion === 'production-evidence-integrity-audit/v1', 'Manager Ready Package must include the production evidence integrity audit.');
+assert(response.body.productionEvidenceIntegrityAudit?.readyForProduction === false && response.body.productionEvidenceIntegrityAudit?.summary?.missingControlCount > 0, 'Production evidence integrity audit must keep public production blocked before production control receipts.');
+assert(response.body.summary?.productionEvidenceIntegrityStatus === response.body.productionEvidenceIntegrityAudit?.status, 'Manager Ready Package summary must expose production evidence integrity status.');
 assert(response.body.providerReadiness?.schemaVersion === 'provider-readiness/v1', 'Manager Ready Package must include the provider readiness contract.');
 assert(response.body.providerReadiness?.status === 'local-provider-contract-ready', 'Provider readiness must pass the local provider contract for the acceptance project.');
 assert(response.body.providerReadiness?.readyForProduction === false, 'Provider readiness must not claim production readiness before rollout controls exist.');
@@ -879,12 +915,15 @@ assert(response.body.productionLaunchAudit?.productionDecision === 'no-go', 'Pro
 assert(response.body.productionLaunchAudit?.readyForProduction === false, 'Production launch audit must not claim production readiness before final controls exist.');
 assert(response.body.productionLaunchAudit?.failedPrivatePilotGates?.some((gate) => gate.id === 'private-pilot-launch-approval-ready'), 'Production launch audit must require launch approval before private-pilot go.');
 assert(response.body.productionLaunchAudit?.summary?.failedProductionGateCount > 0, 'Production launch audit must keep production gates failed until real controls exist.');
+assert(response.body.productionLaunchAudit?.productionGates?.some((gate) => gate.id === 'managed-production-evidence-integrity' && gate.passed === false && gate.apiPath?.endsWith('/production-evidence-integrity-audit')), 'Production launch audit must gate public production on managed-production evidence integrity.');
+assert(response.body.productionLaunchAudit?.productionBlockers?.some((row) => row.id === 'managed-production-evidence-integrity' && row.apiPath?.endsWith('/production-evidence-integrity-audit')), 'Production launch audit must list managed-production evidence integrity as a production blocker.');
 assert(response.body.productionLaunchAudit?.productionBlockers?.some((row) => row.id === 'production-managed-persistence'), 'Production launch audit must retain managed persistence as a production blocker.');
 assert(response.body.productionLaunchAudit?.productionBlockers?.some((row) => row.id === 'production-real-providers'), 'Production launch audit must retain real providers as a production blocker.');
 assert(response.body.productionLaunchAudit?.productionBlockers?.some((row) => row.id === 'production-evidence-custody-storage' || row.id === 'managed-immutable-object-storage'), 'Production launch audit must retain evidence custody storage as a production blocker.');
 assert(response.body.productionLaunchAudit?.productionBlockers?.some((row) => row.id === 'calibrated-artifact-quality-rubric'), 'Production launch audit must retain calibrated artifact quality as a production blocker.');
 assert(response.body.productionLaunchAudit?.evidenceRoutes?.some((route) => route.id === 'artifact-quality-audit' && route.ready), 'Production launch audit must include a ready artifact quality audit route.');
 assert(response.body.productionLaunchAudit?.evidenceRoutes?.some((route) => route.id === 'evidence-custody-readiness' && route.ready), 'Production launch audit must include a ready evidence custody route.');
+assert(response.body.productionLaunchAudit?.evidenceRoutes?.some((route) => route.id === 'production-evidence-integrity-audit' && route.ready === false && route.route?.endsWith('/production-evidence-integrity-audit')), 'Production launch audit must expose the production evidence integrity audit route while keeping it blocked.');
 assert(response.body.productionLaunchAudit?.auditIntegrityGates?.some((gate) => gate.id === 'production-overclaim-guard' && gate.passed), 'Production launch audit must prove production overclaim is blocked.');
 assert(response.body.summary?.productionLaunchAuditStatus === response.body.productionLaunchAudit?.status, 'Manager Ready Package summary must expose production launch audit status.');
 assert(response.body.summary?.productionLaunchProductionDecision === 'no-go', 'Manager Ready Package summary must expose the production launch no-go decision.');
@@ -947,7 +986,7 @@ assert(response.body.securityBoundary.projectMembership?.configured && response.
 assert(response.body.securityBoundary.secretVault?.ready === true && response.body.securityBoundary.secretVault.rawSecretRecordCount === 0, 'Standalone security boundary must expose encrypted secret vault readiness.');
 assert(response.body.securityBoundary.secretVault?.latestRotation?.schemaVersion === 'secret-vault-rotation-receipt/v1' && response.body.securityBoundary.summary?.secretVaultRotationReady === true, 'Standalone security boundary must expose secret-vault rotation readiness.');
 assert(!JSON.stringify(response.body.securityBoundary).includes(FAKE_VAULT_ROTATED_MASTER_KEY), 'Standalone security boundary must not expose the rotated vault master key fixture.');
-for (const routeKey of ['submissions', 'evidence-searches', 'artifact-quality-audit', 'submission-review-workflow', 'evidence-quality-audit', 'evidence-source-review-workflow', 'evidence-custody-readiness', 'submission-reviews', 'pilot-launch-readiness', 'deployment-preflight', 'adapter-gateway-preflight', 'production-launch-audit', 'production-launch-gap-register', 'production-launch-control-center', 'launch-approvals', 'project-evidence-exports', 'private-pilot-go-live-readiness', 'private-pilot-release-candidates', 'private-pilot-launch-runs', 'private-pilot-launch-health-checks', 'private-pilot-acceptance-reports', 'production-operations-readiness', 'production-operations-control-receipts', 'production-deployment-control-receipts', 'production-security-control-receipts', 'production-provider-control-receipts', 'mvp-readiness', 'persistence-snapshot', 'persistence-migration-plan', 'persistence-migration-dry-run', 'persistence-adapter-plan', 'persistence-adapter-dry-run', 'worker-queue', 'worker-queue-adapter-plan', 'worker-queue-adapter-dry-run', 'operations-readiness', 'provider-readiness', 'provider-controlled-run', 'provider-eval-runs', 'security-boundary', 'security-access-audit', 'security-audit-stream', 'membership-policy', 'identity-sessions']) {
+for (const routeKey of ['submissions', 'evidence-searches', 'brainstorm-layer', 'artifact-quality-audit', 'submission-review-workflow', 'evidence-quality-audit', 'evidence-source-review-workflow', 'evidence-custody-readiness', 'submission-reviews', 'pilot-launch-readiness', 'deployment-preflight', 'adapter-gateway-preflight', 'production-launch-audit', 'production-launch-gap-register', 'production-launch-control-center', 'production-launch-evidence-dossier', 'production-evidence-integrity-audit', 'launch-approvals', 'project-evidence-exports', 'private-pilot-go-live-readiness', 'private-pilot-release-candidates', 'private-pilot-launch-runs', 'private-pilot-launch-health-checks', 'private-pilot-acceptance-reports', 'production-operations-readiness', 'production-operations-control-receipts', 'production-deployment-control-receipts', 'production-security-control-receipts', 'production-provider-control-receipts', 'mvp-readiness', 'persistence-snapshot', 'persistence-migration-plan', 'persistence-migration-dry-run', 'persistence-adapter-plan', 'persistence-adapter-dry-run', 'worker-queue', 'worker-queue-adapter-plan', 'worker-queue-adapter-dry-run', 'operations-readiness', 'provider-readiness', 'provider-controlled-run', 'provider-eval-runs', 'security-boundary', 'security-access-audit', 'security-audit-stream', 'membership-policy', 'identity-sessions']) {
   assert(response.body.securityBoundary.routeSummary.routeKeys.includes(routeKey), `Security boundary route manifest must include ${routeKey}.`);
 }
 assert(response.body.securityBoundary.production.status === 'production-blocked' && response.body.securityBoundary.production.blockerCount >= 4, 'Security boundary must keep production hardening blockers visible.');
@@ -1321,6 +1360,8 @@ const submissionReviewWorkflowEdges = graph.edges.filter((edge) => edge.source =
 const sourceReviewEdges = graph.edges.filter((edge) => edge.source === 'evidenceSourceReviews');
 const evidenceCustodyEdges = graph.edges.filter((edge) => edge.source === 'evidenceCustodyReadiness');
 const providerEvalRunEdges = graph.edges.filter((edge) => edge.source === 'providerEvalRuns');
+const brainstormLayerNodes = graph.nodes.filter((node) => node.id === 'brainstorm-layer' && node.subtype === 'brainstorm-layer');
+const brainstormLayerEdges = graph.edges.filter((edge) => edge.source === 'brainstormLayer');
 const graphTypes = new Set(submissionNodes.map((node) => node.subtype));
 for (const type of ['discovery-report', 'brainstorm-board', 'evidence-packet', 'product-brief', 'decision-proposal', 'risk-review', 'revision-note', 'implementation-plan', 'progress-brief', 'final-deliverable']) {
   assert(graphTypes.has(type), `Manager Flow Graph must include ${type} submission node.`);
@@ -1330,6 +1371,8 @@ assert(selfMarketingNodes.some((node) => node.subtype === 'role-self-nomination'
 assert(selfMarketingNodes.some((node) => node.subtype === 'leader-campaign'), 'Manager Flow Graph must include Leader campaign self-marketing nodes.');
 assert(selfMarketingNodes.every((node) => node.proofIds.length && node.eventIds.length && node.attachments.length), 'Every self-marketing node must have transcript, event, and attachment proof.');
 assert(submissionNodes.every((node) => node.proofIds.length && node.timelineLogIds.length && node.eventIds.length && node.attachments.length), 'Every explicit submission node must have chat, timeline, event, and artifact proof.');
+assert(brainstormLayerNodes.length === 1 && brainstormLayerNodes[0].route?.endsWith('/brainstorm-layer') && brainstormLayerNodes[0].proofIds.length && brainstormLayerNodes[0].timelineLogIds.length && brainstormLayerNodes[0].eventIds.length, 'Manager Flow Graph must include a proofed brainstorm layer node.');
+assert(brainstormLayerEdges.some((edge) => edge.toNodeId === 'brainstorm-layer') && brainstormLayerEdges.some((edge) => edge.fromNodeId === 'brainstorm-layer'), 'Manager Flow Graph must connect brainstorm submissions into downstream product-team artifacts.');
 assert(revisionEdges.length >= 3 && revisionEdges.every((edge) => edge.proofIds.length && edge.timelineLogIds.length && edge.eventIds.length), 'Manager Flow Graph must include proofed revision lineage edges.');
 assert(submissionReviewWorkflowNodes.length === 1 && submissionReviewWorkflowNodes[0].route?.endsWith('/submission-review-workflow') && submissionReviewWorkflowNodes[0].proofIds.length && submissionReviewWorkflowNodes[0].timelineLogIds.length && submissionReviewWorkflowNodes[0].eventIds.length, 'Manager Flow Graph must include a proofed submission review workflow closure node.');
 assert(submissionReviewWorkflowEdges.some((edge) => edge.toNodeId === 'submission-review-workflow' && edge.proofIds.length && edge.timelineLogIds.length && edge.eventIds.length), 'Manager Flow Graph must connect review and revision nodes into the submission review workflow.');
@@ -1353,6 +1396,8 @@ assert(response.status === 200 && response.body.submissionSummary.count === expe
 assert(response.body.roleNegotiationSummary.roleClarificationCount > 0 && response.body.roleNegotiationSummary.selfNominationCount > 0, 'Readiness Proof Map must expose role-negotiation routes.');
 assert(response.body.selfMarketingSummary.selfNominationCount > 0 && response.body.selfMarketingSummary.leaderCampaignCount > 0, 'Readiness Proof Map must expose self-marketing routes.');
 assert(response.body.selfMarketingRoutes.every((route) => route.proofIds.length && route.eventIds.length && route.apiPath), 'Self-marketing proof routes must include transcript and event proof.');
+assert(response.body.brainstormLayerRoutes?.some((route) => route.apiPath?.endsWith('/brainstorm-layer') && route.readyForPrivatePilotBrainstorm === true && route.alternativeCount >= 3), 'Readiness Proof Map must expose brainstorm layer routes with alternatives and readiness.');
+assert(response.body.brainstormLayerSummary?.proofIds?.length && response.body.brainstormLayerSummary?.timelineLogIds?.length && response.body.brainstormLayerSummary?.eventIds?.length, 'Readiness Proof Map brainstorm layer summary must preserve chat, timeline, and event proof.');
 assert(response.body.revisionSummary.count >= 2 && response.body.revisionSummary.respondedReviewIds.includes(reviewsByVerdict.get('changes-requested')?.id), 'Readiness Proof Map must summarize artifact revision lineage.');
 assert(response.body.revisionRoutes.every((route) => route.proofIds.length && route.timelineLogIds.length && route.eventIds.length && route.apiPath), 'Revision proof routes must include chat, timeline, event, and API proof.');
 assert(response.body.submissionRoutes.some((route) => route.artifactType === 'final-deliverable'), 'Readiness Proof Map must expose final deliverable submission route.');
@@ -1410,6 +1455,13 @@ assert(response.body.obligations.some((obligation) => (
   && obligation.status === 'resolved'
   && obligation.resolvedBySubmissionId === finalDeliverable?.id
 )), 'Original submitter obligation must be resolved by the linked revision/final deliverable.');
+
+response = api.handle({ method: 'GET', path: `/projects/${projectId}/agents/da_vinci/dashboard` });
+assert(response.status === 200 && response.body.brainstormContribution?.schemaVersion === 'agent-brainstorm-contribution/v1', 'Agent Dashboard must expose the personal brainstorm contribution contract.');
+assert(response.body.brainstormContribution.readyForPrivatePilotContribution === true && response.body.brainstormContribution.summary?.alternativeCount >= 3, 'Brainstorming Agent Dashboard must expose ready alternatives for the submitting Agent.');
+assert(response.body.ownedBrainstormContributions?.some((row) => row.submissionId === submissionsByType.get('brainstorm-board')?.id && row.proofIds.length && row.timelineLogIds.length && row.eventIds.length), 'Agent Dashboard brainstorm contribution rows must preserve submission proof.');
+assert(response.body.brainstormContribution.backendRoutes?.brainstormLayer?.endsWith('/brainstorm-layer'), 'Agent Dashboard brainstorm contribution must link to the Manager brainstorm layer.');
+assert(response.body.proof?.brainstormSubmissionIds?.includes(submissionsByType.get('brainstorm-board')?.id) && response.body.proof?.brainstormAlternativeCount >= 3, 'Agent Dashboard proof summary must include brainstorm submission ids and alternative count.');
 
 response = api.handle({ method: 'GET', path: `/projects/${projectId}/agents/turing/dashboard` });
 assert(response.status === 200 && response.body.ownedSubmissions.some((submission) => submission.id === generatedDraftSubmission.id && submission.isGeneratedDraft && submission.artifactDraft?.source === 'local-artifact-draft-generator' && submission.artifactDraftRoute?.includes('/artifact-drafts')), 'Agent Dashboard must expose generated artifact draft provenance for the submitting Agent.');
@@ -1496,6 +1548,8 @@ try {
   assert(httpBody.evidenceSourceReviewWorkflow?.summary?.sourceReviewDecisionCount === 3 && httpBody.summary?.evidenceSourceReviewDecisionCount === 3, 'HTTP Manager Ready Package must expose source review decision counts.');
   assert(httpBody.evidenceCustodyReadiness?.schemaVersion === 'evidence-custody-readiness/v1' && httpBody.evidenceCustodyReadiness?.readyForPrivatePilot === true, 'HTTP Manager Ready Package must expose local-ready evidence custody readiness.');
   assert(httpBody.summary?.evidenceCustodyChecksum === httpBody.evidenceCustodyReadiness?.checksum && httpBody.summary?.evidenceCustodyRecordCount === 4, 'HTTP Manager Ready Package summary must expose evidence custody checksum and record count.');
+  assert(httpBody.brainstormLayer?.schemaVersion === 'brainstorm-layer/v1' && httpBody.brainstormLayer?.readyForPrivatePilotBrainstorm === true, 'HTTP Manager Ready Package must expose ready brainstorm layer readiness.');
+  assert(httpBody.summary?.brainstormLayerReady === true && httpBody.summary?.brainstormLayerAlternativeCount >= 3, 'HTTP Manager Ready Package summary must expose brainstorm layer alternatives.');
   assert(httpBody.artifactQualityAudit?.schemaVersion === 'artifact-quality-audit/v1' && httpBody.artifactQualityAudit?.readyForLocalPilot === true, 'HTTP Manager Ready Package must expose local-ready artifact quality audit.');
   assert(httpBody.summary?.artifactQualityChecksum === httpBody.artifactQualityAudit?.checksum && httpBody.summary?.artifactQualitySubmissionCount === expectedSubmissionCount, 'HTTP Manager Ready Package summary must expose artifact quality checksum and submission count.');
   assert(httpBody.submissionReviewWorkflow?.schemaVersion === 'submission-review-workflow/v1' && httpBody.submissionReviewWorkflow?.readyForPrivatePilotReview === true, 'HTTP Manager Ready Package must expose local-ready submission review workflow.');
@@ -1507,7 +1561,13 @@ try {
   assert(httpBody.summary?.productionLaunchGapOpenCount === httpBody.productionLaunchGapRegister?.summary?.openGapCount, 'HTTP Manager Ready Package summary must expose production launch gap counts.');
   assert(httpBody.productionLaunchControlCenter?.schemaVersion === 'production-launch-control-center/v1' && httpBody.productionLaunchControlCenter?.readyForProduction === false, 'HTTP Manager Ready Package must expose production launch control center without production overclaim.');
   assert(httpBody.productionLaunchControlCenter?.controlRows?.length >= 8 && httpBody.productionLaunchControlCenter?.nextAction?.apiPath, 'HTTP Manager Ready Package production launch control center must expose gate rows and a routed next action.');
+  assert(httpBody.productionLaunchControlCenter?.controlRows?.some((row) => row.id === 'managed-production-evidence-integrity' && row.ready === false && row.apiPath?.endsWith('/production-evidence-integrity-audit')), 'HTTP Manager Ready Package production launch control center must include blocked managed-production evidence integrity.');
   assert(httpBody.summary?.productionLaunchControlBlockedCount === httpBody.productionLaunchControlCenter?.summary?.blockedControlCount, 'HTTP Manager Ready Package summary must expose production launch control blocked counts.');
+  assert(httpBody.productionLaunchEvidenceDossier?.schemaVersion === 'production-launch-evidence-dossier/v1' && httpBody.productionLaunchEvidenceDossier?.readyForProduction === false, 'HTTP Manager Ready Package must expose production launch evidence dossier without production overclaim.');
+  assert(httpBody.productionLaunchEvidenceDossier?.summary?.manifestEntryCount >= 9 && httpBody.productionLaunchEvidenceDossier?.backendRoutes?.productionLaunchEvidenceDossier?.endsWith('/production-launch-evidence-dossier'), 'HTTP Manager Ready Package production launch evidence dossier must expose manifest coverage and its route.');
+  assert(httpBody.summary?.productionLaunchEvidenceDossierManifestEntryCount >= 9 && httpBody.summary?.productionLaunchEvidenceDossierReadyForProduction === false, 'HTTP Manager Ready Package summary must expose production launch evidence dossier readiness.');
+  assert(httpBody.productionEvidenceIntegrityAudit?.schemaVersion === 'production-evidence-integrity-audit/v1' && httpBody.productionEvidenceIntegrityAudit?.readyForProduction === false, 'HTTP Manager Ready Package must expose production evidence integrity audit without production overclaim.');
+  assert(httpBody.summary?.productionEvidenceIntegrityStatus === httpBody.productionEvidenceIntegrityAudit?.status, 'HTTP Manager Ready Package summary must expose production evidence integrity status.');
   assert(httpBody.securityBoundary?.status === 'local-boundary-ready' && httpBody.securityBoundary?.redactionScan?.rawLeakCount === 0, 'HTTP Manager Ready Package must expose a clean local security boundary.');
   assert(httpBody.persistenceAdapterPlan?.schemaVersion === 'managed-persistence-adapter-plan/v1' && httpBody.persistenceAdapterDryRun?.schemaVersion === 'managed-persistence-adapter-dry-run/v1', 'HTTP Manager Ready Package must expose managed persistence adapter plan and dry-run readiness.');
   assert(httpBody.operationsReadiness?.summary?.workerRecoveryContractReady === true, 'HTTP Manager Ready Package must expose worker recovery readiness.');
@@ -1572,6 +1632,11 @@ try {
   assert(httpBody.evidenceQualityAudit?.summary?.sourceSnapshotCount === 3 && httpBody.evidenceQualityAudit?.summary?.providerReceiptCount === 1, 'HTTP evidence quality audit must expose source snapshot and provider receipt counts.');
   assert(httpBody.evidenceQualityAudit?.backendRoutes?.evidenceQualityAudit?.endsWith('/evidence-quality-audit'), 'HTTP evidence quality audit must expose its own route.');
 
+  httpResponse = await fetch(`${httpRuntime.url}/projects/${projectId}/brainstorm-layer`);
+  httpBody = await httpResponse.json();
+  assert(httpResponse.status === 200 && httpBody.brainstormLayer?.schemaVersion === 'brainstorm-layer/v1', 'HTTP brainstorm layer endpoint must expose the brainstorm layer contract.');
+  assert(httpBody.brainstormLayer?.readyForPrivatePilotBrainstorm === true && httpBody.brainstormLayer?.summary?.alternativeCount >= 3 && httpBody.brainstormLayer?.backendRoutes?.brainstormLayer?.endsWith('/brainstorm-layer'), 'HTTP brainstorm layer must expose alternatives and its own route.');
+
   httpResponse = await fetch(`${httpRuntime.url}/projects/${projectId}/artifact-quality-audit`);
   httpBody = await httpResponse.json();
   assert(httpResponse.status === 200 && httpBody.artifactQualityAudit?.schemaVersion === 'artifact-quality-audit/v1', 'HTTP artifact quality audit endpoint must expose the audit contract.');
@@ -1603,6 +1668,18 @@ try {
   assert(httpResponse.status === 200 && httpBody.productionLaunchControlCenter?.schemaVersion === 'production-launch-control-center/v1', 'HTTP production launch control center endpoint must expose the control center contract.');
   assert(httpBody.productionLaunchControlCenter?.readyForProduction === false && httpBody.productionLaunchControlCenter?.productionDecision === 'no-go', 'HTTP production launch control center must keep public production blocked.');
   assert(httpBody.productionLaunchControlCenter?.controlRows?.length >= 8 && httpBody.productionLaunchControlCenter?.nextAction?.apiPath && httpBody.productionLaunchControlCenter?.backendRoutes?.productionLaunchControlCenter?.endsWith('/production-launch-control-center'), 'HTTP production launch control center must expose its own route, gate rows, and routed next action.');
+  assert(httpBody.productionLaunchControlCenter?.controlRows?.some((row) => row.id === 'managed-production-evidence-integrity' && row.ready === false && row.apiPath?.endsWith('/production-evidence-integrity-audit')), 'HTTP production launch control center endpoint must include blocked managed-production evidence integrity.');
+  httpResponse = await fetch(`${httpRuntime.url}/projects/${projectId}/production-launch-evidence-dossier`);
+  httpBody = await httpResponse.json();
+  assert(httpResponse.status === 200 && httpBody.productionLaunchEvidenceDossier?.schemaVersion === 'production-launch-evidence-dossier/v1', 'HTTP production launch evidence dossier endpoint must expose the dossier contract.');
+  assert(httpBody.productionLaunchEvidenceDossier?.readyForProduction === false && httpBody.productionLaunchEvidenceDossier?.productionDecision === 'no-go', 'HTTP production launch evidence dossier must keep public production blocked without managed production evidence.');
+  assert(httpBody.productionLaunchEvidenceDossier?.manifest?.some((row) => row.id === 'production-launch-control-center') && httpBody.productionLaunchEvidenceDossier?.manifest?.some((row) => row.id === 'production-evidence-integrity-audit'), 'HTTP production launch evidence dossier must aggregate launch control and evidence integrity manifest entries.');
+  assert(httpBody.productionLaunchEvidenceDossier?.controlDomainRows?.length === 4 && httpBody.productionLaunchEvidenceDossier?.backendRoutes?.productionLaunchEvidenceDossier?.endsWith('/production-launch-evidence-dossier'), 'HTTP production launch evidence dossier must expose four control domains and its own route.');
+
+  httpResponse = await fetch(`${httpRuntime.url}/projects/${projectId}/production-evidence-integrity-audit`);
+  httpBody = await httpResponse.json();
+  assert(httpResponse.status === 200 && httpBody.productionEvidenceIntegrityAudit?.schemaVersion === 'production-evidence-integrity-audit/v1', 'HTTP production evidence integrity audit endpoint must expose the audit contract.');
+  assert(httpBody.productionEvidenceIntegrityAudit?.readyForProduction === false && httpBody.productionEvidenceIntegrityAudit?.backendRoutes?.productionEvidenceIntegrityAudit?.endsWith('/production-evidence-integrity-audit'), 'HTTP production evidence integrity audit must expose its own route without production overclaim.');
 
   httpResponse = await fetch(`${httpRuntime.url}/projects/${projectId}/production-deployment-control-receipts`);
   httpBody = await httpResponse.json();
@@ -1725,6 +1802,13 @@ try {
   });
   httpBody = await httpResponse.json();
   assert(httpResponse.status === 200 && httpBody.agentId === 'jobs', 'HTTP enforced mode must allow an Agent to read its own dashboard.');
+
+  httpResponse = await fetch(`${httpRuntime.url}/projects/${projectId}/agents/da_vinci/dashboard`, {
+    headers: enforcedDaVinciAgentHeaders,
+  });
+  httpBody = await httpResponse.json();
+  assert(httpResponse.status === 200 && httpBody.brainstormContribution?.schemaVersion === 'agent-brainstorm-contribution/v1' && httpBody.brainstormContribution?.readyForPrivatePilotContribution === true, 'HTTP Agent Dashboard must expose the submitting Agent brainstorm contribution contract.');
+  assert(httpBody.brainstormContribution?.backendRoutes?.brainstormLayer?.endsWith('/brainstorm-layer') && httpBody.proof?.brainstormAlternativeCount >= 3, 'HTTP Agent Dashboard brainstorm contribution must include brainstorm layer route and alternative proof.');
 
   httpResponse = await fetch(`${httpRuntime.url}/projects/${projectId}/agents/curie/dashboard`, {
     headers: enforcedJobsAgentHeaders,
@@ -3208,7 +3292,40 @@ response = membershipApi.handle({
 assert(response.status === 200 && response.body.productionLaunchControlCenter?.schemaVersion === 'production-launch-control-center/v1', 'Project API must expose production launch control center.');
 assert(response.body.productionLaunchControlCenter.readyForPrivatePilotAcceptance === true && response.body.productionLaunchControlCenter.readyForProduction === false, 'Production launch control center must carry private-pilot acceptance while keeping production blocked.');
 assert(response.body.productionLaunchControlCenter.controlRows?.length >= 8 && response.body.productionLaunchControlCenter.nextAction?.apiPath, 'Production launch control center must expose gate rows and a routed next action.');
+assert(response.body.productionLaunchControlCenter.controlRows?.some((row) => row.id === 'managed-production-evidence-integrity' && row.ready === false && row.apiPath?.endsWith('/production-evidence-integrity-audit')), 'Production launch control center must gate public production on managed-production evidence integrity.');
 assert(response.body.productionLaunchControlCenter.blockedRows?.length >= 1 && response.body.productionLaunchControlCenter.backendRoutes?.productionLaunchControlCenter?.endsWith('/production-launch-control-center'), 'Production launch control center must expose blocked gates and its own route.');
+
+const productionLaunchEvidenceDossierPath = `/projects/${projectId}/production-launch-evidence-dossier`;
+response = membershipApi.handle({
+  method: 'GET',
+  path: productionLaunchEvidenceDossierPath,
+  headers: signedHeadersFor({
+    method: 'GET',
+    path: productionLaunchEvidenceDossierPath,
+    role: 'security-admin',
+    userId: 'security-lead',
+  }),
+});
+assert(response.status === 200 && response.body.productionLaunchEvidenceDossier?.schemaVersion === 'production-launch-evidence-dossier/v1', 'Project API must expose production launch evidence dossier.');
+assert(response.body.productionLaunchEvidenceDossier.readyForPrivatePilotDossier === true && response.body.productionLaunchEvidenceDossier.readyForProduction === false, 'Production launch evidence dossier must carry private-pilot acceptance while keeping production blocked.');
+assert(response.body.productionLaunchEvidenceDossier.manifest?.length >= 9 && response.body.productionLaunchEvidenceDossier.manifest.some((row) => row.id === 'production-launch-control-center') && response.body.productionLaunchEvidenceDossier.manifest.some((row) => row.id === 'production-evidence-integrity-audit'), 'Production launch evidence dossier must aggregate launch control and evidence integrity evidence.');
+assert(response.body.productionLaunchEvidenceDossier.controlDomainRows?.length === 4 && response.body.productionLaunchEvidenceDossier.openGapRows?.some((row) => row.id === 'managed-production-evidence-integrity'), 'Production launch evidence dossier must expose control domains and open managed-production evidence gaps.');
+assert(response.body.productionLaunchEvidenceDossier.backendRoutes?.productionLaunchEvidenceDossier?.endsWith('/production-launch-evidence-dossier'), 'Production launch evidence dossier must expose its own backend route.');
+
+const productionEvidenceIntegrityAuditPath = `/projects/${projectId}/production-evidence-integrity-audit`;
+response = membershipApi.handle({
+  method: 'GET',
+  path: productionEvidenceIntegrityAuditPath,
+  headers: signedHeadersFor({
+    method: 'GET',
+    path: productionEvidenceIntegrityAuditPath,
+    role: 'manager',
+    userId: 'director',
+  }),
+});
+assert(response.status === 200 && response.body.productionEvidenceIntegrityAudit?.schemaVersion === 'production-evidence-integrity-audit/v1', 'Project API must expose production evidence integrity audit.');
+assert(response.body.productionEvidenceIntegrityAudit.readyForProduction === false && response.body.productionEvidenceIntegrityAudit.summary?.missingControlCount > 0, 'Production evidence integrity audit must require explicit managed-production evidence before launch.');
+assert(response.body.productionEvidenceIntegrityAudit.backendRoutes?.productionEvidenceIntegrityAudit?.endsWith('/production-evidence-integrity-audit'), 'Production evidence integrity audit must expose its own backend route.');
 
 response = membershipApi.handle({
   method: 'GET',
@@ -3236,6 +3353,8 @@ assert(response.body.productionLaunchGapRoutes?.some((route) => route.apiPath?.e
 assert(response.body.productionLaunchGapSummary?.privatePilotAccepted === true && response.body.productionLaunchGapSummary?.readyForProduction === false, 'Readiness Proof Map must summarize production launch gap register without production overclaim.');
 assert(response.body.productionLaunchControlCenterRoutes?.some((route) => route.apiPath?.endsWith('/production-launch-control-center') && route.privatePilotAccepted === true && route.readyForProduction === false && route.proofIds?.length >= 10 && route.timelineLogIds?.length && route.eventIds?.length), 'Readiness Proof Map must include production launch control center routes with proof, timeline, and event links.');
 assert(response.body.productionLaunchControlCenterSummary?.privatePilotAccepted === true && response.body.productionLaunchControlCenterSummary?.readyForProduction === false, 'Readiness Proof Map must summarize production launch control center without production overclaim.');
+assert(response.body.productionLaunchEvidenceDossierRoutes?.some((route) => route.apiPath?.endsWith('/production-launch-evidence-dossier') && route.privatePilotAccepted === true && route.readyForProduction === false), 'Readiness Proof Map must include production launch evidence dossier routes without production overclaim.');
+assert(response.body.productionLaunchEvidenceDossierSummary?.manifestEntryCount >= 9 && response.body.productionLaunchEvidenceDossierSummary?.readyForProduction === false, 'Readiness Proof Map must summarize production launch evidence dossier manifest coverage without production overclaim.');
 assert(response.body.productionOperationsReadinessRoutes?.some((route) => route.apiPath?.endsWith('/production-operations-readiness') && route.readyForPrivatePilotOperations === true && route.readyForProduction === false && route.proofIds?.length >= 10 && route.timelineLogIds?.length && route.eventIds?.length), 'Readiness Proof Map must include production operations readiness routes with proof, timeline, and event links.');
 assert(response.body.productionOperationsReadinessSummary?.count === 1 && response.body.productionOperationsReadinessSummary?.readyForProduction === false && response.body.productionOperationsReadinessSummary?.proofIds?.length >= 10, 'Readiness Proof Map must summarize production operations readiness without claiming production readiness.');
 
@@ -3259,6 +3378,7 @@ assert(response.body.nodes?.some((node) => node.id === 'production-operations-re
 assert(response.body.nodes?.some((node) => node.id === 'private-pilot-go-live-readiness' && node.subtype === 'private-pilot-go-live-readiness' && node.route?.endsWith('/private-pilot-go-live-readiness') && node.proofIds?.length >= 10 && node.timelineLogIds?.length && node.eventIds?.length && node.attachments?.some((attachment) => attachment.type === 'private-pilot-go-live-readiness')), 'Manager Flow Graph must include a proofed private-pilot go-live readiness node.');
 assert(response.body.nodes?.some((node) => node.id === 'production-launch-gap-register' && node.subtype === 'production-launch-gap-register' && node.route?.endsWith('/production-launch-gap-register') && node.proofIds?.length >= 10 && node.timelineLogIds?.length && node.eventIds?.length && node.attachments?.some((attachment) => attachment.type === 'production-launch-gap-register')), 'Manager Flow Graph must include a proofed production launch gap register node.');
 assert(response.body.nodes?.some((node) => node.id === 'production-launch-control-center' && node.subtype === 'production-launch-control-center' && node.route?.endsWith('/production-launch-control-center') && node.proofIds?.length >= 10 && node.timelineLogIds?.length && node.eventIds?.length && node.attachments?.some((attachment) => attachment.type === 'production-launch-control-center')), 'Manager Flow Graph must include a proofed production launch control center node.');
+assert(response.body.nodes?.some((node) => node.id === 'production-launch-evidence-dossier' && node.subtype === 'production-launch-evidence-dossier' && node.route?.endsWith('/production-launch-evidence-dossier') && node.attachments?.some((attachment) => attachment.type === 'production-launch-evidence-dossier')), 'Manager Flow Graph must include the production launch evidence dossier node.');
 assert(response.body.edges?.some((edge) => edge.toNodeId === 'evidence-custody-readiness' && edge.source === 'evidenceCustodyReadiness' && edge.proofIds?.length && edge.timelineLogIds?.length && edge.eventIds?.length), 'Manager Flow Graph must keep custody readiness edges with proof after export handoff.');
 assert(response.body.edges?.some((edge) => edge.source === 'privatePilotReleaseCandidates' && edge.toNodeId.startsWith('private-pilot-release-candidate-') && edge.proofIds?.length >= 6 && edge.timelineLogIds?.length && edge.eventIds?.length), 'Manager Flow Graph must connect release candidate receipts to the project evidence ledger.');
 assert(response.body.edges?.some((edge) => edge.source === 'privatePilotLaunchRuns' && edge.toNodeId.startsWith('private-pilot-launch-run-') && edge.proofIds?.length >= 6 && edge.timelineLogIds?.length && edge.eventIds?.length), 'Manager Flow Graph must connect launch run receipts to the frozen release candidate.');
@@ -3268,6 +3388,9 @@ assert(response.body.edges?.some((edge) => edge.source === 'productionOperations
 assert(response.body.edges?.some((edge) => edge.source === 'privatePilotGoLiveReadiness' && edge.toNodeId === 'private-pilot-go-live-readiness' && edge.proofIds?.length >= 10 && edge.timelineLogIds?.length && edge.eventIds?.length), 'Manager Flow Graph must connect private-pilot lifecycle receipts into the go-live readiness command node.');
 assert(response.body.edges?.some((edge) => edge.source === 'productionLaunchGapRegister' && edge.toNodeId === 'production-launch-gap-register' && edge.proofIds?.length >= 10 && edge.timelineLogIds?.length && edge.eventIds?.length), 'Manager Flow Graph must connect private-pilot and operations proof into the production launch gap register node.');
 assert(response.body.edges?.some((edge) => edge.source === 'productionLaunchControlCenter' && edge.toNodeId === 'production-launch-control-center' && edge.proofIds?.length >= 10 && edge.timelineLogIds?.length && edge.eventIds?.length), 'Manager Flow Graph must connect production launch proof into the production launch control center node.');
+assert(response.body.edges?.some((edge) => edge.source === 'productionLaunchEvidenceDossier' && edge.fromNodeId === 'production-launch-control-center' && edge.toNodeId === 'production-launch-evidence-dossier'), 'Manager Flow Graph must connect production launch control center into the evidence dossier.');
+assert(response.body.edges?.some((edge) => edge.source === 'productionLaunchEvidenceDossier' && edge.fromNodeId === 'production-evidence-integrity-audit' && edge.toNodeId === 'production-launch-evidence-dossier'), 'Manager Flow Graph must connect production evidence integrity into the evidence dossier.');
+assert(response.body.edges?.some((edge) => edge.source === 'productionLaunchEvidenceDossier' && edge.fromNodeId === 'production-launch-gap-register' && edge.toNodeId === 'production-launch-evidence-dossier'), 'Manager Flow Graph must connect production launch gaps into the evidence dossier.');
 
 progress('production operations control receipt checks');
 const productionOperationsControlIds = [
@@ -3592,8 +3715,8 @@ response = membershipApi.handle({
 });
 assert(response.status === 200 && response.body.productionProviderControlReceiptRoutes?.some((route) => route.apiPath?.endsWith('/production-provider-control-receipts') && route.readyForProductionProvider === true && route.proofIds?.length >= 10 && route.timelineLogIds?.length && route.eventIds?.length), 'Readiness Proof Map must include production provider control receipt routes with proof, timeline, and event links.');
 assert(response.body.productionProviderControlReceiptSummary?.readyCount >= 1 && response.body.productionProviderControlReceiptSummary?.readyForProductionProvider === true, 'Readiness Proof Map must summarize verified production provider control receipts.');
-assert(response.body.productionLaunchControlCenterRoutes?.some((route) => route.apiPath?.endsWith('/production-launch-control-center') && route.productionOperationsControlsReady === true && route.productionDeploymentControlsReady === true && route.productionSecurityControlsReady === true && route.productionProviderControlsReady === true && route.readyForProduction === false && route.proofIds?.length >= 10), 'Readiness Proof Map must show operations, deployment, security, and provider controls ready without closing the production launch control center.');
-assert(response.body.productionLaunchControlCenterSummary?.productionOperationsControlsReady === true && response.body.productionLaunchControlCenterSummary?.productionDeploymentControlsReady === true && response.body.productionLaunchControlCenterSummary?.productionSecurityControlsReady === true && response.body.productionLaunchControlCenterSummary?.productionProviderControlsReady === true && response.body.productionLaunchControlCenterSummary?.readyForProduction === false, 'Readiness Proof Map must summarize production provider controls without production overclaim.');
+assert(response.body.productionLaunchControlCenterRoutes?.some((route) => route.apiPath?.endsWith('/production-launch-control-center') && route.productionOperationsControlsReady === true && route.productionDeploymentControlsReady === true && route.productionSecurityControlsReady === true && route.productionProviderControlsReady === true && route.productionEvidenceIntegrityReady === false && route.readyForProduction === false && route.proofIds?.length >= 10), 'Readiness Proof Map must show operations, deployment, security, and provider controls ready while evidence integrity keeps the production launch control center blocked.');
+assert(response.body.productionLaunchControlCenterSummary?.productionOperationsControlsReady === true && response.body.productionLaunchControlCenterSummary?.productionDeploymentControlsReady === true && response.body.productionLaunchControlCenterSummary?.productionSecurityControlsReady === true && response.body.productionLaunchControlCenterSummary?.productionProviderControlsReady === true && response.body.productionLaunchControlCenterSummary?.productionEvidenceIntegrityReady === false && response.body.productionLaunchControlCenterSummary?.readyForProduction === false, 'Readiness Proof Map must summarize production provider controls without production evidence overclaim.');
 
 response = membershipApi.handle({
   method: 'GET',
@@ -3608,6 +3731,256 @@ response = membershipApi.handle({
 assert(response.status === 200 && response.body.nodes?.some((node) => node.subtype === 'production-provider-control-receipt' && node.route?.endsWith('/production-provider-control-receipts') && node.proofIds?.length >= 10 && node.timelineLogIds?.length && node.eventIds?.length && node.attachments?.some((attachment) => attachment.type === 'production-provider-control-receipt')), 'Manager Flow Graph must include a proofed production provider control receipt node.');
 assert(response.body.edges?.some((edge) => edge.source === 'productionProviderControlReceipts' && edge.toNodeId.startsWith('production-provider-control-receipt-') && edge.proofIds?.length >= 10 && edge.timelineLogIds?.length && edge.eventIds?.length), 'Manager Flow Graph must connect production provider control receipts to provider eval proof.');
 assert(response.body.edges?.some((edge) => edge.source === 'productionProviderControlReceipts' && edge.fromNodeId?.startsWith('production-provider-control-receipt-') && edge.toNodeId === 'production-launch-control-center'), 'Manager Flow Graph must connect production provider receipts into the production launch control center.');
+
+response = membershipApi.handle({
+  method: 'GET',
+  path: productionEvidenceIntegrityAuditPath,
+  headers: signedHeadersFor({
+    method: 'GET',
+    path: productionEvidenceIntegrityAuditPath,
+    role: 'manager',
+    userId: 'director',
+  }),
+});
+const totalProductionControlCount = productionOperationsControlIds.length
+  + productionDeploymentControlIds.length
+  + productionSecurityControlIds.length
+  + productionProviderControlIds.length;
+assert(response.status === 200 && response.body.productionEvidenceIntegrityAudit?.schemaVersion === 'production-evidence-integrity-audit/v1', 'Production evidence integrity audit must remain readable after all production receipts are recorded.');
+assert(response.body.productionEvidenceIntegrityAudit.summary?.verifiedControlCount === totalProductionControlCount, 'Production evidence integrity audit must count every receipted production control.');
+assert(response.body.productionEvidenceIntegrityAudit.summary?.missingControlCount === 0, 'Production evidence integrity audit must show no missing receipt controls after receipts are recorded.');
+assert(response.body.productionEvidenceIntegrityAudit.summary?.managedProductionControlCount === 0, 'Production evidence integrity audit must not treat local/test receipt evidence as managed-production proof.');
+assert(response.body.productionEvidenceIntegrityAudit.summary?.localRehearsalControlCount === totalProductionControlCount, 'Production evidence integrity audit must classify current receipt evidence as local rehearsal proof.');
+assert(response.body.productionEvidenceIntegrityAudit.readyForProduction === false && response.body.productionEvidenceIntegrityAudit.readyForManagedProductionEvidence === false, 'Production evidence integrity audit must keep public production blocked until explicit managed-production evidence exists.');
+assert(response.body.productionEvidenceIntegrityAudit.domainRows?.every((row) => row.verifiedControlCount === row.requiredControlCount && row.readyForManagedProductionEvidence === false), 'Production evidence integrity audit must separate full local receipt coverage from managed-production evidence readiness.');
+
+response = membershipApi.handle({
+  method: 'GET',
+  path: `/projects/${projectId}/production-launch-audit`,
+  headers: signedHeadersFor({
+    method: 'GET',
+    path: `/projects/${projectId}/production-launch-audit`,
+    role: 'manager',
+    userId: 'director',
+  }),
+});
+assert(response.status === 200 && response.body.productionLaunchAudit?.productionGates?.some((gate) => gate.id === 'managed-production-evidence-integrity' && gate.passed === false), 'Production launch audit must keep managed-production evidence integrity failed after local/test receipts.');
+assert(response.body.productionLaunchAudit?.productionBlockers?.some((row) => row.id === 'managed-production-evidence-integrity'), 'Production launch audit must keep managed-production evidence integrity in blocker inventory after local/test receipts.');
+assert(response.body.productionLaunchAudit?.summary?.managedProductionEvidenceIntegrityReady === false && response.body.productionLaunchAudit?.summary?.managedProductionEvidenceLocalControlCount === totalProductionControlCount, 'Production launch audit summary must expose local rehearsal receipt coverage without closing production evidence integrity.');
+
+response = membershipApi.handle({
+  method: 'GET',
+  path: productionLaunchGapRegisterPath,
+  headers: signedHeadersFor({
+    method: 'GET',
+    path: productionLaunchGapRegisterPath,
+    role: 'manager',
+    userId: 'director',
+  }),
+});
+assert(response.status === 200 && response.body.productionLaunchGapRegister?.gapRows?.some((row) => row.id === 'managed-production-evidence-integrity' && row.status === 'blocked'), 'Production launch gap register must keep managed-production evidence integrity open after local/test receipts.');
+assert(response.body.productionLaunchGapRegister.summary?.managedProductionEvidenceIntegrityReady === false && response.body.productionLaunchGapRegister.summary?.managedProductionEvidenceLocalControlCount === totalProductionControlCount, 'Production launch gap register summary must expose local rehearsal evidence as a gap.');
+
+response = membershipApi.handle({
+  method: 'GET',
+  path: productionLaunchControlCenterPath,
+  headers: signedHeadersFor({
+    method: 'GET',
+    path: productionLaunchControlCenterPath,
+    role: 'manager',
+    userId: 'director',
+  }),
+});
+assert(response.status === 200 && response.body.productionLaunchControlCenter?.controlRows?.some((row) => row.id === 'managed-production-evidence-integrity' && row.ready === false && row.missing?.length > 0), 'Production launch control center must keep managed-production evidence integrity blocked after local/test receipts.');
+assert(response.body.productionLaunchControlCenter.summary?.productionEvidenceIntegrityReady === false && response.body.productionLaunchControlCenter.summary?.productionEvidenceIntegrityLocalControlCount === totalProductionControlCount, 'Production launch control center summary must expose local rehearsal evidence as a production blocker.');
+
+response = membershipApi.handle({
+  method: 'GET',
+  path: `/projects/${projectId}/readiness-proof-map`,
+  headers: signedHeadersFor({
+    method: 'GET',
+    path: `/projects/${projectId}/readiness-proof-map`,
+    role: 'manager',
+    userId: 'director',
+  }),
+});
+assert(response.status === 200 && response.body.productionEvidenceIntegrityRoutes?.some((route) => route.apiPath?.endsWith('/production-evidence-integrity-audit') && route.verifiedControlCount === totalProductionControlCount && route.localRehearsalControlCount === totalProductionControlCount && route.readyForProduction === false), 'Readiness Proof Map must expose production evidence integrity routes without treating local rehearsal evidence as production proof.');
+assert(response.body.productionEvidenceIntegritySummary?.localRehearsalControlCount === totalProductionControlCount && response.body.productionEvidenceIntegritySummary?.readyForManagedProductionEvidence === false, 'Readiness Proof Map must summarize local rehearsal evidence integrity before managed-production proof is recorded.');
+
+response = membershipApi.handle({
+  method: 'GET',
+  path: `/projects/${projectId}/manager-flow-graph`,
+  headers: signedHeadersFor({
+    method: 'GET',
+    path: `/projects/${projectId}/manager-flow-graph`,
+    role: 'manager',
+    userId: 'director',
+  }),
+});
+assert(response.status === 200 && response.body.nodes?.some((node) => node.id === 'production-evidence-integrity-audit' && node.route?.endsWith('/production-evidence-integrity-audit') && node.status === 'blocked' && node.attachments?.some((attachment) => attachment.type === 'production-evidence-integrity-audit')), 'Manager Flow Graph must include a blocked production evidence integrity audit node after local receipt evidence.');
+assert(response.body.edges?.some((edge) => edge.source === 'productionEvidenceIntegrityAudit' && edge.fromNodeId === 'production-evidence-integrity-audit' && edge.toNodeId === 'production-launch-control-center'), 'Manager Flow Graph must connect production evidence integrity audit into the production launch control center.');
+
+progress('managed production evidence integrity upgrade checks');
+const managedProductionReceiptBatches = [
+  {
+    path: productionOperationsControlReceiptPath,
+    role: 'security-admin',
+    userId: 'security-lead',
+    actorRole: 'security-admin',
+    actorId: 'security-lead',
+    now: '2026-06-01T12:30:00.000Z',
+    prefix: 'managed_ops',
+    routePrefix: 'https://ops.hofsstudio.example',
+    controlIds: productionOperationsControlIds,
+  },
+  {
+    path: productionDeploymentControlReceiptPath,
+    role: 'runtime-platform',
+    userId: 'runtime-ops',
+    actorRole: 'runtime-platform',
+    actorId: 'runtime-ops',
+    now: '2026-06-01T12:32:00.000Z',
+    prefix: 'managed_deploy',
+    routePrefix: 'https://deploy.hofsstudio.example',
+    controlIds: productionDeploymentControlIds,
+  },
+  {
+    path: productionSecurityControlReceiptPath,
+    role: 'security-admin',
+    userId: 'security-lead',
+    actorRole: 'security-admin',
+    actorId: 'security-lead',
+    now: '2026-06-01T12:34:00.000Z',
+    prefix: 'managed_sec',
+    routePrefix: 'https://security.hofsstudio.example',
+    controlIds: productionSecurityControlIds,
+  },
+  {
+    path: productionProviderControlReceiptPath,
+    role: 'runtime-platform',
+    userId: 'runtime-ops',
+    actorRole: 'runtime-platform',
+    actorId: 'runtime-ops',
+    now: '2026-06-01T12:36:00.000Z',
+    prefix: 'managed_provider',
+    routePrefix: 'https://provider.hofsstudio.example',
+    controlIds: productionProviderControlIds,
+  },
+];
+for (const batch of managedProductionReceiptBatches) {
+  response = membershipApi.handle({
+    method: 'POST',
+    path: batch.path,
+    headers: signedHeadersFor({
+      method: 'POST',
+      path: batch.path,
+      role: batch.role,
+      userId: batch.userId,
+    }),
+    body: {
+      actorRole: batch.actorRole,
+      actorId: batch.actorId,
+      reason: 'Record explicit managed-production evidence for production evidence integrity audit verification.',
+      now: batch.now,
+      controls: batch.controlIds.map((controlId) => ({
+        controlId,
+        status: 'verified',
+        evidenceId: `${batch.prefix}_${controlId}_receipt`,
+        evidenceRoute: `${batch.routePrefix}/${controlId}`,
+        evidenceChecksum: `${batch.prefix}_${controlId}_checksum`,
+        evidenceEnvironment: 'managed-production',
+        completedAt: batch.now,
+        ownerRole: batch.actorRole,
+        detail: `Verified ${controlId} with explicit managed-production evidence.`,
+      })),
+    },
+  });
+  assert(response.status === 200, `Managed-production receipt batch must be accepted for ${batch.path}.`);
+}
+
+response = membershipApi.handle({
+  method: 'GET',
+  path: productionEvidenceIntegrityAuditPath,
+  headers: signedHeadersFor({
+    method: 'GET',
+    path: productionEvidenceIntegrityAuditPath,
+    role: 'manager',
+    userId: 'director',
+  }),
+});
+assert(response.status === 200 && response.body.productionEvidenceIntegrityAudit?.schemaVersion === 'production-evidence-integrity-audit/v1', 'Production evidence integrity audit must remain readable after managed-production receipts are recorded.');
+assert(response.body.productionEvidenceIntegrityAudit.summary?.managedProductionControlCount === totalProductionControlCount, 'Production evidence integrity audit must count every explicit managed-production control.');
+assert(response.body.productionEvidenceIntegrityAudit.summary?.localRehearsalControlCount === 0, 'Production evidence integrity audit must let newer managed-production receipts supersede local rehearsal evidence.');
+assert(response.body.productionEvidenceIntegrityAudit.readyForManagedProductionEvidence === true && response.body.productionEvidenceIntegrityAudit.readyForProduction === true, 'Production evidence integrity audit must become production-evidence-ready only after explicit managed-production evidence exists.');
+assert(response.body.productionEvidenceIntegrityAudit.rows?.every((row) => row.evidenceTier === 'managed-production' && row.evidenceEnvironment === 'managed-production'), 'Production evidence integrity audit rows must preserve managed-production environment evidence.');
+assert(response.body.productionEvidenceIntegrityAudit.domainRows?.every((row) => row.readyForManagedProductionEvidence === true), 'Production evidence integrity audit must mark every production control domain ready after explicit managed-production proof.');
+
+response = membershipApi.handle({
+  method: 'GET',
+  path: `/projects/${projectId}/production-launch-audit`,
+  headers: signedHeadersFor({
+    method: 'GET',
+    path: `/projects/${projectId}/production-launch-audit`,
+    role: 'manager',
+    userId: 'director',
+  }),
+});
+assert(response.status === 200 && response.body.productionLaunchAudit?.productionGates?.some((gate) => gate.id === 'managed-production-evidence-integrity' && gate.passed === true), 'Production launch audit must pass managed-production evidence integrity after explicit proof.');
+assert(!response.body.productionLaunchAudit?.productionBlockers?.some((row) => row.id === 'managed-production-evidence-integrity'), 'Production launch audit must remove managed-production evidence integrity from blockers after explicit proof.');
+assert(response.body.productionLaunchAudit?.productionDecision === 'no-go' && response.body.productionLaunchAudit?.summary?.managedProductionEvidenceIntegrityReady === true, 'Production launch audit must expose evidence integrity readiness while broader public production can remain no-go.');
+
+response = membershipApi.handle({
+  method: 'GET',
+  path: productionLaunchGapRegisterPath,
+  headers: signedHeadersFor({
+    method: 'GET',
+    path: productionLaunchGapRegisterPath,
+    role: 'manager',
+    userId: 'director',
+  }),
+});
+assert(response.status === 200 && !response.body.productionLaunchGapRegister?.gapRows?.some((row) => row.id === 'managed-production-evidence-integrity'), 'Production launch gap register must close the managed-production evidence integrity gap after explicit proof.');
+assert(response.body.productionLaunchGapRegister.summary?.managedProductionEvidenceIntegrityReady === true && response.body.productionLaunchGapRegister.readyForProduction === false, 'Production launch gap register must expose evidence integrity closure without overclaiming broader production readiness.');
+
+response = membershipApi.handle({
+  method: 'GET',
+  path: productionLaunchControlCenterPath,
+  headers: signedHeadersFor({
+    method: 'GET',
+    path: productionLaunchControlCenterPath,
+    role: 'manager',
+    userId: 'director',
+  }),
+});
+assert(response.status === 200 && response.body.productionLaunchControlCenter?.controlRows?.some((row) => row.id === 'managed-production-evidence-integrity' && row.ready === true), 'Production launch control center must mark managed-production evidence integrity ready after explicit proof.');
+assert(response.body.productionLaunchControlCenter.summary?.productionEvidenceIntegrityReady === true && response.body.productionLaunchControlCenter.readyForProduction === false, 'Production launch control center must expose evidence integrity readiness while broader launch controls can still keep production no-go.');
+
+response = membershipApi.handle({
+  method: 'GET',
+  path: `/projects/${projectId}/readiness-proof-map`,
+  headers: signedHeadersFor({
+    method: 'GET',
+    path: `/projects/${projectId}/readiness-proof-map`,
+    role: 'manager',
+    userId: 'director',
+  }),
+});
+assert(response.status === 200 && response.body.productionEvidenceIntegrityRoutes?.some((route) => route.apiPath?.endsWith('/production-evidence-integrity-audit') && route.managedProductionControlCount === totalProductionControlCount && route.readyForManagedProductionEvidence === true), 'Readiness Proof Map must upgrade production evidence integrity routes after managed-production proof is recorded.');
+assert(response.body.productionEvidenceIntegritySummary?.managedProductionControlCount === totalProductionControlCount && response.body.productionEvidenceIntegritySummary?.readyForProduction === true, 'Readiness Proof Map must summarize managed-production evidence readiness after explicit proof.');
+assert(response.body.productionLaunchControlCenterRoutes?.some((route) => route.apiPath?.endsWith('/production-launch-control-center') && route.productionEvidenceIntegrityReady === true && route.productionEvidenceIntegrityManagedControlCount === totalProductionControlCount && route.readyForProduction === false), 'Readiness Proof Map must feed managed-production evidence integrity readiness into the production launch control center route.');
+assert(response.body.productionLaunchControlCenterSummary?.productionEvidenceIntegrityReady === true && response.body.productionLaunchControlCenterSummary?.productionEvidenceIntegrityManagedControlCount === totalProductionControlCount, 'Readiness Proof Map launch control summary must expose managed-production evidence integrity readiness.');
+
+response = membershipApi.handle({
+  method: 'GET',
+  path: `/projects/${projectId}/manager-flow-graph`,
+  headers: signedHeadersFor({
+    method: 'GET',
+    path: `/projects/${projectId}/manager-flow-graph`,
+    role: 'manager',
+    userId: 'director',
+  }),
+});
+assert(response.status === 200 && response.body.nodes?.some((node) => node.id === 'production-evidence-integrity-audit' && node.status === 'confirmed' && node.proofIds?.length >= totalProductionControlCount), 'Manager Flow Graph must upgrade the production evidence integrity audit node after managed-production proof.');
 
 response = membershipApi.handle({
   method: 'GET',

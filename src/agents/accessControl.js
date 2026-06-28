@@ -841,6 +841,24 @@ export function classifyAccessRequest({ method = 'GET', path = '/', body = {} } 
       allowedRoles: ['manager', 'runtime-platform', 'security-admin', 'observer'],
     });
   }
+  if (action === 'production-launch-evidence-dossier') {
+    return accessRoute({
+      routeKey: 'production-launch-evidence-dossier',
+      capability: 'read production launch evidence dossier and manifest',
+      sensitivity: 'production-launch-evidence-dossier',
+      projectId,
+      allowedRoles: ['manager', 'runtime-platform', 'security-admin', 'observer'],
+    });
+  }
+  if (action === 'production-evidence-integrity-audit') {
+    return accessRoute({
+      routeKey: 'production-evidence-integrity-audit',
+      capability: 'read production control receipt evidence integrity audit',
+      sensitivity: 'production-control-receipt-evidence-integrity',
+      projectId,
+      allowedRoles: ['manager', 'runtime-platform', 'security-admin', 'operations-owner', 'observer'],
+    });
+  }
   if (action === 'operations-readiness') {
     return accessRoute({
       routeKey: 'operations-readiness',
@@ -945,6 +963,15 @@ export function classifyAccessRequest({ method = 'GET', path = '/', body = {} } 
       routeKey: 'evidence-quality-audit',
       capability: 'read evidence quality and source-safety audit',
       sensitivity: 'evidence-quality-and-source-safety-audit',
+      projectId,
+      allowedRoles: ['manager', 'security-admin', 'observer'],
+    });
+  }
+  if (action === 'brainstorm-layer') {
+    return accessRoute({
+      routeKey: 'brainstorm-layer',
+      capability: 'read brainstorm alternatives and synthesis layer',
+      sensitivity: 'brainstorm-artifacts-and-product-team-synthesis',
       projectId,
       allowedRoles: ['manager', 'security-admin', 'observer'],
     });
@@ -1355,6 +1382,8 @@ export function buildAccessControlPolicySnapshot() {
       { id: 'private-pilot-go-live-readiness-read', roles: ['manager', 'runtime-platform', 'security-admin', 'observer'], examples: ['/projects/:id/private-pilot-go-live-readiness'] },
       { id: 'production-launch-gap-register-read', roles: ['manager', 'runtime-platform', 'security-admin', 'observer'], examples: ['/projects/:id/production-launch-gap-register'] },
       { id: 'production-launch-control-center-read', roles: ['manager', 'runtime-platform', 'security-admin', 'observer'], examples: ['/projects/:id/production-launch-control-center'] },
+      { id: 'production-launch-evidence-dossier-read', roles: ['manager', 'runtime-platform', 'security-admin', 'observer'], examples: ['/projects/:id/production-launch-evidence-dossier'] },
+      { id: 'production-evidence-integrity-audit-read', roles: ['manager', 'runtime-platform', 'security-admin', 'operations-owner', 'observer'], examples: ['/projects/:id/production-evidence-integrity-audit'] },
       { id: 'evidence-quality-audit-read', roles: ['manager', 'security-admin', 'observer'], examples: ['/projects/:id/evidence-quality-audit'] },
       { id: 'artifact-quality-audit-read', roles: ['manager', 'security-admin', 'observer'], examples: ['/projects/:id/artifact-quality-audit'] },
       { id: 'submission-review-workflow-read', roles: ['manager', 'security-admin', 'observer'], examples: ['/projects/:id/submission-review-workflow'] },

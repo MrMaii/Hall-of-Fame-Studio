@@ -6804,6 +6804,16 @@ export default function EngineWorkspace() {
         apiPath: backendManagerReadyPackage?.backendRoutes?.productionProviderControlReceipts || (activeProject?.id ? `/projects/${activeProject.id}/production-provider-control-receipts` : null),
       },
       {
+        id: 'managed-production-evidence-integrity',
+        label: 'Managed production evidence integrity',
+        owner: 'runtime-platform',
+        domain: 'release-governance',
+        ready: Boolean(backendManagerReadyPackage?.productionEvidenceIntegrityAudit?.readyForManagedProductionEvidence),
+        status: backendManagerReadyPackage?.productionEvidenceIntegrityAudit?.readyForManagedProductionEvidence ? 'ready' : 'blocked',
+        detail: `${backendManagerReadyPackage?.productionEvidenceIntegrityAudit?.summary?.managedProductionControlCount ?? 0}/${backendManagerReadyPackage?.productionEvidenceIntegrityAudit?.summary?.requiredControlCount ?? 0} controls have managed-production evidence.`,
+        apiPath: backendManagerReadyPackage?.backendRoutes?.productionEvidenceIntegrityAudit || (activeProject?.id ? `/projects/${activeProject.id}/production-evidence-integrity-audit` : null),
+      },
+      {
         id: 'production-launch-approvals',
         label: 'Production launch approvals',
         owner: 'manager',
@@ -6827,6 +6837,7 @@ export default function EngineWorkspace() {
       nextAction: backendProductionLaunchControlRowsFallback.find(row => !row.ready) || null,
       backendRoutes: {
         productionLaunchControlCenter: backendManagerReadyPackage.backendRoutes?.productionLaunchControlCenter || (activeProject?.id ? `/projects/${activeProject.id}/production-launch-control-center` : null),
+        productionEvidenceIntegrityAudit: backendManagerReadyPackage.backendRoutes?.productionEvidenceIntegrityAudit || (activeProject?.id ? `/projects/${activeProject.id}/production-evidence-integrity-audit` : null),
       },
       summary: {
         controlCount: backendProductionLaunchControlRowsFallback.length,
@@ -6835,6 +6846,100 @@ export default function EngineWorkspace() {
         ownerCount: new Set(backendProductionLaunchControlRowsFallback.map(row => row.owner)).size,
         openGapCount: backendProductionLaunchGapRegister?.summary?.openGapCount || 0,
         privatePilotAccepted: Boolean(backendPrivatePilotGoLiveReadiness?.readyForPrivatePilotAcceptance),
+      },
+    } : null);
+    const backendProductionEvidenceIntegrityAudit = backendManagerReadyPackage?.productionEvidenceIntegrityAudit || (backendManagerReadyPackage ? {
+      schemaVersion: 'production-evidence-integrity-audit/v1',
+      status: 'production-control-receipts-needed',
+      readyForPrivatePilotEvidence: false,
+      readyForManagedProductionEvidence: false,
+      readyForProduction: false,
+      rows: [],
+      domainRows: [],
+      backendRoutes: {
+        productionEvidenceIntegrityAudit: backendManagerReadyPackage.backendRoutes?.productionEvidenceIntegrityAudit || (activeProject?.id ? `/projects/${activeProject.id}/production-evidence-integrity-audit` : null),
+      },
+      summary: {
+        domainCount: 0,
+        requiredControlCount: 0,
+        verifiedControlCount: 0,
+        managedProductionControlCount: 0,
+        localRehearsalControlCount: 0,
+        externalUnattestedControlCount: 0,
+        missingControlCount: 0,
+      },
+    } : null);
+    const backendProductionLaunchEvidenceDossier = backendManagerReadyPackage?.productionLaunchEvidenceDossier || (backendManagerReadyPackage ? {
+      schemaVersion: 'production-launch-evidence-dossier/v1',
+      status: backendProductionLaunchControlCenter?.readyForPrivatePilotAcceptance ? 'private-pilot-dossier-ready-production-evidence-needed' : 'production-evidence-dossier-building',
+      readyForPrivatePilotDossier: Boolean(backendProductionLaunchControlCenter?.readyForPrivatePilotAcceptance),
+      readyForProduction: false,
+      productionDecision: 'no-go',
+      controlDomainRows: ['operations', 'deployment', 'security', 'provider'].map((domain) => {
+        const evidenceRow = (backendProductionEvidenceIntegrityAudit?.domainRows || []).find((row) => row.domain === domain) || {};
+        return {
+          id: domain,
+          label: `${domain} production controls`,
+          owner: domain === 'security' ? 'security-admin' : domain === 'operations' ? 'operations-owner' : 'runtime-platform',
+          status: evidenceRow.readyForManagedProductionEvidence ? 'managed-production-evidence-ready' : 'managed-production-evidence-needed',
+          readyForProduction: Boolean(evidenceRow.readyForManagedProductionEvidence),
+          requiredControlCount: evidenceRow.requiredControlCount || 0,
+          verifiedControlCount: evidenceRow.verifiedControlCount || 0,
+          managedProductionControlCount: evidenceRow.managedProductionControlCount || 0,
+          localRehearsalControlCount: evidenceRow.localRehearsalControlCount || 0,
+          missingEvidenceControlCount: evidenceRow.missingControlCount || 0,
+          apiPath: backendManagerReadyPackage.backendRoutes?.[`production${domain.charAt(0).toUpperCase()}${domain.slice(1)}ControlReceipts`] || null,
+        };
+      }),
+      manifest: [
+        ['production-launch-audit', backendManagerReadyPackage.productionLaunchAudit, backendManagerReadyPackage.backendRoutes?.productionLaunchAudit],
+        ['production-launch-gap-register', backendProductionLaunchGapRegister, backendManagerReadyPackage.backendRoutes?.productionLaunchGapRegister],
+        ['production-launch-control-center', backendProductionLaunchControlCenter, backendManagerReadyPackage.backendRoutes?.productionLaunchControlCenter],
+        ['production-evidence-integrity-audit', backendProductionEvidenceIntegrityAudit, backendManagerReadyPackage.backendRoutes?.productionEvidenceIntegrityAudit],
+        ['private-pilot-go-live-readiness', backendPrivatePilotGoLiveReadiness, backendManagerReadyPackage.backendRoutes?.privatePilotGoLiveReadiness],
+        ['deployment-preflight', backendManagerReadyPackage.deploymentPreflight, backendManagerReadyPackage.backendRoutes?.deploymentPreflight],
+        ['security-boundary', backendManagerReadyPackage.securityBoundary, backendManagerReadyPackage.backendRoutes?.securityBoundary],
+        ['provider-readiness', backendManagerReadyPackage.providerReadiness, backendManagerReadyPackage.backendRoutes?.providerReadiness],
+        ['operations-readiness', backendManagerReadyPackage.operationsReadiness, backendManagerReadyPackage.backendRoutes?.operationsReadiness],
+      ].map(([id, model, apiPath]) => ({
+        id,
+        label: id.split('-').map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(' '),
+        apiPath,
+        schemaVersion: model?.schemaVersion || null,
+        status: model?.status || model?.productionDecision || 'unknown',
+        ready: Boolean(model?.readyForProduction || model?.readyForPrivatePilot || model?.readyForPrivatePilotAcceptance || model?.readyForManagedProductionEvidence),
+      })),
+      openGapRows: backendProductionLaunchGapRegister?.gapRows || [],
+      evidenceTierSummary: backendProductionEvidenceIntegrityAudit?.summary || {},
+      backendRoutes: {
+        productionLaunchEvidenceDossier: backendManagerReadyPackage.backendRoutes?.productionLaunchEvidenceDossier || (activeProject?.id ? `/projects/${activeProject.id}/production-launch-evidence-dossier` : null),
+        productionLaunchControlCenter: backendManagerReadyPackage.backendRoutes?.productionLaunchControlCenter || (activeProject?.id ? `/projects/${activeProject.id}/production-launch-control-center` : null),
+        productionEvidenceIntegrityAudit: backendManagerReadyPackage.backendRoutes?.productionEvidenceIntegrityAudit || (activeProject?.id ? `/projects/${activeProject.id}/production-evidence-integrity-audit` : null),
+      },
+      summary: {
+        manifestEntryCount: 9,
+        controlDomainCount: 4,
+        readyDomainCount: 0,
+        managedProductionDomainCount: 0,
+        openGapCount: backendProductionLaunchGapRegister?.summary?.openGapCount || 0,
+        proofIdCount: 0,
+        readyForProduction: false,
+      },
+    } : null);
+    const backendBrainstormLayer = backendManagerReadyPackage?.brainstormLayer || (backendManagerReadyPackage ? {
+      schemaVersion: 'brainstorm-layer/v1',
+      status: backendManagerReadyPackage.summary?.brainstormLayerReady ? 'brainstorm-layer-ready' : 'brainstorm-layer-needs-work',
+      readyForPrivatePilotBrainstorm: Boolean(backendManagerReadyPackage.summary?.brainstormLayerReady),
+      readyForProduction: false,
+      rows: [],
+      gates: [],
+      backendRoutes: {
+        brainstormLayer: backendManagerReadyPackage.backendRoutes?.brainstormLayer || (activeProject?.id ? `/projects/${activeProject.id}/brainstorm-layer` : null),
+      },
+      summary: {
+        brainstormBoardCount: backendManagerReadyPackage.summary?.brainstormLayerBoardCount || 0,
+        alternativeCount: backendManagerReadyPackage.summary?.brainstormLayerAlternativeCount || 0,
+        failedGateCount: backendManagerReadyPackage.summary?.brainstormLayerFailedGateCount || 0,
       },
     } : null);
     const backendPrivatePilotReleaseCandidateWorkflow = backendManagerReadyPackage?.privatePilotReleaseCandidateWorkflow || null;
@@ -10901,6 +11006,50 @@ export default function EngineWorkspace() {
                             </div>
                           </div>
                         )}
+                        {backendBrainstormLayer && (
+                          <div data-testid="backend-brainstorm-layer-snapshot" className="mt-3 border border-[#d8c99f] bg-[#efe2bd]/55 p-2">
+                            <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                              <div className="min-w-0">
+                                <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">{projectText('Brainstorm Layer')}</div>
+                                <div className="font-serif text-base leading-tight">{projectText(backendBrainstormLayer.status || 'brainstorm-layer-needs-work')}</div>
+                              </div>
+                              <span className={`node-status-tag ${backendBrainstormLayer.readyForPrivatePilotBrainstorm ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
+                                {backendBrainstormLayer.readyForPrivatePilotBrainstorm ? projectText('local ready') : projectText('needs work')}
+                              </span>
+                            </div>
+                            <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2">
+                              {[
+                                [projectText('Boards'), backendBrainstormLayer.summary?.brainstormBoardCount ?? 0],
+                                [projectText('Alternatives'), backendBrainstormLayer.summary?.alternativeCount ?? 0],
+                                [projectText('Participants'), backendBrainstormLayer.summary?.participantCount ?? 0],
+                                [projectText('Evidence'), backendBrainstormLayer.summary?.evidenceSearchCount ?? 0],
+                                [projectText('Downstream'), backendBrainstormLayer.summary?.downstreamArtifactCount ?? 0],
+                                [projectText('Failed Gates'), backendBrainstormLayer.summary?.failedGateCount ?? 0],
+                                [projectText('Proofs'), backendBrainstormLayer.summary?.proofIdCount ?? 0],
+                                [projectText('Packet'), backendBrainstormLayer.checksum || 'missing'],
+                              ].map(([label, value]) => (
+                                <div key={`brainstorm-layer-${label}`} className="border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                  <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">{label}</div>
+                                  <div className="font-serif text-sm leading-tight break-words">{value}</div>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="mt-2 space-y-1">
+                              {(backendBrainstormLayer.rows || []).slice(0, 3).map(row => (
+                                <div key={`brainstorm-layer-row-${row.id}`} className="grid grid-cols-[1fr_auto] gap-2 border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                  <div className="min-w-0">
+                                    <div className="font-serif text-sm leading-tight truncate">{row.title || row.submissionId}</div>
+                                    <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] truncate">{row.agentName || row.agentId || 'agent'} / {row.taskId || 'task'}</div>
+                                  </div>
+                                  <span className="node-status-tag bg-[#251b13] text-[#efe2bd]">{row.alternativeCount ?? 0} {projectText('options')}</span>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#9b875c]">
+                              {projectText('Brainstorm route')}: {backendBrainstormLayer.backendRoutes?.brainstormLayer || backendManagerReadyPackage.backendRoutes?.brainstormLayer || `/projects/${activeProject.id}/brainstorm-layer`}
+                            </div>
+                          </div>
+                        )}
                         {backendArtifactQualityAudit && (
                           <div data-testid="backend-artifact-quality-audit-snapshot" className="mt-3 border border-[#d8c99f] bg-[#efe2bd]/55 p-2">
                             <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
@@ -11277,6 +11426,103 @@ export default function EngineWorkspace() {
                             </div>
                             <div className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#9b875c]">
                               {projectText('Control center route')}: {backendProductionLaunchControlCenter.backendRoutes?.productionLaunchControlCenter || backendManagerReadyPackage.backendRoutes?.productionLaunchControlCenter || `/projects/${activeProject.id}/production-launch-control-center`}
+                            </div>
+                          </div>
+                        )}
+                        {backendProductionLaunchEvidenceDossier && (
+                          <div data-testid="backend-production-launch-evidence-dossier-snapshot" className="mt-3 border border-[#d8c99f] bg-[#efe2bd]/55 p-2">
+                            <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                              <div className="min-w-0">
+                                <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">{projectText('Production Launch Evidence Dossier')}</div>
+                                <div className="font-serif text-base leading-tight">{projectText(backendProductionLaunchEvidenceDossier.status || 'production-evidence-dossier-building')}</div>
+                              </div>
+                              <span className={`node-status-tag ${backendProductionLaunchEvidenceDossier.readyForProduction ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
+                                {backendProductionLaunchEvidenceDossier.readyForProduction ? projectText('production ready') : projectText('production no-go')}
+                              </span>
+                            </div>
+                            <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2">
+                              {[
+                                [projectText('Manifest'), backendProductionLaunchEvidenceDossier.summary?.manifestEntryCount ?? backendProductionLaunchEvidenceDossier.manifest?.length ?? 0],
+                                [projectText('Domains'), backendProductionLaunchEvidenceDossier.summary?.controlDomainCount ?? backendProductionLaunchEvidenceDossier.controlDomainRows?.length ?? 0],
+                                [projectText('Ready Domains'), backendProductionLaunchEvidenceDossier.summary?.readyDomainCount ?? 0],
+                                [projectText('Managed Domains'), backendProductionLaunchEvidenceDossier.summary?.managedProductionDomainCount ?? 0],
+                                [projectText('Open Gaps'), backendProductionLaunchEvidenceDossier.summary?.openGapCount ?? backendProductionLaunchEvidenceDossier.openGapRows?.length ?? 0],
+                                [projectText('Proofs'), backendProductionLaunchEvidenceDossier.summary?.proofIdCount ?? backendProductionLaunchEvidenceDossier.proofIds?.length ?? 0],
+                                [projectText('Private Pilot'), backendProductionLaunchEvidenceDossier.readyForPrivatePilotDossier ? projectText('dossier ready') : projectText('building')],
+                                [projectText('Decision'), backendProductionLaunchEvidenceDossier.productionDecision || 'no-go'],
+                              ].map(([label, value]) => (
+                                <div key={`production-launch-evidence-dossier-${label}`} className="border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                  <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">{label}</div>
+                                  <div className="font-serif text-sm leading-tight break-words">{value}</div>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="mt-2 space-y-1">
+                              {(backendProductionLaunchEvidenceDossier.controlDomainRows || []).slice(0, 4).map(row => (
+                                <div key={`production-launch-evidence-dossier-domain-${row.id}`} className="grid grid-cols-[1fr_auto] gap-2 border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                  <div className="min-w-0">
+                                    <div className="font-serif text-sm leading-tight truncate">{row.label || row.id}</div>
+                                    <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] truncate">{row.owner || 'manager'} / {row.verifiedControlCount ?? 0}/{row.requiredControlCount ?? 0} verified</div>
+                                    <div className="font-mono text-[7px] uppercase tracking-widest text-[#9b875c] truncate">managed {row.managedProductionControlCount ?? 0} / local {row.localRehearsalControlCount ?? 0} / missing {row.missingEvidenceControlCount ?? row.missingControlCount ?? 0}</div>
+                                    {row.apiPath && (
+                                      <div className="font-mono text-[7px] uppercase tracking-widest text-[#9b875c] truncate">Route: {row.apiPath}</div>
+                                    )}
+                                  </div>
+                                  <span className={`node-status-tag ${row.readyForProduction ? 'bg-[#59684b] text-white' : 'bg-[#251b13] text-[#efe2bd]'}`}>
+                                    {row.readyForProduction ? projectText('ready') : projectText('blocked')}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#9b875c]">
+                              {projectText('Dossier route')}: {backendProductionLaunchEvidenceDossier.backendRoutes?.productionLaunchEvidenceDossier || backendManagerReadyPackage.backendRoutes?.productionLaunchEvidenceDossier || `/projects/${activeProject.id}/production-launch-evidence-dossier`}
+                            </div>
+                          </div>
+                        )}
+                        {backendProductionEvidenceIntegrityAudit && (
+                          <div data-testid="backend-production-evidence-integrity-audit-snapshot" className="mt-3 border border-[#d8c99f] bg-[#efe2bd]/55 p-2">
+                            <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                              <div className="min-w-0">
+                                <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">{projectText('Production Evidence Integrity Audit')}</div>
+                                <div className="font-serif text-base leading-tight">{projectText(backendProductionEvidenceIntegrityAudit.status || 'managed-production-evidence-needed')}</div>
+                              </div>
+                              <span className={`node-status-tag ${backendProductionEvidenceIntegrityAudit.readyForManagedProductionEvidence ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
+                                {backendProductionEvidenceIntegrityAudit.readyForManagedProductionEvidence ? projectText('managed proof ready') : projectText('production proof needed')}
+                              </span>
+                            </div>
+                            <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2">
+                              {[
+                                [projectText('Controls'), backendProductionEvidenceIntegrityAudit.summary?.requiredControlCount ?? 0],
+                                [projectText('Verified'), backendProductionEvidenceIntegrityAudit.summary?.verifiedControlCount ?? 0],
+                                [projectText('Managed Proof'), backendProductionEvidenceIntegrityAudit.summary?.managedProductionControlCount ?? 0],
+                                [projectText('Local Rehearsal'), backendProductionEvidenceIntegrityAudit.summary?.localRehearsalControlCount ?? 0],
+                                [projectText('External Unattested'), backendProductionEvidenceIntegrityAudit.summary?.externalUnattestedControlCount ?? 0],
+                                [projectText('Missing'), backendProductionEvidenceIntegrityAudit.summary?.missingControlCount ?? 0],
+                                [projectText('Domains'), backendProductionEvidenceIntegrityAudit.summary?.domainCount ?? 0],
+                                [projectText('Production'), backendProductionEvidenceIntegrityAudit.readyForProduction ? projectText('ready') : projectText('no-go')],
+                              ].map(([label, value]) => (
+                                <div key={`production-evidence-integrity-${label}`} className="border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                  <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">{label}</div>
+                                  <div className="font-serif text-sm leading-tight break-words">{value}</div>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="mt-2 space-y-1">
+                              {(backendProductionEvidenceIntegrityAudit.domainRows || []).slice(0, 4).map(row => (
+                                <div key={`production-evidence-integrity-domain-${row.domain}`} className="grid grid-cols-[1fr_auto] gap-2 border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                  <div className="min-w-0">
+                                    <div className="font-serif text-sm leading-tight truncate">{row.domain || 'production'}</div>
+                                    <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] truncate">{row.owner || 'manager'} / {row.verifiedControlCount ?? 0}/{row.requiredControlCount ?? 0} verified</div>
+                                    <div className="font-mono text-[7px] uppercase tracking-widest text-[#9b875c] truncate">managed {row.managedProductionControlCount ?? 0} / local {row.localRehearsalControlCount ?? 0} / missing {row.missingControlCount ?? 0}</div>
+                                  </div>
+                                  <span className={`node-status-tag ${row.readyForManagedProductionEvidence ? 'bg-[#59684b] text-white' : 'bg-[#251b13] text-[#efe2bd]'}`}>
+                                    {row.readyForManagedProductionEvidence ? projectText('managed') : projectText('blocked')}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#9b875c]">
+                              {projectText('Evidence integrity route')}: {backendProductionEvidenceIntegrityAudit.backendRoutes?.productionEvidenceIntegrityAudit || backendManagerReadyPackage.backendRoutes?.productionEvidenceIntegrityAudit || `/projects/${activeProject.id}/production-evidence-integrity-audit`}
                             </div>
                           </div>
                         )}
@@ -14359,6 +14605,59 @@ export default function EngineWorkspace() {
                                       <div className="mt-1 font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">
                                         Synced {agentBackendDashboard.syncedAt ? new Date(agentBackendDashboard.syncedAt).toLocaleTimeString() : 'from backend'}
                                       </div>
+                                      {agentBackendDashboard.brainstormContribution && (
+                                        <div data-testid={`agent-focus-brainstorm-contribution-${agent.id}`} className="mt-2 border-t border-[#d8c99f] pt-2">
+                                          <div className="flex flex-col gap-1 md:flex-row md:items-start md:justify-between">
+                                            <div>
+                                              <div className="font-mono text-[7px] uppercase tracking-widest text-[#8f1e18]">Brainstorm Contribution</div>
+                                              <div className="font-serif text-sm leading-tight">
+                                                {agentBackendDashboard.brainstormContribution.status || 'no-brainstorm-contribution'}
+                                              </div>
+                                            </div>
+                                            <span className="node-status-tag bg-[#251b13] text-[#efe2bd]">
+                                              {agentBackendDashboard.brainstormContribution.summary?.alternativeCount || 0} directions
+                                            </span>
+                                          </div>
+                                          <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2">
+                                            {[
+                                              ['Boards', agentBackendDashboard.brainstormContribution.summary?.brainstormBoardCount || 0],
+                                              ['Evidence', agentBackendDashboard.brainstormContribution.summary?.projectEvidenceSearchCount || 0],
+                                              ['Downstream', agentBackendDashboard.brainstormContribution.summary?.projectDownstreamArtifactCount || 0],
+                                              ['Proofs', agentBackendDashboard.brainstormContribution.summary?.proofIdCount || 0],
+                                            ].map(([label, value]) => (
+                                              <div key={`agent-brainstorm-${agent.id}-${label}`} className="border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                                <div className="font-mono text-[7px] uppercase tracking-widest text-[#8f1e18]">{label}</div>
+                                                <div className="font-serif text-base leading-tight">{value}</div>
+                                              </div>
+                                            ))}
+                                          </div>
+                                          {agentBackendDashboard.brainstormContribution.rows?.length > 0 && (
+                                            <div className="mt-2 space-y-1">
+                                              {agentBackendDashboard.brainstormContribution.rows.slice(0, 2).map(row => (
+                                                <div key={row.id} className="border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                                  <div className="grid grid-cols-[1fr_auto] gap-2">
+                                                    <div className="min-w-0">
+                                                      <div className="font-serif text-sm leading-tight truncate">{row.title}</div>
+                                                      <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] truncate">
+                                                        {row.alternativeCount || 0} alternatives / {row.proofIds?.length || 0} proof
+                                                      </div>
+                                                    </div>
+                                                    <span className="node-status-tag bg-[#251b13] text-[#efe2bd]">brainstorm</span>
+                                                  </div>
+                                                  {row.alternatives?.length > 0 && (
+                                                    <div className="mt-1 font-mono text-[7px] uppercase tracking-widest text-[#4d412d] truncate">
+                                                      {row.alternatives.slice(0, 3).map(item => item.label).join(' / ')}
+                                                    </div>
+                                                  )}
+                                                </div>
+                                              ))}
+                                            </div>
+                                          )}
+                                          <div className="mt-1 font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] break-words">
+                                            Brainstorm route: {agentBackendDashboard.brainstormContribution.backendRoutes?.brainstormLayer || agentBackendDashboard.backendRoutes?.brainstormLayer || `/projects/${activeProject.id}/brainstorm-layer`}
+                                          </div>
+                                        </div>
+                                      )}
                                       {agentBackendDashboard.ownedSubmissions?.length > 0 && (
                                         <div data-testid={`agent-focus-submissions-${agent.id}`} className="mt-2 border-t border-[#d8c99f] pt-2">
                                           <div className="font-mono text-[7px] uppercase tracking-widest text-[#8f1e18]">Owned Submissions</div>
