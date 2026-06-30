@@ -33,6 +33,7 @@ Core resources:
 - `scripts/package_dist.py`: package per-persona distributable SKILL artifacts.
 - `scripts/migrate_layout.py`: migrate legacy `personas/` structure to source/build.
 - `scripts/run_pipeline.py`: 一键执行 validate -> compile -> mindframe -> package -> clean -> audit -> regression。
+- The default pipeline is self-contained: it reads local persona source, generates registry/mindframe/dist artifacts, cleans historical external-tool traces, audits the output, and does not require an external toolkit checkout.
 - `scripts/privatize_audit.py`: 扫描产物中是否残留外部工具指纹。
 - `scripts/clean_external_traces.py`: 清理历史外部工具产物残留。
 - `references/regression-cases.json`: baseline task set for Top1/Top3 behavior checks.

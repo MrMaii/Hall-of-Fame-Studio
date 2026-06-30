@@ -13,12 +13,12 @@
     "skillPath": "personas/musk/SKILL.md",
     "skillMeta": {
       "path": "personas/musk/SKILL.md",
-      "lineCount": 373,
-      "charCount": 9632,
-      "modelCount": 5,
+      "lineCount": 104,
+      "charCount": 2611,
+      "modelCount": 4,
       "quality": "imported",
-      "hasAgentic": true,
-      "preview": "\"The only rules you have to follow are the laws of physics — everything else is a recommendation.\""
+      "hasAgentic": false,
+      "preview": "Hall of Fame Studio 人物认知框架。由人物注册表编制，用于任务匹配、圆桌协作与角色激活。"
     }
   },
   "buffett": {
@@ -35,12 +35,12 @@
     "skillPath": "personas/buffett/SKILL.md",
     "skillMeta": {
       "path": "personas/buffett/SKILL.md",
-      "lineCount": 244,
-      "charCount": 5064,
-      "modelCount": 6,
+      "lineCount": 104,
+      "charCount": 2583,
+      "modelCount": 4,
       "quality": "generated",
-      "hasAgentic": true,
-      "preview": "看不懂的机会，不是真正属于你的机会。"
+      "hasAgentic": false,
+      "preview": "Hall of Fame Studio 人物认知框架。由人物注册表编制，用于任务匹配、圆桌协作与角色激活。"
     }
   },
   "curie": {
@@ -57,12 +57,12 @@
     "skillPath": "personas/curie/SKILL.md",
     "skillMeta": {
       "path": "personas/curie/SKILL.md",
-      "lineCount": 244,
-      "charCount": 4874,
-      "modelCount": 6,
+      "lineCount": 104,
+      "charCount": 2457,
+      "modelCount": 4,
       "quality": "generated",
-      "hasAgentic": true,
-      "preview": "先证明它，再相信它。"
+      "hasAgentic": false,
+      "preview": "Hall of Fame Studio 人物认知框架。由人物注册表编制，用于任务匹配、圆桌协作与角色激活。"
     }
   },
   "confucius": {
@@ -79,12 +79,12 @@
     "skillPath": "personas/confucius/SKILL.md",
     "skillMeta": {
       "path": "personas/confucius/SKILL.md",
-      "lineCount": 244,
-      "charCount": 4967,
-      "modelCount": 6,
+      "lineCount": 104,
+      "charCount": 2511,
+      "modelCount": 4,
       "quality": "generated",
-      "hasAgentic": true,
-      "preview": "名分正，责任明，事情才可长久。"
+      "hasAgentic": false,
+      "preview": "Hall of Fame Studio 人物认知框架。由人物注册表编制，用于任务匹配、圆桌协作与角色激活。"
     }
   },
   "turing": {
@@ -101,12 +101,12 @@
     "skillPath": "personas/turing/SKILL.md",
     "skillMeta": {
       "path": "personas/turing/SKILL.md",
-      "lineCount": 244,
-      "charCount": 4980,
-      "modelCount": 6,
+      "lineCount": 104,
+      "charCount": 2509,
+      "modelCount": 4,
       "quality": "generated",
-      "hasAgentic": true,
-      "preview": "先定义问题，再寻找答案。"
+      "hasAgentic": false,
+      "preview": "Hall of Fame Studio 人物认知框架。由人物注册表编制，用于任务匹配、圆桌协作与角色激活。"
     }
   },
   "jobs": {
@@ -123,12 +123,12 @@
     "skillPath": "personas/jobs/SKILL.md",
     "skillMeta": {
       "path": "personas/jobs/SKILL.md",
-      "lineCount": 369,
-      "charCount": 12224,
-      "modelCount": 6,
+      "lineCount": 104,
+      "charCount": 2494,
+      "modelCount": 4,
       "quality": "imported",
-      "hasAgentic": true,
-      "preview": "\"Remembering that I'll be dead soon is the most important tool I've ever encountered to help me make the big choices in life.\""
+      "hasAgentic": false,
+      "preview": "Hall of Fame Studio 人物认知框架。由人物注册表编制，用于任务匹配、圆桌协作与角色激活。"
     }
   },
   "da_vinci": {
@@ -145,12 +145,12 @@
     "skillPath": "personas/da_vinci/SKILL.md",
     "skillMeta": {
       "path": "personas/da_vinci/SKILL.md",
-      "lineCount": 244,
-      "charCount": 4892,
-      "modelCount": 6,
+      "lineCount": 104,
+      "charCount": 2457,
+      "modelCount": 4,
       "quality": "generated",
-      "hasAgentic": true,
-      "preview": "真正的理解，来自跨学科的连接与观察。"
+      "hasAgentic": false,
+      "preview": "Hall of Fame Studio 人物认知框架。由人物注册表编制，用于任务匹配、圆桌协作与角色激活。"
     }
   },
   "nightingale": {
@@ -167,12 +167,12 @@
     "skillPath": "personas/nightingale/SKILL.md",
     "skillMeta": {
       "path": "personas/nightingale/SKILL.md",
-      "lineCount": 244,
-      "charCount": 4924,
-      "modelCount": 6,
+      "lineCount": 104,
+      "charCount": 2502,
+      "modelCount": 4,
       "quality": "generated",
-      "hasAgentic": true,
-      "preview": "没有可执行的流程，善意无法稳定抵达用户。"
+      "hasAgentic": false,
+      "preview": "Hall of Fame Studio 人物认知框架。由人物注册表编制，用于任务匹配、圆桌协作与角色激活。"
     }
   },
   "sun_tzu": {
@@ -189,12 +189,12 @@
     "skillPath": "personas/sun_tzu/SKILL.md",
     "skillMeta": {
       "path": "personas/sun_tzu/SKILL.md",
-      "lineCount": 244,
-      "charCount": 4690,
-      "modelCount": 6,
+      "lineCount": 104,
+      "charCount": 2391,
+      "modelCount": 4,
       "quality": "generated",
-      "hasAgentic": true,
-      "preview": "先胜而后战，先谋而后动。"
+      "hasAgentic": false,
+      "preview": "Hall of Fame Studio 人物认知框架。由人物注册表编制，用于任务匹配、圆桌协作与角色激活。"
     }
   },
   "kahneman": {
@@ -211,12 +211,12 @@
     "skillPath": "personas/kahneman/SKILL.md",
     "skillMeta": {
       "path": "personas/kahneman/SKILL.md",
-      "lineCount": 244,
-      "charCount": 4818,
-      "modelCount": 6,
+      "lineCount": 104,
+      "charCount": 2450,
+      "modelCount": 4,
       "quality": "generated",
-      "hasAgentic": true,
-      "preview": "先识别偏差，再谈判断质量。"
+      "hasAgentic": false,
+      "preview": "Hall of Fame Studio 人物认知框架。由人物注册表编制，用于任务匹配、圆桌协作与角色激活。"
     }
   },
   "ada_lovelace": {
@@ -233,12 +233,12 @@
     "skillPath": "personas/ada_lovelace/SKILL.md",
     "skillMeta": {
       "path": "personas/ada_lovelace/SKILL.md",
-      "lineCount": 244,
-      "charCount": 4939,
-      "modelCount": 6,
+      "lineCount": 104,
+      "charCount": 2529,
+      "modelCount": 4,
       "quality": "generated",
-      "hasAgentic": true,
-      "preview": "把想法写成规则，规则写成可执行系统。"
+      "hasAgentic": false,
+      "preview": "Hall of Fame Studio 人物认知框架。由人物注册表编制，用于任务匹配、圆桌协作与角色激活。"
     }
   },
   "mandela": {
@@ -255,12 +255,12 @@
     "skillPath": "personas/mandela/SKILL.md",
     "skillMeta": {
       "path": "personas/mandela/SKILL.md",
-      "lineCount": 244,
-      "charCount": 4935,
-      "modelCount": 6,
+      "lineCount": 104,
+      "charCount": 2521,
+      "modelCount": 4,
       "quality": "generated",
-      "hasAgentic": true,
-      "preview": "真正的领导，不是压制分歧，而是把分歧带向共同未来。"
+      "hasAgentic": false,
+      "preview": "Hall of Fame Studio 人物认知框架。由人物注册表编制，用于任务匹配、圆桌协作与角色激活。"
     }
   },
   "goodall": {
@@ -277,12 +277,12 @@
     "skillPath": "personas/goodall/SKILL.md",
     "skillMeta": {
       "path": "personas/goodall/SKILL.md",
-      "lineCount": 244,
-      "charCount": 4830,
-      "modelCount": 6,
+      "lineCount": 104,
+      "charCount": 2454,
+      "modelCount": 4,
       "quality": "generated",
-      "hasAgentic": true,
-      "preview": "先去现场，再做判断。"
+      "hasAgentic": false,
+      "preview": "Hall of Fame Studio 人物认知框架。由人物注册表编制，用于任务匹配、圆桌协作与角色激活。"
     }
   },
   "einstein": {
@@ -299,12 +299,12 @@
     "skillPath": "personas/einstein/SKILL.md",
     "skillMeta": {
       "path": "personas/einstein/SKILL.md",
-      "lineCount": 244,
-      "charCount": 4900,
-      "modelCount": 6,
+      "lineCount": 104,
+      "charCount": 2465,
+      "modelCount": 4,
       "quality": "generated",
-      "hasAgentic": true,
-      "preview": "如果你讲不清楚，说明你还没真正理解。"
+      "hasAgentic": false,
+      "preview": "Hall of Fame Studio 人物认知框架。由人物注册表编制，用于任务匹配、圆桌协作与角色激活。"
     }
   },
   "drucker": {
@@ -321,12 +321,12 @@
     "skillPath": "personas/drucker/SKILL.md",
     "skillMeta": {
       "path": "personas/drucker/SKILL.md",
-      "lineCount": 244,
-      "charCount": 4780,
-      "modelCount": 6,
+      "lineCount": 104,
+      "charCount": 2446,
+      "modelCount": 4,
       "quality": "generated",
-      "hasAgentic": true,
-      "preview": "不能度量的，就很难被管理。"
+      "hasAgentic": false,
+      "preview": "Hall of Fame Studio 人物认知框架。由人物注册表编制，用于任务匹配、圆桌协作与角色激活。"
     }
   },
   "shannon": {
@@ -343,12 +343,12 @@
     "skillPath": "personas/shannon/SKILL.md",
     "skillMeta": {
       "path": "personas/shannon/SKILL.md",
-      "lineCount": 244,
-      "charCount": 4855,
-      "modelCount": 6,
+      "lineCount": 104,
+      "charCount": 2459,
+      "modelCount": 4,
       "quality": "generated",
-      "hasAgentic": true,
-      "preview": "先定义信息，再优化传递。"
+      "hasAgentic": false,
+      "preview": "Hall of Fame Studio 人物认知框架。由人物注册表编制，用于任务匹配、圆桌协作与角色激活。"
     }
   },
   "toyoda": {
@@ -365,12 +365,12 @@
     "skillPath": "personas/toyoda/SKILL.md",
     "skillMeta": {
       "path": "personas/toyoda/SKILL.md",
-      "lineCount": 244,
-      "charCount": 4807,
-      "modelCount": 6,
+      "lineCount": 104,
+      "charCount": 2471,
+      "modelCount": 4,
       "quality": "generated",
-      "hasAgentic": true,
-      "preview": "问题暴露得越早，系统就越可靠。"
+      "hasAgentic": false,
+      "preview": "Hall of Fame Studio 人物认知框架。由人物注册表编制，用于任务匹配、圆桌协作与角色激活。"
     }
   },
   "oprah": {
@@ -387,12 +387,12 @@
     "skillPath": "personas/oprah/SKILL.md",
     "skillMeta": {
       "path": "personas/oprah/SKILL.md",
-      "lineCount": 244,
-      "charCount": 4821,
-      "modelCount": 6,
+      "lineCount": 104,
+      "charCount": 2470,
+      "modelCount": 4,
       "quality": "generated",
-      "hasAgentic": true,
-      "preview": "真正有效的表达，先让人感到被理解。"
+      "hasAgentic": false,
+      "preview": "Hall of Fame Studio 人物认知框架。由人物注册表编制，用于任务匹配、圆桌协作与角色激活。"
     }
   },
   "tesla": {
@@ -409,12 +409,12 @@
     "skillPath": "personas/tesla/SKILL.md",
     "skillMeta": {
       "path": "personas/tesla/SKILL.md",
-      "lineCount": 244,
-      "charCount": 4918,
-      "modelCount": 6,
+      "lineCount": 104,
+      "charCount": 2493,
+      "modelCount": 4,
       "quality": "generated",
-      "hasAgentic": true,
-      "preview": "先在脑中让系统运转，再把它带到现实。"
+      "hasAgentic": false,
+      "preview": "Hall of Fame Studio 人物认知框架。由人物注册表编制，用于任务匹配、圆桌协作与角色激活。"
     }
   },
   "feynman": {
@@ -431,12 +431,12 @@
     "skillPath": "personas/feynman/SKILL.md",
     "skillMeta": {
       "path": "personas/feynman/SKILL.md",
-      "lineCount": 436,
-      "charCount": 9905,
-      "modelCount": 5,
+      "lineCount": 104,
+      "charCount": 2420,
+      "modelCount": 4,
       "quality": "imported",
-      "hasAgentic": true,
-      "preview": "\"The first principle is that you must not fool yourself — and you are the easiest person to fool.\""
+      "hasAgentic": false,
+      "preview": "Hall of Fame Studio 人物认知框架。由人物注册表编制，用于任务匹配、圆桌协作与角色激活。"
     }
   },
   "deming": {
@@ -453,12 +453,12 @@
     "skillPath": "personas/deming/SKILL.md",
     "skillMeta": {
       "path": "personas/deming/SKILL.md",
-      "lineCount": 244,
-      "charCount": 4852,
-      "modelCount": 6,
+      "lineCount": 104,
+      "charCount": 2468,
+      "modelCount": 4,
       "quality": "generated",
-      "hasAgentic": true,
-      "preview": "没有统计视角的改进，往往只是幻觉。"
+      "hasAgentic": false,
+      "preview": "Hall of Fame Studio 人物认知框架。由人物注册表编制，用于任务匹配、圆桌协作与角色激活。"
     }
   },
   "hopper_legacy": {
@@ -475,12 +475,12 @@
     "skillPath": "personas/hopper_legacy/SKILL.md",
     "skillMeta": {
       "path": "personas/hopper_legacy/SKILL.md",
-      "lineCount": 244,
-      "charCount": 4809,
-      "modelCount": 6,
+      "lineCount": 104,
+      "charCount": 2493,
+      "modelCount": 4,
       "quality": "generated",
-      "hasAgentic": true,
-      "preview": "语言是连接人和机器效率的桥梁。"
+      "hasAgentic": false,
+      "preview": "Hall of Fame Studio 人物认知框架。由人物注册表编制，用于任务匹配、圆桌协作与角色激活。"
     }
   },
   "carson": {
@@ -497,12 +497,12 @@
     "skillPath": "personas/carson/SKILL.md",
     "skillMeta": {
       "path": "personas/carson/SKILL.md",
-      "lineCount": 244,
-      "charCount": 4804,
-      "modelCount": 6,
+      "lineCount": 104,
+      "charCount": 2444,
+      "modelCount": 4,
       "quality": "generated",
-      "hasAgentic": true,
-      "preview": "看见长期后果，才算真正看见风险。"
+      "hasAgentic": false,
+      "preview": "Hall of Fame Studio 人物认知框架。由人物注册表编制，用于任务匹配、圆桌协作与角色激活。"
     }
   },
   "carnegie": {
@@ -519,12 +519,12 @@
     "skillPath": "personas/carnegie/SKILL.md",
     "skillMeta": {
       "path": "personas/carnegie/SKILL.md",
-      "lineCount": 244,
-      "charCount": 4721,
-      "modelCount": 6,
+      "lineCount": 104,
+      "charCount": 2422,
+      "modelCount": 4,
       "quality": "generated",
-      "hasAgentic": true,
-      "preview": "影响力始于理解他人利益与动机。"
+      "hasAgentic": false,
+      "preview": "Hall of Fame Studio 人物认知框架。由人物注册表编制，用于任务匹配、圆桌协作与角色激活。"
     }
   },
   "berners_lee": {
@@ -541,12 +541,12 @@
     "skillPath": "personas/berners_lee/SKILL.md",
     "skillMeta": {
       "path": "personas/berners_lee/SKILL.md",
-      "lineCount": 244,
-      "charCount": 4843,
-      "modelCount": 6,
+      "lineCount": 104,
+      "charCount": 2489,
+      "modelCount": 4,
       "quality": "generated",
-      "hasAgentic": true,
-      "preview": "真正可扩展的系统，先保证开放与互联。"
+      "hasAgentic": false,
+      "preview": "Hall of Fame Studio 人物认知框架。由人物注册表编制，用于任务匹配、圆桌协作与角色激活。"
     }
   },
   "noether": {
@@ -563,12 +563,12 @@
     "skillPath": "personas/noether/SKILL.md",
     "skillMeta": {
       "path": "personas/noether/SKILL.md",
-      "lineCount": 244,
-      "charCount": 4705,
-      "modelCount": 6,
+      "lineCount": 104,
+      "charCount": 2403,
+      "modelCount": 4,
       "quality": "generated",
-      "hasAgentic": true,
-      "preview": "看见不变量，才能看见系统真正的稳定性。"
+      "hasAgentic": false,
+      "preview": "Hall of Fame Studio 人物认知框架。由人物注册表编制，用于任务匹配、圆桌协作与角色激活。"
     }
   },
   "simon": {
@@ -585,12 +585,12 @@
     "skillPath": "personas/simon/SKILL.md",
     "skillMeta": {
       "path": "personas/simon/SKILL.md",
-      "lineCount": 244,
-      "charCount": 4755,
-      "modelCount": 6,
+      "lineCount": 104,
+      "charCount": 2421,
+      "modelCount": 4,
       "quality": "generated",
-      "hasAgentic": true,
-      "preview": "好决策不是完美计算，而是可执行的有限理性设计。"
+      "hasAgentic": false,
+      "preview": "Hall of Fame Studio 人物认知框架。由人物注册表编制，用于任务匹配、圆桌协作与角色激活。"
     }
   },
   "ostrom": {
@@ -607,12 +607,12 @@
     "skillPath": "personas/ostrom/SKILL.md",
     "skillMeta": {
       "path": "personas/ostrom/SKILL.md",
-      "lineCount": 244,
-      "charCount": 4763,
-      "modelCount": 6,
+      "lineCount": 104,
+      "charCount": 2446,
+      "modelCount": 4,
       "quality": "generated",
-      "hasAgentic": true,
-      "preview": "复杂协作的关键，不是中心命令，而是可执行的共治规则。"
+      "hasAgentic": false,
+      "preview": "Hall of Fame Studio 人物认知框架。由人物注册表编制，用于任务匹配、圆桌协作与角色激活。"
     }
   },
   "john_snow": {
@@ -629,12 +629,12 @@
     "skillPath": "personas/john_snow/SKILL.md",
     "skillMeta": {
       "path": "personas/john_snow/SKILL.md",
-      "lineCount": 244,
-      "charCount": 4694,
-      "modelCount": 6,
+      "lineCount": 104,
+      "charCount": 2428,
+      "modelCount": 4,
       "quality": "generated",
-      "hasAgentic": true,
-      "preview": "把问题画出来，因果就会更接近真相。"
+      "hasAgentic": false,
+      "preview": "Hall of Fame Studio 人物认知框架。由人物注册表编制，用于任务匹配、圆桌协作与角色激活。"
     }
   },
   "chanel": {
@@ -651,12 +651,12 @@
     "skillPath": "personas/chanel/SKILL.md",
     "skillMeta": {
       "path": "personas/chanel/SKILL.md",
-      "lineCount": 244,
-      "charCount": 4762,
-      "modelCount": 6,
+      "lineCount": 104,
+      "charCount": 2455,
+      "modelCount": 4,
       "quality": "generated",
-      "hasAgentic": true,
-      "preview": "真正的高级感，来自克制而一致的选择。"
+      "hasAgentic": false,
+      "preview": "Hall of Fame Studio 人物认知框架。由人物注册表编制，用于任务匹配、圆桌协作与角色激活。"
     }
   },
   "aristotle": {
@@ -673,12 +673,12 @@
     "skillPath": "personas/aristotle/SKILL.md",
     "skillMeta": {
       "path": "personas/aristotle/SKILL.md",
-      "lineCount": 239,
-      "charCount": 4246,
-      "modelCount": 6,
+      "lineCount": 103,
+      "charCount": 2138,
+      "modelCount": 4,
       "quality": "generated",
-      "hasAgentic": true,
-      "preview": "先把概念分清，再谈结论对错。"
+      "hasAgentic": false,
+      "preview": "Hall of Fame Studio 人物认知框架。由人物注册表编制，用于任务匹配、圆桌协作与角色激活。"
     }
   },
   "lincoln": {
@@ -695,12 +695,12 @@
     "skillPath": "personas/lincoln/SKILL.md",
     "skillMeta": {
       "path": "personas/lincoln/SKILL.md",
-      "lineCount": 239,
-      "charCount": 4244,
-      "modelCount": 6,
+      "lineCount": 103,
+      "charCount": 2128,
+      "modelCount": 4,
       "quality": "generated",
-      "hasAgentic": true,
-      "preview": "在分裂中守住原则，在压力下维持统一。"
+      "hasAgentic": false,
+      "preview": "Hall of Fame Studio 人物认知框架。由人物注册表编制，用于任务匹配、圆桌协作与角色激活。"
     }
   },
   "von_neumann": {
@@ -717,12 +717,12 @@
     "skillPath": "personas/von_neumann/SKILL.md",
     "skillMeta": {
       "path": "personas/von_neumann/SKILL.md",
-      "lineCount": 239,
-      "charCount": 4213,
-      "modelCount": 6,
+      "lineCount": 103,
+      "charCount": 2138,
+      "modelCount": 4,
       "quality": "generated",
-      "hasAgentic": true,
-      "preview": "先建模型，再谈策略最优。"
+      "hasAgentic": false,
+      "preview": "Hall of Fame Studio 人物认知框架。由人物注册表编制，用于任务匹配、圆桌协作与角色激活。"
     }
   },
   "edison": {
@@ -739,12 +739,12 @@
     "skillPath": "personas/edison/SKILL.md",
     "skillMeta": {
       "path": "personas/edison/SKILL.md",
-      "lineCount": 239,
-      "charCount": 4189,
-      "modelCount": 6,
+      "lineCount": 103,
+      "charCount": 2147,
+      "modelCount": 4,
       "quality": "generated",
-      "hasAgentic": true,
-      "preview": "把想法变成产品，要靠连续实验和工程转化。"
+      "hasAgentic": false,
+      "preview": "Hall of Fame Studio 人物认知框架。由人物注册表编制，用于任务匹配、圆桌协作与角色激活。"
     }
   },
   "wangari_maathai": {
@@ -761,12 +761,12 @@
     "skillPath": "personas/wangari_maathai/SKILL.md",
     "skillMeta": {
       "path": "personas/wangari_maathai/SKILL.md",
-      "lineCount": 239,
-      "charCount": 4259,
-      "modelCount": 6,
+      "lineCount": 103,
+      "charCount": 2184,
+      "modelCount": 4,
       "quality": "generated",
-      "hasAgentic": true,
-      "preview": "可持续改变来自长期动员与本地行动。"
+      "hasAgentic": false,
+      "preview": "Hall of Fame Studio 人物认知框架。由人物注册表编制，用于任务匹配、圆桌协作与角色激活。"
     }
   },
   "nash": {
@@ -783,12 +783,12 @@
     "skillPath": "personas/nash/SKILL.md",
     "skillMeta": {
       "path": "personas/nash/SKILL.md",
-      "lineCount": 239,
-      "charCount": 4150,
-      "modelCount": 6,
+      "lineCount": 103,
+      "charCount": 2137,
+      "modelCount": 4,
       "quality": "generated",
-      "hasAgentic": true,
-      "preview": "好的策略要考虑对方也在优化。"
+      "hasAgentic": false,
+      "preview": "Hall of Fame Studio 人物认知框架。由人物注册表编制，用于任务匹配、圆桌协作与角色激活。"
     }
   },
   "amelia_earhart": {
@@ -805,12 +805,12 @@
     "skillPath": "personas/amelia_earhart/SKILL.md",
     "skillMeta": {
       "path": "personas/amelia_earhart/SKILL.md",
-      "lineCount": 239,
-      "charCount": 4226,
-      "modelCount": 6,
+      "lineCount": 103,
+      "charCount": 2157,
+      "modelCount": 4,
       "quality": "generated",
-      "hasAgentic": true,
-      "preview": "面对未知，靠准备和勇气开出新航线。"
+      "hasAgentic": false,
+      "preview": "Hall of Fame Studio 人物认知框架。由人物注册表编制，用于任务匹配、圆桌协作与角色激活。"
     }
   },
   "ibn_khaldun": {
@@ -827,12 +827,12 @@
     "skillPath": "personas/ibn_khaldun/SKILL.md",
     "skillMeta": {
       "path": "personas/ibn_khaldun/SKILL.md",
-      "lineCount": 239,
-      "charCount": 4209,
-      "modelCount": 6,
+      "lineCount": 103,
+      "charCount": 2147,
+      "modelCount": 4,
       "quality": "generated",
-      "hasAgentic": true,
-      "preview": "看趋势要看结构，不只看事件。"
+      "hasAgentic": false,
+      "preview": "Hall of Fame Studio 人物认知框架。由人物注册表编制，用于任务匹配、圆桌协作与角色激活。"
     }
   },
   "babbage": {
@@ -849,12 +849,12 @@
     "skillPath": "personas/babbage/SKILL.md",
     "skillMeta": {
       "path": "personas/babbage/SKILL.md",
-      "lineCount": 239,
-      "charCount": 4251,
-      "modelCount": 6,
+      "lineCount": 103,
+      "charCount": 2155,
+      "modelCount": 4,
       "quality": "generated",
-      "hasAgentic": true,
-      "preview": "把重复劳动交给机器，把精力留给判断。"
+      "hasAgentic": false,
+      "preview": "Hall of Fame Studio 人物认知框架。由人物注册表编制，用于任务匹配、圆桌协作与角色激活。"
     }
   },
   "ramanujan": {
@@ -871,12 +871,12 @@
     "skillPath": "personas/ramanujan/SKILL.md",
     "skillMeta": {
       "path": "personas/ramanujan/SKILL.md",
-      "lineCount": 239,
-      "charCount": 4346,
-      "modelCount": 6,
+      "lineCount": 103,
+      "charCount": 2223,
+      "modelCount": 4,
       "quality": "generated",
-      "hasAgentic": true,
-      "preview": "在看似混乱的数字里，常藏着可利用的结构。"
+      "hasAgentic": false,
+      "preview": "Hall of Fame Studio 人物认知框架。由人物注册表编制，用于任务匹配、圆桌协作与角色激活。"
     }
   }
 }

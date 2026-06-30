@@ -70,7 +70,7 @@ async function main() {
     // Manager Demo
     await page.goto(BASE, { waitUntil: 'networkidle' });
     await wait(1000);
-    await page.getByRole('button', { name: /Run Manager Demo/i }).click();
+    await page.getByRole('button', { name: /Load Sample Fixture/i }).click();
     await wait(3500);
     await shot(page, 'demo-manager');
 

@@ -14,13 +14,51 @@ function assert(condition, message) {
   }
 }
 
+let lastProgressAt = Date.now();
+const ACCEPTANCE_STAGE = process.env.HOFS_PRODUCT_TEAM_STAGE || 'full';
+const ACCEPTANCE_STAGE_STOPS = {
+  core: 'start local HTTP runtime checks',
+  'research-sample': 'research validation sample delivery trace ready',
+  'cycle-consistency': 'autonomous cycle consistency persistence ready',
+  'private-pilot-launch-handoff': 'private-pilot launch approval record ready',
+  'private-pilot-handoff': 'private-pilot release candidate record ready',
+  'private-pilot-release': 'private-pilot release candidate receipt ready',
+  'private-pilot-launch': 'private-pilot launch run receipt ready',
+  'private-pilot-health': 'private-pilot launch health check receipt ready',
+  'private-pilot-acceptance': 'private-pilot acceptance report ready',
+  'private-pilot': 'private-pilot acceptance report ready',
+  'private-pilot-ops-readiness': 'production operations readiness model ready',
+  'production-ops-controls': 'production operations control receipt projection ready',
+  'production-deployment-controls': 'production deployment control receipt projection ready',
+  'production-security-controls': 'production security control receipt ready',
+  'production-provider-controls': 'production provider control receipt ready',
+  'production-evidence-integrity': 'managed production evidence integrity ready',
+  'production-launch-governance': 'production launch governance approval ready',
+};
+
+if (!['full', ...Object.keys(ACCEPTANCE_STAGE_STOPS)].includes(ACCEPTANCE_STAGE)) {
+  throw new Error(`Unsupported HOFS_PRODUCT_TEAM_STAGE: ${ACCEPTANCE_STAGE}`);
+}
+
+function maybeStopAtStage(label) {
+  if (ACCEPTANCE_STAGE === 'full') return;
+  if (ACCEPTANCE_STAGE_STOPS[ACCEPTANCE_STAGE] !== label) return;
+  console.log(`Product team acceptance ${ACCEPTANCE_STAGE} stage validation passed.`);
+  process.exit(0);
+}
+
 function progress(label) {
+  const now = Date.now();
+  const elapsedMs = now - lastProgressAt;
+  lastProgressAt = now;
+  const message = `${label} (+${elapsedMs}ms)`;
   if (process.env.HOFS_PROGRESS === '1') {
-    console.error(`[product-team] ${label}`);
+    console.error(`[product-team] ${message}`);
   }
   if (process.env.HOFS_PROGRESS_LOG === '1') {
-    appendFileSync(fileURLToPath(new URL('../.tmp/product-team-acceptance-progress.log', import.meta.url)), `${new Date().toISOString()} ${label}\n`);
+    appendFileSync(fileURLToPath(new URL('../.tmp/product-team-acceptance-progress.log', import.meta.url)), `${new Date().toISOString()} ${message}\n`);
   }
+  maybeStopAtStage(label);
 }
 
 function readSmallTextFiles(rootPath) {
@@ -100,7 +138,9 @@ const signedHeadersFor = ({
 });
 
 const appSource = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
+const managerBackendUiSource = readFileSync(new URL('./validate-manager-backend-ui.mjs', import.meta.url), 'utf8');
 assert(appSource.includes('backend-manager-submissions-snapshot'), 'Manager Dashboard UI must expose Agent submissions.');
+assert(appSource.includes('submission-review-composer-') && appSource.includes('runBackendSubmissionReview') && appSource.includes('/submissions/${encodeURIComponent(submission.id)}/reviews') && appSource.includes('submission-review-receipt-'), 'Manager Dashboard UI must let a Reviewer submit backend-backed submission reviews from Agent submission rows.');
 assert(appSource.includes('backend-manager-artifact-drafts-route') && appSource.includes('backend-manager-artifact-drafts-snapshot'), 'Manager Dashboard UI must expose generated artifact draft routes and rows.');
 assert(appSource.includes('agent-focus-submissions-'), 'Agent Dashboard UI must expose owned submissions.');
 assert(appSource.includes('agent-focus-artifact-draft-'), 'Agent Dashboard UI must expose generated artifact draft metadata.');
@@ -112,6 +152,16 @@ assert(appSource.includes('backend-artifact-quality-audit-snapshot'), 'Manager R
 assert(appSource.includes('/artifact-quality-audit') && appSource.includes('Artifact Quality Audit') && appSource.includes('Artifact Ready'), 'Manager UI must expose the artifact quality audit route, status, and readiness.');
 assert(appSource.includes('backend-submission-review-workflow-snapshot'), 'Manager Ready Package UI must expose the submission review workflow.');
 assert(appSource.includes('/submission-review-workflow') && appSource.includes('Submission Review Workflow') && appSource.includes('Review workflow route'), 'Manager UI must expose the submission review workflow route, rounds, and closure status.');
+assert(appSource.includes('backend-product-team-delivery-trace-snapshot'), 'Manager Ready Package UI must expose the product-team delivery trace.');
+assert(appSource.includes('/product-team-delivery-trace') && appSource.includes('Product Team Delivery Trace') && appSource.includes('Trace route') && appSource.includes('missingProductTeamDeliveryTrace') && appSource.includes('fetch-product-team-delivery-trace'), 'Manager UI must expose the product-team delivery trace route, rows, closure status, and backend-required missing state.');
+assert(appSource.includes('backend-product-team-operating-loop-snapshot'), 'Manager Ready Package UI must expose the product-team operating loop.');
+assert(appSource.includes('/product-team-operating-loop') && appSource.includes('Product Team Operating Loop') && appSource.includes('Operating loop route') && appSource.includes('missingProductTeamOperatingLoop') && appSource.includes('fetch-product-team-operating-loop'), 'Manager UI must expose the product-team operating loop route, C/A status, and backend-required missing state.');
+assert(appSource.includes('backend-team-collaboration-diagnostics-snapshot'), 'Manager Ready Package UI must expose team collaboration diagnostics.');
+assert(appSource.includes('/team-collaboration-diagnostics') && appSource.includes('Team Collaboration Diagnostics') && appSource.includes('Collaboration diagnostics route') && appSource.includes('missingTeamCollaborationDiagnostics'), 'Manager UI must expose the collaboration diagnostics route, handoff status, and backend-required missing state.');
+assert(appSource.includes('backend-runtime-contracts-snapshot'), 'Manager Ready Package UI must expose runtime contracts.');
+assert(appSource.includes('/runtime-contracts') && appSource.includes('Runtime Contracts') && appSource.includes('Runtime contracts route') && appSource.includes('missingRuntimeContracts'), 'Manager UI must expose the runtime contracts route, freeze status, and backend-required missing state.');
+assert(appSource.includes('backend-autonomous-cycle-consistency-snapshot'), 'Manager Ready Package UI must expose autonomous cycle consistency.');
+assert(appSource.includes('/autonomous-cycle-consistency') && appSource.includes('Autonomous Cycle Consistency') && appSource.includes('Cycle consistency route') && appSource.includes('missingAutonomousCycleConsistency'), 'Manager UI must expose the autonomous cycle consistency route, N-step status, and backend-required missing state.');
 assert(appSource.includes('backend-evidence-quality-audit-snapshot'), 'Manager Ready Package UI must expose the evidence quality audit.');
 assert(appSource.includes('/evidence-quality-audit') && appSource.includes('Evidence Quality Audit') && appSource.includes('Decision Gates'), 'Manager UI must expose the evidence quality audit route, status, and gates.');
 assert(appSource.includes('backend-evidence-source-review-workflow-snapshot'), 'Manager Ready Package UI must expose the evidence source review workflow.');
@@ -127,6 +177,8 @@ assert(appSource.includes('/pilot-launch-readiness') && appSource.includes('Pilo
 assert(appSource.includes('backend-deployment-preflight-snapshot'), 'Manager Ready Package UI must expose deployment preflight readiness.');
 assert(appSource.includes('/deployment-preflight') && appSource.includes('Deployment Preflight') && appSource.includes('Preflight Warnings'), 'Manager UI must expose the deployment preflight route and warning count.');
 assert(appSource.includes('/adapter-gateway-preflight') && appSource.includes('Gateway Live') && appSource.includes('Gateway State'), 'Manager UI must expose the adapter gateway preflight route and live/state status.');
+assert(appSource.includes('backend-production-infrastructure-rehearsal-snapshot'), 'Manager Ready Package UI must expose production infrastructure rehearsal.');
+assert(appSource.includes('/production-infrastructure-rehearsal') && appSource.includes('Production Infrastructure Rehearsal') && appSource.includes('Infrastructure rehearsal route'), 'Manager UI must expose the production infrastructure rehearsal route, status, and domain summary.');
 assert(appSource.includes('backend-production-launch-audit-snapshot'), 'Manager Ready Package UI must expose production launch audit readiness.');
 assert(appSource.includes('/production-launch-audit') && appSource.includes('Production Launch Audit') && appSource.includes('Private Pilot Audit') && appSource.includes('Handoff Package'), 'Manager UI must expose the production launch audit route, decisions, and handoff package status.');
 assert(appSource.includes('backend-project-evidence-archive-snapshot'), 'Manager Ready Package UI must expose the project evidence archive.');
@@ -185,11 +237,35 @@ assert(appSource.includes('Identity Sessions') && appSource.includes('/identity-
 assert(appSource.includes('/security-boundary'), 'Manager UI must expose the security boundary route.');
 assert(appSource.includes('agent-focus-evidence-searches-'), 'Agent Dashboard UI must expose owned evidence searches.');
 assert(appSource.includes('agent-focus-submission-reviews-'), 'Agent Dashboard UI must expose owned submission reviews.');
-
-const root = fileURLToPath(new URL('../.tmp/product-team-acceptance', import.meta.url));
 assert(
-  root.replaceAll('\\', '/').endsWith('/.tmp/product-team-acceptance'),
-  'Acceptance harness cleanup must stay inside the product-team temp directory.',
+  [
+    'Real project brainstorm board',
+    'Real project evidence route validation',
+    'agent-workbench-draft-submit-turing',
+    'submission-review-composer-',
+    'agent-workbench-review-turing',
+    'agent-workbench-revises-submission-turing',
+    'change-requests-closed-by-revision',
+    'final-deliverable-accepted',
+    'brainstormLayerRoutes',
+    'evidenceSearchRoutes',
+    'submission-review-workflow',
+  ].every((marker) => managerBackendUiSource.includes(marker)),
+  'Manager backend UI Harness must cover the same real-project product-team browser chain: brainstorm, evidence, generated draft, review, revision, final delivery, and accepted closure.'
+);
+
+const ACCEPTANCE_RUN_ID = (process.env.HOFS_PRODUCT_TEAM_RUN_ID || `${ACCEPTANCE_STAGE}-${process.pid}`)
+  .replace(/[^a-zA-Z0-9_.-]/g, '-');
+const rootBase = fileURLToPath(new URL('../.tmp/product-team-acceptance', import.meta.url));
+const root = fileURLToPath(new URL(`../.tmp/product-team-acceptance/${ACCEPTANCE_RUN_ID}/`, import.meta.url));
+const normalizeHarnessPath = (value) => value.replaceAll('\\', '/').replace(/\/+$/g, '');
+const rootBaseNormalized = normalizeHarnessPath(rootBase);
+const rootNormalized = normalizeHarnessPath(root);
+assert(
+  rootBaseNormalized.endsWith('/.tmp/product-team-acceptance')
+    && rootNormalized.startsWith(`${rootBaseNormalized}/`)
+    && rootNormalized.endsWith(`/${ACCEPTANCE_RUN_ID}`),
+  'Acceptance harness cleanup must stay inside the product-team temp run directory.',
 );
 rmSync(root, { recursive: true, force: true });
 mkdirSync(root, { recursive: true });
@@ -330,6 +406,7 @@ let response = api.handle({
   },
 });
 assert(response.status === 200, 'Acceptance Harness must create a durable kickoff meeting.');
+assert(response.body.meeting.generationProvenance?.schemaVersion === 'kickoff-generation-provenance/v1' && response.body.meeting.generationProvenance.validationOnly === true && response.body.meeting.generationProvenance.productionClaim === 'blocked', 'Acceptance kickoff meeting must label deterministic generation as validation-only, not production provider-backed output.');
 assert(response.body.meeting.transcript.some((turn) => turn.stage === 'role-clarification'), 'Kickoff meeting must include role-clarification turns.');
 assert(response.body.meeting.transcript.some((turn) => turn.stage === 'leader-campaign'), 'Kickoff meeting must include Leader campaign turns.');
 
@@ -343,6 +420,9 @@ response = api.handle({
   },
 });
 assert(response.status === 200 && response.body.project?.id === 'product_team_acceptance_project', 'Kickoff approval must create the acceptance project.');
+assert(response.body.project?.initiation?.generationProvenance?.schemaVersion === 'kickoff-generation-provenance/v1'
+  && response.body.managerDashboard?.kickoffMeetingFlow?.generationProvenance?.productionClaim === 'blocked',
+'Kickoff approval must preserve generation provenance into the acceptance project and Manager Dashboard.');
 
 const projectId = response.body.project.id;
 progress('kickoff meeting approved and project created');
@@ -352,6 +432,7 @@ const projectMembershipPolicy = {
   source: 'product-team-acceptance-membership-fixture',
   managerUserIds: ['director'],
   securityAdminUserIds: ['security-lead'],
+  operationsOwnerUserIds: ['ops-lead'],
   observerUserIds: ['observer'],
   runtimeUserIds: ['http-autonomous-scheduler', 'runtime-ops'],
   agentIds: team.map((member) => member.id),
@@ -386,10 +467,12 @@ response = await api.handleAsync({
     taskId: 'task_evidence',
     useProvider: true,
     maxResults: 3,
+    includeReadModels: false,
     now: '2026-06-01T10:20:00.000Z',
   },
 });
 assert(response.status === 200 && response.body.evidenceSearch?.sources?.length === 3, 'Agent evidence search must be accepted by the API.');
+assert(response.body.readModels?.included === false && response.body.readModels.managerReadyPackageRoute?.endsWith('/manager-ready-package'), 'Provider-backed evidence search must support deferred read-model refresh for frontend mock replacement.');
 assert(response.body.evidenceSearch.provider === 'deterministic', 'Agent evidence search must preserve provider provenance.');
 assert(response.body.evidenceSearch.evidenceJudgement === 'strong-evidence', 'Agent evidence search must include an aggregate evidence judgement.');
 assert(response.body.evidenceSearch.qualityScore >= 70, 'Agent evidence search must include a usable aggregate quality score.');
@@ -500,6 +583,7 @@ for (const item of submissionPlan) {
   const submissionBody = {
     ...item,
     reviewerAgentId: 'curie',
+    includeReadModels: false,
     now: item.artifactType === 'final-deliverable'
       ? '2026-06-01T11:10:00.000Z'
       : '2026-06-01T10:30:00.000Z',
@@ -522,9 +606,12 @@ for (const item of submissionPlan) {
     body: submissionBody,
   });
   assert(response.status === 200, `Submission ${item.artifactType} must be accepted by the API; got ${response.status} ${JSON.stringify(response.body || {})}.`);
+  assert(response.body.readModels?.included === false && response.body.readModels.managerFlowGraphRoute?.endsWith('/manager-flow-graph'), `Submission ${item.artifactType} must support deferred manager read-model refresh.`);
   assert(response.body.submission?.artifactType === item.artifactType, `Submission ${item.artifactType} must preserve artifactType.`);
   assert(response.body.submission?.messageId && response.body.submission?.timelineLogId && response.body.submission?.eventId, `Submission ${item.artifactType} must link chat, timeline, and event proof.`);
   assert(response.body.artifact?.existsOnDisk && existsSync(response.body.artifact.absolutePath), `Submission ${item.artifactType} must write a workspace artifact.`);
+  assert(response.body.artifact?.storageProof?.schemaVersion === 'agent-artifact-storage-proof/v1' && response.body.artifact.storageProof.checksum && response.body.artifact.storageProof.contentChecksum, `Submission ${item.artifactType} must return checksummed artifact storage proof.`);
+  assert(response.body.submission?.artifactStorageProofChecksum === response.body.artifact.storageProof.checksum && response.body.submission?.workspaceFileProof?.checksum === response.body.artifact.storageProof.checksum, `Submission ${item.artifactType} must link its storage proof into the submission contract.`);
   submissionsByType.set(item.artifactType, response.body.submission);
   progress(`submit ${item.artifactType} completed`);
 
@@ -580,13 +667,16 @@ response = await api.handleAsync({
     useModel: false,
     submit: true,
     reviewerAgentId: 'curie',
+    includeReadModels: false,
     now: '2026-06-01T11:12:00.000Z',
   },
 });
 assert(response.status === 200 && response.body.artifactDraft?.schemaVersion === 'agent-artifact-draft/v1', 'Agent artifact draft route must return the draft contract.');
+assert(response.body.readModels?.included === false && response.body.readModels.agentDashboardRoute?.endsWith('/agents/turing/dashboard'), 'Local artifact draft submission must support deferred read-model refresh.');
 assert(response.body.artifactDraft.source === 'local-artifact-draft-generator' && response.body.artifactDraft.modelUsed === false, 'Agent artifact draft must use the local draft generator when model use is disabled for the request.');
 assert(response.body.submission?.artifactType === 'progress-brief' && response.body.submission?.messageId && response.body.submission?.timelineLogId && response.body.submission?.eventId, 'Agent artifact draft route must submit the generated draft as a proofed Agent submission.');
 assert(response.body.artifact?.existsOnDisk && existsSync(response.body.artifact.absolutePath), 'Generated artifact draft submission must write a workspace artifact.');
+assert(response.body.artifact?.storageProof?.schemaVersion === 'agent-artifact-storage-proof/v1' && response.body.artifact.storageProof.checksum && response.body.submission?.artifactStorageProofChecksum === response.body.artifact.storageProof.checksum, 'Generated artifact draft submission must preserve checksummed storage proof.');
 assert(response.body.artifactDraft.proofContext?.evidenceSearchIds?.includes(evidenceSearch.id), 'Generated artifact draft must carry evidence-search proof context.');
 assert(response.body.artifactDraft.artifactDraftQuality?.schemaVersion === 'artifact-draft-quality/v1' && response.body.artifactDraft.artifactDraftQuality.readyForLocalPilot === true && response.body.artifactDraft.artifactDraftQuality.readyForProduction === false, 'Generated local artifact drafts must carry local-pilot-ready quality gates without production overclaim.');
 assert(response.body.artifactDraft.artifactDraftQuality.gates.every((gate) => gate.passed), 'Generated local artifact draft quality gates must pass for the acceptance scenario.');
@@ -609,12 +699,15 @@ response = await api.handleAsync({
     requireModel: true,
     submit: true,
     reviewerAgentId: 'curie',
+    includeReadModels: false,
     now: '2026-06-01T11:13:00.000Z',
   },
 });
 assert(response.status === 200 && response.body.artifactDraft?.source === 'model-artifact-draft' && response.body.artifactDraft?.modelUsed === true, 'Agent artifact draft route must support provider-backed model drafts.');
+assert(response.body.readModels?.included === false && response.body.readModels.managerReadyPackageRoute?.endsWith('/manager-ready-package'), 'Model artifact draft submission must support deferred read-model refresh.');
 assert(response.body.providerUsage?.operation === 'model:artifact-draft' && response.body.providerUsage?.allowed === true && response.body.providerUsage?.ok === true, 'Model-backed artifact drafts must write allowed provider usage proof.');
 assert(response.body.submission?.isGeneratedDraft === true && response.body.submission?.artifactDraftModelUsed === true && response.body.submission?.artifactDraftSource === 'model-artifact-draft', 'Submitted model-backed artifact drafts must preserve model provenance.');
+assert(response.body.artifact?.storageProof?.schemaVersion === 'agent-artifact-storage-proof/v1' && response.body.artifact.storageProof.contentChecksum && response.body.submission?.artifactStorageProofChecksum === response.body.artifact.storageProof.checksum, 'Model-backed artifact draft submission must preserve checksummed storage proof.');
 assert(response.body.artifactDraft.artifactDraftQuality?.schemaVersion === 'artifact-draft-quality/v1' && response.body.artifactDraft.artifactDraftQuality.readyForLocalPilot === true && response.body.artifactDraft.artifactDraftQuality.humanReviewRequired === true && response.body.artifactDraft.artifactDraftQuality.readyForProduction === false, 'Model-backed artifact drafts must carry local-pilot-ready quality gates and an explicit human-review requirement.');
 assert(response.body.artifactDraft.artifactDraftQuality.gates.every((gate) => gate.passed), 'Model-backed artifact draft quality gates must pass for the acceptance scenario.');
 assert(modelFetchCalls.length >= 1, 'Model-backed artifact draft validation must exercise the deterministic model provider fetch path.');
@@ -625,6 +718,7 @@ progress('artifact draft routes completed');
 
 response = api.handle({ method: 'GET', path: `/projects/${projectId}/submissions` });
 assert(response.status === 200 && response.body.submissions.length === expectedSubmissionCount, 'Project API must list all Agent submissions, including generated artifact drafts.');
+assert(response.body.submissions.every((submission) => submission.artifactStorageProof?.schemaVersion === 'agent-artifact-storage-proof/v1' && submission.artifactStorageProofChecksum && submission.workspaceFileProof?.checksum === submission.artifactStorageProofChecksum), 'Project API must list Agent submissions with checksummed artifact storage proof.');
 assert(response.body.submissions.some((submission) => submission.artifactType === 'final-deliverable' && submission.status === 'final'), 'Project submissions must include a final deliverable.');
 assert(response.body.submissions.some((submission) => submission.id === generatedDraftSubmission.id && submission.artifactType === 'progress-brief'), 'Project submissions must include the generated progress brief draft submission.');
 assert(response.body.submissions.some((submission) => submission.id === modelGeneratedDraftSubmission.id && submission.artifactDraftModelUsed === true), 'Project submissions must include the model-backed generated progress brief submission.');
@@ -677,7 +771,9 @@ response = api.handle({ method: 'GET', path: `/projects/${projectId}/artifact-qu
 assert(response.status === 200 && response.body.artifactQualityAudit?.schemaVersion === 'artifact-quality-audit/v1', 'Project API must expose a standalone artifact quality audit contract.');
 assert(response.body.artifactQualityAudit.readyForLocalPilot === true && response.body.artifactQualityAudit.readyForProduction === false, 'Artifact quality audit must be locally ready without production overclaim.');
 assert(response.body.artifactQualityAudit.summary?.submissionCount === expectedSubmissionCount && response.body.artifactQualityAudit.summary?.failedLocalDecisionGateCount === 0, 'Artifact quality audit must cover all submissions with no failed local gates.');
+assert(response.body.artifactQualityAudit.summary?.storageProofReadyCount === expectedSubmissionCount, 'Artifact quality audit must count checksummed artifact storage proof coverage for every submission.');
 assert(response.body.artifactQualityAudit.gates.some((gate) => gate.id === 'generic-artifact-type-coverage' && gate.passed), 'Artifact quality audit must gate generic product-team artifact coverage.');
+assert(response.body.artifactQualityAudit.gates.some((gate) => gate.id === 'artifact-storage-proof-ready' && gate.passed), 'Artifact quality audit must gate checksummed artifact storage proof coverage.');
 assert(response.body.artifactQualityAudit.gates.some((gate) => gate.id === 'draft-review-revision-final-loop' && gate.passed), 'Artifact quality audit must gate the draft-review-revision-final loop.');
 assert(response.body.artifactQualityAudit.backendRoutes.artifactQualityAudit?.endsWith('/artifact-quality-audit'), 'Artifact quality audit must expose its own backend route.');
 
@@ -688,6 +784,49 @@ assert(response.body.submissionReviewWorkflow.summary?.reviewRoundCount >= 2 && 
 assert(response.body.submissionReviewWorkflow.summary?.revisionResponseCount >= 1 && response.body.submissionReviewWorkflow.summary?.acceptedFinalDeliverableCount >= 1, 'Submission review workflow must link revision responses and final deliverable acceptance.');
 assert(response.body.submissionReviewWorkflow.roundRows.every((row) => row.proofReady && row.route && row.proofIds.length && row.timelineLogIds.length && row.eventIds.length), 'Submission review workflow rows must preserve proof routes, chat, timeline, and event evidence.');
 assert(response.body.submissionReviewWorkflow.productionControls.some((control) => control.id === 'production-review-governance-blocked'), 'Submission review workflow must keep calibrated production review governance as a blocker.');
+
+response = api.handle({ method: 'GET', path: `/projects/${projectId}/product-team-delivery-trace` });
+assert(response.status === 200 && response.body.productTeamDeliveryTrace?.schemaVersion === 'product-team-delivery-trace/v1', 'Project API must expose a standalone product-team delivery trace contract.');
+assert(response.body.productTeamDeliveryTrace.readyForPrivatePilotDelivery === true && response.body.productTeamDeliveryTrace.readyForProduction === false, 'Product-team delivery trace must close the private-pilot delivery loop without production overclaim.');
+assert(response.body.productTeamDeliveryTrace.summary?.readyCount === response.body.productTeamDeliveryTrace.summary?.rowCount && response.body.productTeamDeliveryTrace.summary?.acceptedFinalDeliverableCount >= 1, 'Product-team delivery trace must show every required stage ready and final delivery accepted.');
+assert(response.body.productTeamDeliveryTrace.rows.some((row) => row.id === 'brainstorm-layer' && row.ready && row.artifactIds.length), 'Product-team delivery trace must include a proofed brainstorm stage.');
+assert(response.body.productTeamDeliveryTrace.rows.some((row) => row.id === 'review-and-revision' && row.ready && row.reviewIds.length), 'Product-team delivery trace must include a proofed review/revision stage.');
+assert(response.body.productTeamDeliveryTrace.rows.every((row) => row.ready && (row.proofIds.length || row.timelineLogIds.length || row.eventIds.length)), 'Every ready product-team delivery trace row must carry proof, timeline, or event evidence.');
+assert(response.body.productTeamDeliveryTrace.backendRoutes?.productTeamDeliveryTrace?.endsWith('/product-team-delivery-trace'), 'Product-team delivery trace must expose its own backend route.');
+
+response = api.handle({ method: 'GET', path: `/projects/${projectId}/product-team-operating-loop` });
+assert(response.status === 200 && response.body.productTeamOperatingLoop?.schemaVersion === 'product-team-operating-loop/v1', 'Project API must expose a standalone product-team operating loop contract.');
+assert(response.body.productTeamOperatingLoop.readyForLocalPilotOperatingLoop === true && response.body.productTeamOperatingLoop.readyForProduction === false, 'Product-team operating loop must prove local C/A autonomy without production overclaim.');
+assert(response.body.productTeamOperatingLoop.status === 'local-autonomous-product-team-loop-ready', `Product-team operating loop must be locally ready after the generic acceptance chain. Actual: ${response.body.productTeamOperatingLoop.status}`);
+assert(response.body.productTeamOperatingLoop.customerSide?.nextAction?.runApiPath?.includes('/autonomous-run-control/'), 'Product-team operating loop must route C-side continuation through Autonomous Run Control.');
+assert(response.body.productTeamOperatingLoop.agentSide?.selectedActions?.length > 0 && response.body.productTeamOperatingLoop.agentSide?.queueCount >= team.length, 'Product-team operating loop must summarize A-side Agent strategy selections.');
+assert(response.body.productTeamOperatingLoop.agentSide?.initiativeRows?.length >= team.length && response.body.productTeamOperatingLoop.agentSide.initiativeRows.every((row) => row.schemaVersion === 'agent-autonomous-initiative/v1' && row.intent && row.selectedAction && row.artifactType && row.runApiPath?.includes('/agent-autonomous-action-queue/')), 'Product-team operating loop must expose A-side Agent initiative rows with intent, artifact target, and runnable backend route.');
+assert(response.body.productTeamOperatingLoop.agentSide?.targetArtifactTypes?.length > 0 && response.body.productTeamOperatingLoop.summary?.agentInitiativeCount >= team.length, 'Product-team operating loop summary must preserve Agent initiative artifact targets.');
+assert(response.body.productTeamOperatingLoop.deliveryLoop?.readyStageIds?.includes('final-deliverable') && response.body.productTeamOperatingLoop.deliveryLoop?.missingStageIds?.length === 0, 'Product-team operating loop must see the generic delivery trace through final deliverable.');
+assert(response.body.productTeamOperatingLoop.executionLoop?.runnableActionCount >= 1 && response.body.productTeamOperatingLoop.executionLoop?.workerQueuedCount >= team.length, 'Product-team operating loop must expose runnable scheduler/worker continuation.');
+assert(response.body.productTeamOperatingLoop.proofLoop?.proofRouteCount > 0 && response.body.productTeamOperatingLoop.proofLoop?.timelineLogIds?.length > 0 && response.body.productTeamOperatingLoop.proofLoop?.eventIds?.length > 0, 'Product-team operating loop must preserve proof, timeline, and event traceability.');
+assert(response.body.productTeamOperatingLoop.gates?.some((gate) => gate.id === 'production-autonomy-boundary' && gate.productionBlocker && gate.passed === false), 'Product-team operating loop must keep public production autonomy blocked until managed controls exist.');
+assert(response.body.productTeamOperatingLoop.backendRoutes?.productTeamOperatingLoop?.endsWith('/product-team-operating-loop'), 'Product-team operating loop must expose its own backend route.');
+
+response = api.handle({ method: 'GET', path: `/projects/${projectId}/team-collaboration-diagnostics` });
+assert(response.status === 200 && response.body.teamCollaborationDiagnostics?.schemaVersion === 'team-collaboration-diagnostics/v1', 'Project API must expose standalone team collaboration diagnostics.');
+assert(response.body.teamCollaborationDiagnostics.readyForLocalPilotCollaboration === true && response.body.teamCollaborationDiagnostics.readyForProduction === false, `Team collaboration diagnostics must prove the local C/A chain without production overclaim. Actual: ${response.body.teamCollaborationDiagnostics.status}`);
+assert(response.body.teamCollaborationDiagnostics.diagnosticRows?.some((row) => row.id === 'group-chat-collaboration-visible' && row.passed && row.apiPath?.endsWith('/transcripts')), 'Team collaboration diagnostics must prove group chat transcript visibility.');
+assert(response.body.teamCollaborationDiagnostics.diagnosticRows?.some((row) => row.id === 'artifact-review-revision-final' && row.passed && row.proofIds.length && row.timelineLogIds.length && row.eventIds.length), 'Team collaboration diagnostics must prove artifact, review, revision, and final-deliverable closure.');
+assert(response.body.teamCollaborationDiagnostics.diagnosticRows?.some((row) => row.id === 'autonomous-continuation-visible' && row.passed && row.apiPath?.endsWith('/product-team-operating-loop')), 'Team collaboration diagnostics must prove C-side/A-side autonomous continuation from the operating loop.');
+assert(response.body.teamCollaborationDiagnostics.handoffBreaks?.length === 0, 'Team collaboration diagnostics must not report local handoff breaks after the generic acceptance chain closes.');
+assert(response.body.teamCollaborationDiagnostics.backendRoutes?.teamCollaborationDiagnostics?.endsWith('/team-collaboration-diagnostics'), 'Team collaboration diagnostics must expose its own backend route.');
+assert(response.body.teamCollaborationDiagnostics.requiredProductionControls?.includes('real-provider-and-byok-policy'), 'Team collaboration diagnostics must keep production provider/BYOK controls explicit.');
+
+response = api.handle({ method: 'GET', path: `/projects/${projectId}/runtime-contracts` });
+assert(response.status === 200 && response.body.runtimeContracts?.schemaVersion === 'runtime-contract-freeze/v1', 'Project API must expose standalone runtime contract freeze manifest.');
+assert(response.body.runtimeContracts.readyForLocalPilotContractFreeze === true && response.body.runtimeContracts.readyForProduction === false, `Runtime contracts must be locally frozen without production overclaim. Actual: ${response.body.runtimeContracts.status}`);
+assert(response.body.runtimeContracts.contractRows?.some((row) => row.id === 'agent-submission-artifact-contract' && row.ready && row.schemaVersions.includes('agent-artifact-storage-proof/v1')), 'Runtime contracts must freeze the Agent submission/artifact storage proof contract.');
+assert(response.body.runtimeContracts.contractRows?.some((row) => row.id === 'evidence-search-contract' && row.ready && row.schemaVersions.includes('agent-evidence-search/v1')), 'Runtime contracts must freeze the evidence/search contract.');
+assert(response.body.runtimeContracts.contractRows?.some((row) => row.id === 'review-revision-final-contract' && row.ready && row.schemaVersions.includes('submission-review-workflow/v1')), 'Runtime contracts must freeze the review/revision/final contract.');
+assert(response.body.runtimeContracts.contractRows?.some((row) => row.id === 'production-runtime-contract-boundary' && row.productionBlocker && row.ready === false), 'Runtime contracts must keep managed-production runtime controls as a visible blocker.');
+assert(response.body.runtimeContracts.failedLocalContracts?.length === 0, 'Runtime contracts must not report missing local MVP contracts after the generic acceptance chain closes.');
+assert(response.body.runtimeContracts.backendRoutes?.runtimeContracts?.endsWith('/runtime-contracts'), 'Runtime contracts must expose its own backend route.');
 
 response = api.handle({ method: 'GET', path: `/projects/${projectId}/evidence-source-review-workflow` });
 assert(response.status === 200 && response.body.evidenceSourceReviewWorkflow?.schemaVersion === 'evidence-source-review-workflow/v1', 'Project API must expose a standalone evidence source review workflow contract.');
@@ -762,6 +901,16 @@ assert(response.body.evidenceSourceReviews.count === 3 && response.body.evidence
 assert(response.body.evidenceSourceReviews.rows.every((row) => row.proofRoute?.includes('/evidence-source-review-workflow#') && row.evidenceSearchRoute?.includes('/evidence-searches/')), 'Manager Dashboard source review rows must expose proof and evidence search routes.');
 assert(response.body.submissionReviews.acceptedCount === 1 && response.body.submissionReviews.changesRequestedCount === 1, 'Manager Dashboard must expose review summary.');
 assert(response.body.brainstormLayer?.schemaVersion === 'brainstorm-layer/v1' && response.body.brainstormLayer?.readyForPrivatePilotBrainstorm === true && response.body.brainstormLayer?.route?.endsWith('/brainstorm-layer'), 'Manager Dashboard must expose a ready generic brainstorm layer summary and route.');
+assert(response.body.autonomousRunControl?.schemaVersion === 'autonomous-run-control/v1', 'Manager Dashboard must expose the autonomous run control contract.');
+assert(response.body.autonomousRunControl?.backendRoutes?.autonomousRunControl?.endsWith('/autonomous-run-control') && response.body.autonomousRunControl?.backendRoutes?.schedulerTick === '/workers/autonomous/tick', 'Autonomous run control must expose backend run and scheduler routes.');
+assert(response.body.autonomousRunControl?.nextActions?.some((row) => row.id === 'run-backend-scheduler-tick' && row.canRun), 'Autonomous run control must expose a runnable scheduler tick action for the product-team loop.');
+assert(response.body.autonomousRunControl?.nextActions?.every((row) => row.runApiPath?.includes('/autonomous-run-control/')), 'Autonomous run control next actions must expose unified run routes.');
+assert(response.body.autonomousRunControl?.nextActions?.some((row) => row.lane === 'agent-autonomy' && row.initiative?.schemaVersion === 'agent-autonomous-initiative/v1' && row.initiativeId && row.initiativeArtifactType), 'Autonomous run control Agent actions must carry Agent initiative proof into the C-side run surface.');
+
+response = api.handle({ method: 'GET', path: `/projects/${projectId}/autonomous-run-control` });
+assert(response.status === 200 && response.body.autonomousRunControl?.schemaVersion === 'autonomous-run-control/v1', 'Project API must expose standalone autonomous run control.');
+assert(response.body.autonomousRunControl?.summary?.runnableActionCount >= 1 && response.body.autonomousRunControl?.workerQueue?.schemaVersion === 'worker-queue-snapshot/v1', 'Standalone autonomous run control must summarize runnable work and worker queue proof.');
+assert(response.body.autonomousRunControl?.backendRoutes?.autonomousRunControlRunTemplate?.endsWith('/autonomous-run-control/:actionId/run'), 'Standalone autonomous run control must expose the unified run route template.');
 
 progress('initial manager ready package read starting');
 response = api.handle({ method: 'GET', path: `/projects/${projectId}/manager-ready-package` });
@@ -794,6 +943,7 @@ assert(response.body.artifactQualityAudit?.schemaVersion === 'artifact-quality-a
 assert(response.body.artifactQualityAudit?.status === 'local-artifact-quality-ready' && response.body.artifactQualityAudit?.readyForLocalPilot === true && response.body.artifactQualityAudit?.readyForProduction === false, 'Artifact quality audit must pass locally without production overclaim.');
 assert(response.body.artifactQualityAudit?.summary?.submissionCount === expectedSubmissionCount && response.body.artifactQualityAudit?.summary?.missingArtifactTypeCount === 0, 'Artifact quality audit must cover all generic product-team submission types.');
 assert(response.body.artifactQualityAudit?.summary?.proofReadyCount === expectedSubmissionCount && response.body.artifactQualityAudit?.summary?.qualityReadyCount === expectedSubmissionCount, 'Artifact quality audit must mark every submission proof-ready and locally quality-ready.');
+assert(response.body.artifactQualityAudit?.summary?.storageProofReadyCount === expectedSubmissionCount && response.body.artifactQualityAudit?.gates?.some((gate) => gate.id === 'artifact-storage-proof-ready' && gate.passed), 'Artifact quality audit must prove every Agent submission has checksummed file storage proof.');
 assert(response.body.artifactQualityAudit?.gates?.every((gate) => gate.passed), 'Artifact quality audit gates must all pass for the acceptance scenario.');
 assert(response.body.artifactQualityAudit?.requiredProductionControls?.some((control) => control.id === 'calibrated-artifact-quality-rubric' && control.status === 'blocked'), 'Artifact quality audit must keep calibrated production rubric as an explicit blocker.');
 assert(response.body.summary?.artifactQualityReady === true && response.body.summary?.artifactQualityFailedLocalGateCount === 0 && response.body.summary?.artifactQualitySubmissionCount === expectedSubmissionCount, 'Manager Ready Package summary must expose artifact quality readiness.');
@@ -801,6 +951,13 @@ assert(response.body.submissionReviewWorkflow?.schemaVersion === 'submission-rev
 assert(response.body.submissionReviewWorkflow?.readyForPrivatePilotReview === true && response.body.submissionReviewWorkflow?.readyForProduction === false, 'Submission review workflow must pass locally without production overclaim.');
 assert(response.body.submissionReviewWorkflow?.summary?.openChangeRequestCount === 0 && response.body.submissionReviewWorkflow?.summary?.acceptedFinalDeliverableCount >= 1, 'Submission review workflow must close change requests and preserve final deliverable acceptance.');
 assert(response.body.summary?.submissionReviewWorkflowReady === true && response.body.summary?.submissionReviewOpenChangeRequestCount === 0, 'Manager Ready Package summary must expose submission review workflow readiness.');
+assert(response.body.productTeamDeliveryTrace?.schemaVersion === 'product-team-delivery-trace/v1', 'Manager Ready Package must include the product-team delivery trace contract.');
+assert(response.body.productTeamDeliveryTrace?.readyForPrivatePilotDelivery === true && response.body.productTeamDeliveryTrace?.readyForProduction === false, 'Product-team delivery trace must pass locally without production overclaim.');
+assert(response.body.productTeamDeliveryTrace?.summary?.readyCount === response.body.productTeamDeliveryTrace?.summary?.rowCount && response.body.productTeamDeliveryTrace?.summary?.acceptedFinalDeliverableCount >= 1, 'Product-team delivery trace must expose a closed kickoff-to-final-delivery path.');
+assert(response.body.summary?.productTeamDeliveryTraceReady === true && response.body.summary?.productTeamDeliveryTraceMissingCount === 0, 'Manager Ready Package summary must expose product-team delivery trace readiness.');
+assert(response.body.autonomousRunControl?.schemaVersion === 'autonomous-run-control/v1' && response.body.autonomousRunControl?.workerQueue?.schemaVersion === 'worker-queue-snapshot/v1', 'Manager Ready Package must include autonomous run control with worker queue proof.');
+assert(response.body.autonomousRunControl?.summary?.runnableActionCount >= 1 && response.body.autonomousRunControl?.summary?.workerQueuedCount >= team.length, 'Autonomous run control must summarize runnable actions and queued Agent worker rows.');
+assert(response.body.summary?.autonomousRunControlRunnableCount === response.body.autonomousRunControl?.summary?.runnableActionCount && response.body.summary?.autonomousRunControlChecksum === response.body.autonomousRunControl?.checksum, 'Manager Ready Package summary must expose autonomous run control status and checksum.');
 assert(response.body.privatePilotGoLiveReadiness?.schemaVersion === 'private-pilot-go-live-readiness/v1', 'Manager Ready Package must include the private-pilot go-live readiness command view.');
 assert(response.body.privatePilotGoLiveReadiness?.readyForPrivatePilotGoLive === false && response.body.privatePilotGoLiveReadiness?.readyForProduction === false, 'Initial private-pilot go-live readiness must wait for release receipts without production overclaim.');
 assert(response.body.privatePilotGoLiveReadiness?.stageRows?.length >= 8 && response.body.privatePilotGoLiveReadiness?.nextAction?.apiPath, 'Private-pilot go-live readiness must expose stage rows and a routed next action.');
@@ -905,8 +1062,15 @@ assert(response.body.deploymentPreflight?.gates?.some((gate) => gate.id === 'ada
 assert(response.body.deploymentPreflight?.adapters?.gateway?.preflight?.route?.endsWith('/adapter-gateway-preflight'), 'Deployment preflight must point to the adapter gateway preflight route.');
 assert(response.body.summary?.adapterGatewayPreflightStatus === response.body.adapterGatewayPreflight?.status, 'Manager Ready Package summary must expose adapter gateway preflight status.');
 assert(response.body.summary?.adapterGatewayLiveReady === false && response.body.summary?.adapterGatewayStateReadable === false, 'Local-shadow Manager Ready Package summary must keep live gateway/state checks pending until an endpoint is configured.');
+assert(response.body.productionInfrastructureRehearsal?.schemaVersion === 'production-infrastructure-rehearsal/v1', 'Manager Ready Package must include the production infrastructure rehearsal contract.');
+assert(typeof response.body.productionInfrastructureRehearsal?.readyForInfrastructureRehearsal === 'boolean' && response.body.productionInfrastructureRehearsal?.readyForProduction === false, 'Production infrastructure rehearsal must expose rehearsal readiness while keeping public production blocked.');
+assert(response.body.productionInfrastructureRehearsal?.domainRows?.some((row) => row.id === 'managed-persistence' && typeof row.rehearsalReady === 'boolean' && row.productionReady === false && row.route?.endsWith('/persistence-adapter-dry-run')), 'Production infrastructure rehearsal must expose managed persistence rehearsal state without production cutover.');
+assert(response.body.productionInfrastructureRehearsal?.domainRows?.some((row) => row.id === 'managed-worker-queue' && typeof row.rehearsalReady === 'boolean' && row.productionReady === false && row.route?.endsWith('/worker-queue-adapter-dry-run')), 'Production infrastructure rehearsal must expose queue/cron rehearsal state without production cutover.');
+assert(response.body.productionInfrastructureRehearsal?.backendRoutes?.productionInfrastructureRehearsal?.endsWith('/production-infrastructure-rehearsal'), 'Production infrastructure rehearsal must expose its standalone backend route.');
+assert(response.body.summary?.productionInfrastructureRehearsalReady === response.body.productionInfrastructureRehearsal?.readyForInfrastructureRehearsal && response.body.summary?.productionInfrastructureRehearsalProductionBlockedCount >= 1, 'Manager Ready Package summary must expose infrastructure rehearsal readiness and production blockers.');
 assert(response.body.launchApprovalWorkflow?.schemaVersion === 'launch-approval-workflow/v1', 'Manager Ready Package must include the launch approval workflow contract.');
 assert(response.body.launchApprovalWorkflow?.readyForPrivatePilot === false, 'Launch approval workflow must require explicit private-pilot approvals before release.');
+assert(response.body.launchApprovalWorkflow?.checksum && Array.isArray(response.body.launchApprovalWorkflow?.proofIds), 'Launch approval workflow must expose a checksum and proof id array even before approvals exist.');
 assert(response.body.summary?.launchApprovalStatus === response.body.launchApprovalWorkflow?.status, 'Manager Ready Package summary must expose launch approval status.');
 assert(response.body.summary?.launchApprovalPrivatePilotReady === false, 'Manager Ready Package summary must expose private-pilot approval readiness.');
 assert(response.body.productionLaunchAudit?.schemaVersion === 'production-launch-audit/v1', 'Manager Ready Package must include the production launch audit contract.');
@@ -970,7 +1134,7 @@ response = api.handle({
   },
 });
 assert(response.status === 200 && response.body.projectMembershipPolicy?.schemaVersion === 'project-membership-policy/v1', 'Project API must persist a project membership policy.');
-assert(response.body.projectMembershipSummary?.managerUserCount === 1 && response.body.projectMembershipSummary?.agentBindingCount === team.length, 'Project membership policy summary must count manager and Agent runtime bindings.');
+assert(response.body.projectMembershipSummary?.managerUserCount === 1 && response.body.projectMembershipSummary?.operationsOwnerUserCount === 1 && response.body.projectMembershipSummary?.agentBindingCount === team.length, 'Project membership policy summary must count manager, operations owner, and Agent runtime bindings.');
 assert(response.body.projectMembershipAuditEntry?.eventId && response.body.log?.eventType === 'project-membership-policy-updated', 'Project membership policy updates must create audit and timeline proof.');
 assert(response.body.project.eventLedger.some((event) => event.type === 'project-membership-policy-updated'), 'Project membership policy updates must enter the event ledger.');
 
@@ -986,25 +1150,30 @@ assert(response.body.securityBoundary.projectMembership?.configured && response.
 assert(response.body.securityBoundary.secretVault?.ready === true && response.body.securityBoundary.secretVault.rawSecretRecordCount === 0, 'Standalone security boundary must expose encrypted secret vault readiness.');
 assert(response.body.securityBoundary.secretVault?.latestRotation?.schemaVersion === 'secret-vault-rotation-receipt/v1' && response.body.securityBoundary.summary?.secretVaultRotationReady === true, 'Standalone security boundary must expose secret-vault rotation readiness.');
 assert(!JSON.stringify(response.body.securityBoundary).includes(FAKE_VAULT_ROTATED_MASTER_KEY), 'Standalone security boundary must not expose the rotated vault master key fixture.');
-for (const routeKey of ['submissions', 'evidence-searches', 'brainstorm-layer', 'artifact-quality-audit', 'submission-review-workflow', 'evidence-quality-audit', 'evidence-source-review-workflow', 'evidence-custody-readiness', 'submission-reviews', 'pilot-launch-readiness', 'deployment-preflight', 'adapter-gateway-preflight', 'production-launch-audit', 'production-launch-gap-register', 'production-launch-control-center', 'production-launch-evidence-dossier', 'production-evidence-integrity-audit', 'launch-approvals', 'project-evidence-exports', 'private-pilot-go-live-readiness', 'private-pilot-release-candidates', 'private-pilot-launch-runs', 'private-pilot-launch-health-checks', 'private-pilot-acceptance-reports', 'production-operations-readiness', 'production-operations-control-receipts', 'production-deployment-control-receipts', 'production-security-control-receipts', 'production-provider-control-receipts', 'mvp-readiness', 'persistence-snapshot', 'persistence-migration-plan', 'persistence-migration-dry-run', 'persistence-adapter-plan', 'persistence-adapter-dry-run', 'worker-queue', 'worker-queue-adapter-plan', 'worker-queue-adapter-dry-run', 'operations-readiness', 'provider-readiness', 'provider-controlled-run', 'provider-eval-runs', 'security-boundary', 'security-access-audit', 'security-audit-stream', 'membership-policy', 'identity-sessions']) {
+for (const routeKey of ['submissions', 'evidence-searches', 'brainstorm-layer', 'artifact-quality-audit', 'submission-review-workflow', 'product-team-operating-loop', 'team-collaboration-diagnostics', 'runtime-contracts', 'autonomous-cycle-consistency', 'evidence-quality-audit', 'evidence-source-review-workflow', 'evidence-custody-readiness', 'submission-reviews', 'pilot-launch-readiness', 'deployment-preflight', 'adapter-gateway-preflight', 'production-infrastructure-rehearsal', 'production-launch-audit', 'production-launch-gap-register', 'production-launch-control-center', 'production-launch-evidence-dossier', 'production-evidence-integrity-audit', 'launch-approvals', 'project-evidence-exports', 'private-pilot-go-live-readiness', 'private-pilot-release-candidates', 'private-pilot-launch-runs', 'private-pilot-launch-health-checks', 'private-pilot-acceptance-reports', 'production-operations-readiness', 'production-operations-control-receipts', 'production-deployment-control-receipts', 'production-security-control-receipts', 'production-provider-control-receipts', 'mvp-readiness', 'persistence-snapshot', 'persistence-migration-plan', 'persistence-migration-dry-run', 'persistence-adapter-plan', 'persistence-adapter-dry-run', 'worker-queue', 'worker-queue-adapter-plan', 'worker-queue-adapter-dry-run', 'operations-readiness', 'provider-readiness', 'provider-controlled-run', 'provider-eval-runs', 'security-boundary', 'security-access-audit', 'security-audit-stream', 'membership-policy', 'identity-sessions']) {
   assert(response.body.securityBoundary.routeSummary.routeKeys.includes(routeKey), `Security boundary route manifest must include ${routeKey}.`);
 }
 assert(response.body.securityBoundary.production.status === 'production-blocked' && response.body.securityBoundary.production.blockerCount >= 4, 'Security boundary must keep production hardening blockers visible.');
 
+progress('artifact quality audit checks');
 response = api.handle({ method: 'GET', path: `/projects/${projectId}/artifact-quality-audit` });
 assert(response.status === 200 && response.body.artifactQualityAudit?.schemaVersion === 'artifact-quality-audit/v1', 'Project API must expose a standalone artifact quality audit contract.');
 assert(response.body.artifactQualityAudit.status === 'local-artifact-quality-ready' && response.body.artifactQualityAudit.readyForLocalPilot === true && response.body.artifactQualityAudit.readyForProduction === false, 'Standalone artifact quality audit must pass locally without production overclaim.');
 assert(response.body.artifactQualityAudit.summary?.coveredArtifactTypeCount === response.body.artifactQualityAudit.summary?.requiredArtifactTypeCount && response.body.artifactQualityAudit.summary?.missingArtifactTypeCount === 0, 'Standalone artifact quality audit must cover generic product-team artifact types.');
 assert(response.body.artifactQualityAudit.summary?.proofReadyCount === expectedSubmissionCount && response.body.artifactQualityAudit.summary?.generatedDraftQualityReadyCount === 2, 'Standalone artifact quality audit must preserve proof readiness and generated-draft quality readiness.');
+assert(response.body.artifactQualityAudit.summary?.storageProofReadyCount === expectedSubmissionCount && response.body.artifactQualityAudit.rows.every((row) => row.storageProofReady && row.artifactStorageProof?.checksum), 'Standalone artifact quality audit must preserve checksummed storage proof readiness for every submission.');
+assert(response.body.artifactQualityAudit.gates.some((gate) => gate.id === 'artifact-storage-proof-ready' && gate.passed), 'Standalone artifact quality audit must include the artifact storage proof gate.');
 assert(response.body.artifactQualityAudit.rows.some((row) => row.id === modelGeneratedDraftSubmission.id && row.artifactDraftQualityStatus === 'local-quality-ready' && row.artifactDraftHumanReviewRequired === true), 'Standalone artifact quality audit must expose model-backed draft quality and human-review metadata.');
 assert(response.body.artifactQualityAudit.requiredProductionControls.some((control) => control.id === 'calibrated-artifact-quality-rubric' && control.status === 'blocked'), 'Standalone artifact quality audit must expose calibrated production rubric as a blocker.');
 
+progress('submission review workflow checks');
 response = api.handle({ method: 'GET', path: `/projects/${projectId}/submission-review-workflow` });
 assert(response.status === 200 && response.body.submissionReviewWorkflow?.schemaVersion === 'submission-review-workflow/v1', 'Project API must expose a standalone submission review workflow contract.');
 assert(response.body.submissionReviewWorkflow.status === 'submission-review-loop-closed' && response.body.submissionReviewWorkflow.readyForPrivatePilotReview === true, 'Standalone submission review workflow must close the review loop.');
 assert(response.body.submissionReviewWorkflow.summary?.reviewRoundCount >= 2 && response.body.submissionReviewWorkflow.summary?.failedLocalGateCount === 0, 'Standalone submission review workflow must expose review rounds and passing local gates.');
 assert(response.body.submissionReviewWorkflow.backendRoutes?.submissionReviewWorkflow?.endsWith('/submission-review-workflow'), 'Standalone submission review workflow must expose its own backend route.');
 
+progress('provider readiness checks');
 response = api.handle({ method: 'GET', path: `/projects/${projectId}/provider-readiness` });
 assert(response.status === 200 && response.body.providerReadiness?.schemaVersion === 'provider-readiness/v1', 'Project API must expose a standalone provider readiness contract.');
 assert(response.body.providerReadiness.status === 'local-provider-contract-ready', 'Standalone provider readiness must pass local provider gates.');
@@ -1033,6 +1202,7 @@ assert(!JSON.stringify(response.body.providerReadiness).includes(FAKE_SOURCE_SEC
 assert(!JSON.stringify(response.body.providerReadiness).includes(FAKE_VAULT_MASTER_KEY), 'Standalone provider readiness must not expose the vault master key fixture.');
 assert(!JSON.stringify(response.body.providerReadiness).includes(FAKE_VAULT_ROTATED_MASTER_KEY), 'Standalone provider readiness must not expose the rotated vault master key fixture.');
 
+progress('provider controlled run checks');
 response = api.handle({ method: 'GET', path: `/projects/${projectId}/provider-controlled-run` });
 assert(response.status === 200 && response.body.providerControlledRun?.schemaVersion === 'provider-controlled-run/v1', 'Project API must expose a standalone provider controlled run contract.');
 assert(response.body.providerControlledRun.status === 'local-controlled-run-ready' && response.body.providerControlledRun.readyForPrivatePilotRun === true, 'Standalone provider controlled run must pass local private-pilot gates.');
@@ -1050,11 +1220,13 @@ assert(!JSON.stringify(response.body.providerControlledRun).includes(FAKE_SEARCH
 assert(!JSON.stringify(response.body.providerControlledRun).includes(FAKE_MODEL_SECRET), 'Standalone provider controlled run must not expose the model secret fixture.');
 assert(!JSON.stringify(response.body.providerControlledRun).includes(FAKE_VAULT_ROTATED_MASTER_KEY), 'Standalone provider controlled run must not expose the rotated vault master key fixture.');
 
+progress('provider eval workflow preflight checks');
 response = api.handle({ method: 'GET', path: `/projects/${projectId}/provider-eval-runs` });
 assert(response.status === 200 && response.body.providerEvalRunWorkflow?.schemaVersion === 'provider-eval-run-workflow/v1', 'Project API must expose a standalone provider eval run workflow.');
 assert(response.body.providerEvalRunWorkflow.status === 'provider-eval-run-needed' && response.body.providerEvalRunWorkflow.readyForPrivatePilotProviderEval === false, 'Standalone provider eval workflow must require a recorded shadow replay before it is ready.');
 assert(response.body.providerEvalRunWorkflow.backendRoutes.providerEvalRuns?.endsWith('/provider-eval-runs'), 'Provider eval workflow must expose its standalone backend route.');
 
+progress('provider eval shadow replay receipt checks');
 response = api.handle({
   method: 'POST',
   path: `/projects/${projectId}/provider-eval-runs`,
@@ -1085,6 +1257,7 @@ assert(response.body.providerEvalRunWorkflow.latestRun?.status === 'shadow-repla
 assert(response.body.providerEvalRunWorkflow.proofIds.length >= 2 && response.body.providerEvalRunWorkflow.eventIds.length >= 2 && response.body.providerEvalRunWorkflow.timelineLogIds.length >= 1, 'Provider eval workflow must expose proof, event, and timeline links.');
 assert(response.body.providerEvalRunWorkflow.readyForProduction === false, 'Provider eval workflow must not claim production provider readiness.');
 
+progress('production deployment control workflow checks');
 response = api.handle({ method: 'GET', path: `/projects/${projectId}/production-deployment-control-receipts` });
 assert(response.status === 200 && response.body.productionDeploymentControlReceiptWorkflow?.schemaVersion === 'production-deployment-control-receipt-workflow/v1', 'Project API must expose a standalone production deployment control receipt workflow.');
 assert(response.body.productionDeploymentControlReceiptWorkflow.status === 'production-deployment-control-receipts-needed' && response.body.productionDeploymentControlReceiptWorkflow.readyForProductionDeployment === false, 'Production deployment control receipt workflow must require production deployment evidence before deployment readiness can pass.');
@@ -1092,6 +1265,7 @@ assert(typeof response.body.productionDeploymentControlReceiptWorkflow.readyForP
 assert(response.body.productionDeploymentControlReceiptWorkflow.backendRoutes.productionDeploymentControlReceipts?.endsWith('/production-deployment-control-receipts'), 'Production deployment control receipt workflow must expose its standalone backend route.');
 assert(response.body.productionDeploymentControlReceiptWorkflow.missingControlIds.includes('environment-promotion-audit') && response.body.productionDeploymentControlReceiptWorkflow.missingControlIds.includes('rollback-plan-and-smoke-test'), 'Production deployment control receipt workflow must expose promotion and rollback controls as missing.');
 
+progress('production provider control workflow checks');
 response = api.handle({ method: 'GET', path: `/projects/${projectId}/production-provider-control-receipts` });
 assert(response.status === 200 && response.body.productionProviderControlReceiptWorkflow?.schemaVersion === 'production-provider-control-receipt-workflow/v1', 'Project API must expose a standalone production provider control receipt workflow.');
 assert(response.body.productionProviderControlReceiptWorkflow.status === 'production-provider-control-receipts-needed' && response.body.productionProviderControlReceiptWorkflow.readyForProductionProvider === false, 'Production provider control receipt workflow must require production evidence before provider rollout is ready.');
@@ -1099,6 +1273,7 @@ assert(response.body.productionProviderControlReceiptWorkflow.readyForLocalProvi
 assert(response.body.productionProviderControlReceiptWorkflow.backendRoutes.productionProviderControlReceipts?.endsWith('/production-provider-control-receipts'), 'Production provider control receipt workflow must expose its standalone backend route.');
 assert(response.body.productionProviderControlReceiptWorkflow.missingControlIds.includes('real-provider-eval-run') && response.body.productionProviderControlReceiptWorkflow.missingControlIds.includes('managed-provider-eval-storage'), 'Production provider control receipt workflow must expose real eval and managed storage as missing controls.');
 
+progress('enforced access route checks');
 response = api.handle({
   method: 'GET',
   path: `/projects/${projectId}/security-boundary`,
@@ -1216,6 +1391,7 @@ assert(response.body.securityAccessAudit.stream?.count >= response.body.security
 assert(response.body.securityAccessAudit.stream?.sequenceGapCount === 0, 'Security audit stream must preserve contiguous project-local append order.');
 assert(response.body.securityAccessAudit.stream?.hashChainReady === true, 'Security access audit must expose a verified backend audit hash chain.');
 
+progress('security audit stream checks');
 response = api.handle({
   method: 'GET',
   path: `/projects/${projectId}/security-audit-stream`,
@@ -1243,6 +1419,7 @@ assert(response.body.securityBoundary.accessAudit?.stream?.count >= response.bod
 assert(response.body.securityBoundary.accessAudit?.stream?.sequenceGapCount === 0, 'Security boundary must expose contiguous backend audit stream proof.');
 assert(response.body.securityBoundary.accessAudit?.stream?.hashChainReady === true, 'Security boundary must expose verified audit-stream hash-chain proof.');
 
+progress('persistence snapshot checks');
 response = api.handle({ method: 'GET', path: `/projects/${projectId}/persistence-snapshot` });
 assert(response.status === 200 && response.body.persistenceSnapshot?.schemaVersion === 'production-persistence-snapshot/v1', 'Project API must expose a production persistence snapshot contract.');
 assert(response.body.persistenceSnapshot.integrity.status === 'ready', 'Production persistence snapshot must pass integrity checks for the acceptance project.');
@@ -1252,6 +1429,8 @@ for (const table of ['projects', 'project_membership_policies', 'project_members
 assert(response.body.persistenceSnapshot.recordsByTable.project_membership_policies.some((record) => record.data.revision === 1), 'Production persistence snapshot must include project membership policy rows.');
 assert(response.body.persistenceSnapshot.recordsByTable.project_membership_grants.some((record) => record.data.role === 'agent-runtime-binding' && record.data.agentId === 'jobs'), 'Production persistence snapshot must include Agent runtime membership binding rows.');
 assert(response.body.persistenceSnapshot.recordsByTable.agent_submissions.some((record) => record.data.artifactType === 'final-deliverable'), 'Production persistence snapshot must include final deliverable submission rows.');
+assert(response.body.persistenceSnapshot.recordsByTable.agent_submissions.every((record) => record.data.artifactStorageProofChecksum && record.data.artifactContentChecksum && record.data.artifactStorageStatus === 'local-file-written'), 'Production persistence snapshot must preserve submission artifact storage proof columns.');
+assert(response.body.persistenceSnapshot.recordsByTable.artifact_files?.every((record) => record.data.storageProofChecksum && record.data.contentChecksum && record.data.storageStatus === 'local-file-written'), 'Production persistence snapshot artifact file rows must preserve checksummed storage proof columns.');
 for (const type of ['discovery-report', 'decision-proposal', 'implementation-plan', 'progress-brief']) {
   assert(response.body.persistenceSnapshot.recordsByTable.agent_submissions.some((record) => record.data.artifactType === type), `Production persistence snapshot must include ${type} submission rows.`);
   assert(response.body.persistenceSnapshot.recordsByTable.artifact_files?.some((record) => record.data.artifactType === type), `Production persistence snapshot must include ${type} artifact file rows.`);
@@ -1279,6 +1458,7 @@ assert(response.body.persistenceSnapshot.recordsByTable.worker_runs.every((recor
 assert(response.body.persistenceSnapshot.recordsByTable.worker_runs.every((record) => record.data.maxAttempts >= 3 && typeof record.data.retryable === 'boolean' && typeof record.data.deadLettered === 'boolean'), 'Production persistence snapshot must include worker retry/dead-letter columns.');
 assert(response.body.persistenceSnapshot.recordsByTable.read_model_checkpoints.some((record) => record.data.readModel === 'security-boundary'), 'Production persistence snapshot must include the security boundary read-model checkpoint.');
 
+progress('worker queue snapshot checks');
 response = api.handle({
   method: 'POST',
   path: `/projects/${projectId}/worker-queue`,
@@ -1293,8 +1473,10 @@ response = api.handle({
 assert(response.status === 200 && response.body.workerQueueSnapshot?.schemaVersion === 'worker-queue-snapshot/v1', 'Project API must expose a worker queue snapshot contract.');
 assert(response.body.workerQueueSnapshot.summary.projectQueuedCount >= 1, 'Worker queue snapshot must include queued project work when forced due.');
 assert(response.body.workerQueueSnapshot.summary.agentQueuedCount >= team.length, 'Worker queue snapshot must include queued Agent work when forced due.');
+assert(response.body.workerQueueSnapshot.summary.agentInitiativeCount >= team.length && response.body.workerQueueSnapshot.summary.queuedAgentInitiativeCount >= team.length, 'Worker queue snapshot must summarize Agent initiative coverage for queued Agent work.');
 assert(response.body.workerQueueSnapshot.retryPolicy?.schemaVersion === 'worker-queue-retry-policy/v1' && response.body.workerQueueSnapshot.deadLetterPolicy?.schemaVersion === 'worker-dead-letter-policy/v1', 'Worker queue snapshot must expose retry and dead-letter policies.');
 assert(response.body.workerQueueSnapshot.agentQueue.every((row) => row.idempotencyKey && row.leaseKey && row.runApiPath === '/workers/agents/due' && row.retry?.schemaVersion === 'worker-retry-state/v1' && row.executionReceiptExpected === true), 'Agent worker queue rows must include idempotency, lease, retry, receipt, and worker route contract.');
+assert(response.body.workerQueueSnapshot.agentQueue.every((row) => row.initiative?.schemaVersion === 'agent-autonomous-initiative/v1' && row.initiativeId && row.initiativeIntent && row.initiativeArtifactType && row.agentAutonomousActionRunApiPath?.includes('/agent-autonomous-action-queue/') && row.requestBody?.agentInitiativeId === row.initiativeId), 'Agent worker queue rows must carry the backend Agent initiative into queue/import/lease request bodies.');
 assert(response.body.workerQueueSnapshot.executionReceipts.length >= 1 && response.body.workerQueueSnapshot.executionReceipts.every((receipt) => receipt.receiptChecksum && receipt.idempotencyKey && receipt.leaseKey), 'Worker queue snapshot must expose execution receipts for completed worker runs.');
 assert(Array.isArray(response.body.workerQueueSnapshot.deadLetterQueue) && response.body.workerQueueSnapshot.summary.workerDeadLetterCount === response.body.workerQueueSnapshot.deadLetterQueue.length, 'Worker queue snapshot must expose dead-letter queue summary and rows.');
 
@@ -1312,6 +1494,7 @@ response = api.handle({
 assert(response.status === 200 && response.body.workerQueueSnapshot?.projectQueue.some((row) => row.projectId === projectId), 'Global worker queue snapshot must include the acceptance project.');
 assert(response.body.workerQueueSnapshot.summary.workerRunReceiptCount >= 1, 'Global worker queue snapshot must include worker execution receipt counts.');
 
+progress('worker queue adapter plan checks');
 response = api.handle({ method: 'GET', path: `/projects/${projectId}/worker-queue-adapter-plan` });
 assert(response.status === 200 && response.body.workerQueueAdapterPlan?.schemaVersion === 'worker-queue-adapter-plan/v1', 'Project API must expose a worker queue adapter plan.');
 assert(response.body.workerQueueAdapterPlan.status === 'ready-for-queue-adapter-pilot', 'Worker queue adapter plan must pass for the acceptance project.');
@@ -1322,6 +1505,7 @@ assert(response.body.workerQueueAdapterPlan.adapterStatus?.schemaVersion === 'wo
 assert(response.body.workerQueueAdapterPlan.adapterStatus.driver === 'local-shadow', 'Default worker queue adapter plan must use the local-shadow driver.');
 assert(response.body.workerQueueAdapterPlan.adapterStatus.productionCutoverReady === false, 'Default worker queue adapter plan must not claim production queue cutover readiness.');
 
+progress('worker queue adapter dry-run checks');
 response = api.handle({ method: 'GET', path: `/projects/${projectId}/worker-queue-adapter-dry-run` });
 assert(response.status === 200 && response.body.workerQueueAdapterDryRun?.schemaVersion === 'worker-queue-adapter-dry-run/v1', 'Project API must expose a worker queue adapter dry-run.');
 assert(response.body.workerQueueAdapterDryRun.status === 'passed', 'Worker queue adapter dry-run must pass for the acceptance project.');
@@ -1344,6 +1528,7 @@ assert(response.body.workerQueueAdapterDryRun.summary.adapterDriver === 'local-s
 assert(response.body.workerQueueAdapterDryRun.summary.adapterProductionCutoverReady === false, 'Worker queue adapter dry-run summary must not claim production queue cutover readiness for local shadow runs.');
 assert(response.body.workerQueueAdapterDryRun.summary.dispatchCount >= team.length && response.body.workerQueueAdapterDryRun.summary.leaseAcquisitionCount >= team.length, 'Worker queue adapter dry-run must simulate dispatch and lease acquisition.');
 
+progress('manager flow graph checks');
 response = api.handle({ method: 'GET', path: `/projects/${projectId}/manager-flow-graph` });
 const graph = response.body;
 const submissionNodes = graph.nodes.filter((node) => node.category === 'submission' && node.source === 'agentSubmissions');
@@ -1355,6 +1540,15 @@ const evidenceCustodyNodes = graph.nodes.filter((node) => node.category === 'evi
 const providerEvalRunNodes = graph.nodes.filter((node) => node.category === 'monitoring' && node.source === 'providerEvalRuns');
 const selfMarketingNodes = graph.nodes.filter((node) => node.category === 'self-marketing');
 const roleClarificationNodes = graph.nodes.filter((node) => node.subtype === 'role-clarification');
+const autonomousRunControlNodes = graph.nodes.filter((node) => node.id === 'autonomous-run-control' && node.source === 'autonomousRunControl');
+const autonomousRunControlEdges = graph.edges.filter((edge) => edge.source === 'autonomousRunControl');
+const agentAutonomousActionNodes = graph.nodes.filter((node) => node.source === 'agentAutonomousActionQueue' && node.id?.startsWith('agent-autonomous-action-'));
+const productTeamOperatingLoopNodes = graph.nodes.filter((node) => node.id === 'product-team-operating-loop' && node.source === 'productTeamOperatingLoop');
+const productTeamOperatingLoopEdges = graph.edges.filter((edge) => edge.source === 'productTeamOperatingLoop');
+const teamCollaborationDiagnosticNodes = graph.nodes.filter((node) => node.id === 'team-collaboration-diagnostics' && node.source === 'teamCollaborationDiagnostics');
+const teamCollaborationDiagnosticEdges = graph.edges.filter((edge) => edge.source === 'teamCollaborationDiagnostics');
+const runtimeContractNodes = graph.nodes.filter((node) => node.id === 'runtime-contract-freeze' && node.source === 'runtimeContracts');
+const runtimeContractEdges = graph.edges.filter((edge) => edge.source === 'runtimeContracts');
 const revisionEdges = graph.edges.filter((edge) => edge.type === 'revision');
 const submissionReviewWorkflowEdges = graph.edges.filter((edge) => edge.source === 'submissionReviewWorkflow');
 const sourceReviewEdges = graph.edges.filter((edge) => edge.source === 'evidenceSourceReviews');
@@ -1371,6 +1565,7 @@ assert(selfMarketingNodes.some((node) => node.subtype === 'role-self-nomination'
 assert(selfMarketingNodes.some((node) => node.subtype === 'leader-campaign'), 'Manager Flow Graph must include Leader campaign self-marketing nodes.');
 assert(selfMarketingNodes.every((node) => node.proofIds.length && node.eventIds.length && node.attachments.length), 'Every self-marketing node must have transcript, event, and attachment proof.');
 assert(submissionNodes.every((node) => node.proofIds.length && node.timelineLogIds.length && node.eventIds.length && node.attachments.length), 'Every explicit submission node must have chat, timeline, event, and artifact proof.');
+assert(submissionNodes.every((node) => node.attachments.some((attachment) => attachment.storageProof?.schemaVersion === 'agent-artifact-storage-proof/v1' && attachment.storageProof.checksum)), 'Every explicit submission node must expose checksummed artifact storage proof in its Flow Graph attachment.');
 assert(brainstormLayerNodes.length === 1 && brainstormLayerNodes[0].route?.endsWith('/brainstorm-layer') && brainstormLayerNodes[0].proofIds.length && brainstormLayerNodes[0].timelineLogIds.length && brainstormLayerNodes[0].eventIds.length, 'Manager Flow Graph must include a proofed brainstorm layer node.');
 assert(brainstormLayerEdges.some((edge) => edge.toNodeId === 'brainstorm-layer') && brainstormLayerEdges.some((edge) => edge.fromNodeId === 'brainstorm-layer'), 'Manager Flow Graph must connect brainstorm submissions into downstream product-team artifacts.');
 assert(revisionEdges.length >= 3 && revisionEdges.every((edge) => edge.proofIds.length && edge.timelineLogIds.length && edge.eventIds.length), 'Manager Flow Graph must include proofed revision lineage edges.');
@@ -1389,10 +1584,25 @@ assert(evidenceCustodyEdges.some((edge) => edge.fromNodeId === `evidence-search-
 assert(providerEvalRunNodes.length >= 1 && providerEvalRunNodes.every((node) => node.subtype === 'provider-eval-run' && node.route?.endsWith('/provider-eval-runs') && node.proofIds.length && node.timelineLogIds.length && node.eventIds.length && node.attachments.some((attachment) => attachment.type === 'provider-eval-operations')), 'Manager Flow Graph must include proofed provider eval shadow replay nodes.');
 assert(providerEvalRunEdges.some((edge) => edge.toNodeId.startsWith('provider-eval-run-') && edge.proofIds.length && edge.timelineLogIds.length && edge.eventIds.length), 'Manager Flow Graph must connect provider eval runs to the project evidence ledger.');
 assert(reviewNodes.length === 2 && reviewNodes.every((node) => node.proofIds.length && node.timelineLogIds.length && node.eventIds.length && node.attachments.length), 'Manager Flow Graph must include proofed submission-review nodes.');
+assert(autonomousRunControlNodes.length === 1 && autonomousRunControlNodes[0].route?.endsWith('/autonomous-run-control') && autonomousRunControlNodes[0].attachments.some((attachment) => attachment.type === 'autonomous-run-next-action') && autonomousRunControlNodes[0].attachments.some((attachment) => attachment.type === 'autonomous-run-gate'), 'Manager Flow Graph must include autonomous run control node with next-action and gate attachments.');
+assert(autonomousRunControlEdges.some((edge) => edge.fromNodeId === 'autonomous-run-control' && edge.toNodeId.startsWith('agent-autonomous-action-')), 'Manager Flow Graph must connect autonomous run control into Agent-selected action nodes.');
+assert(agentAutonomousActionNodes.length >= team.length && agentAutonomousActionNodes.every((node) => node.attachments.some((attachment) => attachment.type === 'agent-autonomous-initiative' && attachment.schemaVersion === 'agent-autonomous-initiative/v1' && attachment.intent && attachment.artifactType && attachment.runApiPath?.includes('/agent-autonomous-action-queue/'))), 'Manager Flow Graph Agent autonomous action nodes must expose Agent initiative intent attachments.');
+assert(productTeamOperatingLoopNodes.length === 1 && productTeamOperatingLoopNodes[0].route?.endsWith('/product-team-operating-loop') && productTeamOperatingLoopNodes[0].proofIds.length && productTeamOperatingLoopNodes[0].timelineLogIds.length && productTeamOperatingLoopNodes[0].eventIds.length, 'Manager Flow Graph must include a proofed product-team operating loop node.');
+assert(productTeamOperatingLoopNodes[0].attachments.some((attachment) => attachment.type === 'operating-loop-c-side' && attachment.runApiPath?.includes('/autonomous-run-control/')) && productTeamOperatingLoopNodes[0].attachments.some((attachment) => attachment.type === 'operating-loop-a-side' && attachment.selectedActions?.length && attachment.initiativeRows?.length >= team.length) && productTeamOperatingLoopNodes[0].attachments.some((attachment) => attachment.type === 'operating-loop-proof' && attachment.deliveryTraceRoute?.endsWith('/product-team-delivery-trace')) && productTeamOperatingLoopNodes[0].attachments.some((attachment) => attachment.type === 'operating-loop-gate' && attachment.status === 'production-blocked'), 'Manager Flow Graph operating loop node must expose C-side control, A-side initiative strategy, proof route, and production boundary attachments.');
+assert(productTeamOperatingLoopEdges.some((edge) => edge.fromNodeId === 'product-team-delivery-trace' && edge.toNodeId === 'product-team-operating-loop') && productTeamOperatingLoopEdges.some((edge) => edge.fromNodeId === 'autonomous-run-control' && edge.toNodeId === 'product-team-operating-loop') && productTeamOperatingLoopEdges.some((edge) => edge.fromNodeId.startsWith('agent-autonomous-action-') && edge.toNodeId === 'product-team-operating-loop'), 'Manager Flow Graph must connect Delivery Trace, Run Control, and Agent strategy nodes into the Product Team Operating Loop.');
+assert(teamCollaborationDiagnosticNodes.length === 1 && teamCollaborationDiagnosticNodes[0].route?.endsWith('/team-collaboration-diagnostics') && teamCollaborationDiagnosticNodes[0].proofIds.length && teamCollaborationDiagnosticNodes[0].timelineLogIds.length && teamCollaborationDiagnosticNodes[0].eventIds.length, 'Manager Flow Graph must include a proofed team collaboration diagnostics node.');
+assert(teamCollaborationDiagnosticNodes[0].attachments.some((attachment) => attachment.type === 'collaboration-diagnostics-loop' && attachment.route?.endsWith('/product-team-operating-loop')) && teamCollaborationDiagnosticNodes[0].attachments.some((attachment) => attachment.type === 'collaboration-diagnostics-proof' && attachment.transcriptRoute?.endsWith('/transcripts') && attachment.timelineRoute?.endsWith('/timeline') && attachment.eventLedgerRoute?.endsWith('/events')) && teamCollaborationDiagnosticNodes[0].attachments.some((attachment) => attachment.type === 'collaboration-diagnostics-production-boundary' && attachment.status === 'production-blocked'), 'Manager Flow Graph collaboration diagnostics node must expose operating loop, proof surfaces, and production boundary attachments.');
+assert(teamCollaborationDiagnosticEdges.some((edge) => edge.fromNodeId === 'product-team-operating-loop' && edge.toNodeId === 'team-collaboration-diagnostics') && teamCollaborationDiagnosticEdges.some((edge) => edge.fromNodeId === 'product-team-delivery-trace' && edge.toNodeId === 'team-collaboration-diagnostics') && teamCollaborationDiagnosticEdges.some((edge) => edge.fromNodeId === 'submission-review-workflow' && edge.toNodeId === 'team-collaboration-diagnostics'), 'Manager Flow Graph must connect operating loop, delivery trace, and review workflow into team collaboration diagnostics.');
+assert(runtimeContractNodes.length === 1 && runtimeContractNodes[0].route?.endsWith('/runtime-contracts') && runtimeContractNodes[0].proofIds.length && runtimeContractNodes[0].timelineLogIds.length && runtimeContractNodes[0].eventIds.length, 'Manager Flow Graph must include a proofed runtime contract freeze node.');
+assert(runtimeContractNodes[0].attachments.some((attachment) => attachment.type === 'runtime-contract-freeze-local' && attachment.route?.endsWith('/runtime-contracts')) && runtimeContractNodes[0].attachments.some((attachment) => attachment.type === 'runtime-contract-freeze-proof' && attachment.proofIds?.length && attachment.timelineLogIds?.length && attachment.eventIds?.length) && runtimeContractNodes[0].attachments.some((attachment) => attachment.type === 'runtime-contract-freeze-production-boundary' && attachment.status === 'production-blocked'), 'Manager Flow Graph runtime contract node must expose local contracts, proof surfaces, and production boundary attachments.');
+assert(runtimeContractEdges.some((edge) => edge.fromNodeId === 'team-collaboration-diagnostics' && edge.toNodeId === 'runtime-contract-freeze') && runtimeContractEdges.some((edge) => edge.fromNodeId === 'product-team-operating-loop' && edge.toNodeId === 'runtime-contract-freeze') && runtimeContractEdges.some((edge) => edge.fromNodeId === 'product-team-delivery-trace' && edge.toNodeId === 'runtime-contract-freeze'), 'Manager Flow Graph must connect diagnostics, operating loop, and delivery trace into runtime contract freeze.');
 
 progress('initial readiness proof map checks');
 response = api.handle({ method: 'GET', path: `/projects/${projectId}/readiness-proof-map` });
 assert(response.status === 200 && response.body.submissionSummary.count === expectedSubmissionCount, 'Readiness Proof Map must summarize Agent submissions, including generated artifact drafts.');
+assert(response.body.submissionSummary.artifactStorageProofCount === expectedSubmissionCount && response.body.submissionRoutes.every((route) => route.storageProofReady && route.artifactStorageProofChecksum), 'Readiness Proof Map must summarize checksummed artifact storage proof coverage for every Agent submission route.');
+assert(response.body.transcriptProofCoverageSummary?.readyForBackendTranscriptProof === true && response.body.transcriptProofCoverageSummary?.missingProofIdCount === 0 && response.body.transcriptProofCoverageSummary?.submissionProofIdCount === expectedSubmissionCount && response.body.transcriptProofCoverageSummary?.evidenceSearchProofIdCount >= 1 && response.body.transcriptProofCoverageSummary?.evidenceSourceReviewProofIdCount >= 3 && response.body.transcriptProofCoverageSummary?.submissionReviewProofIdCount >= 2, 'Readiness Proof Map must summarize complete backend transcript proof coverage for submissions, evidence, source reviews, and submission reviews.');
+assert(response.body.transcriptProofCoverageRoutes?.some((route) => route.apiPath?.endsWith('/transcripts') && route.readyForBackendTranscriptProof === true && route.archivedProofIdCount === route.expectedProofIdCount && route.missingProofIdCount === 0), 'Readiness Proof Map must expose transcript proof coverage as a backend route.');
 assert(response.body.roleNegotiationSummary.roleClarificationCount > 0 && response.body.roleNegotiationSummary.selfNominationCount > 0, 'Readiness Proof Map must expose role-negotiation routes.');
 assert(response.body.selfMarketingSummary.selfNominationCount > 0 && response.body.selfMarketingSummary.leaderCampaignCount > 0, 'Readiness Proof Map must expose self-marketing routes.');
 assert(response.body.selfMarketingRoutes.every((route) => route.proofIds.length && route.eventIds.length && route.apiPath), 'Self-marketing proof routes must include transcript and event proof.');
@@ -1401,6 +1611,17 @@ assert(response.body.brainstormLayerSummary?.proofIds?.length && response.body.b
 assert(response.body.revisionSummary.count >= 2 && response.body.revisionSummary.respondedReviewIds.includes(reviewsByVerdict.get('changes-requested')?.id), 'Readiness Proof Map must summarize artifact revision lineage.');
 assert(response.body.revisionRoutes.every((route) => route.proofIds.length && route.timelineLogIds.length && route.eventIds.length && route.apiPath), 'Revision proof routes must include chat, timeline, event, and API proof.');
 assert(response.body.submissionRoutes.some((route) => route.artifactType === 'final-deliverable'), 'Readiness Proof Map must expose final deliverable submission route.');
+assert(response.body.productTeamDeliveryTraceSummary?.count === 1 && response.body.productTeamDeliveryTraceSummary?.proofIds?.length && response.body.productTeamDeliveryTraceSummary?.revisionCount >= 1, 'Readiness Proof Map must summarize the product-team delivery trace.');
+assert(response.body.productTeamDeliveryTraceRoutes?.some((route) => route.apiPath?.endsWith('/product-team-delivery-trace') && route.acceptedFinalDeliverableCount >= 1 && route.proofIds.length && route.timelineLogIds.length && route.eventIds.length), 'Readiness Proof Map must expose the product-team delivery trace proof route.');
+assert(response.body.autonomousRunControlSummary?.routeReady === true && response.body.autonomousRunControlRoutes?.some((route) => route.apiPath?.endsWith('/autonomous-run-control') && route.schedulerRoute === '/workers/autonomous/tick'), 'Readiness Proof Map must expose autonomous run control routes with scheduler linkage.');
+assert(response.body.productTeamOperatingLoopSummary?.routeReady === true && response.body.productTeamOperatingLoopSummary?.readyForLocalPilotOperatingLoop === true && response.body.productTeamOperatingLoopSummary?.readyForProduction === false, 'Readiness Proof Map must summarize the product-team operating loop without production overclaim.');
+assert(response.body.productTeamOperatingLoopRoutes?.some((route) => route.apiPath?.endsWith('/product-team-operating-loop') && route.deliveryTraceRoute?.endsWith('/product-team-delivery-trace') && route.autonomousRunControlRoute?.endsWith('/autonomous-run-control') && route.schedulerRoute === '/workers/autonomous/tick' && route.readyForLocalPilotOperatingLoop === true && route.productionBlocker === true && route.proofIds.length && route.timelineLogIds.length && route.eventIds.length), 'Readiness Proof Map must expose the product-team operating loop proof route with delivery, run-control, scheduler, and production-boundary evidence.');
+assert(response.body.managerUseCaseAuditSummary?.routeReady === true && response.body.managerUseCaseAuditSummary?.readyForProduction === false, 'Readiness Proof Map must summarize Manager Use Case Audit route coverage without production overclaim.');
+assert(response.body.managerUseCaseAuditRoutes?.some((route) => route.apiPath?.endsWith('/manager-use-case-audit') && route.managerDashboardRoute?.endsWith('/manager-dashboard') && route.managerActionQueueRoute?.endsWith('/manager-action-queue') && route.readyForProduction === false && route.productionBlocker === true && route.proofIds.length && route.timelineLogIds.length && route.eventIds.length), 'Readiness Proof Map must expose Manager Use Case Audit as a C-side proof route with action-queue linkage.');
+assert(response.body.teamCollaborationDiagnosticsSummary?.routeReady === true && response.body.teamCollaborationDiagnosticsSummary?.readyForLocalPilotCollaboration === true && response.body.teamCollaborationDiagnosticsSummary?.readyForProduction === false, 'Readiness Proof Map must summarize team collaboration diagnostics without production overclaim.');
+assert(response.body.teamCollaborationDiagnosticRoutes?.some((route) => route.apiPath?.endsWith('/team-collaboration-diagnostics') && route.productTeamOperatingLoopRoute?.endsWith('/product-team-operating-loop') && route.productTeamDeliveryTraceRoute?.endsWith('/product-team-delivery-trace') && route.transcriptRoute?.endsWith('/transcripts') && route.timelineRoute?.endsWith('/timeline') && route.eventLedgerRoute?.endsWith('/events') && route.readyForLocalPilotCollaboration === true && route.productionBlocker === true && route.proofIds.length && route.timelineLogIds.length && route.eventIds.length), 'Readiness Proof Map must expose team collaboration diagnostics proof route with operating-loop, transcript, timeline, event, and production-boundary evidence.');
+assert(response.body.runtimeContractFreezeSummary?.routeReady === true && response.body.runtimeContractFreezeSummary?.readyForLocalPilotContractFreeze === true && response.body.runtimeContractFreezeSummary?.readyForProduction === false, 'Readiness Proof Map must summarize runtime contract freeze without production overclaim.');
+assert(response.body.runtimeContractFreezeRoutes?.some((route) => route.apiPath?.endsWith('/runtime-contracts') && route.productTeamOperatingLoopRoute?.endsWith('/product-team-operating-loop') && route.teamCollaborationDiagnosticsRoute?.endsWith('/team-collaboration-diagnostics') && route.readyForLocalPilotContractFreeze === true && route.productionBlocker === true && route.proofIds.length && route.timelineLogIds.length && route.eventIds.length), 'Readiness Proof Map must expose runtime contract freeze proof route with operating-loop, diagnostics, proof, and production-boundary evidence.');
 assert(response.body.artifactQualitySummary?.count === expectedSubmissionCount && response.body.artifactQualitySummary?.generatedDraftCount === 2 && response.body.artifactQualitySummary?.productionQualityReady === false, 'Readiness Proof Map must summarize artifact quality audit coverage and production quality status.');
 assert(response.body.artifactQualityRoutes?.some((route) => route.apiPath?.endsWith('/artifact-quality-audit') && route.proofIds.length === expectedSubmissionCount && route.artifactTypes.includes('final-deliverable')), 'Readiness Proof Map must expose artifact quality audit proof route.');
 assert(response.body.providerControlledRunSummary?.count >= 2 && response.body.providerControlledRunSummary?.operations.includes('model:artifact-draft') && response.body.providerControlledRunSummary?.operations.includes('search:evidence'), 'Readiness Proof Map must summarize provider controlled run usage operations.');
@@ -1536,18 +1757,61 @@ try {
   httpBody = await httpResponse.json();
   assert(httpResponse.status === 200 && httpBody.operationsBoard.latestProjectCycle?.trigger === 'product-team-http-scheduler-tick', 'HTTP Manager Ready Package must expose scheduler-produced operations evidence.');
   assert(httpBody.mvpReadiness?.readyForLocalPilot && httpBody.mvpReadiness?.production?.status === 'production-blocked', 'HTTP Manager Ready Package must expose local-pilot readiness without overclaiming production readiness.');
-  assert(httpBody.providerReadiness?.status === 'local-provider-contract-ready' && httpBody.providerReadiness?.readyForProduction === false, 'HTTP Manager Ready Package must expose provider readiness without overclaiming production readiness.');
+  assert(
+    httpBody.providerReadiness?.status === 'local-provider-contract-ready' && httpBody.providerReadiness?.readyForProduction === false,
+    `HTTP Manager Ready Package must expose provider readiness without overclaiming production readiness. Actual: ${JSON.stringify({
+      status: httpBody.providerReadiness?.status,
+      readyForLocalPilot: httpBody.providerReadiness?.readyForLocalPilot,
+      readyForProduction: httpBody.providerReadiness?.readyForProduction,
+      failedGateCount: httpBody.providerReadiness?.summary?.failedGateCount,
+      failedGates: (httpBody.providerReadiness?.failedGates || []).map((gate) => ({
+        id: gate.id,
+        status: gate.status,
+        detail: gate.detail,
+      })),
+    })}`,
+  );
   assert(httpBody.providerControlledRun?.schemaVersion === 'provider-controlled-run/v1' && httpBody.providerControlledRun?.readyForPrivatePilotRun === true && httpBody.summary?.providerControlledRunReady === true, 'HTTP Manager Ready Package must expose provider controlled run readiness.');
   assert(httpBody.providerEvalRunWorkflow?.schemaVersion === 'provider-eval-run-workflow/v1' && httpBody.providerEvalRunWorkflow?.readyForPrivatePilotProviderEval === true && httpBody.summary?.providerEvalRunReady === true, 'HTTP Manager Ready Package must expose provider eval shadow replay readiness.');
   assert(httpBody.evidenceQualityAudit?.schemaVersion === 'evidence-quality-audit/v1' && httpBody.evidenceQualityAudit?.readyForDecision === true, 'HTTP Manager Ready Package must expose decision-ready evidence quality audit.');
   assert(httpBody.summary?.evidenceQualityChecksum === httpBody.evidenceQualityAudit?.checksum, 'HTTP Manager Ready Package summary must expose the evidence quality audit checksum.');
-  assert(httpBody.evidenceQualityAudit?.summary?.sourceSnapshotCount === 3 && httpBody.summary?.evidenceSourceSnapshotCount === 3, 'HTTP Manager Ready Package must expose source snapshot counts.');
-  assert(httpBody.evidenceQualityAudit?.summary?.providerReceiptCount === 1 && httpBody.summary?.evidenceProviderReceiptCount === 1, 'HTTP Manager Ready Package must expose provider receipt counts.');
-  assert(httpBody.evidenceSourceReviewWorkflow?.schemaVersion === 'evidence-source-review-workflow/v1' && httpBody.evidenceSourceReviewWorkflow?.readyForLocalPilot === true, 'HTTP Manager Ready Package must expose local-ready evidence source review workflow.');
+  const httpReadyEvidenceSummary = httpBody.evidenceQualityAudit?.summary || {};
+  const httpReadyProviderSummary = httpBody.providerReadiness?.summary || {};
+  assert(
+    httpReadyEvidenceSummary.sourceSnapshotCount >= 3
+      && httpBody.summary?.evidenceSourceSnapshotCount === httpReadyEvidenceSummary.sourceSnapshotCount
+      && httpReadyProviderSummary.evidenceSourceSnapshotCount === httpReadyEvidenceSummary.sourceSnapshotCount,
+    'HTTP Manager Ready Package must expose source snapshot counts for every scheduler-produced evidence source.',
+  );
+  assert(
+    httpReadyEvidenceSummary.providerReceiptCount >= 1
+      && httpBody.summary?.evidenceProviderReceiptCount === httpReadyEvidenceSummary.providerReceiptCount
+      && httpReadyProviderSummary.evidenceProviderReceiptCount === httpReadyEvidenceSummary.providerReceiptCount
+      && httpReadyEvidenceSummary.providerBackedReceiptCount === httpReadyEvidenceSummary.providerBackedSearchCount,
+    'HTTP Manager Ready Package must expose provider receipt counts for every provider-backed evidence search.',
+  );
+  assert(
+    httpBody.evidenceSourceReviewWorkflow?.schemaVersion === 'evidence-source-review-workflow/v1' && httpBody.evidenceSourceReviewWorkflow?.readyForLocalPilot === true,
+    `HTTP Manager Ready Package must expose local-ready evidence source review workflow. Actual: ${JSON.stringify({
+      status: httpBody.evidenceSourceReviewWorkflow?.status,
+      readyForLocalPilot: httpBody.evidenceSourceReviewWorkflow?.readyForLocalPilot,
+      summary: httpBody.evidenceSourceReviewWorkflow?.summary,
+      failedGates: (httpBody.evidenceSourceReviewWorkflow?.failedGates || []).map((gate) => ({
+        id: gate.id,
+        status: gate.status,
+        detail: gate.detail,
+      })),
+    })}`,
+  );
   assert(httpBody.summary?.evidenceSourceReviewChecksum === httpBody.evidenceSourceReviewWorkflow?.checksum, 'HTTP Manager Ready Package summary must expose the source review workflow checksum.');
-  assert(httpBody.evidenceSourceReviewWorkflow?.summary?.sourceReviewDecisionCount === 3 && httpBody.summary?.evidenceSourceReviewDecisionCount === 3, 'HTTP Manager Ready Package must expose source review decision counts.');
+  assert(httpBody.evidenceSourceReviewWorkflow?.summary?.sourceReviewDecisionCount >= 3 && httpBody.summary?.evidenceSourceReviewDecisionCount === httpBody.evidenceSourceReviewWorkflow?.summary?.sourceReviewDecisionCount, 'HTTP Manager Ready Package must expose source review decision counts.');
   assert(httpBody.evidenceCustodyReadiness?.schemaVersion === 'evidence-custody-readiness/v1' && httpBody.evidenceCustodyReadiness?.readyForPrivatePilot === true, 'HTTP Manager Ready Package must expose local-ready evidence custody readiness.');
-  assert(httpBody.summary?.evidenceCustodyChecksum === httpBody.evidenceCustodyReadiness?.checksum && httpBody.summary?.evidenceCustodyRecordCount === 4, 'HTTP Manager Ready Package summary must expose evidence custody checksum and record count.');
+  assert(
+    httpBody.summary?.evidenceCustodyChecksum === httpBody.evidenceCustodyReadiness?.checksum
+      && httpBody.summary?.evidenceCustodyRecordCount === httpBody.evidenceCustodyReadiness?.summary?.custodyRecordCount
+      && httpBody.evidenceCustodyReadiness?.summary?.custodyRecordCount === httpReadyEvidenceSummary.sourceSnapshotCount + httpReadyEvidenceSummary.providerReceiptCount,
+    'HTTP Manager Ready Package summary must expose evidence custody checksum and record count.',
+  );
   assert(httpBody.brainstormLayer?.schemaVersion === 'brainstorm-layer/v1' && httpBody.brainstormLayer?.readyForPrivatePilotBrainstorm === true, 'HTTP Manager Ready Package must expose ready brainstorm layer readiness.');
   assert(httpBody.summary?.brainstormLayerReady === true && httpBody.summary?.brainstormLayerAlternativeCount >= 3, 'HTTP Manager Ready Package summary must expose brainstorm layer alternatives.');
   assert(httpBody.artifactQualityAudit?.schemaVersion === 'artifact-quality-audit/v1' && httpBody.artifactQualityAudit?.readyForLocalPilot === true, 'HTTP Manager Ready Package must expose local-ready artifact quality audit.');
@@ -1575,6 +1839,8 @@ try {
   assert(httpBody.deploymentPreflight?.schemaVersion === 'deployment-preflight/v1' && httpBody.deploymentPreflight?.productionDeploymentReady === false, 'HTTP Manager Ready Package must expose deployment preflight without production overclaim.');
   assert(httpBody.adapterGatewayPreflight?.schemaVersion === 'adapter-gateway-preflight/v1' && httpBody.adapterGatewayPreflight?.productionCutoverReady === false, 'HTTP Manager Ready Package must expose adapter gateway preflight without production overclaim.');
   assert(httpBody.summary?.adapterGatewayPreflightStatus === httpBody.adapterGatewayPreflight?.status, 'HTTP Manager Ready Package summary must expose adapter gateway preflight status.');
+  assert(httpBody.productionInfrastructureRehearsal?.schemaVersion === 'production-infrastructure-rehearsal/v1' && typeof httpBody.productionInfrastructureRehearsal?.readyForInfrastructureRehearsal === 'boolean' && httpBody.productionInfrastructureRehearsal?.readyForProduction === false, 'HTTP Manager Ready Package must expose production infrastructure rehearsal without production overclaim.');
+  assert(httpBody.summary?.productionInfrastructureRehearsalReady === httpBody.productionInfrastructureRehearsal?.readyForInfrastructureRehearsal && httpBody.summary?.productionInfrastructureRehearsalProductionBlockedCount >= 1, 'HTTP Manager Ready Package summary must expose production infrastructure rehearsal state.');
   assert(httpBody.launchApprovalWorkflow?.schemaVersion === 'launch-approval-workflow/v1' && httpBody.launchApprovalWorkflow?.readyForProduction === false, 'HTTP Manager Ready Package must expose launch approval workflow without production overclaim.');
   assert(httpBody.productionLaunchAudit?.schemaVersion === 'production-launch-audit/v1' && httpBody.productionLaunchAudit?.productionDecision === 'no-go', 'HTTP Manager Ready Package must expose production launch audit without production overclaim.');
   assert(['go', 'no-go'].includes(httpBody.productionLaunchAudit?.privatePilotDecision) && httpBody.productionLaunchAudit?.readyForProduction === false, 'HTTP Manager Ready Package must expose launch audit status without claiming production readiness.');
@@ -1608,20 +1874,36 @@ try {
   assert(httpBody.adapterGatewayPreflight?.privateGatewayReady === true, 'HTTP adapter gateway preflight must pass the local-shadow private rehearsal path.');
   assert(httpBody.adapterGatewayPreflight?.productionCutoverReady === false, 'HTTP adapter gateway preflight must keep production cutover blocked.');
 
+  httpResponse = await fetch(`${httpRuntime.url}/projects/${projectId}/production-infrastructure-rehearsal`);
+  httpBody = await httpResponse.json();
+  assert(httpResponse.status === 200 && httpBody.productionInfrastructureRehearsal?.schemaVersion === 'production-infrastructure-rehearsal/v1', 'HTTP production infrastructure rehearsal endpoint must expose the infrastructure rehearsal contract.');
+  assert(typeof httpBody.productionInfrastructureRehearsal.readyForInfrastructureRehearsal === 'boolean' && httpBody.productionInfrastructureRehearsal.readyForProduction === false, 'HTTP production infrastructure rehearsal must expose rehearsal readiness and keep production blocked.');
+  assert(httpBody.productionInfrastructureRehearsal.domainRows?.some((row) => row.id === 'private-adapter-gateway' && row.rehearsalReady === true) && httpBody.productionInfrastructureRehearsal.domainRows?.some((row) => row.id === 'managed-worker-queue' && row.productionReady === false), 'HTTP production infrastructure rehearsal must aggregate gateway and queue cutover state.');
+
   httpResponse = await fetch(`${httpRuntime.url}/projects/${projectId}/project-evidence-archive`);
   httpBody = await httpResponse.json();
   assert(httpResponse.status === 200 && httpBody.projectEvidenceArchive?.schemaVersion === 'project-evidence-archive/v1', 'HTTP project evidence archive endpoint must expose the archive contract.');
   assert(httpBody.projectEvidenceArchive?.summary?.finalDeliverableCount >= 1, 'HTTP project evidence archive must include final deliverable evidence.');
   assert(httpBody.projectEvidenceArchive?.summary?.rawLeakCount === 0, 'HTTP project evidence archive must keep redaction clean.');
   assert(httpBody.projectEvidenceArchive?.manifest?.some((entry) => entry.id === 'evidence-quality-audit' && entry.ready), 'HTTP project evidence archive must include a ready evidence quality audit manifest entry.');
+  assert(httpBody.projectEvidenceArchive?.manifest?.some((entry) => entry.id === 'artifact-storage-proofs' && entry.ready && entry.count >= 1), 'HTTP project evidence archive must include ready artifact storage proof coverage.');
+  assert(httpBody.projectEvidenceArchive?.summary?.artifactStorageProofCoverageReady === true && httpBody.projectEvidenceArchive?.summary?.workspaceFileProofCount >= 1, 'HTTP project evidence archive must summarize workspace artifact proof coverage.');
   assert(httpBody.projectEvidenceArchive?.manifest?.some((entry) => entry.id === 'evidence-source-snapshots' && entry.ready), 'HTTP project evidence archive must include source snapshot records.');
   assert(httpBody.projectEvidenceArchive?.manifest?.some((entry) => entry.id === 'evidence-provider-receipts' && entry.ready), 'HTTP project evidence archive must include provider receipt records.');
   assert(httpBody.projectEvidenceArchive?.manifest?.some((entry) => entry.id === 'evidence-source-review-workflow' && entry.ready), 'HTTP project evidence archive must include a ready evidence source review workflow manifest entry.');
   assert(httpBody.projectEvidenceArchive?.manifest?.some((entry) => entry.id === 'evidence-source-review-decisions' && entry.ready), 'HTTP project evidence archive must include source review decision records.');
   assert(httpBody.projectEvidenceArchive?.manifest?.some((entry) => entry.id === 'evidence-custody-readiness' && entry.ready), 'HTTP project evidence archive must include evidence custody readiness.');
   assert(httpBody.projectEvidenceArchive?.summary?.evidenceSourceReviewReady === true, 'HTTP project evidence archive summary must include source review readiness.');
-  assert(httpBody.projectEvidenceArchive?.summary?.evidenceSourceReviewDecisionCount === 3, 'HTTP project evidence archive summary must include source review decision count.');
-  assert(httpBody.projectEvidenceArchive?.summary?.evidenceCustodyReady === true && httpBody.projectEvidenceArchive?.summary?.evidenceCustodyRecordCount === 4, 'HTTP project evidence archive summary must include custody readiness and record count.');
+  assert(httpBody.projectEvidenceArchive?.summary?.evidenceSourceReviewDecisionCount >= 3, 'HTTP project evidence archive summary must include source review decision count.');
+  assert(httpBody.projectEvidenceArchive?.summary?.transcriptProofCoverageReady === true && httpBody.projectEvidenceArchive?.summary?.transcriptMissingProofIdCount === 0, 'HTTP project evidence archive must prove critical work-node chat proof coverage from backend transcripts.');
+  assert(
+    httpBody.projectEvidenceArchive?.summary?.evidenceCustodyReady === true
+      && httpBody.projectEvidenceArchive?.summary?.evidenceCustodyRecordCount === (
+        (httpBody.projectEvidenceArchive?.summary?.evidenceSourceSnapshotCount || 0)
+        + (httpBody.projectEvidenceArchive?.summary?.evidenceProviderReceiptCount || 0)
+      ),
+    'HTTP project evidence archive summary must include custody readiness and record count.',
+  );
   assert(httpBody.projectEvidenceArchive?.backendRoutes?.projectEvidenceArchive?.endsWith('/project-evidence-archive'), 'HTTP project evidence archive must expose its own route.');
 
   httpResponse = await fetch(`${httpRuntime.url}/projects/${projectId}/evidence-quality-audit`);
@@ -1629,7 +1911,13 @@ try {
   assert(httpResponse.status === 200 && httpBody.evidenceQualityAudit?.schemaVersion === 'evidence-quality-audit/v1', 'HTTP evidence quality audit endpoint must expose the audit contract.');
   assert(httpBody.evidenceQualityAudit?.readyForDecision === true && httpBody.evidenceQualityAudit?.readyForProduction === false, 'HTTP evidence quality audit must be decision-ready without production overclaim.');
   assert(httpBody.evidenceQualityAudit?.summary?.sourceSafetyReady === true && httpBody.evidenceQualityAudit?.summary?.failedDecisionGateCount === 0, 'HTTP evidence quality audit must expose source-safety and decision gate status.');
-  assert(httpBody.evidenceQualityAudit?.summary?.sourceSnapshotCount === 3 && httpBody.evidenceQualityAudit?.summary?.providerReceiptCount === 1, 'HTTP evidence quality audit must expose source snapshot and provider receipt counts.');
+  assert(
+    httpBody.evidenceQualityAudit?.summary?.sourceSnapshotCount >= 3
+      && httpBody.evidenceQualityAudit?.summary?.providerReceiptCount >= 1
+      && httpBody.evidenceQualityAudit?.summary?.sourceSnapshotCount === httpBody.evidenceQualityAudit?.summary?.sourceCount
+      && httpBody.evidenceQualityAudit?.summary?.providerBackedReceiptCount === httpBody.evidenceQualityAudit?.summary?.providerBackedSearchCount,
+    'HTTP evidence quality audit must expose source snapshot and provider receipt counts.',
+  );
   assert(httpBody.evidenceQualityAudit?.backendRoutes?.evidenceQualityAudit?.endsWith('/evidence-quality-audit'), 'HTTP evidence quality audit must expose its own route.');
 
   httpResponse = await fetch(`${httpRuntime.url}/projects/${projectId}/brainstorm-layer`);
@@ -1650,6 +1938,99 @@ try {
   assert(httpBody.submissionReviewWorkflow?.readyForPrivatePilotReview === true && httpBody.submissionReviewWorkflow?.readyForProduction === false, 'HTTP submission review workflow must be local-ready without production overclaim.');
   assert(httpBody.submissionReviewWorkflow?.summary?.openChangeRequestCount === 0 && httpBody.submissionReviewWorkflow?.summary?.acceptedFinalDeliverableCount >= 1, 'HTTP submission review workflow must expose closed changes and final acceptance.');
   assert(httpBody.submissionReviewWorkflow?.backendRoutes?.submissionReviewWorkflow?.endsWith('/submission-review-workflow'), 'HTTP submission review workflow must expose its own route.');
+
+  httpResponse = await fetch(`${httpRuntime.url}/projects/${projectId}/product-team-delivery-trace`);
+  httpBody = await httpResponse.json();
+  assert(httpResponse.status === 200 && httpBody.productTeamDeliveryTrace?.schemaVersion === 'product-team-delivery-trace/v1', 'HTTP product-team delivery trace endpoint must expose the delivery trace contract.');
+  assert(httpBody.productTeamDeliveryTrace?.readyForPrivatePilotDelivery === true && httpBody.productTeamDeliveryTrace?.readyForProduction === false, 'HTTP product-team delivery trace must be local-ready without production overclaim.');
+  assert(httpBody.productTeamDeliveryTrace?.summary?.readyCount === httpBody.productTeamDeliveryTrace?.summary?.rowCount && httpBody.productTeamDeliveryTrace?.summary?.acceptedFinalDeliverableCount >= 1, 'HTTP product-team delivery trace must expose a closed kickoff-to-final-delivery path.');
+  assert(httpBody.productTeamDeliveryTrace?.backendRoutes?.productTeamDeliveryTrace?.endsWith('/product-team-delivery-trace'), 'HTTP product-team delivery trace must expose its own route.');
+  const researchSampleTraceStageIds = (httpBody.productTeamDeliveryTrace.rows || []).map((row) => row.id);
+  const expectedGenericTraceStageIds = [
+    'kickoff-meeting',
+    'agent-self-marketing',
+    'brainstorm-layer',
+    'evidence-quality',
+    'draft-artifact',
+    'review-and-revision',
+    'final-deliverable',
+    'proof-surfaces',
+  ];
+  assert(
+    expectedGenericTraceStageIds.every((id) => researchSampleTraceStageIds.includes(id)),
+    `Research validation sample must prove the generic product-team delivery stages, not research-only stages. Got: ${researchSampleTraceStageIds.join(', ')}`,
+  );
+  assert(
+    (httpBody.productTeamDeliveryTrace.rows || []).every((row) => (
+      !/paper|thesis|manuscript|论文/i.test(`${row.id || ''} ${row.stage || ''} ${row.label || ''}`)
+    )),
+    'Research validation sample trace rows must not introduce paper/thesis/manuscript-specific protocol fields.',
+  );
+  httpResponse = await fetch(`${httpRuntime.url}/projects/${projectId}/product-team-operating-loop`);
+  httpBody = await httpResponse.json();
+  assert(httpResponse.status === 200 && httpBody.productTeamOperatingLoop?.schemaVersion === 'product-team-operating-loop/v1', 'HTTP product-team operating loop endpoint must expose the C/A operating contract.');
+assert(httpBody.productTeamOperatingLoop?.readyForLocalPilotOperatingLoop === true && httpBody.productTeamOperatingLoop?.readyForProduction === false, 'HTTP product-team operating loop must prove local C/A autonomy without production overclaim.');
+assert(httpBody.productTeamOperatingLoop?.deliveryLoop?.readyStageIds?.includes('final-deliverable') && httpBody.productTeamOperatingLoop?.deliveryLoop?.missingStageIds?.length === 0, 'HTTP product-team operating loop must read the generic trace through final deliverable.');
+assert(httpBody.productTeamOperatingLoop?.customerSide?.nextAction?.runApiPath?.includes('/autonomous-run-control/') && httpBody.productTeamOperatingLoop?.agentSide?.selectedActions?.length > 0, 'HTTP product-team operating loop must join C-side continuation with A-side strategy selection.');
+assert(httpBody.productTeamOperatingLoop?.agentSide?.initiativeRows?.length >= team.length && httpBody.productTeamOperatingLoop.agentSide.initiativeRows.every((row) => row.schemaVersion === 'agent-autonomous-initiative/v1' && row.intent && row.artifactType && row.runApiPath?.includes('/agent-autonomous-action-queue/')), 'HTTP product-team operating loop must expose A-side Agent initiative rows.');
+assert(httpBody.productTeamOperatingLoop?.proofLoop?.proofRouteCount > 0 && httpBody.productTeamOperatingLoop?.proofLoop?.eventIds?.length > 0, 'HTTP product-team operating loop must keep proof routes and event evidence attached.');
+  assert(httpBody.productTeamOperatingLoop?.backendRoutes?.productTeamOperatingLoop?.endsWith('/product-team-operating-loop'), 'HTTP product-team operating loop must expose its own route.');
+  assert(httpBody.productTeamOperatingLoop?.gates?.some((gate) => gate.id === 'production-autonomy-boundary' && gate.productionBlocker && gate.passed === false), 'HTTP product-team operating loop must keep production autonomy blocked.');
+  httpResponse = await fetch(`${httpRuntime.url}/projects/${projectId}/team-collaboration-diagnostics`);
+  httpBody = await httpResponse.json();
+  assert(httpResponse.status === 200 && httpBody.teamCollaborationDiagnostics?.schemaVersion === 'team-collaboration-diagnostics/v1', 'HTTP team collaboration diagnostics endpoint must expose the C/A break-diagnostics contract.');
+  assert(httpBody.teamCollaborationDiagnostics?.readyForLocalPilotCollaboration === true && httpBody.teamCollaborationDiagnostics?.readyForProduction === false, 'HTTP team collaboration diagnostics must prove local collaboration without production overclaim.');
+  assert(httpBody.teamCollaborationDiagnostics?.diagnosticRows?.some((row) => row.id === 'group-chat-collaboration-visible' && row.passed), 'HTTP team collaboration diagnostics must preserve group-chat proof.');
+  assert(httpBody.teamCollaborationDiagnostics?.diagnosticRows?.some((row) => row.id === 'autonomous-continuation-visible' && row.passed && row.apiPath?.endsWith('/product-team-operating-loop')), 'HTTP team collaboration diagnostics must preserve C/A operating-loop proof.');
+  assert(httpBody.teamCollaborationDiagnostics?.backendRoutes?.teamCollaborationDiagnostics?.endsWith('/team-collaboration-diagnostics'), 'HTTP team collaboration diagnostics must expose its own route.');
+  httpResponse = await fetch(`${httpRuntime.url}/projects/${projectId}/runtime-contracts`);
+  httpBody = await httpResponse.json();
+  assert(httpResponse.status === 200 && httpBody.runtimeContracts?.schemaVersion === 'runtime-contract-freeze/v1', 'HTTP runtime contracts endpoint must expose the runtime contract freeze manifest.');
+  assert(httpBody.runtimeContracts?.readyForLocalPilotContractFreeze === true && httpBody.runtimeContracts?.readyForProduction === false, 'HTTP runtime contracts must prove local contract freeze without production overclaim.');
+  assert(httpBody.runtimeContracts?.contractRows?.some((row) => row.id === 'agent-submission-artifact-contract' && row.ready) && httpBody.runtimeContracts?.contractRows?.some((row) => row.id === 'production-runtime-contract-boundary' && row.productionBlocker), 'HTTP runtime contracts must preserve frozen local contracts and production boundary.');
+  assert(httpBody.runtimeContracts?.backendRoutes?.runtimeContracts?.endsWith('/runtime-contracts'), 'HTTP runtime contracts must expose its own route.');
+  if (ACCEPTANCE_STAGE === 'research-sample') {
+    httpResponse = await fetch(`${httpRuntime.url}/projects/${projectId}/autonomous-run-control/run-loop`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        now: '2026-06-01T19:10:00.000Z',
+        maxSteps: 3,
+        force: true,
+        includeReadModels: false,
+        useAgentAutonomousStrategy: true,
+        submitAgentWorkArtifacts: true,
+        reviewPendingSubmissions: true,
+        respondToReviewObligations: true,
+      }),
+    });
+    httpBody = await httpResponse.json();
+    assert(httpResponse.status === 200 && httpBody.autonomousRunControlLoop?.schemaVersion === 'autonomous-run-control-loop-run/v1', 'HTTP research-sample autonomous consistency loop must record a bounded loop receipt.');
+    assert(httpBody.autonomousRunControlLoop.stepCount >= 3 && httpBody.autonomousRunControlLoop.runReceiptIds?.length >= 3 && !httpBody.autonomousRunControlLoop.failedStep, `HTTP research-sample autonomous consistency loop must run at least three receipt-backed steps. Actual: ${httpBody.autonomousRunControlLoop.stepCount}`);
+
+    httpResponse = await fetch(`${httpRuntime.url}/projects/${projectId}/autonomous-cycle-consistency`);
+    httpBody = await httpResponse.json();
+    assert(httpResponse.status === 200 && httpBody.autonomousCycleConsistency?.schemaVersion === 'autonomous-cycle-consistency/v1', 'HTTP autonomous cycle consistency endpoint must expose the N-step consistency contract.');
+    assert(httpBody.autonomousCycleConsistency?.readyForLocalPilotCycleConsistency === true && httpBody.autonomousCycleConsistency?.readyForProduction === false, 'HTTP autonomous cycle consistency must prove local N-step continuity without production overclaim.');
+    assert(httpBody.autonomousCycleConsistency?.summary?.observedStepCount >= 3 && httpBody.autonomousCycleConsistency?.summary?.missingRunReceiptCount === 0 && httpBody.autonomousCycleConsistency?.summary?.failedLocalRowCount === 0, 'HTTP autonomous cycle consistency must expose three or more consistent steps with no missing receipts or failed local rows.');
+    assert(httpBody.autonomousCycleConsistency?.consistencyRows?.some((row) => row.id === 'flow-proof-surfaces-linked' && row.ready) && httpBody.autonomousCycleConsistency?.consistencyRows?.some((row) => row.id === 'production-autonomy-boundary' && row.productionBlocker), 'HTTP autonomous cycle consistency must prove Flow/Proof linkage and keep production autonomy blocked.');
+
+    httpResponse = await fetch(`${httpRuntime.url}/projects/${projectId}/readiness-proof-map`);
+    httpBody = await httpResponse.json();
+    assert(httpResponse.status === 200 && httpBody.autonomousCycleConsistencySummary?.readyForLocalPilotCycleConsistency === true && httpBody.autonomousCycleConsistencySummary?.observedStepCount >= 3, 'HTTP Readiness Proof Map must summarize autonomous cycle consistency after the research-sample loop.');
+    assert(httpBody.autonomousCycleConsistencyRoutes?.some((route) => route.apiPath?.endsWith('/autonomous-cycle-consistency') && route.runReceiptCount >= 3 && route.loopReceiptCount >= 1 && route.readyForLocalPilotCycleConsistency === true), 'HTTP Readiness Proof Map must expose the autonomous cycle consistency proof route.');
+
+    httpResponse = await fetch(`${httpRuntime.url}/projects/${projectId}/manager-flow-graph`);
+    httpBody = await httpResponse.json();
+    const httpConsistencyGraph = httpBody.managerFlowGraph || httpBody;
+    const httpConsistencyNode = httpConsistencyGraph?.nodes?.find((node) => node.id === 'autonomous-cycle-consistency' && node.source === 'autonomousCycleConsistency');
+    assert(httpResponse.status === 200 && httpConsistencyNode?.route?.endsWith('/autonomous-cycle-consistency') && httpConsistencyNode.proofIds?.length && httpConsistencyNode.attachments?.some((attachment) => attachment.type === 'autonomous-cycle-consistency-loop' && attachment.ready === true), 'HTTP Manager Flow Graph must expose the autonomous cycle consistency node and loop attachment.');
+
+    httpResponse = await fetch(`${httpRuntime.url}/projects/${projectId}/manager-ready-package`);
+    httpBody = await httpResponse.json();
+    assert(httpResponse.status === 200 && httpBody.autonomousCycleConsistency?.schemaVersion === 'autonomous-cycle-consistency/v1' && httpBody.summary?.autonomousCycleConsistencyReady === true, 'HTTP Manager Ready Package must embed autonomous cycle consistency after the research-sample loop.');
+  }
+  progress('research validation sample delivery trace ready');
 
   httpResponse = await fetch(`${httpRuntime.url}/projects/${projectId}/private-pilot-go-live-readiness`);
   httpBody = await httpResponse.json();
@@ -1697,14 +2078,21 @@ try {
   httpBody = await httpResponse.json();
   assert(httpResponse.status === 200 && httpBody.evidenceSourceReviewWorkflow?.schemaVersion === 'evidence-source-review-workflow/v1', 'HTTP evidence source review workflow endpoint must expose the workflow contract.');
   assert(httpBody.evidenceSourceReviewWorkflow?.readyForLocalPilot === true && httpBody.evidenceSourceReviewWorkflow?.readyForProduction === false, 'HTTP evidence source review workflow must be local-ready without production overclaim.');
-  assert(httpBody.evidenceSourceReviewWorkflow?.reviewItems?.length === 3 && httpBody.evidenceSourceReviewWorkflow?.backendRoutes?.evidenceSourceReviewWorkflow?.endsWith('/evidence-source-review-workflow'), 'HTTP evidence source review workflow must expose source review items and its own route.');
-  assert(httpBody.evidenceSourceReviewWorkflow?.summary?.sourceReviewDecisionCount === 3 && httpBody.evidenceSourceReviewWorkflow?.summary?.pendingDecisionSourceCount === 0, 'HTTP evidence source review workflow must expose submitted source review decisions.');
+  assert(httpBody.evidenceSourceReviewWorkflow?.reviewItems?.length >= 3 && httpBody.evidenceSourceReviewWorkflow?.reviewItems?.length === httpBody.evidenceSourceReviewWorkflow?.summary?.reviewItemCount && httpBody.evidenceSourceReviewWorkflow?.backendRoutes?.evidenceSourceReviewWorkflow?.endsWith('/evidence-source-review-workflow'), 'HTTP evidence source review workflow must expose source review items and its own route.');
+  assert(httpBody.evidenceSourceReviewWorkflow?.summary?.sourceReviewDecisionCount >= 3 && httpBody.evidenceSourceReviewWorkflow?.summary?.pendingDecisionSourceCount === 0, 'HTTP evidence source review workflow must expose submitted source review decisions.');
 
   httpResponse = await fetch(`${httpRuntime.url}/projects/${projectId}/evidence-custody-readiness`);
   httpBody = await httpResponse.json();
   assert(httpResponse.status === 200 && httpBody.evidenceCustodyReadiness?.schemaVersion === 'evidence-custody-readiness/v1', 'HTTP evidence custody readiness endpoint must expose the custody contract.');
   assert(httpBody.evidenceCustodyReadiness?.readyForPrivatePilot === true && httpBody.evidenceCustodyReadiness?.readyForProduction === false, 'HTTP evidence custody readiness must be local-ready without production storage overclaim.');
-  assert(httpBody.evidenceCustodyReadiness?.summary?.custodyRecordCount === 4 && httpBody.evidenceCustodyReadiness?.backendRoutes?.evidenceCustodyReadiness?.endsWith('/evidence-custody-readiness'), 'HTTP evidence custody readiness must expose custody record count and route.');
+  assert(
+    httpBody.evidenceCustodyReadiness?.summary?.custodyRecordCount === (
+      (httpBody.evidenceCustodyReadiness?.summary?.sourceSnapshotCount || 0)
+      + (httpBody.evidenceCustodyReadiness?.summary?.providerReceiptCount || 0)
+    )
+      && httpBody.evidenceCustodyReadiness?.backendRoutes?.evidenceCustodyReadiness?.endsWith('/evidence-custody-readiness'),
+    'HTTP evidence custody readiness must expose custody record count and route.',
+  );
 
   httpResponse = await fetch(`${httpRuntime.url}/projects/${projectId}/project-evidence-exports`);
   httpBody = await httpResponse.json();
@@ -1714,7 +2102,7 @@ try {
 
   httpResponse = await fetch(`${httpRuntime.url}/projects/${projectId}/launch-approvals`);
   httpBody = await httpResponse.json();
-  assert(httpResponse.status === 200 && httpBody.launchApprovalWorkflow?.schemaVersion === 'launch-approval-workflow/v1', 'HTTP launch approvals endpoint must expose the approval workflow contract.');
+  assert(httpResponse.status === 200 && httpBody.launchApprovalWorkflow?.schemaVersion === 'launch-approval-workflow/v1' && httpBody.launchApprovalWorkflow?.checksum, 'HTTP launch approvals endpoint must expose the checksummed approval workflow contract.');
   assert(httpBody.launchApprovalWorkflow?.readyForProduction === false, 'HTTP launch approvals endpoint must not claim production approval readiness.');
 
   httpResponse = await fetch(`${httpRuntime.url}/projects/${projectId}/production-launch-audit`);
@@ -1848,7 +2236,13 @@ try {
   assert(httpBody.persistenceSnapshot.recordCounts.security_audit_stream > 0, 'HTTP persistence snapshot must include backend security audit stream rows.');
   assert(httpBody.persistenceSnapshot.recordCounts.provider_usage_ledger > 0, 'HTTP persistence snapshot must include provider usage ledger rows.');
   assert(httpBody.persistenceSnapshot.recordCounts.provider_eval_runs > 0, 'HTTP persistence snapshot must include provider eval run rows.');
-  assert(httpBody.persistenceSnapshot.recordCounts.evidence_source_snapshots === 3 && httpBody.persistenceSnapshot.recordCounts.evidence_provider_receipts === 1, 'HTTP persistence snapshot must include source snapshot and provider receipt rows.');
+  assert(
+    httpBody.persistenceSnapshot.recordCounts.evidence_source_snapshots >= 3
+      && httpBody.persistenceSnapshot.recordCounts.evidence_provider_receipts >= 1
+      && httpBody.persistenceSnapshot.recordCounts.evidence_source_snapshots === httpBody.persistenceSnapshot.recordsByTable?.evidence_source_snapshots?.length
+      && httpBody.persistenceSnapshot.recordCounts.evidence_provider_receipts === httpBody.persistenceSnapshot.recordsByTable?.evidence_provider_receipts?.length,
+    'HTTP persistence snapshot must include source snapshot and provider receipt rows.',
+  );
 
   httpResponse = await fetch(`${httpRuntime.url}/workers/queue-snapshot`, {
     method: 'POST',
@@ -1863,7 +2257,7 @@ try {
   });
   httpBody = await httpResponse.json();
   assert(httpResponse.status === 200 && httpBody.workerQueueSnapshot?.summary?.agentQueuedCount >= team.length, 'HTTP worker queue snapshot must expose forced due Agent queue rows.');
-  assert(httpBody.workerQueueSnapshot.agentQueue.every((row) => row.idempotencyKey && row.leaseKey && row.retry?.schemaVersion === 'worker-retry-state/v1'), 'HTTP worker queue snapshot rows must include idempotency, lease, and retry keys.');
+  assert(httpBody.workerQueueSnapshot.agentQueue.every((row) => row.idempotencyKey && row.leaseKey && row.retry?.schemaVersion === 'worker-retry-state/v1' && row.initiative?.schemaVersion === 'agent-autonomous-initiative/v1' && row.requestBody?.agentInitiativeId === row.initiativeId), 'HTTP worker queue snapshot rows must include idempotency, lease, retry keys, and Agent initiative proof.');
   assert(httpBody.workerQueueSnapshot.deadLetterPolicy?.schemaVersion === 'worker-dead-letter-policy/v1' && httpBody.workerQueueSnapshot.executionReceipts?.length >= 1, 'HTTP worker queue snapshot must expose dead-letter policy and execution receipts.');
 
   httpResponse = await fetch(`${httpRuntime.url}/projects/${projectId}/manager-flow-graph`);
@@ -2093,6 +2487,95 @@ response = membershipApi.handle({
   }),
 });
 assert(response.status === 200 && response.body.projectId === projectId, 'Project membership policy must allow the signed project manager.');
+
+if (ACCEPTANCE_STAGE === 'cycle-consistency') {
+  progress('autonomous cycle consistency loop starting');
+  const consistencyLoopPath = `/projects/${projectId}/autonomous-run-control/run-loop`;
+  response = membershipApi.handle({
+    method: 'POST',
+    path: consistencyLoopPath,
+    headers: signedHeadersFor({
+      method: 'POST',
+      path: consistencyLoopPath,
+      role: 'manager',
+      userId: 'director',
+    }),
+    body: {
+      now: '2026-06-01T19:10:00.000Z',
+      maxSteps: 3,
+      force: true,
+      includeReadModels: false,
+      useAgentAutonomousStrategy: true,
+      submitAgentWorkArtifacts: true,
+      reviewPendingSubmissions: true,
+      respondToReviewObligations: true,
+    },
+  });
+  assert(response.status === 200 && response.body.autonomousRunControlLoop?.schemaVersion === 'autonomous-run-control-loop-run/v1', 'Autonomous cycle consistency stage must record a signed bounded loop receipt.');
+  assert(response.body.autonomousRunControlLoop.stepCount >= 3 && response.body.autonomousRunControlLoop.runReceiptIds?.length >= 3 && !response.body.autonomousRunControlLoop.failedStep, `Autonomous cycle consistency stage must run at least three signed receipt-backed steps. Actual: ${response.body.autonomousRunControlLoop.stepCount}`);
+  progress('autonomous cycle consistency loop completed');
+
+  const consistencyPath = `/projects/${projectId}/autonomous-cycle-consistency`;
+  response = membershipApi.handle({
+    method: 'GET',
+    path: consistencyPath,
+    headers: signedHeadersFor({
+      method: 'GET',
+      path: consistencyPath,
+      role: 'manager',
+      userId: 'director',
+    }),
+  });
+  assert(response.status === 200 && response.body.autonomousCycleConsistency?.schemaVersion === 'autonomous-cycle-consistency/v1', 'Autonomous cycle consistency stage must expose standalone consistency proof.');
+  assert(response.body.autonomousCycleConsistency.readyForLocalPilotCycleConsistency === true && response.body.autonomousCycleConsistency.readyForProduction === false, `Autonomous cycle consistency stage must prove local signed N-step continuity without production overclaim. Actual: ${response.body.autonomousCycleConsistency.status}`);
+  assert(response.body.autonomousCycleConsistency.summary?.observedStepCount >= 3 && response.body.autonomousCycleConsistency.summary?.missingRunReceiptCount === 0 && response.body.autonomousCycleConsistency.summary?.failedLocalRowCount === 0, 'Autonomous cycle consistency stage must show consistent steps with no missing receipts or failed local rows.');
+
+  response = membershipApi.handle({
+    method: 'GET',
+    path: `/projects/${projectId}/readiness-proof-map`,
+    headers: signedHeadersFor({
+      method: 'GET',
+      path: `/projects/${projectId}/readiness-proof-map`,
+      role: 'manager',
+      userId: 'director',
+    }),
+  });
+  assert(response.status === 200 && response.body.autonomousCycleConsistencySummary?.readyForLocalPilotCycleConsistency === true && response.body.autonomousCycleConsistencySummary?.observedStepCount >= 3, 'Autonomous cycle consistency stage must expose Proof Map consistency summary.');
+  assert(response.body.autonomousCycleConsistencyRoutes?.some((route) => route.apiPath?.endsWith('/autonomous-cycle-consistency') && route.runReceiptCount >= 3 && route.loopReceiptCount >= 1 && route.readyForLocalPilotCycleConsistency === true && route.productionBlocker === true), 'Autonomous cycle consistency stage must expose Proof Map consistency route.');
+
+  response = membershipApi.handle({
+    method: 'GET',
+    path: `/projects/${projectId}/manager-flow-graph`,
+    headers: signedHeadersFor({
+      method: 'GET',
+      path: `/projects/${projectId}/manager-flow-graph`,
+      role: 'manager',
+      userId: 'director',
+    }),
+  });
+  const stageConsistencyGraph = response.body.managerFlowGraph || response.body;
+  const stageConsistencyNode = stageConsistencyGraph?.nodes?.find((node) => node.id === 'autonomous-cycle-consistency' && node.source === 'autonomousCycleConsistency');
+  assert(response.status === 200 && stageConsistencyNode?.route?.endsWith('/autonomous-cycle-consistency') && stageConsistencyNode.proofIds?.length && stageConsistencyNode.attachments?.some((attachment) => attachment.type === 'autonomous-cycle-consistency-loop' && attachment.ready === true), 'Autonomous cycle consistency stage must expose Flow Graph consistency node and loop attachment.');
+
+  response = membershipApi.handle({
+    method: 'GET',
+    path: `/projects/${projectId}/manager-ready-package`,
+    headers: signedHeadersFor({
+      method: 'GET',
+      path: `/projects/${projectId}/manager-ready-package`,
+      role: 'manager',
+      userId: 'director',
+    }),
+  });
+  assert(response.status === 200 && response.body.autonomousCycleConsistency?.schemaVersion === 'autonomous-cycle-consistency/v1' && response.body.summary?.autonomousCycleConsistencyReady === true, 'Autonomous cycle consistency stage must embed consistency proof in Manager Ready Package.');
+
+  const consistencyStageStoreSnapshot = JSON.parse(readFileSync(`${root}/store.json`, 'utf8'));
+  const consistencyStageProject = consistencyStageStoreSnapshot.projects.find((project) => project.id === projectId);
+  assert(consistencyStageProject?.autonomousRunControlLoopLedger?.some((record) => record.schemaVersion === 'autonomous-run-control-loop-run/v1' && record.stepCount >= 3 && record.runReceiptIds?.length >= 3 && record.eventId && record.logId), 'Autonomous cycle consistency stage must persist N-step loop receipts.');
+  assert(consistencyStageProject?.autonomousRunControlRunLedger?.length >= 3, 'Autonomous cycle consistency stage must persist child action run receipts.');
+  progress('autonomous cycle consistency persistence ready');
+}
+
 response = membershipApi.handle({
   method: 'GET',
   path: membershipManagerPath,
@@ -2410,7 +2893,13 @@ assert(response.body.persistenceMigrationDryRun.adapterContract?.methods?.includ
 assert(response.body.persistenceMigrationDryRun.summary.importedRecordCount === response.body.persistenceMigrationDryRun.summary.expectedRecordCount, 'Dry-run verifier must import every snapshot row.');
 assert(response.body.persistenceMigrationDryRun.importedTableCounts.access_replay_records > 0, 'Dry-run verifier must import signed access replay rows.');
 assert(response.body.persistenceMigrationDryRun.importedTableCounts.identity_sessions >= 2, 'Dry-run verifier must import identity-session rows.');
-assert(response.body.persistenceMigrationDryRun.importedTableCounts.evidence_source_snapshots === 3 && response.body.persistenceMigrationDryRun.importedTableCounts.evidence_provider_receipts === 1, 'Dry-run verifier must import source snapshot and provider receipt rows.');
+const dryRunImportedCounts = response.body.persistenceMigrationDryRun.importedTableCounts || {};
+assert(
+  dryRunImportedCounts.evidence_source_snapshots >= 3
+    && dryRunImportedCounts.evidence_provider_receipts >= 1
+    && dryRunImportedCounts.evidence_source_snapshots >= dryRunImportedCounts.evidence_provider_receipts,
+  'Dry-run verifier must import source snapshot and provider receipt rows.',
+);
 assert(response.body.persistenceMigrationDryRun.importedTableCounts.provider_eval_runs > 0, 'Dry-run verifier must import provider eval run rows.');
 assert(response.body.persistenceMigrationDryRun.gates.some((gate) => gate.id === 'checksum-preserved' && gate.passed), 'Dry-run verifier must check checksum preservation.');
 assert(response.body.persistenceMigrationDryRun.gates.some((gate) => gate.id === 'rls-policy-drafts' && gate.passed), 'Dry-run verifier must check RLS guidance coverage.');
@@ -2591,8 +3080,24 @@ assert(response.body.adapterGatewayPreflight.privateGatewayReady === true, 'Stan
 assert(response.body.adapterGatewayPreflight.productionCutoverReady === false, 'Standalone adapter gateway preflight must keep production cutover blocked.');
 assert(response.body.adapterGatewayPreflight.backendRoutes.adapterGatewayPreflight?.endsWith('/adapter-gateway-preflight'), 'Standalone adapter gateway preflight must expose its own backend route.');
 
+const productionInfrastructureRehearsalPath = `/projects/${projectId}/production-infrastructure-rehearsal`;
+response = membershipApi.handle({
+  method: 'GET',
+  path: productionInfrastructureRehearsalPath,
+  headers: signedHeadersFor({
+    method: 'GET',
+    path: productionInfrastructureRehearsalPath,
+    role: 'security-admin',
+    userId: 'security-lead',
+  }),
+});
+assert(response.status === 200 && response.body.productionInfrastructureRehearsal?.schemaVersion === 'production-infrastructure-rehearsal/v1', 'Project API must expose a standalone production infrastructure rehearsal contract.');
+assert(response.body.productionInfrastructureRehearsal.readyForInfrastructureRehearsal === true && response.body.productionInfrastructureRehearsal.readyForProduction === false, 'Standalone production infrastructure rehearsal must pass rehearsal and keep production blocked.');
+assert(response.body.productionInfrastructureRehearsal.domainRows?.some((row) => row.id === 'managed-persistence' && row.route?.endsWith('/persistence-adapter-dry-run')), 'Standalone production infrastructure rehearsal must route managed persistence proof.');
+
 progress('membership launch approval and launch audit checks');
 const launchApprovalPath = `/projects/${projectId}/launch-approvals`;
+progress('private-pilot launch approval record ready');
 response = membershipApi.handle({
   method: 'POST',
   path: launchApprovalPath,
@@ -2642,7 +3147,9 @@ assert(response.status === 200 && response.body.launchApproval?.schemaVersion ==
 assert(response.body.launchApprovalWorkflow?.schemaVersion === 'launch-approval-workflow/v1', 'Launch approval POST must return the workflow snapshot.');
 assert(response.body.launchApprovalWorkflow.readyForPrivatePilot === true, 'Launch approval workflow must mark private pilot ready after manager and security approvals.');
 assert(response.body.launchApprovalWorkflow.readyForProduction === false, 'Launch approval workflow must keep production blocked without operations-owner approval.');
+assert(response.body.launchApprovalWorkflow.checksum && response.body.launchApprovalWorkflow.proofIds?.length >= 4 && response.body.launchApprovalWorkflow.timelineLogIds?.length >= 2 && response.body.launchApprovalWorkflow.eventIds?.length >= 2, 'Launch approval workflow must aggregate private-pilot approval checksum, proof, timeline, and event ids.');
 assert(response.body.managerReadyPackage?.launchApprovalWorkflow?.readyForPrivatePilot === true, 'Manager Ready Package must embed the updated launch approval workflow.');
+assert(response.body.managerReadyPackage?.launchApprovalWorkflow?.checksum === response.body.launchApprovalWorkflow.checksum, 'Manager Ready Package must embed the same launch approval workflow checksum returned by the write path.');
 assert(response.body.managerReadyPackage?.productionLaunchAudit?.privatePilotDecision === 'go', `Manager Ready Package launch audit must move to private-pilot go after approvals. failedPrivatePilotGates=${JSON.stringify(response.body.managerReadyPackage?.productionLaunchAudit?.failedPrivatePilotGates || [])}`);
 assert(response.body.managerReadyPackage?.productionLaunchAudit?.productionDecision === 'no-go', 'Manager Ready Package launch audit must keep production no-go after private-pilot approval.');
 
@@ -2659,6 +3166,7 @@ response = membershipApi.handle({
 assert(response.status === 200 && response.body.launchApprovalWorkflow?.rows?.length >= 2, 'Project API must read back persisted launch approvals.');
 assert(response.body.launchApprovalWorkflow.modes.some((mode) => mode.id === 'private-pilot' && mode.ready && mode.approvedRoles.includes('manager') && mode.approvedRoles.includes('security-admin')), 'Launch approval workflow must summarize private-pilot role approvals.');
 assert(response.body.launchApprovalWorkflow.modes.some((mode) => mode.id === 'production' && !mode.ready && mode.missingRoles.includes('operations-owner')), 'Launch approval workflow must summarize missing production approver roles.');
+assert(response.body.launchApprovalWorkflow.checksum && response.body.launchApprovalWorkflow.summary?.proofIdCount >= 4 && response.body.launchApprovalWorkflow.summary?.eventIdCount >= 2, 'Launch approval workflow read model must preserve aggregate proof counts.');
 
 response = membershipApi.handle({
   method: 'GET',
@@ -2741,18 +3249,31 @@ assert(response.body.projectEvidenceArchive.readyForProduction === false, 'Proje
 assert(response.body.projectEvidenceArchive.summary?.finalDeliverableCount >= 1, 'Project evidence archive must include the final deliverable.');
 assert(response.body.projectEvidenceArchive.summary?.artifactQualityReady === true && response.body.projectEvidenceArchive.summary?.artifactQualityAverageScore >= 75, 'Project evidence archive must include artifact quality readiness.');
 assert(response.body.projectEvidenceArchive.summary?.evidenceSearchCount >= 1, 'Project evidence archive must include evidence searches.');
-assert(response.body.projectEvidenceArchive.summary?.evidenceSourceSnapshotCount === 3, 'Project evidence archive must include source snapshots.');
-assert(response.body.projectEvidenceArchive.summary?.evidenceProviderReceiptCount === 1, 'Project evidence archive must include provider receipts.');
-assert(response.body.projectEvidenceArchive.summary?.evidenceSourceReviewDecisionCount === 3, 'Project evidence archive must include evidence source review decisions.');
-assert(response.body.projectEvidenceArchive.summary?.evidenceCustodyReady === true && response.body.projectEvidenceArchive.summary?.evidenceCustodyRecordCount === 4, 'Project evidence archive must include evidence custody readiness and custody record count.');
+const standaloneArchiveSummary = response.body.projectEvidenceArchive.summary || {};
+assert(standaloneArchiveSummary.evidenceSourceSnapshotCount >= 3, 'Project evidence archive must include source snapshots.');
+assert(standaloneArchiveSummary.evidenceProviderReceiptCount >= 1, 'Project evidence archive must include provider receipts.');
+assert(standaloneArchiveSummary.evidenceSourceReviewDecisionCount >= 3, 'Project evidence archive must include evidence source review decisions.');
+assert(
+  standaloneArchiveSummary.evidenceCustodyReady === true
+    && standaloneArchiveSummary.evidenceCustodyRecordCount === (
+      (standaloneArchiveSummary.evidenceSourceSnapshotCount || 0)
+      + (standaloneArchiveSummary.evidenceProviderReceiptCount || 0)
+    ),
+  'Project evidence archive must include evidence custody readiness and custody record count.',
+);
 assert(response.body.projectEvidenceArchive.summary?.submissionReviewCount >= 2, 'Project evidence archive must include submission reviews.');
 assert(response.body.projectEvidenceArchive.summary?.transcriptMessageCount > 0, 'Project evidence archive must include transcript messages.');
+assert(response.body.projectEvidenceArchive.summary?.transcriptProofCoverageReady === true && response.body.projectEvidenceArchive.summary?.transcriptMissingProofIdCount === 0, 'Project evidence archive must report complete backend transcript proof coverage.');
 assert(response.body.projectEvidenceArchive.summary?.flowGraphProofedNodeCount > 0, 'Project evidence archive must include proofed Flow Graph nodes.');
 assert(response.body.projectEvidenceArchive.summary?.rawLeakCount === 0, 'Project evidence archive must report zero raw secret leaks.');
 assert(response.body.projectEvidenceArchive.manifest.every((entry) => entry.checksum), 'Every project evidence archive manifest entry must carry a checksum.');
 assert(response.body.projectEvidenceArchive.manifest.some((entry) => entry.id === 'final-deliverables' && entry.ready), 'Project evidence archive manifest must include ready final-deliverable evidence.');
+assert(response.body.projectEvidenceArchive.manifest.some((entry) => entry.id === 'artifact-storage-proofs' && entry.ready && entry.count === expectedSubmissionCount), 'Project evidence archive manifest must include ready checksummed artifact storage proof coverage.');
+const archiveArtifactProofManifest = response.body.projectEvidenceArchive.manifest.find((entry) => entry.id === 'artifact-storage-proofs');
+assert(archiveArtifactProofManifest.storageProofCount === expectedSubmissionCount && archiveArtifactProofManifest.workspaceFileProofCount === expectedSubmissionCount, 'Project evidence archive artifact proof manifest must count storage and workspace proof coverage for every submission.');
 assert(response.body.projectEvidenceArchive.manifest.some((entry) => entry.id === 'artifact-quality-audit' && entry.ready), 'Project evidence archive manifest must include ready artifact quality audit evidence.');
-assert(response.body.projectEvidenceArchive.manifest.some((entry) => entry.id === 'group-chat-transcripts' && entry.ready), 'Project evidence archive manifest must include ready transcript evidence.');
+const archiveTranscriptManifest = response.body.projectEvidenceArchive.manifest.find((entry) => entry.id === 'group-chat-transcripts');
+assert(archiveTranscriptManifest?.ready && archiveTranscriptManifest.transcriptProofIdCount >= expectedSubmissionCount && archiveTranscriptManifest.archivedTranscriptProofIdCount === archiveTranscriptManifest.transcriptProofIdCount && archiveTranscriptManifest.missingTranscriptProofIdCount === 0, 'Project evidence archive manifest must include ready backend transcript proof coverage.');
 assert(response.body.projectEvidenceArchive.manifest.some((entry) => entry.id === 'evidence-source-snapshots' && entry.ready), 'Project evidence archive manifest must include ready source snapshot evidence.');
 assert(response.body.projectEvidenceArchive.manifest.some((entry) => entry.id === 'evidence-provider-receipts' && entry.ready), 'Project evidence archive manifest must include ready provider receipt evidence.');
 assert(response.body.projectEvidenceArchive.manifest.some((entry) => entry.id === 'evidence-source-review-workflow' && entry.ready), 'Project evidence archive manifest must include ready evidence source review workflow evidence.');
@@ -2765,12 +3286,15 @@ assert(response.body.projectEvidenceArchive.contents.finalDeliverables.some((sub
 assert(response.body.projectEvidenceArchive.contents.submissions.some((submission) => submission.id === generatedDraftSubmission.id && submission.isGeneratedDraft === true && submission.artifactDraft?.source === 'local-artifact-draft-generator' && submission.artifactDraftChecksum), 'Project evidence archive must preserve generated artifact draft provenance.');
 assert(response.body.projectEvidenceArchive.contents.submissions.some((submission) => submission.id === modelGeneratedDraftSubmission.id && submission.isGeneratedDraft === true && submission.artifactDraft?.source === 'model-artifact-draft' && submission.artifactDraftModelUsed === true && submission.artifactDraftChecksum), 'Project evidence archive must preserve model-backed generated artifact draft provenance.');
 assert(response.body.projectEvidenceArchive.contents.submissions.some((submission) => submission.id === modelGeneratedDraftSubmission.id && submission.artifactDraftQuality?.readyForLocalPilot === true && submission.artifactDraftHumanReviewRequired === true), 'Project evidence archive must preserve model-backed draft quality and human-review metadata.');
+assert(response.body.projectEvidenceArchive.contents.artifacts.length === expectedSubmissionCount && response.body.projectEvidenceArchive.contents.artifacts.every((artifact) => artifact.storageProof?.schemaVersion === 'agent-artifact-storage-proof/v1' && artifact.storageProofChecksum && artifact.contentChecksum), 'Project evidence archive must include checksummed artifact storage proofs for every submitted artifact.');
+assert(response.body.projectEvidenceArchive.summary?.artifactStorageProofCoverageReady === true && response.body.projectEvidenceArchive.summary?.artifactStorageProofCount === expectedSubmissionCount && response.body.projectEvidenceArchive.summary?.workspaceFileProofCount === expectedSubmissionCount && response.body.projectEvidenceArchive.integrity.gates.some((gate) => gate.id === 'artifact-storage-proof-coverage' && gate.passed), 'Project evidence archive must gate complete artifact storage and workspace proof coverage.');
 assert(response.body.projectEvidenceArchive.contents.transcripts.channels.some((channel) => channel.messages.some((message) => message.type === 'submission')), 'Project evidence archive must include submission messages in transcripts.');
+assert(response.body.projectEvidenceArchive.contents.transcripts.proofCoverage?.ready === true && response.body.projectEvidenceArchive.contents.transcripts.proofCoverage?.counts?.submission === expectedSubmissionCount && response.body.projectEvidenceArchive.contents.transcripts.proofCoverage?.counts?.evidenceSearch >= 1 && response.body.projectEvidenceArchive.contents.transcripts.proofCoverage?.counts?.evidenceSourceReview >= 3 && response.body.projectEvidenceArchive.contents.transcripts.proofCoverage?.counts?.submissionReview >= 2 && response.body.projectEvidenceArchive.contents.transcripts.proofCoverage?.missingProofIds?.length === 0, 'Project evidence archive transcript proof coverage must include submission, evidence, source-review, and submission-review chat proof ids.');
 assert(response.body.projectEvidenceArchive.contents.evidenceSearches.some((record) => record.sources?.length >= 1 && record.checksum), 'Project evidence archive must include evidence source packets with checksums.');
-assert(response.body.projectEvidenceArchive.contents.evidenceSourceSnapshots?.length === 3 && response.body.projectEvidenceArchive.contents.evidenceSourceSnapshots.every((snapshot) => snapshot.sourceChecksum && snapshot.summaryChecksum && snapshot.checksum), 'Project evidence archive must include checksummed source snapshots.');
-assert(response.body.projectEvidenceArchive.contents.evidenceProviderReceipts?.length === 1 && response.body.projectEvidenceArchive.contents.evidenceProviderReceipts.every((receipt) => receipt.requestChecksum && receipt.resultChecksum && receipt.checksum), 'Project evidence archive must include checksummed provider receipts.');
+assert(response.body.projectEvidenceArchive.contents.evidenceSourceSnapshots?.length === standaloneArchiveSummary.evidenceSourceSnapshotCount && response.body.projectEvidenceArchive.contents.evidenceSourceSnapshots.every((snapshot) => snapshot.sourceChecksum && snapshot.summaryChecksum && snapshot.checksum), 'Project evidence archive must include checksummed source snapshots.');
+assert(response.body.projectEvidenceArchive.contents.evidenceProviderReceipts?.length === standaloneArchiveSummary.evidenceProviderReceiptCount && response.body.projectEvidenceArchive.contents.evidenceProviderReceipts.every((receipt) => receipt.requestChecksum && receipt.resultChecksum && receipt.checksum), 'Project evidence archive must include checksummed provider receipts.');
 assert(response.body.projectEvidenceArchive.contents.evidenceSourceReviewWorkflow.reviewItems.some((item) => item.evidenceSearchId === evidenceSearch.id && item.checksum), 'Project evidence archive must include evidence source review items with checksums.');
-assert(response.body.projectEvidenceArchive.contents.evidenceCustodyReadiness?.schemaVersion === 'evidence-custody-readiness/v1' && response.body.projectEvidenceArchive.contents.evidenceCustodyReadiness?.custodyRows?.length === 4, 'Project evidence archive must include evidence custody readiness rows.');
+assert(response.body.projectEvidenceArchive.contents.evidenceCustodyReadiness?.schemaVersion === 'evidence-custody-readiness/v1' && response.body.projectEvidenceArchive.contents.evidenceCustodyReadiness?.custodyRows?.length === standaloneArchiveSummary.evidenceCustodyRecordCount, 'Project evidence archive must include evidence custody readiness rows.');
 assert(response.body.projectEvidenceArchive.contents.evidenceSourceReviews?.length === 3 && response.body.projectEvidenceArchive.contents.evidenceSourceReviews.every((review) => review.decision === 'approved' && review.commentsChecksum && review.checksum), 'Project evidence archive must include source review decision records with checksums.');
 assert(response.body.projectEvidenceArchive.contents.submissionReviews.some((review) => review.verdict === 'accepted' && review.commentsChecksum), 'Project evidence archive must include accepted review evidence with checksums.');
 assert(response.body.projectEvidenceArchive.contents.managerFlowGraph.nodes.some((node) => node.category === 'submission' && node.subtype === 'final-deliverable'), 'Project evidence archive must include final-deliverable Flow Graph nodes.');
@@ -2814,6 +3338,7 @@ response = membershipApi.handle({
     reason: 'Request customer handoff evidence package for private-pilot acceptance.',
     retentionDays: 30,
     dataResidencyRegion: 'local-private-pilot',
+    includeReadModels: false,
   },
 });
 assert(response.status === 200 && response.body.projectEvidenceExport?.schemaVersion === 'project-evidence-export/v1', 'Manager must be able to request a governed project evidence export.');
@@ -2821,6 +3346,7 @@ const exportRequestId = response.body.projectEvidenceExport.exportRequestId;
 const requestedExportArchiveChecksum = response.body.projectEvidenceArchive?.checksum || response.body.projectEvidenceExport.archiveChecksum;
 assert(response.body.projectEvidenceExport.archiveChecksum && response.body.projectEvidenceExport.archiveChecksum === requestedExportArchiveChecksum, 'Project evidence export request must pin the archive checksum generated for that request.');
 assert(response.body.projectEvidenceExportWorkflow.summary?.requestCount >= 1, 'Project evidence export workflow must count export requests.');
+assert(response.body.readModels?.included === false && response.body.readModels.projectEvidenceExportWorkflowRoute?.endsWith('/project-evidence-exports') && response.body.readModels.managerReadyPackageRoute?.endsWith('/manager-ready-package'), 'Project evidence export request must support lightweight read-model refresh routes.');
 
 for (const approval of [
   { role: 'manager', userId: 'director', reason: 'Manager approves the private-pilot handoff bundle.' },
@@ -2842,15 +3368,15 @@ for (const approval of [
       actorRole: approval.role,
       actorId: approval.userId,
       reason: approval.reason,
+      includeReadModels: false,
     },
   });
   assert(response.status === 200 && response.body.projectEvidenceExport?.decision === 'approved', `${approval.role} must be able to approve the project evidence export workflow.`);
+  assert(response.body.readModels?.included === false && response.body.readModels.projectEvidenceExportWorkflowRoute?.endsWith('/project-evidence-exports'), `${approval.role} project evidence export approval must return deferred read-model routes.`);
 }
 assert(response.body.projectEvidenceExportWorkflow.readyForPrivatePilotHandoff === true, 'Project evidence export workflow must become private-pilot handoff ready after Manager and security-admin approvals.');
 assert(response.body.projectEvidenceExportWorkflow.readyForProductionExport === false, 'Project evidence export workflow must keep production export blocked.');
 assert(response.body.projectEvidenceExportWorkflow.gates.every((gate) => gate.passed), `Project evidence export workflow gates must pass for private-pilot handoff: ${JSON.stringify(response.body.projectEvidenceExportWorkflow.gates.filter((gate) => !gate.passed))}`);
-assert(response.body.managerReadyPackage?.projectEvidenceExportWorkflow?.readyForPrivatePilotHandoff === true, 'Manager Ready Package must embed the approved project evidence export workflow.');
-assert(response.body.managerReadyPackage?.summary?.projectEvidenceExportReady === true, 'Manager Ready Package summary must expose project evidence export readiness.');
 assert(response.body.projectEvidenceExportWorkflow.readyForPrivatePilotDownload === false, 'Project evidence export workflow must require a download-audit record before local package handoff.');
 
 response = membershipApi.handle({
@@ -2869,6 +3395,7 @@ response = membershipApi.handle({
     actorRole: 'manager',
     actorId: 'director',
     reason: 'Record local private-pilot package handoff after approvals.',
+    includeReadModels: false,
   },
 });
 assert(response.status === 200 && response.body.projectEvidenceExport?.action === 'download-audit', 'Manager must be able to record a governed project evidence download audit.');
@@ -2881,9 +3408,24 @@ assert(response.body.projectEvidenceExportPackage.downloadUrlIssued === false, '
 assert(response.body.projectEvidenceExportPackage.watermark?.applied === true && response.body.projectEvidenceExportPackage.watermark?.checksum, 'Project evidence export package must include a watermarked handoff descriptor.');
 assert(response.body.projectEvidenceExportPackage.downloadAudit?.id === response.body.projectEvidenceExport.id, 'Project evidence export package must link to the download-audit row.');
 assert(response.body.projectEvidenceExportPackage.archive?.currentChecksum && response.body.projectEvidenceExportPackage.archive?.manifest?.length > 0, 'Project evidence export package must include archive checksum and manifest proof.');
-assert(response.body.managerReadyPackage?.summary?.projectEvidenceExportDownloadReady === true, 'Manager Ready Package summary must expose local project evidence package readiness.');
-assert(response.body.managerReadyPackage?.productionLaunchAudit?.projectEvidenceHandoff?.readyForPrivatePilotPackage === true, 'Manager Ready Package production launch audit must show evidence handoff ready after package audit.');
-assert(response.body.managerReadyPackage?.productionLaunchAudit?.nextShortestPath?.scope === 'production-hardening', 'Production launch audit must return to production hardening after evidence handoff package is ready.');
+assert(response.body.readModels?.included === false && response.body.readModels.projectEvidenceExportPackageRoute?.includes(encodeURIComponent(exportRequestId)) && response.body.readModels.productionLaunchAuditRoute?.endsWith('/production-launch-audit'), 'Project evidence export download audit must return package and production-launch refresh routes.');
+
+const projectEvidenceManagerReadyPackagePath = `/projects/${projectId}/manager-ready-package`;
+response = membershipApi.handle({
+  method: 'GET',
+  path: projectEvidenceManagerReadyPackagePath,
+  headers: signedHeadersFor({
+    method: 'GET',
+    path: projectEvidenceManagerReadyPackagePath,
+    role: 'manager',
+    userId: 'director',
+  }),
+});
+assert(response.status === 200 && response.body.summary?.projectEvidenceExportDownloadReady === true, 'Manager Ready Package summary must expose local project evidence package readiness.');
+assert(response.body.projectEvidenceExportWorkflow?.readyForPrivatePilotHandoff === true, 'Manager Ready Package must embed the approved project evidence export workflow.');
+assert(response.body.summary?.projectEvidenceExportReady === true, 'Manager Ready Package summary must expose project evidence export readiness.');
+assert(response.body.productionLaunchAudit?.projectEvidenceHandoff?.readyForPrivatePilotPackage === true, 'Manager Ready Package production launch audit must show evidence handoff ready after package audit.');
+assert(response.body.productionLaunchAudit?.nextShortestPath?.scope === 'production-hardening', 'Production launch audit must return to production hardening after evidence handoff package is ready.');
 
 response = membershipApi.handle({
   method: 'GET',
@@ -2928,6 +3470,7 @@ assert(response.status === 200 && response.body.privatePilotReleaseCandidateWork
 assert(response.body.privatePilotReleaseCandidateWorkflow.readyToRecord === true, `Private-pilot release candidate workflow must be ready to record after handoff package audit: ${JSON.stringify(response.body.privatePilotReleaseCandidateWorkflow.failedPrerequisiteGates)}`);
 assert(response.body.privatePilotReleaseCandidateWorkflow.readyForPrivatePilotRelease === false, 'Private-pilot release candidate workflow must require a recorded freeze receipt before release candidate readiness.');
 assert(response.body.privatePilotReleaseCandidateWorkflow.status === 'private-pilot-release-candidate-record-needed', 'Private-pilot release candidate workflow must show record-needed before a receipt is written.');
+progress('private-pilot release candidate record ready');
 
 response = membershipApi.handle({
   method: 'POST',
@@ -2944,6 +3487,7 @@ response = membershipApi.handle({
     exportRequestId,
     reason: 'Freeze the private-pilot release candidate after approvals, package audit, provider eval, and deployment preflight.',
     now: '2026-06-01T11:58:00.000Z',
+    includeReadModels: false,
   },
 });
 assert(response.status === 200 && response.body.privatePilotReleaseCandidate?.schemaVersion === 'private-pilot-release-candidate/v1', 'Manager must be able to record a private-pilot release candidate receipt.');
@@ -2952,8 +3496,7 @@ assert(response.body.privatePilotReleaseCandidate.readyForProduction === false, 
 assert(response.body.privatePilotReleaseCandidate.releaseChecksums?.productionLaunchAudit && response.body.privatePilotReleaseCandidate.releaseChecksums?.projectEvidenceExportPackage && response.body.privatePilotReleaseCandidate.releaseChecksums?.latestProviderEvalRun, 'Private-pilot release candidate must freeze launch audit, package, and provider eval checksums.');
 assert(response.body.privatePilotReleaseCandidate.proofIds?.length >= 6 && response.body.privatePilotReleaseCandidate.eventId && response.body.privatePilotReleaseCandidate.timelineLogId, 'Private-pilot release candidate must include proof, event, and timeline links.');
 assert(response.body.privatePilotReleaseCandidateWorkflow.readyForPrivatePilotRelease === true && response.body.privatePilotReleaseCandidateWorkflow.summary?.candidateCount >= 1, 'Private-pilot release candidate workflow must become ready after recording the receipt.');
-assert(response.body.managerReadyPackage?.privatePilotReleaseCandidateWorkflow?.readyForPrivatePilotRelease === true, 'Manager Ready Package must embed private-pilot release candidate readiness after the receipt.');
-assert(response.body.managerReadyPackage?.summary?.privatePilotReleaseCandidateReady === true, 'Manager Ready Package summary must expose private-pilot release candidate readiness.');
+assert(response.body.readModels?.included === false && response.body.readModels.privatePilotReleaseCandidateWorkflowRoute?.endsWith('/private-pilot-release-candidates') && response.body.readModels.managerReadyPackageRoute?.endsWith('/manager-ready-package'), 'Private-pilot release candidate receipt must support lightweight read-model refresh routes.');
 
 response = membershipApi.handle({
   method: 'GET',
@@ -2967,6 +3510,7 @@ response = membershipApi.handle({
 });
 assert(response.status === 200 && response.body.privatePilotReleaseCandidateWorkflow?.status === 'private-pilot-release-candidate-ready', 'Security admin must be able to read the ready private-pilot release candidate workflow.');
 assert(response.body.privatePilotReleaseCandidateWorkflow.latestCandidate?.exportRequestId === exportRequestId, 'Release candidate workflow must preserve the export request id.');
+progress('private-pilot release candidate receipt ready');
 
 progress('private-pilot launch run receipt checks');
 const privatePilotLaunchRunPath = `/projects/${projectId}/private-pilot-launch-runs`;
@@ -3000,6 +3544,7 @@ response = membershipApi.handle({
     launchWindow: 'controlled private-pilot launch window',
     reason: 'Start the controlled private-pilot launch run from the frozen release candidate.',
     now: '2026-06-01T12:02:00.000Z',
+    includeReadModels: false,
   },
 });
 assert(response.status === 200 && response.body.privatePilotLaunchRun?.schemaVersion === 'private-pilot-launch-run/v1', 'Manager must be able to record a private-pilot launch run receipt.');
@@ -3009,8 +3554,7 @@ assert(response.body.privatePilotLaunchRun.releaseCandidateId && response.body.p
 assert(response.body.privatePilotLaunchRun.releaseChecksums?.deploymentPreflight && response.body.privatePilotLaunchRun.releaseChecksums?.operationsReadiness && response.body.privatePilotLaunchRun.releaseChecksums?.latestProviderEvalRun, 'Private-pilot launch run must freeze deployment, operations, and provider eval checksums.');
 assert(response.body.privatePilotLaunchRun.proofIds?.length >= 6 && response.body.privatePilotLaunchRun.eventId && response.body.privatePilotLaunchRun.timelineLogId, 'Private-pilot launch run must include proof, event, and timeline links.');
 assert(response.body.privatePilotLaunchRunWorkflow.readyForPrivatePilotLaunch === true && response.body.privatePilotLaunchRunWorkflow.summary?.runCount >= 1, `Private-pilot launch run workflow must become ready after recording the receipt: ${JSON.stringify(response.body.privatePilotLaunchRunWorkflow.failedLaunchGates)}`);
-assert(response.body.managerReadyPackage?.privatePilotLaunchRunWorkflow?.readyForPrivatePilotLaunch === true, 'Manager Ready Package must embed private-pilot launch run readiness after the receipt.');
-assert(response.body.managerReadyPackage?.summary?.privatePilotLaunchRunReady === true, 'Manager Ready Package summary must expose private-pilot launch run readiness.');
+assert(response.body.readModels?.included === false && response.body.readModels.privatePilotLaunchRunWorkflowRoute?.endsWith('/private-pilot-launch-runs') && response.body.readModels.deploymentPreflightRoute?.endsWith('/deployment-preflight'), 'Private-pilot launch run receipt must support lightweight read-model refresh routes.');
 
 response = membershipApi.handle({
   method: 'GET',
@@ -3024,6 +3568,7 @@ response = membershipApi.handle({
 });
 assert(response.status === 200 && response.body.privatePilotLaunchRunWorkflow?.status === 'private-pilot-launch-run-ready', 'Security admin must be able to read the ready private-pilot launch run workflow.');
 assert(response.body.privatePilotLaunchRunWorkflow.latestRun?.releaseCandidateId, 'Launch run workflow must preserve the release candidate id.');
+progress('private-pilot launch run receipt ready');
 
 progress('private-pilot launch health check receipt checks');
 const privatePilotLaunchHealthCheckPath = `/projects/${projectId}/private-pilot-launch-health-checks`;
@@ -3057,6 +3602,7 @@ response = membershipApi.handle({
     actorId: 'director',
     reason: 'Record private-pilot post-launch health after the controlled launch run.',
     now: '2026-06-01T12:06:00.000Z',
+    includeReadModels: false,
   },
 });
 assert(response.status === 200 && response.body.privatePilotLaunchHealthCheck?.schemaVersion === 'private-pilot-launch-health-check/v1', 'Manager must be able to record a private-pilot launch health check receipt.');
@@ -3067,8 +3613,7 @@ assert(response.body.privatePilotLaunchHealthCheck.healthChecksums?.operationsRe
 assert(response.body.privatePilotLaunchHealthCheck.proofIds?.length >= 6 && response.body.privatePilotLaunchHealthCheck.eventId && response.body.privatePilotLaunchHealthCheck.timelineLogId, 'Private-pilot launch health check must include proof, event, and timeline links.');
 assert(response.body.privatePilotLaunchHealthCheck.requiredProductionControls?.some((control) => control.id === 'centralized-production-observability' && control.status === 'blocked'), 'Private-pilot launch health check must keep centralized production observability as a blocker.');
 assert(response.body.privatePilotLaunchHealthCheckWorkflow.readyForPrivatePilotMonitoring === true && response.body.privatePilotLaunchHealthCheckWorkflow.summary?.healthCheckCount >= 1, `Private-pilot launch health workflow must become ready after recording the receipt: ${JSON.stringify(response.body.privatePilotLaunchHealthCheckWorkflow.failedHealthGates)}`);
-assert(response.body.managerReadyPackage?.privatePilotLaunchHealthCheckWorkflow?.readyForPrivatePilotMonitoring === true, 'Manager Ready Package must embed private-pilot launch health readiness after the receipt.');
-assert(response.body.managerReadyPackage?.summary?.privatePilotLaunchHealthCheckReady === true, 'Manager Ready Package summary must expose private-pilot launch health readiness.');
+assert(response.body.readModels?.included === false && response.body.readModels.privatePilotLaunchHealthCheckWorkflowRoute?.endsWith('/private-pilot-launch-health-checks') && response.body.readModels.operationsReadinessRoute?.endsWith('/operations-readiness'), 'Private-pilot launch health receipt must support lightweight read-model refresh routes.');
 
 response = membershipApi.handle({
   method: 'GET',
@@ -3082,6 +3627,7 @@ response = membershipApi.handle({
 });
 assert(response.status === 200 && response.body.privatePilotLaunchHealthCheckWorkflow?.status === 'private-pilot-launch-health-ready', 'Security admin must be able to read the ready private-pilot launch health workflow.');
 assert(response.body.privatePilotLaunchHealthCheckWorkflow.latestHealthCheck?.launchRunId, 'Launch health workflow must preserve the launch run id.');
+progress('private-pilot launch health check receipt ready');
 
 progress('private-pilot acceptance report checks');
 const privatePilotAcceptanceReportPath = `/projects/${projectId}/private-pilot-acceptance-reports`;
@@ -3114,6 +3660,7 @@ response = membershipApi.handle({
     actorId: 'director',
     reason: 'Record customer-visible private-pilot acceptance after launch health and evidence handoff are ready.',
     now: '2026-06-01T12:07:00.000Z',
+    includeReadModels: false,
   },
 });
 assert(response.status === 200 && response.body.privatePilotAcceptanceReport?.schemaVersion === 'private-pilot-acceptance-report/v1', 'Manager must be able to record a private-pilot acceptance report.');
@@ -3125,16 +3672,29 @@ assert(response.body.privatePilotAcceptanceReport.acceptanceChecksums?.projectEv
 assert(response.body.privatePilotAcceptanceReport.proofIds?.length >= 10 && response.body.privatePilotAcceptanceReport.eventId && response.body.privatePilotAcceptanceReport.timelineLogId, 'Private-pilot acceptance report must include proof, event, and timeline links.');
 assert(response.body.privatePilotAcceptanceReport.requiredProductionControls?.some((control) => control.id === 'public-production-managed-controls' && control.status === 'blocked'), 'Private-pilot acceptance report must keep public production managed controls as blockers.');
 assert(response.body.privatePilotAcceptanceReportWorkflow.readyForPrivatePilotAcceptance === true && response.body.privatePilotAcceptanceReportWorkflow.summary?.reportCount >= 1, `Private-pilot acceptance workflow must become ready after recording the report: ${JSON.stringify(response.body.privatePilotAcceptanceReportWorkflow.failedAcceptanceGates)}`);
-assert(response.body.managerReadyPackage?.privatePilotAcceptanceReportWorkflow?.readyForPrivatePilotAcceptance === true, 'Manager Ready Package must embed private-pilot acceptance readiness after the report.');
-assert(response.body.managerReadyPackage?.summary?.privatePilotAcceptanceReportReady === true, 'Manager Ready Package summary must expose private-pilot acceptance readiness.');
-assert(response.body.managerReadyPackage?.productionOperationsReadiness?.schemaVersion === 'production-operations-readiness/v1', 'Manager Ready Package must embed production operations readiness after the report.');
-assert(response.body.managerReadyPackage.productionOperationsReadiness.readyForPrivatePilotOperations === true, 'Production operations readiness must pass local/private-pilot operations proof after customer acceptance.');
-assert(response.body.managerReadyPackage.productionOperationsReadiness.readyForProductionOperations === false && response.body.managerReadyPackage.productionOperationsReadiness.readyForProduction === false, 'Production operations readiness must not claim public production readiness.');
-assert(response.body.managerReadyPackage.productionOperationsReadiness.status === 'production-operations-controls-blocked', 'Production operations readiness must surface production control blockers after local proof passes.');
-assert(response.body.managerReadyPackage.productionOperationsReadiness.summary?.failedLocalProofGateCount === 0, 'Production operations readiness must have no local proof failures after the acceptance report.');
-assert(response.body.managerReadyPackage.productionOperationsReadiness.summary?.failedProductionControlGateCount > 0, 'Production operations readiness must keep production operations controls blocked.');
-assert(response.body.managerReadyPackage.summary?.productionOperationsReadyForPrivatePilot === true && response.body.managerReadyPackage.summary?.productionOperationsReadyForProduction === false, 'Manager Ready Package summary must expose production operations private-pilot readiness without production readiness.');
-assert(response.body.managerReadyPackage.summary?.productionOperationsChecksum === response.body.managerReadyPackage.productionOperationsReadiness.checksum, 'Manager Ready Package summary must preserve the production operations readiness checksum.');
+assert(response.body.readModels?.included === false && response.body.readModels.privatePilotAcceptanceReportWorkflowRoute?.endsWith('/private-pilot-acceptance-reports') && response.body.readModels.productionOperationsReadinessRoute?.endsWith('/production-operations-readiness'), 'Private-pilot acceptance receipt must support lightweight production-operations refresh routes.');
+
+const managerReadyPackagePath = `/projects/${projectId}/manager-ready-package`;
+response = membershipApi.handle({
+  method: 'GET',
+  path: managerReadyPackagePath,
+  headers: signedHeadersFor({
+    method: 'GET',
+    path: managerReadyPackagePath,
+    role: 'manager',
+    userId: 'director',
+  }),
+});
+assert(response.status === 200 && response.body.privatePilotAcceptanceReportWorkflow?.readyForPrivatePilotAcceptance === true, 'Manager Ready Package must embed private-pilot acceptance readiness after the report.');
+assert(response.body.summary?.privatePilotAcceptanceReportReady === true, 'Manager Ready Package summary must expose private-pilot acceptance readiness.');
+assert(response.body.productionOperationsReadiness?.schemaVersion === 'production-operations-readiness/v1', 'Manager Ready Package must embed production operations readiness after the report.');
+assert(response.body.productionOperationsReadiness.readyForPrivatePilotOperations === true, 'Production operations readiness must pass local/private-pilot operations proof after customer acceptance.');
+assert(response.body.productionOperationsReadiness.readyForProductionOperations === false && response.body.productionOperationsReadiness.readyForProduction === false, 'Production operations readiness must not claim public production readiness.');
+assert(response.body.productionOperationsReadiness.status === 'production-operations-controls-blocked', 'Production operations readiness must surface production control blockers after local proof passes.');
+assert(response.body.productionOperationsReadiness.summary?.failedLocalProofGateCount === 0, 'Production operations readiness must have no local proof failures after the acceptance report.');
+assert(response.body.productionOperationsReadiness.summary?.failedProductionControlGateCount > 0, 'Production operations readiness must keep production operations controls blocked.');
+assert(response.body.summary?.productionOperationsReadyForPrivatePilot === true && response.body.summary?.productionOperationsReadyForProduction === false, 'Manager Ready Package summary must expose production operations private-pilot readiness without production readiness.');
+assert(response.body.summary?.productionOperationsChecksum === response.body.productionOperationsReadiness.checksum, 'Manager Ready Package summary must preserve the production operations readiness checksum.');
 
 response = membershipApi.handle({
   method: 'GET',
@@ -3148,6 +3708,7 @@ response = membershipApi.handle({
 });
 assert(response.status === 200 && response.body.privatePilotAcceptanceReportWorkflow?.status === 'private-pilot-acceptance-ready', 'Security admin must be able to read the ready private-pilot acceptance workflow.');
 assert(response.body.privatePilotAcceptanceReportWorkflow.latestReport?.launchHealthCheckId, 'Acceptance report workflow must preserve the launch health id.');
+progress('private-pilot acceptance report ready');
 
 progress('production operations readiness checks');
 const productionOperationsReadinessPath = `/projects/${projectId}/production-operations-readiness`;
@@ -3187,6 +3748,7 @@ response = membershipApi.handle({
   }),
 });
 assert(response.status === 200 && response.body.productionOperationsReadiness?.status === 'production-operations-controls-blocked', 'Security admin must be able to read production operations readiness without production overclaim.');
+progress('production operations readiness model ready');
 
 const productionOperationsControlReceiptPath = `/projects/${projectId}/production-operations-control-receipts`;
 response = membershipApi.handle({
@@ -3349,6 +3911,8 @@ assert(response.body.privatePilotAcceptanceReportRoutes?.some((route) => route.a
 assert(response.body.privatePilotAcceptanceReportSummary?.readyCount >= 1 && response.body.privatePilotAcceptanceReportSummary?.latestAcceptanceReportChecksum, 'Readiness Proof Map must summarize private-pilot acceptance report readiness.');
 assert(response.body.privatePilotGoLiveRoutes?.some((route) => route.apiPath?.endsWith('/private-pilot-go-live-readiness') && route.readyForPrivatePilotGoLive === true && route.readyForPrivatePilotAcceptance === true && route.proofIds?.length >= 10 && route.timelineLogIds?.length && route.eventIds?.length), 'Readiness Proof Map must include private-pilot go-live readiness routes with proof, timeline, and event links.');
 assert(response.body.privatePilotGoLiveSummary?.acceptanceReady === true && response.body.privatePilotGoLiveSummary?.readyForProduction === false, 'Readiness Proof Map must summarize private-pilot go-live readiness without production overclaim.');
+assert(response.body.productionInfrastructureRehearsalRoutes?.some((route) => route.apiPath?.endsWith('/production-infrastructure-rehearsal') && route.readyForInfrastructureRehearsal === true && route.productionBlocked === true && route.readyForProduction === false && route.proofIds?.length >= 10 && route.timelineLogIds?.length && route.eventIds?.length && route.upstreamRoutes?.deploymentPreflight?.endsWith('/deployment-preflight')), 'Readiness Proof Map must include production infrastructure rehearsal routes with proof, upstream routes, and production blockers.');
+assert(response.body.productionInfrastructureRehearsalSummary?.routeReady === true && response.body.productionInfrastructureRehearsalSummary?.productionBlocked === true && response.body.productionInfrastructureRehearsalSummary?.readyForProduction === false, 'Readiness Proof Map must summarize production infrastructure rehearsal without production overclaim.');
 assert(response.body.productionLaunchGapRoutes?.some((route) => route.apiPath?.endsWith('/production-launch-gap-register') && route.privatePilotAccepted === true && route.readyForProduction === false && route.proofIds?.length >= 10 && route.timelineLogIds?.length && route.eventIds?.length), 'Readiness Proof Map must include production launch gap register routes with proof, timeline, and event links.');
 assert(response.body.productionLaunchGapSummary?.privatePilotAccepted === true && response.body.productionLaunchGapSummary?.readyForProduction === false, 'Readiness Proof Map must summarize production launch gap register without production overclaim.');
 assert(response.body.productionLaunchControlCenterRoutes?.some((route) => route.apiPath?.endsWith('/production-launch-control-center') && route.privatePilotAccepted === true && route.readyForProduction === false && route.proofIds?.length >= 10 && route.timelineLogIds?.length && route.eventIds?.length), 'Readiness Proof Map must include production launch control center routes with proof, timeline, and event links.');
@@ -3370,12 +3934,21 @@ response = membershipApi.handle({
 });
 assert(response.status === 200 && response.body.nodes?.some((node) => node.subtype === 'project-evidence-export' && node.route?.endsWith('/project-evidence-exports')), 'Manager Flow Graph must include project evidence export governance nodes.');
 assert(response.body.nodes?.some((node) => node.subtype === 'evidence-custody-readiness' && node.route?.endsWith('/evidence-custody-readiness')), 'Manager Flow Graph must keep evidence custody readiness nodes after export handoff.');
+const productTeamDeliveryTraceFlowNode = response.body.nodes?.find((node) => node.id === 'product-team-delivery-trace');
+const productTeamDeliveryTraceStageAttachments = productTeamDeliveryTraceFlowNode?.attachments?.filter((attachment) => attachment.type === 'delivery-trace-stage') || [];
+assert(productTeamDeliveryTraceFlowNode?.subtype === 'product-team-delivery-trace' && productTeamDeliveryTraceFlowNode.route?.endsWith('/product-team-delivery-trace') && productTeamDeliveryTraceFlowNode.status === 'confirmed' && productTeamDeliveryTraceFlowNode.proofIds?.length && productTeamDeliveryTraceFlowNode.timelineLogIds?.length && productTeamDeliveryTraceFlowNode.eventIds?.length && productTeamDeliveryTraceStageAttachments.filter((attachment) => attachment.ready === true).length >= 8, 'Manager Flow Graph must include a proofed product-team delivery trace node with ready stage attachments.');
+assert(response.body.edges?.some((edge) => edge.source === 'productTeamDeliveryTrace' && edge.fromNodeId === 'brainstorm-layer' && edge.toNodeId === 'product-team-delivery-trace'), 'Manager Flow Graph must connect Brainstorm Layer into the product-team delivery trace.');
+assert(response.body.edges?.some((edge) => edge.source === 'productTeamDeliveryTrace' && edge.fromNodeId?.startsWith('evidence-search-') && edge.toNodeId === 'product-team-delivery-trace'), 'Manager Flow Graph must connect evidence/search nodes into the product-team delivery trace.');
+assert(response.body.edges?.some((edge) => edge.source === 'productTeamDeliveryTrace' && edge.fromNodeId === 'submission-review-workflow' && edge.toNodeId === 'product-team-delivery-trace'), 'Manager Flow Graph must connect review/revision workflow into the product-team delivery trace.');
+const productTeamFinalDeliverableFlowNode = response.body.nodes?.find((node) => node.subtype === 'final-deliverable' && node.id?.startsWith('agent-submission-'));
+assert(productTeamFinalDeliverableFlowNode && response.body.edges?.some((edge) => edge.source === 'productTeamDeliveryTrace' && edge.fromNodeId === productTeamFinalDeliverableFlowNode.id && edge.toNodeId === 'product-team-delivery-trace' && edge.importance === 'major'), 'Manager Flow Graph must connect accepted final-deliverable submission nodes into the product-team delivery trace.');
 assert(response.body.nodes?.some((node) => node.subtype === 'private-pilot-release-candidate' && node.route?.endsWith('/private-pilot-release-candidates') && node.proofIds?.length >= 6 && node.timelineLogIds?.length && node.eventIds?.length && node.attachments?.some((attachment) => attachment.type === 'release-candidate-checksums')), 'Manager Flow Graph must include a proofed private-pilot release candidate node.');
 assert(response.body.nodes?.some((node) => node.subtype === 'private-pilot-launch-run' && node.route?.endsWith('/private-pilot-launch-runs') && node.proofIds?.length >= 6 && node.timelineLogIds?.length && node.eventIds?.length && node.attachments?.some((attachment) => attachment.type === 'launch-run-checksums')), 'Manager Flow Graph must include a proofed private-pilot launch run node.');
 assert(response.body.nodes?.some((node) => node.subtype === 'private-pilot-launch-health-check' && node.route?.endsWith('/private-pilot-launch-health-checks') && node.proofIds?.length >= 6 && node.timelineLogIds?.length && node.eventIds?.length && node.attachments?.some((attachment) => attachment.type === 'launch-health-checksums')), 'Manager Flow Graph must include a proofed private-pilot launch health check node.');
 assert(response.body.nodes?.some((node) => node.subtype === 'private-pilot-acceptance-report' && node.route?.endsWith('/private-pilot-acceptance-reports') && node.proofIds?.length >= 10 && node.timelineLogIds?.length && node.eventIds?.length && node.attachments?.some((attachment) => attachment.type === 'acceptance-report-checksums')), 'Manager Flow Graph must include a proofed private-pilot acceptance report node.');
 assert(response.body.nodes?.some((node) => node.id === 'production-operations-readiness' && node.subtype === 'production-operations-readiness' && node.route?.endsWith('/production-operations-readiness') && node.proofIds?.length >= 10 && node.timelineLogIds?.length && node.eventIds?.length && node.attachments?.some((attachment) => attachment.type === 'production-operations-controls')), 'Manager Flow Graph must include a proofed production operations readiness node.');
 assert(response.body.nodes?.some((node) => node.id === 'private-pilot-go-live-readiness' && node.subtype === 'private-pilot-go-live-readiness' && node.route?.endsWith('/private-pilot-go-live-readiness') && node.proofIds?.length >= 10 && node.timelineLogIds?.length && node.eventIds?.length && node.attachments?.some((attachment) => attachment.type === 'private-pilot-go-live-readiness')), 'Manager Flow Graph must include a proofed private-pilot go-live readiness node.');
+assert(response.body.nodes?.some((node) => node.id === 'production-infrastructure-rehearsal' && node.subtype === 'production-infrastructure-rehearsal' && node.route?.endsWith('/production-infrastructure-rehearsal') && node.proofIds?.length >= 10 && node.timelineLogIds?.length && node.eventIds?.length && node.attachments?.some((attachment) => attachment.type === 'production-infrastructure-rehearsal' && attachment.upstreamRoutes?.some((route) => route.endsWith('/deployment-preflight')))), 'Manager Flow Graph must include a proofed production infrastructure rehearsal node with upstream infrastructure routes.');
 assert(response.body.nodes?.some((node) => node.id === 'production-launch-gap-register' && node.subtype === 'production-launch-gap-register' && node.route?.endsWith('/production-launch-gap-register') && node.proofIds?.length >= 10 && node.timelineLogIds?.length && node.eventIds?.length && node.attachments?.some((attachment) => attachment.type === 'production-launch-gap-register')), 'Manager Flow Graph must include a proofed production launch gap register node.');
 assert(response.body.nodes?.some((node) => node.id === 'production-launch-control-center' && node.subtype === 'production-launch-control-center' && node.route?.endsWith('/production-launch-control-center') && node.proofIds?.length >= 10 && node.timelineLogIds?.length && node.eventIds?.length && node.attachments?.some((attachment) => attachment.type === 'production-launch-control-center')), 'Manager Flow Graph must include a proofed production launch control center node.');
 assert(response.body.nodes?.some((node) => node.id === 'production-launch-evidence-dossier' && node.subtype === 'production-launch-evidence-dossier' && node.route?.endsWith('/production-launch-evidence-dossier') && node.attachments?.some((attachment) => attachment.type === 'production-launch-evidence-dossier')), 'Manager Flow Graph must include the production launch evidence dossier node.');
@@ -3386,6 +3959,7 @@ assert(response.body.edges?.some((edge) => edge.source === 'privatePilotLaunchHe
 assert(response.body.edges?.some((edge) => edge.source === 'privatePilotAcceptanceReports' && edge.toNodeId.startsWith('private-pilot-acceptance-report-') && edge.proofIds?.length >= 10 && edge.timelineLogIds?.length && edge.eventIds?.length), 'Manager Flow Graph must connect acceptance reports to the launch health receipt.');
 assert(response.body.edges?.some((edge) => edge.source === 'productionOperationsReadiness' && edge.toNodeId === 'production-operations-readiness' && edge.proofIds?.length >= 10 && edge.timelineLogIds?.length && edge.eventIds?.length), 'Manager Flow Graph must connect production operations readiness to the acceptance proof chain.');
 assert(response.body.edges?.some((edge) => edge.source === 'privatePilotGoLiveReadiness' && edge.toNodeId === 'private-pilot-go-live-readiness' && edge.proofIds?.length >= 10 && edge.timelineLogIds?.length && edge.eventIds?.length), 'Manager Flow Graph must connect private-pilot lifecycle receipts into the go-live readiness command node.');
+assert(response.body.edges?.some((edge) => edge.source === 'productionInfrastructureRehearsal' && edge.toNodeId === 'production-infrastructure-rehearsal' && edge.proofIds?.length >= 10 && edge.timelineLogIds?.length && edge.eventIds?.length), 'Manager Flow Graph must connect production control receipts into the production infrastructure rehearsal node.');
 assert(response.body.edges?.some((edge) => edge.source === 'productionLaunchGapRegister' && edge.toNodeId === 'production-launch-gap-register' && edge.proofIds?.length >= 10 && edge.timelineLogIds?.length && edge.eventIds?.length), 'Manager Flow Graph must connect private-pilot and operations proof into the production launch gap register node.');
 assert(response.body.edges?.some((edge) => edge.source === 'productionLaunchControlCenter' && edge.toNodeId === 'production-launch-control-center' && edge.proofIds?.length >= 10 && edge.timelineLogIds?.length && edge.eventIds?.length), 'Manager Flow Graph must connect production launch proof into the production launch control center node.');
 assert(response.body.edges?.some((edge) => edge.source === 'productionLaunchEvidenceDossier' && edge.fromNodeId === 'production-launch-control-center' && edge.toNodeId === 'production-launch-evidence-dossier'), 'Manager Flow Graph must connect production launch control center into the evidence dossier.');
@@ -3465,6 +4039,21 @@ assert(response.body.productionLaunchGapRoutes?.some((route) => route.apiPath?.e
 assert(response.body.productionLaunchGapSummary?.productionOperationsControlsReady === true && response.body.productionLaunchGapSummary?.readyForProduction === false, 'Readiness Proof Map must show production operations controls without closing the full production gap register.');
 assert(response.body.productionLaunchControlCenterRoutes?.some((route) => route.apiPath?.endsWith('/production-launch-control-center') && route.productionOperationsControlsReady === true && route.readyForProduction === false && route.proofIds?.length >= 10), 'Readiness Proof Map must keep production launch control center after production operations receipts.');
 assert(response.body.productionLaunchControlCenterSummary?.productionOperationsControlsReady === true && response.body.productionLaunchControlCenterSummary?.readyForProduction === false, 'Readiness Proof Map must show production operations controls without closing the production launch control center.');
+
+response = membershipApi.handle({
+  method: 'GET',
+  path: productionInfrastructureRehearsalPath,
+  headers: signedHeadersFor({
+    method: 'GET',
+    path: productionInfrastructureRehearsalPath,
+    role: 'security-admin',
+    userId: 'security-lead',
+  }),
+});
+assert(response.status === 200 && response.body.productionInfrastructureRehearsal?.domainRows?.some((row) => row.id === 'managed-persistence' && row.productionReady === true && row.observed?.cutoverReceiptReady === true), 'Production infrastructure rehearsal must project managed persistence cutover receipts into the infrastructure domain row.');
+assert(response.body.productionInfrastructureRehearsal?.domainRows?.some((row) => row.id === 'managed-worker-queue' && row.productionReady === true && row.observed?.cutoverReceiptReady === true), 'Production infrastructure rehearsal must project managed worker queue cutover receipts into the infrastructure domain row.');
+assert(response.body.productionInfrastructureRehearsal?.readyForProduction === false && !response.body.productionInfrastructureRehearsal?.productionBlockedRows?.some((row) => ['managed-persistence', 'managed-worker-queue'].includes(row.id)), 'Production infrastructure rehearsal must clear managed database/queue blockers after operations cutover receipts while keeping broader production blocked.');
+progress('production operations control receipt projection ready');
 
 response = membershipApi.handle({
   method: 'GET',
@@ -3557,6 +4146,21 @@ assert(response.body.productionLaunchControlCenterSummary?.productionOperationsC
 
 response = membershipApi.handle({
   method: 'GET',
+  path: productionInfrastructureRehearsalPath,
+  headers: signedHeadersFor({
+    method: 'GET',
+    path: productionInfrastructureRehearsalPath,
+    role: 'security-admin',
+    userId: 'security-lead',
+  }),
+});
+assert(response.status === 200 && response.body.productionInfrastructureRehearsal?.domainRows?.some((row) => row.id === 'deployment-preflight' && row.productionReady === true && row.observed?.deploymentReceiptReady === true), 'Production infrastructure rehearsal must project production deployment receipts into the deployment domain row.');
+assert(response.body.productionInfrastructureRehearsal?.backendRoutes?.productionDeploymentControlReceipts?.endsWith('/production-deployment-control-receipts'), 'Production infrastructure rehearsal must expose the production deployment control receipt route.');
+assert(response.body.productionInfrastructureRehearsal?.upstreamChecksums?.productionDeploymentControlReceiptWorkflow, 'Production infrastructure rehearsal must bind the deployment receipt workflow checksum.');
+assert(response.body.productionInfrastructureRehearsal?.readyForProduction === false && !response.body.productionInfrastructureRehearsal?.productionBlockedRows?.some((row) => row.id === 'deployment-preflight'), 'Production infrastructure rehearsal must clear the deployment preflight blocker after deployment receipts while keeping broader production blocked.');
+
+response = membershipApi.handle({
+  method: 'GET',
   path: `/projects/${projectId}/manager-flow-graph`,
   headers: signedHeadersFor({
     method: 'GET',
@@ -3569,6 +4173,7 @@ assert(response.status === 200 && response.body.nodes?.some((node) => node.subty
 assert(response.body.edges?.some((edge) => edge.source === 'productionDeploymentControlReceipts' && edge.toNodeId.startsWith('production-deployment-control-receipt-') && edge.proofIds?.length >= 10 && edge.timelineLogIds?.length && edge.eventIds?.length), 'Manager Flow Graph must connect production deployment control receipts to the evidence ledger.');
 assert(response.body.edges?.some((edge) => edge.source === 'productionDeploymentControlReceipts' && edge.fromNodeId?.startsWith('production-deployment-control-receipt-') && edge.toNodeId === 'production-launch-control-center'), 'Manager Flow Graph must connect production deployment receipts into the production launch control center.');
 assert(response.body.edges?.some((edge) => edge.source === 'privatePilotGoLiveReadiness' && edge.fromNodeId?.startsWith('production-deployment-control-receipt-') && edge.toNodeId === 'private-pilot-go-live-readiness'), 'Manager Flow Graph must connect production deployment receipts into the go-live readiness command node.');
+progress('production deployment control receipt projection ready');
 
 progress('production security control receipt checks');
 const productionSecurityControlIds = [
@@ -3645,6 +4250,7 @@ response = membershipApi.handle({
 assert(response.status === 200 && response.body.nodes?.some((node) => node.subtype === 'production-security-control-receipt' && node.route?.endsWith('/production-security-control-receipts') && node.proofIds?.length >= 10 && node.timelineLogIds?.length && node.eventIds?.length && node.attachments?.some((attachment) => attachment.type === 'production-security-control-receipt')), 'Manager Flow Graph must include a proofed production security control receipt node.');
 assert(response.body.edges?.some((edge) => edge.source === 'productionSecurityControlReceipts' && edge.toNodeId.startsWith('production-security-control-receipt-') && edge.proofIds?.length >= 10 && edge.timelineLogIds?.length && edge.eventIds?.length), 'Manager Flow Graph must connect production security control receipts to the security boundary.');
 assert(response.body.edges?.some((edge) => edge.source === 'productionSecurityControlReceipts' && edge.fromNodeId?.startsWith('production-security-control-receipt-') && edge.toNodeId === 'production-launch-control-center'), 'Manager Flow Graph must connect production security receipts into the production launch control center.');
+progress('production security control receipt ready');
 
 progress('production provider control receipt checks');
 const productionProviderControlIds = [
@@ -3731,6 +4337,7 @@ response = membershipApi.handle({
 assert(response.status === 200 && response.body.nodes?.some((node) => node.subtype === 'production-provider-control-receipt' && node.route?.endsWith('/production-provider-control-receipts') && node.proofIds?.length >= 10 && node.timelineLogIds?.length && node.eventIds?.length && node.attachments?.some((attachment) => attachment.type === 'production-provider-control-receipt')), 'Manager Flow Graph must include a proofed production provider control receipt node.');
 assert(response.body.edges?.some((edge) => edge.source === 'productionProviderControlReceipts' && edge.toNodeId.startsWith('production-provider-control-receipt-') && edge.proofIds?.length >= 10 && edge.timelineLogIds?.length && edge.eventIds?.length), 'Manager Flow Graph must connect production provider control receipts to provider eval proof.');
 assert(response.body.edges?.some((edge) => edge.source === 'productionProviderControlReceipts' && edge.fromNodeId?.startsWith('production-provider-control-receipt-') && edge.toNodeId === 'production-launch-control-center'), 'Manager Flow Graph must connect production provider receipts into the production launch control center.');
+progress('production provider control receipt ready');
 
 response = membershipApi.handle({
   method: 'GET',
@@ -3868,6 +4475,7 @@ const managedProductionReceiptBatches = [
   },
 ];
 for (const batch of managedProductionReceiptBatches) {
+  progress(`managed production receipt ${batch.prefix} starting`);
   response = membershipApi.handle({
     method: 'POST',
     path: batch.path,
@@ -3882,6 +4490,7 @@ for (const batch of managedProductionReceiptBatches) {
       actorId: batch.actorId,
       reason: 'Record explicit managed-production evidence for production evidence integrity audit verification.',
       now: batch.now,
+      includeReadModels: false,
       controls: batch.controlIds.map((controlId) => ({
         controlId,
         status: 'verified',
@@ -3896,6 +4505,8 @@ for (const batch of managedProductionReceiptBatches) {
     },
   });
   assert(response.status === 200, `Managed-production receipt batch must be accepted for ${batch.path}.`);
+  assert(response.body.readModels?.included === false && response.body.readModels?.managerReadyPackageRoute?.endsWith('/manager-ready-package'), `Managed-production receipt batch ${batch.prefix} must support deferred read-model refresh.`);
+  progress(`managed production receipt ${batch.prefix} completed`);
 }
 
 response = membershipApi.handle({
@@ -3928,6 +4539,7 @@ response = membershipApi.handle({
 assert(response.status === 200 && response.body.productionLaunchAudit?.productionGates?.some((gate) => gate.id === 'managed-production-evidence-integrity' && gate.passed === true), 'Production launch audit must pass managed-production evidence integrity after explicit proof.');
 assert(!response.body.productionLaunchAudit?.productionBlockers?.some((row) => row.id === 'managed-production-evidence-integrity'), 'Production launch audit must remove managed-production evidence integrity from blockers after explicit proof.');
 assert(response.body.productionLaunchAudit?.productionDecision === 'no-go' && response.body.productionLaunchAudit?.summary?.managedProductionEvidenceIntegrityReady === true, 'Production launch audit must expose evidence integrity readiness while broader public production can remain no-go.');
+const managedEvidenceProductionLaunchAuditChecksum = response.body.productionLaunchAudit?.checksum;
 
 response = membershipApi.handle({
   method: 'GET',
@@ -3981,6 +4593,121 @@ response = membershipApi.handle({
   }),
 });
 assert(response.status === 200 && response.body.nodes?.some((node) => node.id === 'production-evidence-integrity-audit' && node.status === 'confirmed' && node.proofIds?.length >= totalProductionControlCount), 'Manager Flow Graph must upgrade the production evidence integrity audit node after managed-production proof.');
+progress('managed production evidence integrity ready');
+
+const productionLaunchApprovalInputs = [
+  {
+    role: 'manager',
+    userId: 'director',
+    approverId: 'director',
+    approverName: 'Product Director',
+    reason: 'Manager approves production launch governance only after managed-production evidence integrity is explicit.',
+    now: '2026-06-01T12:38:00.000Z',
+  },
+  {
+    role: 'security-admin',
+    userId: 'security-lead',
+    approverId: 'security-lead',
+    approverName: 'Security Lead',
+    reason: 'Security approves production launch governance with security receipts and evidence integrity available.',
+    now: '2026-06-01T12:39:00.000Z',
+  },
+  {
+    role: 'operations-owner',
+    userId: 'ops-lead',
+    approverId: 'ops-lead',
+    approverName: 'Operations Lead',
+    reason: 'Operations owner approves production launch governance after operations, deployment, provider, and managed-evidence controls are receipted.',
+    now: '2026-06-01T12:40:00.000Z',
+  },
+];
+
+for (const approvalInput of productionLaunchApprovalInputs) {
+  response = membershipApi.handle({
+    method: 'POST',
+    path: launchApprovalPath,
+    headers: signedHeadersFor({
+      method: 'POST',
+      path: launchApprovalPath,
+      role: approvalInput.role,
+      userId: approvalInput.userId,
+    }),
+    body: {
+      mode: 'production',
+      decision: 'approved',
+      approverRole: approvalInput.role,
+      approverId: approvalInput.approverId,
+      approverName: approvalInput.approverName,
+      reason: approvalInput.reason,
+      linkedAuditChecksum: managedEvidenceProductionLaunchAuditChecksum,
+      now: approvalInput.now,
+    },
+  });
+  assert(response.status === 200 && response.body.launchApproval?.schemaVersion === 'launch-approval/v1', `Production launch approval must be accepted for ${approvalInput.role}.`);
+  assert(response.body.launchApproval.mode === 'production' && response.body.launchApproval.decision === 'approved', `Production launch approval must preserve production approval mode for ${approvalInput.role}.`);
+}
+
+assert(response.body.launchApprovalWorkflow?.readyForProduction === true, 'Launch approval workflow must mark production approval ready after Manager, security-admin, and operations-owner approvals.');
+assert(response.body.launchApprovalWorkflow.modes?.some((mode) => mode.id === 'production' && mode.ready && mode.approvedRoles.includes('manager') && mode.approvedRoles.includes('security-admin') && mode.approvedRoles.includes('operations-owner')), 'Launch approval workflow must summarize all required production approver roles.');
+assert(response.body.launchApprovalWorkflow.proofIds?.length >= 10 && response.body.launchApprovalWorkflow.timelineLogIds?.length >= 5 && response.body.launchApprovalWorkflow.eventIds?.length >= 5, 'Production launch approval workflow must aggregate private-pilot and production approval proof, timeline, and event ids.');
+assert(response.body.managerReadyPackage?.launchApprovalWorkflow?.readyForProduction === true && response.body.managerReadyPackage?.summary?.launchApprovalProductionReady === true, 'Manager Ready Package must expose production launch approval readiness after the three-role approval.');
+assert(response.body.managerReadyPackage?.productionLaunchAudit?.productionGates?.some((gate) => gate.id === 'production-launch-approval-ready' && gate.passed === true), 'Production launch audit must pass the production approval gate after three-role approval.');
+assert(response.body.managerReadyPackage?.productionLaunchAudit?.productionDecision === 'no-go' && response.body.managerReadyPackage?.productionLaunchAudit?.readyForProduction === false, 'Production launch audit must keep broader public production no-go after approval while other production gates remain blocked.');
+
+response = membershipApi.handle({
+  method: 'GET',
+  path: launchApprovalPath,
+  headers: signedHeadersFor({
+    method: 'GET',
+    path: launchApprovalPath,
+    role: 'operations-owner',
+    userId: 'ops-lead',
+  }),
+});
+assert(response.status === 200 && response.body.launchApprovalWorkflow?.readyForProduction === true, 'Operations owner must be able to read the production launch approval workflow after approval.');
+assert(response.body.launchApprovalWorkflow.summary?.productionApproved === true && response.body.launchApprovalWorkflow.summary?.productionMissingRoleCount === 0, 'Launch approval workflow summary must close production missing approver roles.');
+
+response = membershipApi.handle({
+  method: 'GET',
+  path: productionLaunchControlCenterPath,
+  headers: signedHeadersFor({
+    method: 'GET',
+    path: productionLaunchControlCenterPath,
+    role: 'manager',
+    userId: 'director',
+  }),
+});
+assert(response.status === 200 && response.body.productionLaunchControlCenter?.controlRows?.some((row) => row.id === 'production-launch-approvals' && row.ready === true), 'Production launch control center must mark production launch approvals ready after three-role approval.');
+assert(response.body.productionLaunchControlCenter.stageRows?.some((row) => row.id === 'production-approval' && row.ready === true), 'Production launch control center stage rows must mark production approval ready.');
+assert(response.body.productionLaunchControlCenter.summary?.productionApprovalReady === true && response.body.productionLaunchControlCenter.readyForProduction === false, 'Production launch control center must expose production approval readiness while public production remains blocked.');
+
+response = membershipApi.handle({
+  method: 'GET',
+  path: `/projects/${projectId}/readiness-proof-map`,
+  headers: signedHeadersFor({
+    method: 'GET',
+    path: `/projects/${projectId}/readiness-proof-map`,
+    role: 'manager',
+    userId: 'director',
+  }),
+});
+assert(response.status === 200 && response.body.launchApprovalSummary?.productionApprovalCount >= 3 && response.body.launchApprovalSummary?.proofIds?.length >= 10, 'Readiness Proof Map must summarize production launch approval proof after three-role approval.');
+assert(response.body.launchApprovalRoutes?.filter((route) => route.mode === 'production' && route.decision === 'approved').length >= 3, 'Readiness Proof Map must expose every production launch approval as a proof route.');
+assert(response.body.productionLaunchControlCenterRoutes?.some((route) => route.productionApprovalReady === true && route.readyForProduction === false), 'Readiness Proof Map must feed production approval readiness into the production launch control center route.');
+
+response = membershipApi.handle({
+  method: 'GET',
+  path: `/projects/${projectId}/manager-flow-graph`,
+  headers: signedHeadersFor({
+    method: 'GET',
+    path: `/projects/${projectId}/manager-flow-graph`,
+    role: 'manager',
+    userId: 'director',
+  }),
+});
+assert(response.status === 200 && response.body.nodes?.filter((node) => node.source === 'launchApprovals' && node.subtype === 'launch-approval' && node.importance === 'critical' && node.status === 'confirmed').length >= 3, 'Manager Flow Graph must render production launch approvals as critical confirmed governance nodes.');
+assert(response.body.edges?.some((edge) => edge.source === 'launchApprovals' && edge.label === 'Release governance' && edge.eventIds?.length >= 1), 'Manager Flow Graph must connect production launch approvals into release-governance evidence.');
+progress('production launch governance approval ready');
 
 response = membershipApi.handle({
   method: 'GET',
@@ -4041,9 +4768,104 @@ assert(response.body.persistenceMigrationDryRun.importedTableCounts.production_d
 assert(response.body.persistenceMigrationDryRun.importedTableCounts.production_security_control_receipts > 0, 'Migration dry-run must import production security control receipt rows.');
 assert(response.body.persistenceMigrationDryRun.importedTableCounts.production_provider_control_receipts > 0, 'Migration dry-run must import production provider control receipt rows.');
 
+progress('autonomous cycle consistency loop starting');
+const consistencyLoopPath = `/projects/${projectId}/autonomous-run-control/run-loop`;
+response = membershipApi.handle({
+  method: 'POST',
+  path: consistencyLoopPath,
+  headers: signedHeadersFor({
+    method: 'POST',
+    path: consistencyLoopPath,
+    role: 'manager',
+    userId: 'director',
+  }),
+  body: {
+    now: '2026-06-01T19:10:00.000Z',
+    maxSteps: 3,
+    force: true,
+    includeReadModels: false,
+    useAgentAutonomousStrategy: true,
+    submitAgentWorkArtifacts: true,
+    reviewPendingSubmissions: true,
+    respondToReviewObligations: true,
+  },
+});
+assert(response.status === 200 && response.body.autonomousRunControlLoop?.schemaVersion === 'autonomous-run-control-loop-run/v1', 'Autonomous consistency loop must record a bounded loop receipt.');
+assert(response.body.autonomousRunControlLoop.stepCount >= 3 && response.body.autonomousRunControlLoop.runReceiptIds?.length >= 3 && !response.body.autonomousRunControlLoop.failedStep, `Autonomous consistency loop must run at least three receipt-backed steps. Actual: ${response.body.autonomousRunControlLoop.stepCount}`);
+progress('autonomous cycle consistency loop completed');
+
+const consistencyPath = `/projects/${projectId}/autonomous-cycle-consistency`;
+response = membershipApi.handle({
+  method: 'GET',
+  path: consistencyPath,
+  headers: signedHeadersFor({
+    method: 'GET',
+    path: consistencyPath,
+    role: 'manager',
+    userId: 'director',
+  }),
+});
+assert(response.status === 200 && response.body.autonomousCycleConsistency?.schemaVersion === 'autonomous-cycle-consistency/v1', 'Project API must expose standalone autonomous cycle consistency.');
+assert(response.body.autonomousCycleConsistency.readyForLocalPilotCycleConsistency === true && response.body.autonomousCycleConsistency.readyForProduction === false, `Autonomous cycle consistency must prove local N-step continuity without production overclaim. Actual: ${response.body.autonomousCycleConsistency.status}`);
+assert(response.body.autonomousCycleConsistency.summary?.observedStepCount >= 3 && response.body.autonomousCycleConsistency.summary?.actionRunCount >= 3 && response.body.autonomousCycleConsistency.summary?.loopRunCount >= 1, 'Autonomous cycle consistency must summarize at least three action runs and one loop receipt.');
+assert(response.body.autonomousCycleConsistency.summary?.missingRunReceiptCount === 0 && response.body.autonomousCycleConsistency.summary?.failedLocalRowCount === 0 && response.body.autonomousCycleConsistency.summary?.workerDeadLetterCount === 0, 'Autonomous cycle consistency must not report missing receipts, failed local rows, or worker dead letters.');
+assert(response.body.autonomousCycleConsistency.consistencyRows?.some((row) => row.id === 'n-step-autonomous-loop-observed' && row.ready), 'Autonomous cycle consistency must prove the N-step loop row.');
+assert(response.body.autonomousCycleConsistency.consistencyRows?.some((row) => row.id === 'loop-run-receipts-linked' && row.ready && row.proofIds.length >= 3), 'Autonomous cycle consistency must link loop receipts to action receipts.');
+assert(response.body.autonomousCycleConsistency.consistencyRows?.some((row) => row.id === 'flow-proof-surfaces-linked' && row.ready), 'Autonomous cycle consistency must prove Flow Graph and Proof Map surfaces.');
+assert(response.body.autonomousCycleConsistency.consistencyRows?.some((row) => row.id === 'worker-recovery-clean' && row.ready), 'Autonomous cycle consistency must prove worker recovery remains clean.');
+assert(response.body.autonomousCycleConsistency.consistencyRows?.some((row) => row.id === 'production-autonomy-boundary' && row.productionBlocker && row.ready === false), 'Autonomous cycle consistency must keep public 24/7 production autonomy blocked.');
+assert(response.body.autonomousCycleConsistency.backendRoutes?.autonomousCycleConsistency?.endsWith('/autonomous-cycle-consistency'), 'Autonomous cycle consistency must expose its own backend route.');
+
+response = membershipApi.handle({
+  method: 'GET',
+  path: `/projects/${projectId}/readiness-proof-map`,
+  headers: signedHeadersFor({
+    method: 'GET',
+    path: `/projects/${projectId}/readiness-proof-map`,
+    role: 'manager',
+    userId: 'director',
+  }),
+});
+assert(response.status === 200 && response.body.autonomousCycleConsistencySummary?.routeReady === true, 'Readiness Proof Map must summarize autonomous cycle consistency after a bounded loop.');
+assert(response.body.autonomousCycleConsistencySummary?.readyForLocalPilotCycleConsistency === true && response.body.autonomousCycleConsistencySummary?.observedStepCount >= 3 && response.body.autonomousCycleConsistencySummary?.readyForProduction === false, 'Readiness Proof Map must preserve N-step autonomous consistency counts and production boundary.');
+assert(response.body.autonomousCycleConsistencyRoutes?.some((route) => route.apiPath?.endsWith('/autonomous-cycle-consistency') && route.autonomousRunControlRoute?.endsWith('/autonomous-run-control') && route.productTeamOperatingLoopRoute?.endsWith('/product-team-operating-loop') && route.runtimeContractsRoute?.endsWith('/runtime-contracts') && route.runReceiptCount >= 3 && route.loopReceiptCount >= 1 && route.readyForLocalPilotCycleConsistency === true && route.productionBlocker === true && route.proofIds.length && route.timelineLogIds.length && route.eventIds.length), 'Readiness Proof Map must expose autonomous cycle consistency proof route with loop counts, operating-loop, contract, proof, and production-boundary evidence.');
+
+response = membershipApi.handle({
+  method: 'GET',
+  path: `/projects/${projectId}/manager-flow-graph`,
+  headers: signedHeadersFor({
+    method: 'GET',
+    path: `/projects/${projectId}/manager-flow-graph`,
+    role: 'manager',
+    userId: 'director',
+  }),
+});
+const consistencyGraph = response.body.managerFlowGraph || response.body;
+const consistencyNode = consistencyGraph?.nodes?.find((node) => node.id === 'autonomous-cycle-consistency' && node.source === 'autonomousCycleConsistency');
+const consistencyEdges = consistencyGraph?.edges?.filter((edge) => edge.source === 'autonomousCycleConsistency') || [];
+assert(response.status === 200 && consistencyNode?.route?.endsWith('/autonomous-cycle-consistency') && consistencyNode.proofIds.length && consistencyNode.timelineLogIds.length && consistencyNode.eventIds.length, 'Manager Flow Graph must include a proofed autonomous cycle consistency node.');
+assert(consistencyNode.attachments.some((attachment) => attachment.type === 'autonomous-cycle-consistency-loop' && attachment.ready === true) && consistencyNode.attachments.some((attachment) => attachment.type === 'autonomous-cycle-consistency-proof' && attachment.proofIds?.length && attachment.timelineLogIds?.length && attachment.eventIds?.length) && consistencyNode.attachments.some((attachment) => attachment.type === 'autonomous-cycle-consistency-worker' && attachment.ready === true) && consistencyNode.attachments.some((attachment) => attachment.type === 'autonomous-cycle-consistency-production-boundary' && attachment.status === 'production-blocked'), 'Manager Flow Graph autonomous consistency node must expose loop, proof, worker recovery, and production boundary attachments.');
+assert(consistencyEdges.some((edge) => edge.fromNodeId === 'autonomous-run-control' && edge.toNodeId === 'autonomous-cycle-consistency') && consistencyEdges.some((edge) => edge.fromNodeId === 'product-team-operating-loop' && edge.toNodeId === 'autonomous-cycle-consistency') && consistencyEdges.some((edge) => edge.fromNodeId === 'runtime-contract-freeze' && edge.toNodeId === 'autonomous-cycle-consistency') && consistencyEdges.some((edge) => edge.fromNodeId.startsWith('autonomous-run-control-run-') && edge.toNodeId === 'autonomous-cycle-consistency'), 'Manager Flow Graph must connect Run Control, Operating Loop, Runtime Contracts, and run receipts into autonomous cycle consistency.');
+
+response = membershipApi.handle({
+  method: 'GET',
+  path: `/projects/${projectId}/manager-ready-package`,
+  headers: signedHeadersFor({
+    method: 'GET',
+    path: `/projects/${projectId}/manager-ready-package`,
+    role: 'manager',
+    userId: 'director',
+  }),
+});
+assert(response.status === 200 && response.body.autonomousCycleConsistency?.schemaVersion === 'autonomous-cycle-consistency/v1', 'Manager Ready Package must embed autonomous cycle consistency.');
+assert(response.body.summary?.autonomousCycleConsistencyReady === true && response.body.summary?.autonomousCycleConsistencyObservedStepCount >= 3 && response.body.summary?.autonomousCycleConsistencyMissingRunReceiptCount === 0, 'Manager Ready Package summary must expose autonomous consistency readiness, step count, and missing receipt count.');
+
 const persistedStoreSnapshot = JSON.parse(readFileSync(`${root}/store.json`, 'utf8'));
 assert(Array.isArray(persistedStoreSnapshot.securityAccessAuditRecords), 'File-backed store snapshot must export backend security audit stream records.');
 const persistedAcceptanceProject = persistedStoreSnapshot.projects.find((project) => project.id === projectId);
+assert(persistedAcceptanceProject?.autonomousRunControlLoopLedger?.some((record) => record.schemaVersion === 'autonomous-run-control-loop-run/v1' && record.stepCount >= 3 && record.runReceiptIds?.length >= 3 && record.eventId && record.logId), 'File-backed store must persist N-step autonomous loop receipts with proof ids.');
+assert(persistedAcceptanceProject?.autonomousRunControlRunLedger?.length >= 3, 'File-backed store must persist child autonomous action run receipts from the N-step loop.');
+progress('autonomous cycle consistency persistence ready');
 assert(persistedAcceptanceProject?.projectMembershipPolicy?.revision === 2, 'File-backed store must persist the latest project membership policy revision.');
 assert(persistedAcceptanceProject?.projectMembershipAudit?.length >= 2, 'File-backed store must persist project membership policy audit entries.');
 assert(persistedAcceptanceProject?.identitySessions?.some((session) => session.id === activeSecurityIdentitySessionId && session.status === 'active' && session.tokenHash), 'File-backed store must persist active identity-session hash rows.');

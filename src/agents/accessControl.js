@@ -38,6 +38,7 @@ function normalizeRole(role = '') {
   if (['reviewer', 'reviewer-agent', 'review-agent'].includes(value)) return 'reviewer-agent';
   if (['agent', 'persona-agent'].includes(value)) return 'agent';
   if (['runtime', 'runtime-platform', 'scheduler', 'worker'].includes(value)) return 'runtime-platform';
+  if (['ops', 'operator', 'operations', 'operations-owner'].includes(value)) return 'operations-owner';
   if (['viewer', 'observer', 'read-only'].includes(value)) return 'observer';
   return value || 'anonymous';
 }
@@ -742,6 +743,15 @@ export function classifyAccessRequest({ method = 'GET', path = '/', body = {} } 
       allowedRoles: ['manager', 'runtime-platform', 'security-admin'],
     });
   }
+  if (action === 'production-infrastructure-rehearsal') {
+    return accessRoute({
+      routeKey: 'production-infrastructure-rehearsal',
+      capability: 'read production infrastructure rehearsal summary',
+      sensitivity: 'managed-infrastructure-readiness-metadata',
+      projectId,
+      allowedRoles: ['manager', 'runtime-platform', 'security-admin'],
+    });
+  }
   if (action === 'project-evidence-archive') {
     return accessRoute({
       routeKey: 'project-evidence-archive',
@@ -1015,8 +1025,8 @@ export function classifyAccessRequest({ method = 'GET', path = '/', body = {} } 
       sensitivity: 'release-approval-and-change-management-audit',
       projectId,
       allowedRoles: resolvedMethod === 'GET'
-        ? ['manager', 'security-admin', 'observer']
-        : ['manager', 'security-admin'],
+        ? ['manager', 'security-admin', 'operations-owner', 'observer']
+        : ['manager', 'security-admin', 'operations-owner'],
     });
   }
   if (['workspace', 'local-runtime'].includes(action)) {
@@ -1036,6 +1046,7 @@ export function classifyAccessRequest({ method = 'GET', path = '/', body = {} } 
     'manager-command-center',
     'manager-scenario-walkthrough',
     'manager-action-queue',
+    'autonomous-run-control',
   ].includes(action) && resolvedMethod !== 'GET') {
     return accessRoute({
       routeKey: action,
@@ -1060,7 +1071,7 @@ export function classifyAccessRequest({ method = 'GET', path = '/', body = {} } 
       allowedRoles: ['manager', 'security-admin', 'observer'],
     });
   }
-  if (['messages', 'transcripts', 'timeline', 'events', 'tasks', 'readiness', 'readiness-proof-map', 'manager-dashboard', 'manager-flow-graph', 'manager-ready-package', 'pilot-launch-readiness', 'deployment-preflight', 'production-launch-audit', 'mvp-readiness', 'manager-command-center', 'manager-scenario-trail', 'manager-scenario-walkthrough', 'manager-requirement-matrix', 'manager-use-case-audit', 'manager-action-queue', 'get'].includes(action)) {
+  if (['messages', 'transcripts', 'timeline', 'events', 'tasks', 'readiness', 'readiness-proof-map', 'manager-dashboard', 'manager-flow-graph', 'manager-ready-package', 'pilot-launch-readiness', 'deployment-preflight', 'production-launch-audit', 'mvp-readiness', 'manager-command-center', 'manager-scenario-trail', 'manager-scenario-walkthrough', 'manager-requirement-matrix', 'sync-protocol-audit', 'manager-use-case-audit', 'manager-action-queue', 'autonomous-run-control', 'product-team-operating-loop', 'team-collaboration-diagnostics', 'runtime-contracts', 'autonomous-cycle-consistency', 'get'].includes(action)) {
     return accessRoute({
       routeKey: action === 'get' ? 'project' : action,
       capability: `read ${action === 'get' ? 'project' : action}`,
@@ -1157,6 +1168,12 @@ export function evaluateProjectMembershipAccess(decision = {}, policy = {}, {
   }
   if (role === 'runtime-platform') {
     if (hasUser(policyList(policy, 'runtimeUserIds', 'runtimeUsers', 'serviceUserIds'))) {
+      return membershipSuccess({ decision, policy });
+    }
+    return membershipFailure({ decision, policy });
+  }
+  if (role === 'operations-owner') {
+    if (hasUser(policyList(policy, 'operationsOwnerUserIds', 'operationsOwnerUsers', 'operationsUserIds', 'operationsUsers'))) {
       return membershipSuccess({ decision, policy });
     }
     return membershipFailure({ decision, policy });
@@ -1389,7 +1406,7 @@ export function buildAccessControlPolicySnapshot() {
       { id: 'submission-review-workflow-read', roles: ['manager', 'security-admin', 'observer'], examples: ['/projects/:id/submission-review-workflow'] },
       { id: 'evidence-source-review-workflow-read', roles: ['manager', 'security-admin', 'observer'], examples: ['/projects/:id/evidence-source-review-workflow'] },
       { id: 'evidence-source-review-decision-write', roles: ['manager', 'reviewer-agent', 'security-admin'], examples: ['/projects/:id/evidence-source-review-workflow'] },
-      { id: 'launch-approval-workflow', roles: ['manager', 'security-admin'], examples: ['/projects/:id/launch-approvals'] },
+      { id: 'launch-approval-workflow', roles: ['manager', 'security-admin', 'operations-owner'], examples: ['/projects/:id/launch-approvals'] },
       { id: 'operations-readiness-read', roles: ['manager', 'runtime-platform', 'security-admin'], examples: ['/projects/:id/operations-readiness'] },
       { id: 'queue-adapter-read', roles: ['manager', 'runtime-platform', 'security-admin'], examples: ['/projects/:id/worker-queue-adapter-plan', '/projects/:id/worker-queue-adapter-dry-run'] },
       { id: 'provider-readiness-read', roles: ['manager', 'runtime-platform', 'security-admin'], examples: ['/projects/:id/provider-readiness'] },

@@ -120,7 +120,7 @@ async function backToDashboard(page) {
   const backButton = page.getByTestId('project-scene-back');
   assert(await backButton.count() === 1, 'Project scene must expose one back-to-dashboard control.');
   await backButton.click();
-  await page.getByText('PROJECT DASHBOARD', { exact: false }).waitFor({ state: 'visible', timeout: 5000 });
+  await page.getByTestId('project-dashboard-view').waitFor({ state: 'visible', timeout: 10000 });
   await scrollDashboardToBottom(page);
 }
 
@@ -188,11 +188,14 @@ try {
   await page.goto(url, { waitUntil: 'domcontentloaded' });
   await page.waitForLoadState('networkidle');
 
-  const demoButton = page.getByRole('button', { name: 'Run Manager Demo Full scenario seed' });
-  assert(await demoButton.count() === 1, 'Dashboard must expose exactly one Run Manager Demo entry point.');
+  const demoButton = page.getByRole('button', { name: /Load Sample Fixture.*Manager demo data/i });
+  assert(await demoButton.count() === 1, 'Dashboard must expose exactly one Manager Demo sample fixture entry point.');
   await demoButton.click();
 
   await page.waitForFunction(() => document.body.innerText.includes('Manager Demo: Autonomous Agent Studio'), null, { timeout: 10000 });
+  await page.getByTestId('project-sample-fixture-banner').waitFor({ state: 'visible', timeout: 5000 });
+  await assertPageContains(page, 'Sample Fixture');
+  await assertPageContains(page, 'Validation and demo data only');
   const scenarioControlCenter = page.getByTestId('scenario-control-center');
   await scenarioControlCenter.scrollIntoViewIfNeeded();
   await scenarioControlCenter.waitFor({ state: 'visible', timeout: 5000 });
@@ -505,7 +508,7 @@ try {
   await assertPageContains(page, 'DIRECT TARGETS');
   await backToDashboard(page);
   await scrollDashboardToBottom(page);
-  await assertPageContains(page, 'Manager Demo Path');
+  await assertPageContains(page, 'Sample Fixture Path');
   await assertPageContains(page, 'Simulate Google Chat change');
   await assertPageContains(page, 'Raise meeting change');
   await assertPageContains(page, 'Ask Leader to assign new work');

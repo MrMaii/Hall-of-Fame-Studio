@@ -1,0 +1,18 @@
+{
+  "projectId": "product_team_acceptance_project",
+  "name": "General Product Team Acceptance Project",
+  "localRuntime": {
+    "id": "local_runtime_product_team_acceptance_project",
+    "projectId": "product_team_acceptance_project",
+    "rootPath": "C:\\projects\\Hall-of-Fame-Studio\\product_team_acceptance_project",
+    "memoryPath": "C:\\projects\\Hall-of-Fame-Studio\\product_team_acceptance_project\\memory",
+    "artifactsPath": "C:\\projects\\Hall-of-Fame-Studio\\product_team_acceptance_project\\artifacts",
+    "archivesPath": "C:\\projects\\Hall-of-Fame-Studio\\product_team_acceptance_project\\archives",
+    "workspacePath": null,
+    "workspaceBoundAt": null,
+    "archivedAt": null,
+    "latestArchivePath": null,
+    "commandExecutionEnabled": false
+  },
+  "updatedAt": "2026-06-30T12:13:30.875Z"
+}

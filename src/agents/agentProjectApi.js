@@ -89,6 +89,7 @@ function publicResult(result = {}) {
     agent: result.agent,
     log: result.log,
     task: result.task,
+    strategyDecision: result.strategyDecision,
     modelKickoffMeeting: result.modelKickoffMeeting,
   };
 }
@@ -356,11 +357,74 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
     });
   };
 
-  const publicProjectResult = (result = {}, projectId = result.project?.id, language = result.project?.language || result.language) => ({
+  const shouldIncludeReadModels = (body = {}) => (
+    body.includeReadModels !== false
+    && body.includeManagerReadModels !== false
+  );
+  const deferredReadModels = (projectId, agentId = '', extraRoutes = {}) => ({
+    readModels: {
+      included: false,
+      reason: 'deferred-by-request',
+      managerDashboardRoute: projectId ? `/projects/${projectId}/manager-dashboard` : null,
+      managerReadyPackageRoute: projectId ? `/projects/${projectId}/manager-ready-package` : null,
+      managerFlowGraphRoute: projectId ? `/projects/${projectId}/manager-flow-graph` : null,
+      productTeamDeliveryTraceRoute: projectId ? `/projects/${projectId}/product-team-delivery-trace` : null,
+      teamCollaborationDiagnosticsRoute: projectId ? `/projects/${projectId}/team-collaboration-diagnostics` : null,
+      runtimeContractsRoute: projectId ? `/projects/${projectId}/runtime-contracts` : null,
+      autonomousCycleConsistencyRoute: projectId ? `/projects/${projectId}/autonomous-cycle-consistency` : null,
+      autonomousRunControlRoute: projectId ? `/projects/${projectId}/autonomous-run-control` : null,
+      agentAutonomousActionQueueRoute: projectId ? `/projects/${projectId}/agent-autonomous-action-queue` : null,
+      agentDashboardRoute: projectId && agentId ? `/projects/${projectId}/agents/${agentId}/dashboard` : null,
+      ...extraRoutes,
+    },
+  });
+  const productionControlReceiptReadModels = (projectId, extraRoutes = {}) => deferredReadModels(projectId, '', {
+    productionLaunchAuditRoute: projectId ? `/projects/${projectId}/production-launch-audit` : null,
+    productionLaunchGapRegisterRoute: projectId ? `/projects/${projectId}/production-launch-gap-register` : null,
+    productionLaunchControlCenterRoute: projectId ? `/projects/${projectId}/production-launch-control-center` : null,
+    productionLaunchEvidenceDossierRoute: projectId ? `/projects/${projectId}/production-launch-evidence-dossier` : null,
+    productionEvidenceIntegrityAuditRoute: projectId ? `/projects/${projectId}/production-evidence-integrity-audit` : null,
+    ...extraRoutes,
+  });
+  const projectEvidenceExportReadModels = (projectId, exportRequestId = '', extraRoutes = {}) => deferredReadModels(projectId, '', {
+    projectEvidenceArchiveRoute: projectId ? `/projects/${projectId}/project-evidence-archive` : null,
+    projectEvidenceExportWorkflowRoute: projectId ? `/projects/${projectId}/project-evidence-exports` : null,
+    projectEvidenceExportPackageRoute: projectId && exportRequestId
+      ? `/projects/${projectId}/project-evidence-exports/${encodeURIComponent(exportRequestId)}/package`
+      : null,
+    launchApprovalWorkflowRoute: projectId ? `/projects/${projectId}/launch-approvals` : null,
+    pilotLaunchReadinessRoute: projectId ? `/projects/${projectId}/pilot-launch-readiness` : null,
+    productionLaunchAuditRoute: projectId ? `/projects/${projectId}/production-launch-audit` : null,
+    ...extraRoutes,
+  });
+  const privatePilotReceiptReadModels = (projectId, extraRoutes = {}) => deferredReadModels(projectId, '', {
+    pilotLaunchReadinessRoute: projectId ? `/projects/${projectId}/pilot-launch-readiness` : null,
+    productionLaunchAuditRoute: projectId ? `/projects/${projectId}/production-launch-audit` : null,
+    projectEvidenceArchiveRoute: projectId ? `/projects/${projectId}/project-evidence-archive` : null,
+    projectEvidenceExportsRoute: projectId ? `/projects/${projectId}/project-evidence-exports` : null,
+    privatePilotGoLiveReadinessRoute: projectId ? `/projects/${projectId}/private-pilot-go-live-readiness` : null,
+    privatePilotReleaseCandidateWorkflowRoute: projectId ? `/projects/${projectId}/private-pilot-release-candidates` : null,
+    privatePilotLaunchRunWorkflowRoute: projectId ? `/projects/${projectId}/private-pilot-launch-runs` : null,
+    privatePilotLaunchHealthCheckWorkflowRoute: projectId ? `/projects/${projectId}/private-pilot-launch-health-checks` : null,
+    privatePilotAcceptanceReportWorkflowRoute: projectId ? `/projects/${projectId}/private-pilot-acceptance-reports` : null,
+    productionOperationsReadinessRoute: projectId ? `/projects/${projectId}/production-operations-readiness` : null,
+    readinessProofMapRoute: projectId ? `/projects/${projectId}/readiness-proof-map` : null,
+    ...extraRoutes,
+  });
+  const publicProjectResult = (
+    result = {},
+    projectId = result.project?.id,
+    language = result.project?.language || result.language,
+    options = {},
+  ) => ({
     ...publicResult(result),
     // Compatibility proof anchors: managerDashboard: projectId ? service.getManagerDashboard(projectId) : null / managerReadyPackage: projectId ? service.getManagerReadyPackage(projectId) : null
-    managerDashboard: projectId ? service.getManagerDashboard(projectId, { language }) : null,
-    managerReadyPackage: projectId ? service.getManagerReadyPackage(projectId, { language }) : null,
+    ...(options.includeReadModels === false
+      ? deferredReadModels(projectId, options.agentId)
+      : {
+          managerDashboard: projectId ? service.getManagerDashboard(projectId, { language }) : null,
+          managerReadyPackage: projectId ? service.getManagerReadyPackage(projectId, { language }) : null,
+        }),
   });
 
   return {
@@ -369,6 +433,7 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
       const path = normalizePath(request.path || request.url || '/');
       const body = request.body || {};
       const language = languageFromRequest(request, body);
+      const includeReadModels = shouldIncludeReadModels(body);
       const kickoffMeetingRoute = parseKickoffMeetingRoute(path);
       const route = parseProjectRoute(path);
       const denied = request._accessChecked ? null : authorizeRequest({ ...request, method, path, body });
@@ -395,8 +460,10 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
       ) {
         const agentId = decodeURIComponent(route.tail[0]);
         const result = await service.generateAgentArtifactDraft({ projectId: route.projectId, agentId, ...body });
+        const resultProjectId = result.project?.id || route.projectId;
+        const includeReadModels = shouldIncludeReadModels(body);
         return json(200, {
-          ...publicProjectResult(result, result.project?.id || route.projectId, language),
+          ...publicProjectResult(result, resultProjectId, language, { includeReadModels }),
           artifactDraft: result.artifactDraft,
           providerUsage: result.providerUsage || null,
           modelProviderStatus: result.modelProviderStatus || (service.getModelProviderStatus ? service.getModelProviderStatus() : { enabled: false }),
@@ -404,9 +471,13 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
           artifact: result.artifact || null,
           log: result.log || null,
           task: result.task || null,
-          agentDashboard: service.getAgentDashboard(result.project?.id || route.projectId, agentId),
-          managerFlowGraph: service.getManagerFlowGraph(result.project?.id || route.projectId, { language }),
-          managerReadyPackage: service.getManagerReadyPackage(result.project?.id || route.projectId, { language }),
+          ...(includeReadModels
+            ? {
+                agentDashboard: service.getAgentDashboard(resultProjectId, agentId),
+                managerFlowGraph: service.getManagerFlowGraph(resultProjectId, { language }),
+                managerReadyPackage: service.getManagerReadyPackage(resultProjectId, { language }),
+              }
+            : deferredReadModels(resultProjectId, agentId)),
         });
       }
       if (
@@ -417,8 +488,10 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
       ) {
         const agentId = decodeURIComponent(route.tail[0]);
         const result = await service.recordAgentEvidenceSearchWithProvider({ projectId: route.projectId, agentId, ...body });
+        const resultProjectId = result.project?.id || route.projectId;
+        const includeReadModels = shouldIncludeReadModels(body);
         return json(200, {
-          ...publicProjectResult(result, result.project?.id || route.projectId, language),
+          ...publicProjectResult(result, resultProjectId, language, { includeReadModels }),
           evidenceSearch: result.evidenceSearch,
           sourceSnapshots: result.sourceSnapshots || [],
           providerReceipt: result.providerReceipt || null,
@@ -426,9 +499,13 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
           task: result.task,
           submission: result.submission,
           searchProvider: service.getSearchProviderStatus ? service.getSearchProviderStatus() : { enabled: false },
-          agentDashboard: service.getAgentDashboard(result.project?.id || route.projectId, agentId),
-          managerFlowGraph: service.getManagerFlowGraph(result.project?.id || route.projectId, { language }),
-          managerReadyPackage: service.getManagerReadyPackage(result.project?.id || route.projectId, { language }),
+          ...(includeReadModels
+            ? {
+                agentDashboard: service.getAgentDashboard(resultProjectId, agentId),
+                managerFlowGraph: service.getManagerFlowGraph(resultProjectId, { language }),
+                managerReadyPackage: service.getManagerReadyPackage(resultProjectId, { language }),
+              }
+            : deferredReadModels(resultProjectId, agentId)),
         });
       }
       if (method === 'GET' && route?.action === 'persistence-adapter-dry-run' && typeof service.getPersistenceAdapterDryRunAsync === 'function') {
@@ -471,6 +548,10 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
             ...body,
             language,
             allowDeterministicFallback: true,
+            forcedDeterministicFallback: Boolean(body.forceDeterministicFallback),
+            source: 'deterministic-kickoff-model-fallback',
+            fallbackReason: error.message || String(error),
+            modelProviderStatus: service.getModelProviderStatus ? service.getModelProviderStatus() : { enabled: false },
           });
           return json(200, publicResult({
             ...fallbackResult,
@@ -491,6 +572,10 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
         || method !== 'POST'
         || !result.body?.project?.id
       ) {
+        return result;
+      }
+
+      if (!includeReadModels) {
         return result;
       }
 
@@ -549,6 +634,8 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
             return json(200, publicResult(service.createKickoffMeeting({
               ...body,
               allowDeterministicFallback: true,
+              source: body.source || 'deterministic-kickoff-validation',
+              modelProviderStatus: service.getModelProviderStatus ? service.getModelProviderStatus() : { enabled: false },
             })));
           }
           if (!kickoffMeetingRoute.meetingId) {
@@ -586,6 +673,7 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
         }
         if (method === 'POST' && workerRoute?.worker === 'autonomous' && workerRoute.action === 'due') {
           const result = service.runDueAutonomousCycles(body);
+          const includeReadModels = shouldIncludeReadModels(body);
           const readModelCache = new Map();
           const readModelsFor = (projectId) => {
             const key = String(projectId || '');
@@ -600,7 +688,7 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
           return json(200, {
             // Compatibility proof anchors: managerDashboard: service.getManagerDashboard(item.projectId) / managerReadyPackage: service.getManagerReadyPackage(item.projectId)
             processed: result.processed.map((item) => {
-              const readModels = readModelsFor(item.projectId);
+              const readModels = includeReadModels ? readModelsFor(item.projectId) : null;
               return {
                 projectId: item.projectId,
                 cadence: item.cadence,
@@ -609,8 +697,12 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
                 nextRunAt: item.nextRunAt,
                 messageCount: item.result.messages.length,
                 project: item.result.project,
-                managerDashboard: readModels.managerDashboard,
-                managerReadyPackage: readModels.managerReadyPackage,
+                ...(includeReadModels
+                  ? {
+                      managerDashboard: readModels.managerDashboard,
+                      managerReadyPackage: readModels.managerReadyPackage,
+                    }
+                  : deferredReadModels(item.projectId)),
               };
             }),
             skipped: result.skipped,
@@ -620,6 +712,7 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
         }
         if (method === 'POST' && workerRoute?.worker === 'agents' && workerRoute.action === 'due') {
           const result = service.runDueAgentWorkCycles(body);
+          const includeReadModels = shouldIncludeReadModels(body);
           const readModelCache = new Map();
           const readModelsFor = (projectId) => {
             const key = String(projectId || '');
@@ -633,7 +726,7 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
           };
           return json(200, {
             processed: result.processed.map((item) => {
-              const readModels = readModelsFor(item.projectId);
+              const readModels = includeReadModels ? readModelsFor(item.projectId) : null;
               return {
                 projectId: item.projectId,
                 agentId: item.agentId,
@@ -646,8 +739,79 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
                 project: item.result.project,
                 agent: item.result.agent,
                 task: item.result.task,
-                managerDashboard: readModels.managerDashboard,
-                managerReadyPackage: readModels.managerReadyPackage,
+                evidenceSearch: item.result.evidenceSearch,
+                evidenceSearchLog: item.result.evidenceSearchLog,
+                evidenceSearchSourceSnapshots: item.result.evidenceSearchSourceSnapshots,
+                submission: item.result.submission,
+                artifact: item.result.artifact,
+                workSubmission: item.result.workSubmission,
+                review: item.result.review,
+                reviewedSubmission: item.result.reviewedSubmission,
+                reviewResponseSubmission: item.result.reviewResponseSubmission,
+                strategyDecision: item.result.strategyDecision,
+                ...(includeReadModels
+                  ? {
+                      managerDashboard: readModels.managerDashboard,
+                      managerReadyPackage: readModels.managerReadyPackage,
+                    }
+                  : deferredReadModels(item.projectId, item.agentId)),
+              };
+            }),
+            skipped: result.skipped,
+            agentAutonomousActionQueues: result.agentAutonomousActionQueues || [],
+            agentAutonomousActionQueue: result.agentAutonomousActionQueues?.length === 1
+              ? result.agentAutonomousActionQueues[0]
+              : null,
+            messages: result.messages,
+            messageCount: result.messages.length,
+          });
+        }
+        if (method === 'POST' && workerRoute?.worker === 'autopilot' && workerRoute.action === 'due') {
+          const result = service.runDueAutonomousRunControlSessions(body);
+          const includeReadModels = shouldIncludeReadModels(body);
+          const readModelCache = new Map();
+          const readModelsFor = (projectId) => {
+            const key = String(projectId || '');
+            if (!readModelCache.has(key)) {
+              readModelCache.set(key, {
+                managerDashboard: service.getManagerDashboard(projectId, { language }),
+                managerReadyPackage: service.getManagerReadyPackage(projectId, { language }),
+                readinessProofMap: service.getReadinessProofMap(projectId),
+                managerFlowGraph: service.getManagerFlowGraph(projectId, { language }),
+              });
+            }
+            return readModelCache.get(key);
+          };
+          return json(200, {
+            schemaVersion: result.schemaVersion || 'autopilot-due-worker-summary/v1',
+            processed: result.processed.map((item) => {
+              const readModels = includeReadModels ? readModelsFor(item.projectId) : null;
+              return {
+                projectId: item.projectId,
+                sessionId: item.sessionId,
+                reason: item.reason,
+                dueAt: item.dueAt,
+                nextRunAt: item.nextRunAt,
+                statusAfter: item.statusAfter,
+                tickId: item.tickId,
+                loopReceiptIds: item.loopReceiptIds,
+                runReceiptIds: item.runReceiptIds,
+                actionLanes: item.actionLanes,
+                targetStageId: item.targetStageId,
+                messageCount: item.result.messages?.length || 0,
+                project: item.result.project,
+                autonomousRunControlSession: item.result.autonomousRunControlSession,
+                autonomousRunControlSessionTick: item.result.autonomousRunControlSessionTick,
+                autonomousRunControlLoops: item.result.autonomousRunControlLoops || [],
+                autonomousRunControlRuns: item.result.autonomousRunControlRuns || [],
+                ...(includeReadModels
+                  ? {
+                      managerDashboard: readModels.managerDashboard,
+                      managerReadyPackage: readModels.managerReadyPackage,
+                      readinessProofMap: readModels.readinessProofMap,
+                      managerFlowGraph: readModels.managerFlowGraph,
+                    }
+                  : deferredReadModels(item.projectId)),
               };
             }),
             skipped: result.skipped,
@@ -694,14 +858,20 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
         if (method === 'POST' && route.action === 'submissions' && route.tail[1] === 'reviews') {
           const submissionId = decodeURIComponent(route.tail[0] || '');
           const result = service.reviewAgentSubmission({ projectId: route.projectId, submissionId, ...body });
+          const resultProjectId = result.project?.id || route.projectId;
+          const includeReadModels = shouldIncludeReadModels(body);
           return json(200, {
-            ...publicProjectResult(result, result.project?.id || route.projectId, language),
+            ...publicProjectResult(result, resultProjectId, language, { includeReadModels }),
             review: result.review,
             submission: result.submission,
             log: result.log,
             task: result.task,
-            managerFlowGraph: service.getManagerFlowGraph(result.project?.id || route.projectId, { language }),
-            managerReadyPackage: service.getManagerReadyPackage(result.project?.id || route.projectId, { language }),
+            ...(includeReadModels
+              ? {
+                  managerFlowGraph: service.getManagerFlowGraph(resultProjectId, { language }),
+                  managerReadyPackage: service.getManagerReadyPackage(resultProjectId, { language }),
+                }
+              : deferredReadModels(resultProjectId)),
           });
         }
         if (method === 'GET' && route.action === 'evidence-searches') {
@@ -723,19 +893,40 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
         if (method === 'GET' && route.action === 'submission-review-workflow') {
           return json(200, { submissionReviewWorkflow: service.getSubmissionReviewWorkflow(route.projectId, { language }) });
         }
+        if (method === 'GET' && route.action === 'product-team-delivery-trace') {
+          return json(200, { productTeamDeliveryTrace: service.getProductTeamDeliveryTrace(route.projectId, { language }) });
+        }
+        if (method === 'GET' && route.action === 'product-team-operating-loop') {
+          return json(200, { productTeamOperatingLoop: service.getProductTeamOperatingLoop(route.projectId, { language }) });
+        }
+        if (method === 'GET' && route.action === 'team-collaboration-diagnostics') {
+          return json(200, { teamCollaborationDiagnostics: service.getTeamCollaborationDiagnostics(route.projectId, { language }) });
+        }
+        if (method === 'GET' && route.action === 'runtime-contracts') {
+          return json(200, { runtimeContracts: service.getRuntimeContracts(route.projectId, { language }) });
+        }
+        if (method === 'GET' && route.action === 'autonomous-cycle-consistency') {
+          return json(200, { autonomousCycleConsistency: service.getAutonomousCycleConsistency(route.projectId, { language }) });
+        }
         if (method === 'POST' && route.action === 'evidence-source-review-workflow') {
           const result = service.reviewEvidenceSource({ projectId: route.projectId, ...body });
+          const resultProjectId = result.project?.id || route.projectId;
+          const includeReadModels = shouldIncludeReadModels(body);
           return json(200, {
-            ...publicProjectResult(result, result.project?.id || route.projectId, language),
+            ...publicProjectResult(result, resultProjectId, language, { includeReadModels }),
             evidenceSourceReview: result.evidenceSourceReview,
             evidenceSearch: result.evidenceSearch,
-            evidenceSourceReviewWorkflow: service.getEvidenceSourceReviewWorkflow(result.project?.id || route.projectId, { language }),
-            readinessProofMap: service.getReadinessProofMap(result.project?.id || route.projectId),
-            managerFlowGraph: service.getManagerFlowGraph(result.project?.id || route.projectId, { language }),
-            managerReadyPackage: service.getManagerReadyPackage(result.project?.id || route.projectId, { language }),
+            evidenceSourceReviewWorkflow: service.getEvidenceSourceReviewWorkflow(resultProjectId, { language }),
             log: result.log,
             task: result.task,
             submission: result.submission,
+            ...(includeReadModels
+              ? {
+                  readinessProofMap: service.getReadinessProofMap(resultProjectId),
+                  managerFlowGraph: service.getManagerFlowGraph(resultProjectId, { language }),
+                  managerReadyPackage: service.getManagerReadyPackage(resultProjectId, { language }),
+                }
+              : deferredReadModels(resultProjectId)),
           });
         }
         if (method === 'GET' && route.action === 'evidence-source-review-workflow') {
@@ -799,28 +990,61 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
           if (method === 'GET' && !route.tail.length) {
             return json(200, { agents: service.listAgentStates(route.projectId) });
           }
+          if (method === 'POST' && route.tail[0] === 'contract') {
+            const result = service.contractProjectAgent({
+              projectId: route.projectId,
+              ...body,
+            });
+            const resultProjectId = result.project?.id || route.projectId;
+            const includeReadModels = shouldIncludeReadModels(body);
+            return json(200, {
+              ...publicProjectResult(result, resultProjectId, language, { includeReadModels }),
+              agentContract: result.agentContract,
+              agent: result.agent,
+              log: result.log,
+              ...(includeReadModels
+                ? {
+                    agentDashboard: result.agentContract?.agentId
+                      ? service.getAgentDashboard(resultProjectId, result.agentContract.agentId)
+                      : null,
+                    managerFlowGraph: service.getManagerFlowGraph(resultProjectId, { language }),
+                    managerReadyPackage: service.getManagerReadyPackage(resultProjectId, { language }),
+                  }
+                : deferredReadModels(resultProjectId, result.agentContract?.agentId || '')),
+            });
+          }
           if (!route.tail.length) {
             return json(405, { error: 'method-not-allowed', method, path });
           }
           const agentId = decodeURIComponent(route.tail[0]);
           if (method === 'POST' && route.tail[1] === 'message') {
             const result = service.submitAgentMessage({ projectId: route.projectId, agentId, ...body });
+            const resultProjectId = result.project?.id || route.projectId;
+            const includeReadModels = shouldIncludeReadModels(body);
             return json(200, {
-              ...publicProjectResult(result, route.projectId, language),
-              agentDashboard: service.getAgentDashboard(route.projectId, agentId),
+              ...publicProjectResult(result, resultProjectId, language, { includeReadModels }),
+              ...(includeReadModels
+                ? { agentDashboard: service.getAgentDashboard(resultProjectId, agentId) }
+                : deferredReadModels(resultProjectId, agentId)),
             });
           }
           if (method === 'POST' && route.tail[1] === 'submissions') {
             const result = service.submitAgentArtifact({ projectId: route.projectId, agentId, ...body });
+            const resultProjectId = result.project?.id || route.projectId;
+            const includeReadModels = shouldIncludeReadModels(body);
             return json(200, {
-              ...publicProjectResult(result, result.project?.id || route.projectId, language),
+              ...publicProjectResult(result, resultProjectId, language, { includeReadModels }),
               submission: result.submission,
               artifact: result.artifact,
               log: result.log,
               task: result.task,
-              agentDashboard: service.getAgentDashboard(result.project?.id || route.projectId, agentId),
-              managerFlowGraph: service.getManagerFlowGraph(result.project?.id || route.projectId, { language }),
-              managerReadyPackage: service.getManagerReadyPackage(result.project?.id || route.projectId, { language }),
+              ...(includeReadModels
+                ? {
+                    agentDashboard: service.getAgentDashboard(resultProjectId, agentId),
+                    managerFlowGraph: service.getManagerFlowGraph(resultProjectId, { language }),
+                    managerReadyPackage: service.getManagerReadyPackage(resultProjectId, { language }),
+                  }
+                : deferredReadModels(resultProjectId, agentId)),
             });
           }
           if (method === 'POST' && route.tail[1] === 'artifact-drafts') {
@@ -828,20 +1052,42 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
           }
           if (method === 'POST' && route.tail[1] === 'evidence-searches') {
             const result = service.recordAgentEvidenceSearch({ projectId: route.projectId, agentId, ...body });
+            const resultProjectId = result.project?.id || route.projectId;
+            const includeReadModels = shouldIncludeReadModels(body);
             return json(200, {
-              ...publicProjectResult(result, result.project?.id || route.projectId, language),
+              ...publicProjectResult(result, resultProjectId, language, { includeReadModels }),
               evidenceSearch: result.evidenceSearch,
               log: result.log,
               task: result.task,
               submission: result.submission,
-              agentDashboard: service.getAgentDashboard(result.project?.id || route.projectId, agentId),
-              managerFlowGraph: service.getManagerFlowGraph(result.project?.id || route.projectId, { language }),
-              managerReadyPackage: service.getManagerReadyPackage(result.project?.id || route.projectId, { language }),
+              ...(includeReadModels
+                ? {
+                    agentDashboard: service.getAgentDashboard(resultProjectId, agentId),
+                    managerFlowGraph: service.getManagerFlowGraph(resultProjectId, { language }),
+                    managerReadyPackage: service.getManagerReadyPackage(resultProjectId, { language }),
+                  }
+                : deferredReadModels(resultProjectId, agentId)),
             });
           }
           if (method === 'POST' && route.tail[1] === 'work-cycle') {
             const result = service.runAgentWorkCycle({ projectId: route.projectId, agentId, ...body });
-            return json(200, publicProjectResult(result, route.projectId));
+            const resultProjectId = result.project?.id || route.projectId;
+            const includeReadModels = shouldIncludeReadModels(body);
+            return json(200, {
+              ...publicProjectResult(result, resultProjectId, language, { includeReadModels }),
+              submission: result.submission,
+              artifact: result.artifact,
+              evidenceSearch: result.evidenceSearch,
+              evidenceSearchLog: result.evidenceSearchLog,
+              evidenceSearchSourceSnapshots: result.evidenceSearchSourceSnapshots,
+              workSubmission: result.workSubmission,
+              review: result.review,
+              reviewedSubmission: result.reviewedSubmission,
+              reviewResponseSubmission: result.reviewResponseSubmission,
+              reviewResponseArtifact: result.reviewResponseArtifact,
+              strategyDecision: result.strategyDecision,
+              ...(includeReadModels ? {} : deferredReadModels(resultProjectId, agentId)),
+            });
           }
           if (method !== 'GET') {
             return json(405, { error: 'method-not-allowed', method, path });
@@ -875,12 +1121,18 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
             nodeId,
             ...body,
           });
+          const resultProjectId = result.project?.id || route.projectId;
+          const includeReadModels = shouldIncludeReadModels(body);
           return json(200, {
-            ...publicProjectResult(result, result.project?.id || route.projectId, language),
+            ...publicProjectResult(result, resultProjectId, language, { includeReadModels }),
             managerFlowGraph: result.managerFlowGraph,
             managerFlowGraphConfirmation: result.confirmation,
-            managerDashboard: service.getManagerDashboard(result.project?.id || route.projectId, { language }),
-            managerReadyPackage: service.getManagerReadyPackage(result.project?.id || route.projectId, { language }),
+            ...(includeReadModels
+              ? {
+                  managerDashboard: service.getManagerDashboard(resultProjectId, { language }),
+                  managerReadyPackage: service.getManagerReadyPackage(resultProjectId, { language }),
+                }
+              : deferredReadModels(resultProjectId)),
           });
         }
         if (method === 'GET' && route.action === 'manager-ready-package') {
@@ -894,6 +1146,9 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
         }
         if (method === 'GET' && route.action === 'adapter-gateway-preflight') {
           return json(200, { adapterGatewayPreflight: service.getAdapterGatewayPreflight(route.projectId, { language }) });
+        }
+        if (method === 'GET' && route.action === 'production-infrastructure-rehearsal') {
+          return json(200, { productionInfrastructureRehearsal: service.getProductionInfrastructureRehearsal(route.projectId, { language }) });
         }
         if (method === 'GET' && route.action === 'production-launch-audit') {
           return json(200, { productionLaunchAudit: service.getProductionLaunchAudit(route.projectId, { language }) });
@@ -915,18 +1170,25 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
             return json(200, { projectEvidenceExportWorkflow: service.getProjectEvidenceExportWorkflow(route.projectId, { language }) });
           }
           if (method === 'POST') {
+            const includeReadModels = shouldIncludeReadModels(body);
             const result = service.recordProjectEvidenceExport({
               projectId: route.projectId,
               ...body,
             });
+            const resultProjectId = result.project?.id || route.projectId;
             return json(200, {
-              ...publicProjectResult(result, result.project?.id || route.projectId, language),
+              ...publicProjectResult(result, resultProjectId, language, { includeReadModels }),
               projectEvidenceExport: result.projectEvidenceExport,
               projectEvidenceExportWorkflow: result.projectEvidenceExportWorkflow,
               projectEvidenceExportPackage: result.projectEvidenceExportPackage,
               projectEvidenceArchive: result.projectEvidenceArchive,
               log: result.log,
-              managerReadyPackage: service.getManagerReadyPackage(result.project?.id || route.projectId, { language }),
+              ...(includeReadModels
+                ? { managerReadyPackage: service.getManagerReadyPackage(resultProjectId, { language }) }
+                : projectEvidenceExportReadModels(
+                    resultProjectId,
+                    result.projectEvidenceExport?.exportRequestId || body.exportRequestId || '',
+                  )),
             });
           }
           return json(405, { error: 'method-not-allowed', method, path });
@@ -938,17 +1200,26 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
             });
           }
           if (method === 'POST') {
+            const includeReadModels = shouldIncludeReadModels(body);
             const result = service.recordPrivatePilotReleaseCandidate({
               projectId: route.projectId,
               ...body,
             });
+            const resultProjectId = result.project?.id || route.projectId;
             return json(200, {
-              ...publicProjectResult(result, result.project?.id || route.projectId, language),
+              ...publicProjectResult(result, resultProjectId, language, { includeReadModels }),
               privatePilotReleaseCandidate: result.privatePilotReleaseCandidate,
               privatePilotReleaseCandidateWorkflow: result.privatePilotReleaseCandidateWorkflow,
               projectEvidenceExportPackage: result.projectEvidenceExportPackage,
               log: result.log,
-              managerReadyPackage: service.getManagerReadyPackage(result.project?.id || route.projectId, { language, fresh: true }),
+              ...(includeReadModels
+                ? { managerReadyPackage: service.getManagerReadyPackage(resultProjectId, { language, fresh: true }) }
+                : privatePilotReceiptReadModels(resultProjectId, {
+                    privatePilotReleaseCandidateWorkflowRoute: `/projects/${resultProjectId}/private-pilot-release-candidates`,
+                    projectEvidenceExportPackageRoute: result.projectEvidenceExportPackage?.exportRequestId
+                      ? `/projects/${resultProjectId}/project-evidence-exports/${encodeURIComponent(result.projectEvidenceExportPackage.exportRequestId)}/package`
+                      : `/projects/${resultProjectId}/project-evidence-exports`,
+                  })),
             });
           }
           return json(405, { error: 'method-not-allowed', method, path });
@@ -960,16 +1231,25 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
             });
           }
           if (method === 'POST') {
+            const includeReadModels = shouldIncludeReadModels(body);
             const result = service.recordPrivatePilotLaunchRun({
               projectId: route.projectId,
               ...body,
             });
+            const resultProjectId = result.project?.id || route.projectId;
             return json(200, {
-              ...publicProjectResult(result, result.project?.id || route.projectId, language),
+              ...publicProjectResult(result, resultProjectId, language, { includeReadModels }),
               privatePilotLaunchRun: result.privatePilotLaunchRun,
               privatePilotLaunchRunWorkflow: result.privatePilotLaunchRunWorkflow,
               log: result.log,
-              managerReadyPackage: service.getManagerReadyPackage(result.project?.id || route.projectId, { language, fresh: true }),
+              ...(includeReadModels
+                ? { managerReadyPackage: service.getManagerReadyPackage(resultProjectId, { language, fresh: true }) }
+                : privatePilotReceiptReadModels(resultProjectId, {
+                    privatePilotLaunchRunWorkflowRoute: `/projects/${resultProjectId}/private-pilot-launch-runs`,
+                    deploymentPreflightRoute: `/projects/${resultProjectId}/deployment-preflight`,
+                    operationsReadinessRoute: `/projects/${resultProjectId}/operations-readiness`,
+                    providerEvalRunWorkflowRoute: `/projects/${resultProjectId}/provider-eval-runs`,
+                  })),
             });
           }
           return json(405, { error: 'method-not-allowed', method, path });
@@ -981,16 +1261,27 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
             });
           }
           if (method === 'POST') {
+            const includeReadModels = shouldIncludeReadModels(body);
             const result = service.recordPrivatePilotLaunchHealthCheck({
               projectId: route.projectId,
               ...body,
             });
+            const resultProjectId = result.project?.id || route.projectId;
             return json(200, {
-              ...publicProjectResult(result, result.project?.id || route.projectId, language),
+              ...publicProjectResult(result, resultProjectId, language, { includeReadModels }),
               privatePilotLaunchHealthCheck: result.privatePilotLaunchHealthCheck,
               privatePilotLaunchHealthCheckWorkflow: result.privatePilotLaunchHealthCheckWorkflow,
               log: result.log,
-              managerReadyPackage: service.getManagerReadyPackage(result.project?.id || route.projectId, { language, fresh: true }),
+              ...(includeReadModels
+                ? { managerReadyPackage: service.getManagerReadyPackage(resultProjectId, { language, fresh: true }) }
+                : privatePilotReceiptReadModels(resultProjectId, {
+                    privatePilotLaunchHealthCheckWorkflowRoute: `/projects/${resultProjectId}/private-pilot-launch-health-checks`,
+                    operationsReadinessRoute: `/projects/${resultProjectId}/operations-readiness`,
+                    securityBoundaryRoute: `/projects/${resultProjectId}/security-boundary`,
+                    workerQueueAdapterDryRunRoute: `/projects/${resultProjectId}/worker-queue-adapter-dry-run`,
+                    persistenceAdapterDryRunRoute: `/projects/${resultProjectId}/persistence-adapter-dry-run`,
+                    providerEvalRunWorkflowRoute: `/projects/${resultProjectId}/provider-eval-runs`,
+                  })),
             });
           }
           return json(405, { error: 'method-not-allowed', method, path });
@@ -1002,16 +1293,26 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
             });
           }
           if (method === 'POST') {
+            const includeReadModels = shouldIncludeReadModels(body);
             const result = service.recordPrivatePilotAcceptanceReport({
               projectId: route.projectId,
               ...body,
             });
+            const resultProjectId = result.project?.id || route.projectId;
             return json(200, {
-              ...publicProjectResult(result, result.project?.id || route.projectId, language),
+              ...publicProjectResult(result, resultProjectId, language, { includeReadModels }),
               privatePilotAcceptanceReport: result.privatePilotAcceptanceReport,
               privatePilotAcceptanceReportWorkflow: result.privatePilotAcceptanceReportWorkflow,
               log: result.log,
-              managerReadyPackage: service.getManagerReadyPackage(result.project?.id || route.projectId, { language, fresh: true }),
+              ...(includeReadModels
+                ? { managerReadyPackage: service.getManagerReadyPackage(resultProjectId, { language, fresh: true }) }
+                : privatePilotReceiptReadModels(resultProjectId, {
+                    privatePilotAcceptanceReportWorkflowRoute: `/projects/${resultProjectId}/private-pilot-acceptance-reports`,
+                    productionOperationsReadinessRoute: `/projects/${resultProjectId}/production-operations-readiness`,
+                    managerReadyPackageRoute: `/projects/${resultProjectId}/manager-ready-package`,
+                    managerFlowGraphRoute: `/projects/${resultProjectId}/manager-flow-graph`,
+                    readinessProofMapRoute: `/projects/${resultProjectId}/readiness-proof-map`,
+                  })),
             });
           }
           return json(405, { error: 'method-not-allowed', method, path });
@@ -1139,17 +1440,26 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
             });
           }
           if (method === 'POST') {
+            const includeReadModels = shouldIncludeReadModels(body);
             const result = service.recordProductionOperationsControlReceipt({
               projectId: route.projectId,
               ...body,
             });
+            const resultProjectId = result.project?.id || route.projectId;
             return json(200, {
-              ...publicProjectResult(result, result.project?.id || route.projectId, language),
+              ...publicProjectResult(result, resultProjectId, language, { includeReadModels }),
               productionOperationsControlReceipt: result.productionOperationsControlReceipt,
-              productionOperationsControlReceiptWorkflow: result.productionOperationsControlReceiptWorkflow,
-              productionOperationsReadiness: result.productionOperationsReadiness,
               log: result.log,
-              managerReadyPackage: service.getManagerReadyPackage(result.project?.id || route.projectId, { language, fresh: true }),
+              ...(includeReadModels
+                ? {
+                    productionOperationsControlReceiptWorkflow: result.productionOperationsControlReceiptWorkflow,
+                    productionOperationsReadiness: result.productionOperationsReadiness,
+                    managerReadyPackage: service.getManagerReadyPackage(resultProjectId, { language, fresh: true }),
+                  }
+                : productionControlReceiptReadModels(resultProjectId, {
+                    productionOperationsControlReceiptWorkflowRoute: `/projects/${resultProjectId}/production-operations-control-receipts`,
+                    productionOperationsReadinessRoute: `/projects/${resultProjectId}/production-operations-readiness`,
+                  })),
             });
           }
           return json(405, { error: 'method-not-allowed', method, path });
@@ -1161,20 +1471,32 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
             });
           }
           if (method === 'POST') {
+            const includeReadModels = shouldIncludeReadModels(body);
             const result = service.recordProductionDeploymentControlReceipt({
               projectId: route.projectId,
               ...body,
             });
+            const resultProjectId = result.project?.id || route.projectId;
             return json(200, {
-              ...publicProjectResult(result, result.project?.id || route.projectId, language),
+              ...publicProjectResult(result, resultProjectId, language, { includeReadModels }),
               productionDeploymentControlReceipt: result.productionDeploymentControlReceipt,
-              productionDeploymentControlReceiptWorkflow: result.productionDeploymentControlReceiptWorkflow,
-              deploymentPreflight: result.deploymentPreflight,
-              persistenceAdapterDryRun: result.persistenceAdapterDryRun,
-              workerQueueAdapterDryRun: result.workerQueueAdapterDryRun,
-              adapterGatewayPreflight: result.adapterGatewayPreflight,
               log: result.log,
-              managerReadyPackage: service.getManagerReadyPackage(result.project?.id || route.projectId, { language, fresh: true }),
+              ...(includeReadModels
+                ? {
+                    productionDeploymentControlReceiptWorkflow: result.productionDeploymentControlReceiptWorkflow,
+                    deploymentPreflight: result.deploymentPreflight,
+                    persistenceAdapterDryRun: result.persistenceAdapterDryRun,
+                    workerQueueAdapterDryRun: result.workerQueueAdapterDryRun,
+                    adapterGatewayPreflight: result.adapterGatewayPreflight,
+                    managerReadyPackage: service.getManagerReadyPackage(resultProjectId, { language, fresh: true }),
+                  }
+                : productionControlReceiptReadModels(resultProjectId, {
+                    productionDeploymentControlReceiptWorkflowRoute: `/projects/${resultProjectId}/production-deployment-control-receipts`,
+                    deploymentPreflightRoute: `/projects/${resultProjectId}/deployment-preflight`,
+                    persistenceAdapterDryRunRoute: `/projects/${resultProjectId}/persistence-adapter-dry-run`,
+                    workerQueueAdapterDryRunRoute: `/projects/${resultProjectId}/worker-queue-adapter-dry-run`,
+                    adapterGatewayPreflightRoute: `/projects/${resultProjectId}/adapter-gateway-preflight`,
+                  })),
             });
           }
           return json(405, { error: 'method-not-allowed', method, path });
@@ -1212,19 +1534,30 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
             });
           }
           if (method === 'POST') {
+            const includeReadModels = shouldIncludeReadModels(body);
             const result = service.recordProductionProviderControlReceipt({
               projectId: route.projectId,
               ...body,
             });
+            const resultProjectId = result.project?.id || route.projectId;
             return json(200, {
-              ...publicProjectResult(result, result.project?.id || route.projectId, language),
+              ...publicProjectResult(result, resultProjectId, language, { includeReadModels }),
               productionProviderControlReceipt: result.productionProviderControlReceipt,
-              productionProviderControlReceiptWorkflow: result.productionProviderControlReceiptWorkflow,
-              providerReadiness: result.providerReadiness,
-              providerControlledRun: result.providerControlledRun,
-              providerEvalRunWorkflow: result.providerEvalRunWorkflow,
               log: result.log,
-              managerReadyPackage: service.getManagerReadyPackage(result.project?.id || route.projectId, { language, fresh: true }),
+              ...(includeReadModels
+                ? {
+                    productionProviderControlReceiptWorkflow: result.productionProviderControlReceiptWorkflow,
+                    providerReadiness: result.providerReadiness,
+                    providerControlledRun: result.providerControlledRun,
+                    providerEvalRunWorkflow: result.providerEvalRunWorkflow,
+                    managerReadyPackage: service.getManagerReadyPackage(resultProjectId, { language, fresh: true }),
+                  }
+                : productionControlReceiptReadModels(resultProjectId, {
+                    productionProviderControlReceiptWorkflowRoute: `/projects/${resultProjectId}/production-provider-control-receipts`,
+                    providerReadinessRoute: `/projects/${resultProjectId}/provider-readiness`,
+                    providerControlledRunRoute: `/projects/${resultProjectId}/provider-controlled-run`,
+                    providerEvalRunWorkflowRoute: `/projects/${resultProjectId}/provider-eval-runs`,
+                  })),
             });
           }
           return json(405, { error: 'method-not-allowed', method, path });
@@ -1239,17 +1572,26 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
             });
           }
           if (method === 'POST') {
+            const includeReadModels = shouldIncludeReadModels(body);
             const result = service.recordProductionSecurityControlReceipt({
               projectId: route.projectId,
               ...body,
             });
+            const resultProjectId = result.project?.id || route.projectId;
             return json(200, {
-              ...publicProjectResult(result, result.project?.id || route.projectId, language),
+              ...publicProjectResult(result, resultProjectId, language, { includeReadModels }),
               productionSecurityControlReceipt: result.productionSecurityControlReceipt,
-              productionSecurityControlReceiptWorkflow: result.productionSecurityControlReceiptWorkflow,
-              securityBoundary: result.securityBoundary,
               log: result.log,
-              managerReadyPackage: service.getManagerReadyPackage(result.project?.id || route.projectId, { language, fresh: true }),
+              ...(includeReadModels
+                ? {
+                    productionSecurityControlReceiptWorkflow: result.productionSecurityControlReceiptWorkflow,
+                    securityBoundary: result.securityBoundary,
+                    managerReadyPackage: service.getManagerReadyPackage(resultProjectId, { language, fresh: true }),
+                  }
+                : productionControlReceiptReadModels(resultProjectId, {
+                    productionSecurityControlReceiptWorkflowRoute: `/projects/${resultProjectId}/production-security-control-receipts`,
+                    securityBoundaryRoute: `/projects/${resultProjectId}/security-boundary`,
+                  })),
             });
           }
           return json(405, { error: 'method-not-allowed', method, path });
@@ -1294,8 +1636,10 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
             projectId: route.projectId,
             ...body,
           });
+          const resultProjectId = result.project?.id || route.projectId;
+          const includeReadModels = shouldIncludeReadModels(body);
           return json(200, {
-            ...publicProjectResult(result, result.project?.id || route.projectId, language),
+            ...publicProjectResult(result, resultProjectId, language, { includeReadModels }),
             managerAction: result.managerAction,
             managerActionRun: result.managerActionRun,
             managerActionLog: result.managerActionLog,
@@ -1316,8 +1660,10 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
             stepId: decodeURIComponent(route.tail[0] || 'next'),
             ...body,
           });
+          const resultProjectId = result.project?.id || route.projectId;
+          const includeReadModels = shouldIncludeReadModels(body);
           return json(200, {
-            ...publicProjectResult(result, result.project?.id || route.projectId, language),
+            ...publicProjectResult(result, resultProjectId, language, { includeReadModels }),
             managerAction: result.managerAction,
             managerActionRun: result.managerActionRun,
             managerActionLog: result.managerActionLog,
@@ -1329,11 +1675,147 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
         if (method === 'GET' && route.action === 'manager-requirement-matrix') {
           return json(200, service.getManagerRequirementMatrix(route.projectId, { language }));
         }
+        if (method === 'GET' && route.action === 'sync-protocol-audit') {
+          return json(200, service.getSyncProtocolAudit(route.projectId, { language }));
+        }
         if (method === 'GET' && route.action === 'manager-use-case-audit') {
           return json(200, service.getManagerUseCaseAudit(route.projectId, { language }));
         }
         if (method === 'GET' && route.action === 'manager-action-queue') {
           return json(200, service.getManagerActionQueue(route.projectId, { language }));
+        }
+        if (method === 'GET' && route.action === 'autonomous-run-control' && route.tail[0] === 'sessions') {
+          return json(200, { autonomousRunControlSessions: service.getAutonomousRunControlSessions(route.projectId, { language }) });
+        }
+        if (method === 'GET' && route.action === 'autonomous-run-control') {
+          return json(200, { autonomousRunControl: service.getAutonomousRunControl(route.projectId, { language }) });
+        }
+        if (method === 'POST' && route.action === 'autonomous-run-control' && route.tail[0] === 'sessions' && route.tail[1] === 'start') {
+          const result = service.startAutonomousRunControlSession({
+            projectId: route.projectId,
+            ...body,
+          });
+          const resultProjectId = result.project?.id || route.projectId;
+          const includeReadModels = shouldIncludeReadModels(body);
+          return json(200, {
+            ...publicProjectResult(result, resultProjectId, language, {
+              includeReadModels,
+              agentId: result.autonomousRunControlSession?.agentIds?.[0],
+            }),
+            autonomousRunControlSession: result.autonomousRunControlSession,
+            autonomousRunControlSessionTick: result.autonomousRunControlSessionTick,
+            autonomousRunControlSessions: result.autonomousRunControlSessions,
+            autonomousRunControl: result.autonomousRunControl,
+          });
+        }
+        if (method === 'POST' && route.action === 'autonomous-run-control' && route.tail[0] === 'sessions' && route.tail[2] === 'tick') {
+          const result = service.tickAutonomousRunControlSession({
+            projectId: route.projectId,
+            sessionId: decodeURIComponent(route.tail[1] || 'active'),
+            ...body,
+          });
+          const resultProjectId = result.project?.id || route.projectId;
+          const includeReadModels = shouldIncludeReadModels(body);
+          return json(200, {
+            ...publicProjectResult(result, resultProjectId, language, {
+              includeReadModels,
+              agentId: result.autonomousRunControlSession?.agentIds?.[0],
+            }),
+            autonomousRunControlSession: result.autonomousRunControlSession,
+            autonomousRunControlSessionTick: result.autonomousRunControlSessionTick,
+            autonomousRunControlSessions: result.autonomousRunControlSessions,
+            autonomousRunControlLoops: result.autonomousRunControlLoops,
+            autonomousRunControlRuns: result.autonomousRunControlRuns,
+            autonomousRunControl: result.autonomousRunControl,
+          });
+        }
+        if (method === 'POST' && route.action === 'autonomous-run-control' && route.tail[0] === 'sessions' && route.tail[2] === 'pause') {
+          const result = service.pauseAutonomousRunControlSession({
+            projectId: route.projectId,
+            sessionId: decodeURIComponent(route.tail[1] || 'active'),
+            ...body,
+          });
+          const resultProjectId = result.project?.id || route.projectId;
+          const includeReadModels = shouldIncludeReadModels(body);
+          return json(200, {
+            ...publicProjectResult(result, resultProjectId, language, { includeReadModels }),
+            autonomousRunControlSession: result.autonomousRunControlSession,
+            autonomousRunControlSessions: result.autonomousRunControlSessions,
+            autonomousRunControl: result.autonomousRunControl,
+          });
+        }
+        if (method === 'POST' && route.action === 'autonomous-run-control' && route.tail[0] === 'run-loop') {
+          const result = service.runAutonomousRunControlLoop({
+            projectId: route.projectId,
+            ...body,
+          });
+          const resultProjectId = result.project?.id || route.projectId;
+          const includeReadModels = shouldIncludeReadModels(body);
+          return json(200, {
+            ...publicProjectResult(result, resultProjectId, language, {
+              includeReadModels,
+              agentId: result.autonomousRunControlLoop?.agentIds?.[0],
+            }),
+            autonomousRunControlLoop: result.autonomousRunControlLoop,
+            autonomousRunControlLoopRun: result.autonomousRunControlLoopRun,
+            autonomousRunControlRuns: result.autonomousRunControlRuns,
+            autonomousRunControl: result.autonomousRunControl,
+            managerActionQueue: result.managerActionQueue,
+            agentAutonomousActionQueue: result.agentAutonomousActionQueue,
+          });
+        }
+        if (method === 'POST' && route.action === 'autonomous-run-control' && route.tail[1] === 'run') {
+          const result = service.runAutonomousRunControlAction({
+            projectId: route.projectId,
+            actionId: decodeURIComponent(route.tail[0] || 'next'),
+            ...body,
+          });
+          const resultProjectId = result.project?.id || route.projectId;
+          const includeReadModels = shouldIncludeReadModels(body);
+          return json(200, {
+            ...publicProjectResult(result, resultProjectId, language, {
+              includeReadModels,
+              agentId: result.autonomousRunControlAction?.agentId || result.agentAutonomousAction?.agentId || result.agentAutonomousActionRun?.agentId,
+            }),
+            autonomousRunControlAction: result.autonomousRunControlAction,
+            autonomousRunControlRun: result.autonomousRunControlRun,
+            autonomousRunControl: result.autonomousRunControl,
+            managerAction: result.managerAction,
+            managerActionRun: result.managerActionRun,
+            managerActionQueue: result.managerActionQueue,
+            agentAutonomousAction: result.agentAutonomousAction,
+            agentAutonomousActionRun: result.agentAutonomousActionRun,
+            agentAutonomousActionQueue: result.agentAutonomousActionQueue,
+            submission: result.submission,
+            workSubmission: result.workSubmission,
+            review: result.review,
+            reviewResponseSubmission: result.reviewResponseSubmission,
+          });
+        }
+        if (method === 'GET' && route.action === 'agent-autonomous-action-queue') {
+          return json(200, service.getAgentAutonomousActionQueue(route.projectId, { language }));
+        }
+        if (method === 'POST' && route.action === 'agent-autonomous-action-queue' && route.tail[1] === 'run') {
+          const result = service.runAgentAutonomousActionQueueItem({
+            projectId: route.projectId,
+            agentId: decodeURIComponent(route.tail[0] || 'next'),
+            ...body,
+          });
+          const resultProjectId = result.project?.id || route.projectId;
+          const includeReadModels = shouldIncludeReadModels(body);
+          return json(200, {
+            ...publicProjectResult(result, resultProjectId, language, {
+              includeReadModels,
+              agentId: result.agentAutonomousAction?.agentId || result.agentAutonomousActionRun?.agentId,
+            }),
+            agentAutonomousAction: result.agentAutonomousAction,
+            agentAutonomousActionRun: result.agentAutonomousActionRun,
+            agentAutonomousActionQueue: result.agentAutonomousActionQueue,
+            submission: result.submission,
+            workSubmission: result.workSubmission,
+            review: result.review,
+            reviewResponseSubmission: result.reviewResponseSubmission,
+          });
         }
         if (method === 'POST' && route.action === 'manager-action-queue' && route.tail[1] === 'run') {
           const result = service.runManagerActionQueueItem({
@@ -1341,8 +1823,10 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
             actionId: decodeURIComponent(route.tail[0] || 'next'),
             ...body,
           });
+          const resultProjectId = result.project?.id || route.projectId;
+          const includeReadModels = shouldIncludeReadModels(body);
           return json(200, {
-            ...publicProjectResult(result, result.project?.id || route.projectId, language),
+            ...publicProjectResult(result, resultProjectId, language, { includeReadModels }),
             managerAction: result.managerAction,
             managerActionRun: result.managerActionRun,
             managerActionLog: result.managerActionLog,
@@ -1354,19 +1838,27 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
         }
         if (method === 'POST' && route.action === 'chat') {
           const result = service.submitChatMessage({ projectId: route.projectId, ...body });
-          return json(200, publicProjectResult(result, route.projectId, language));
+          const resultProjectId = result.project?.id || route.projectId;
+          const includeReadModels = shouldIncludeReadModels(body);
+          return json(200, publicProjectResult(result, resultProjectId, language, { includeReadModels }));
         }
         if (method === 'POST' && route.action === 'meeting') {
           const result = service.submitMeetingMessage({ projectId: route.projectId, ...body });
-          return json(200, publicProjectResult(result, route.projectId, language));
+          const resultProjectId = result.project?.id || route.projectId;
+          const includeReadModels = shouldIncludeReadModels(body);
+          return json(200, publicProjectResult(result, resultProjectId, language, { includeReadModels }));
         }
         if (method === 'POST' && route.action === 'change-request') {
           const result = service.submitMultiChannelChangeRequest({ projectId: route.projectId, ...body });
-          return json(200, publicProjectResult(result, route.projectId, language));
+          const resultProjectId = result.project?.id || route.projectId;
+          const includeReadModels = shouldIncludeReadModels(body);
+          return json(200, publicProjectResult(result, resultProjectId, language, { includeReadModels }));
         }
         if (method === 'POST' && route.action === 'autonomous-cycle') {
           const result = service.runAutonomousCycle({ projectId: route.projectId, ...body });
-          return json(200, publicProjectResult(result, route.projectId, language));
+          const resultProjectId = result.project?.id || route.projectId;
+          const includeReadModels = shouldIncludeReadModels(body);
+          return json(200, publicProjectResult(result, resultProjectId, language, { includeReadModels }));
         }
 
         return json(405, { error: 'method-not-allowed', method, path });

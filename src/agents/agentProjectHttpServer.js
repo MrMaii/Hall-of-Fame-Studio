@@ -22,6 +22,51 @@ function writeJson(response, status, body) {
   response.end(JSON.stringify(body));
 }
 
+function normalizeSchedulerLimit(value) {
+  if (value === Infinity) return 'infinity';
+  const numberValue = Number(value);
+  return Number.isFinite(numberValue) ? numberValue : null;
+}
+
+function summarizeSchedulerAgentControls(input = {}) {
+  const forceProjectIds = Array.isArray(input.forceProjectIds) ? input.forceProjectIds : [];
+  const forceAgentProjectIds = Array.isArray(input.forceAgentProjectIds) ? input.forceAgentProjectIds : [];
+  return {
+    schemaVersion: 'scheduler-agent-controls/v1',
+    projectId: input.projectId || forceProjectIds[0] || forceAgentProjectIds[0] || null,
+    projectScoped: Boolean(input.projectId || forceProjectIds.length || forceAgentProjectIds.length),
+    includeReadModels: typeof input.includeReadModels === 'boolean' ? input.includeReadModels : null,
+    useAgentAutonomousStrategy: Boolean(input.useAgentAutonomousStrategy || input.agentAutonomousStrategy || input.useAutonomousStrategy),
+    submitAgentWorkArtifacts: Boolean(input.submitAgentWorkArtifacts),
+    workArtifactType: input.agentWorkArtifactType || (input.submitAgentWorkArtifacts ? 'auto' : null),
+    reviewPendingSubmissions: Boolean(input.reviewPendingSubmissions),
+    agentReviewVerdict: input.agentReviewVerdict || null,
+    respondToReviewObligations: Boolean(input.respondToReviewObligations),
+    reviewResponseArtifactType: input.reviewResponseArtifactType || null,
+    maxAgentProjects: normalizeSchedulerLimit(input.maxAgentProjects),
+    maxAgentsPerProject: normalizeSchedulerLimit(input.maxAgentsPerProject),
+  };
+}
+
+function summarizeSchedulerAutopilotControls(input = {}) {
+  const forceProjectIds = Array.isArray(input.forceProjectIds) ? input.forceProjectIds : [];
+  const forceAutopilotProjectIds = Array.isArray(input.forceAutopilotProjectIds) ? input.forceAutopilotProjectIds : [];
+  const enabled = Boolean(input.tickAutopilotSessions || input.runAutopilotSessions || input.autopilotSessions);
+  return {
+    schemaVersion: 'scheduler-autopilot-controls/v1',
+    enabled,
+    projectId: input.projectId || forceAutopilotProjectIds[0] || forceProjectIds[0] || null,
+    projectScoped: Boolean(input.projectId || forceAutopilotProjectIds.length || forceProjectIds.length),
+    includeReadModels: typeof input.includeReadModels === 'boolean' ? input.includeReadModels : null,
+    forceAutopilotRun: Boolean(input.forceAutopilotRun),
+    loopCount: normalizeSchedulerLimit(input.autopilotLoopCount || input.loopCount || 1),
+    intervalMs: normalizeSchedulerLimit(input.autopilotIntervalMs),
+    maxProjects: normalizeSchedulerLimit(input.maxAutopilotProjects),
+    maxSessionsPerProject: normalizeSchedulerLimit(input.maxAutopilotSessionsPerProject),
+    targetKind: input.autopilotTargetKind || input.targetKind || null,
+  };
+}
+
 function createAutonomousSchedulerController({
   api,
   intervalMs = 60_000,
@@ -48,10 +93,21 @@ function createAutonomousSchedulerController({
     skippedCount: 0,
     agentProcessedCount: 0,
     agentSkippedCount: 0,
+    agentAutonomousActionQueueCount: 0,
+    autopilotProcessedCount: 0,
+    autopilotSkippedCount: 0,
+    autopilotSessionTickCount: 0,
     messageCount: 0,
     lastStartedRunImmediately: false,
     lastResult: null,
+    startupAgentControlSummary: null,
+    scheduledAgentControlSummary: null,
+    lastTickAgentControlSummary: null,
+    startupAutopilotControlSummary: null,
+    scheduledAutopilotControlSummary: null,
+    lastTickAutopilotControlSummary: null,
   };
+  let scheduledTickInput = {};
 
   const status = () => ({
     ...state,
@@ -91,6 +147,8 @@ function createAutonomousSchedulerController({
     running = true;
     const tickAt = input.now || now();
     state.lastTickAt = tickAt;
+    state.lastTickAgentControlSummary = summarizeSchedulerAgentControls(input);
+    state.lastTickAutopilotControlSummary = summarizeSchedulerAutopilotControls(input);
     try {
       const projectResult = api.handle({
         method: 'POST',
@@ -100,9 +158,11 @@ function createAutonomousSchedulerController({
           now: tickAt,
           trigger: input.trigger || state.trigger,
           source: input.source || state.source,
+          cadence: input.projectCadence || input.cadence,
           forceDue: Boolean(input.forceProjectRun),
           forceReason: input.forceProjectRun ? (input.forceReason || 'scheduler-start-project-sweep') : undefined,
           forceProjectIds: input.forceProjectIds || [],
+          includeReadModels: input.includeReadModels,
         },
       });
       if (projectResult.status >= 400) {
@@ -121,17 +181,67 @@ function createAutonomousSchedulerController({
           forceDue: Boolean(input.forceAgentRun),
           forceReason: input.forceAgentRun ? 'scheduler-start-agent-sweep' : undefined,
           forceProjectIds: input.forceAgentProjectIds || [],
+          submitWorkArtifacts: Boolean(input.submitAgentWorkArtifacts),
+          workArtifactType: input.agentWorkArtifactType || (input.submitAgentWorkArtifacts ? 'auto' : undefined),
+          workArtifactReviewStatus: input.agentWorkArtifactReviewStatus,
+          workArtifactReviewerAgentId: input.agentWorkArtifactReviewerAgentId,
+          submitWorkArtifactOn: input.submitAgentWorkArtifactOn,
+          reviewPendingSubmissions: Boolean(input.reviewPendingSubmissions),
+          agentReviewVerdict: input.agentReviewVerdict,
+          agentReviewComments: input.agentReviewComments,
+          agentReviewRequestedChanges: input.agentReviewRequestedChanges,
+          respondToReviewObligations: Boolean(input.respondToReviewObligations),
+          reviewResponseArtifactType: input.reviewResponseArtifactType,
+          reviewResponseReviewerAgentId: input.reviewResponseReviewerAgentId,
+          useAutonomousStrategy: Boolean(input.useAgentAutonomousStrategy || input.agentAutonomousStrategy || input.useAutonomousStrategy),
+          includeReadModels: input.includeReadModels,
         },
       });
       if (agentResult.status >= 400) {
         throw new Error(agentResult.body?.message || agentResult.body?.error || `Agent worker returned ${agentResult.status}.`);
       }
+      const shouldTickAutopilotSessions = Boolean(input.tickAutopilotSessions || input.runAutopilotSessions || input.autopilotSessions);
+      const autopilotResult = shouldTickAutopilotSessions
+        ? api.handle({
+            method: 'POST',
+            path: '/workers/autopilot/due',
+            headers: runtimeHeaders({ method: 'POST', path: '/workers/autopilot/due' }),
+            body: {
+              now: tickAt,
+              actor: input.autopilotActor || 'HTTP Autonomous Scheduler',
+              reason: input.autopilotReason || 'http-autonomous-scheduler-autopilot',
+              intervalMs: input.autopilotIntervalMs,
+              maxProjects: input.maxAutopilotProjects,
+              maxSessionsPerProject: input.maxAutopilotSessionsPerProject,
+              forceDue: Boolean(input.forceAutopilotRun),
+              forceReason: input.forceAutopilotRun ? (input.forceAutopilotReason || 'scheduler-start-autopilot-sweep') : undefined,
+              forceProjectIds: input.forceAutopilotProjectIds || input.forceProjectIds || [],
+              loopCount: input.autopilotLoopCount || input.loopCount || 1,
+              targetKind: input.autopilotTargetKind || input.targetKind,
+              requestBodyOverrides: {
+                includeReadModels: false,
+                ...(input.autopilotRequestBodyOverrides || {}),
+              },
+              includeReadModels: input.includeReadModels,
+            },
+          })
+        : { status: 200, body: { processed: [], skipped: [], messages: [], messageCount: 0 } };
+      if (autopilotResult.status >= 400) {
+        throw new Error(autopilotResult.body?.message || autopilotResult.body?.error || `Autopilot worker returned ${autopilotResult.status}.`);
+      }
+      const agentAutonomousActionQueues = agentResult.body.agentAutonomousActionQueues || [];
+      const agentAutonomousActionQueue = agentResult.body.agentAutonomousActionQueue
+        || (agentAutonomousActionQueues.length === 1 ? agentAutonomousActionQueues[0] : null);
       state.tickCount += 1;
       state.processedCount += projectResult.body.processed?.length || 0;
       state.skippedCount += projectResult.body.skipped?.length || 0;
       state.agentProcessedCount += agentResult.body.processed?.length || 0;
       state.agentSkippedCount += agentResult.body.skipped?.length || 0;
-      state.messageCount += (projectResult.body.messageCount || 0) + (agentResult.body.messageCount || 0);
+      state.agentAutonomousActionQueueCount += agentAutonomousActionQueues.length;
+      state.autopilotProcessedCount += autopilotResult.body.processed?.length || 0;
+      state.autopilotSkippedCount += autopilotResult.body.skipped?.length || 0;
+      state.autopilotSessionTickCount += autopilotResult.body.processed?.filter((item) => item.tickId).length || 0;
+      state.messageCount += (projectResult.body.messageCount || 0) + (agentResult.body.messageCount || 0) + (autopilotResult.body.messageCount || 0);
       state.lastCompletedAt = now();
       state.lastError = null;
       state.lastResult = {
@@ -139,7 +249,11 @@ function createAutonomousSchedulerController({
         skipped: projectResult.body.skipped || [],
         agentsProcessed: agentResult.body.processed || [],
         agentsSkipped: agentResult.body.skipped || [],
-        messageCount: (projectResult.body.messageCount || 0) + (agentResult.body.messageCount || 0),
+        autopilotProcessed: autopilotResult.body.processed || [],
+        autopilotSkipped: autopilotResult.body.skipped || [],
+        agentAutonomousActionQueues,
+        agentAutonomousActionQueue,
+        messageCount: (projectResult.body.messageCount || 0) + (agentResult.body.messageCount || 0) + (autopilotResult.body.messageCount || 0),
       };
       return {
         skipped: false,
@@ -148,6 +262,11 @@ function createAutonomousSchedulerController({
           agentProcessed: agentResult.body.processed || [],
           agentSkipped: agentResult.body.skipped || [],
           agentMessages: agentResult.body.messages || [],
+          autopilotProcessed: autopilotResult.body.processed || [],
+          autopilotSkipped: autopilotResult.body.skipped || [],
+          autopilotMessages: autopilotResult.body.messages || [],
+          agentAutonomousActionQueues,
+          agentAutonomousActionQueue,
         },
         status: status(),
       };
@@ -160,28 +279,65 @@ function createAutonomousSchedulerController({
     }
   };
 
-  const start = ({ runImmediately = false, projectId = null } = {}) => {
-    if (timer) return status();
+  const start = (input = {}) => {
+    const { runImmediately = false, projectId = null, includeReadModels } = input;
+    const { runImmediately: _runImmediately, projectId: _projectId, ...tickInput } = input;
+    const runImmediateStartupTick = () => tick({
+      forceProjectRun: Boolean(projectId),
+      forceProjectIds: projectId ? [projectId] : [],
+      forceAgentRun: true,
+      forceAgentProjectIds: projectId ? [projectId] : [],
+      maxAgentProjects: projectId ? Infinity : 1,
+      trigger: 'manager-ui-scheduler-start-pulse',
+      source: 'manager-ui-scheduler-start-chat',
+      forceReason: 'backend-scheduler-start-first-work',
+      agentTrigger: 'http-autonomous-scheduler-startup-agents',
+      submitAgentWorkArtifacts: Boolean(input.submitAgentWorkArtifacts),
+      agentWorkArtifactType: input.agentWorkArtifactType || (input.submitAgentWorkArtifacts ? 'auto' : undefined),
+      agentWorkArtifactReviewStatus: input.agentWorkArtifactReviewStatus,
+      agentWorkArtifactReviewerAgentId: input.agentWorkArtifactReviewerAgentId,
+      submitAgentWorkArtifactOn: input.submitAgentWorkArtifactOn,
+      reviewPendingSubmissions: Boolean(input.reviewPendingSubmissions),
+      agentReviewVerdict: input.agentReviewVerdict,
+      agentReviewComments: input.agentReviewComments,
+      agentReviewRequestedChanges: input.agentReviewRequestedChanges,
+      respondToReviewObligations: Boolean(input.respondToReviewObligations),
+      reviewResponseArtifactType: input.reviewResponseArtifactType,
+      reviewResponseReviewerAgentId: input.reviewResponseReviewerAgentId,
+      useAgentAutonomousStrategy: Boolean(input.useAgentAutonomousStrategy || input.agentAutonomousStrategy || input.useAutonomousStrategy),
+      tickAutopilotSessions: Boolean(input.tickAutopilotSessions || input.runAutopilotSessions || input.autopilotSessions),
+      forceAutopilotRun: Boolean(input.tickAutopilotSessions || input.runAutopilotSessions || input.autopilotSessions) && Boolean(projectId),
+      forceAutopilotProjectIds: projectId ? [projectId] : [],
+      autopilotLoopCount: input.autopilotLoopCount || input.loopCount,
+      autopilotIntervalMs: input.autopilotIntervalMs,
+      maxAutopilotProjects: projectId ? 1 : input.maxAutopilotProjects,
+      maxAutopilotSessionsPerProject: input.maxAutopilotSessionsPerProject,
+      autopilotTargetKind: input.autopilotTargetKind || input.targetKind,
+      autopilotRequestBodyOverrides: input.autopilotRequestBodyOverrides,
+      includeReadModels,
+    }).catch(() => {});
+    if (timer) {
+      state.lastStartedRunImmediately = Boolean(runImmediately);
+      state.startupAgentControlSummary = summarizeSchedulerAgentControls(input);
+      state.startupAutopilotControlSummary = summarizeSchedulerAutopilotControls(input);
+      if (runImmediately) runImmediateStartupTick();
+      return status();
+    }
+    scheduledTickInput = { ...tickInput };
     state.enabled = true;
     state.startedAt = now();
     state.stoppedAt = null;
     state.lastStartedRunImmediately = Boolean(runImmediately);
+    state.startupAgentControlSummary = summarizeSchedulerAgentControls(input);
+    state.scheduledAgentControlSummary = summarizeSchedulerAgentControls(tickInput);
+    state.startupAutopilotControlSummary = summarizeSchedulerAutopilotControls(input);
+    state.scheduledAutopilotControlSummary = summarizeSchedulerAutopilotControls(tickInput);
     timer = setInterval(() => {
-      tick().catch(() => {});
+      tick(scheduledTickInput).catch(() => {});
     }, state.intervalMs);
     if (typeof timer.unref === 'function') timer.unref();
     if (runImmediately) {
-      tick({
-        forceProjectRun: Boolean(projectId),
-        forceProjectIds: projectId ? [projectId] : [],
-        forceAgentRun: true,
-        forceAgentProjectIds: projectId ? [projectId] : [],
-        maxAgentProjects: projectId ? Infinity : 1,
-        trigger: 'manager-ui-scheduler-start-pulse',
-        source: 'manager-ui-scheduler-start-chat',
-        forceReason: 'backend-scheduler-start-first-work',
-        agentTrigger: 'http-autonomous-scheduler-startup-agents',
-      }).catch(() => {});
+      runImmediateStartupTick();
     }
     return status();
   };
@@ -193,6 +349,9 @@ function createAutonomousSchedulerController({
     }
     state.enabled = false;
     state.stoppedAt = now();
+    scheduledTickInput = {};
+    state.scheduledAgentControlSummary = null;
+    state.scheduledAutopilotControlSummary = null;
     return status();
   };
 
@@ -262,7 +421,14 @@ export function createAgentProjectHttpServer({
         return;
       }
       if (url.pathname === '/workers/autonomous/start' && request.method === 'POST') {
-        writeJson(response, 200, { scheduler: scheduler.start({ runImmediately: Boolean(body.runImmediately), projectId: body.projectId || null }) });
+        writeJson(response, 200, {
+          scheduler: scheduler.start({
+            ...body,
+            runImmediately: Boolean(body.runImmediately),
+            projectId: body.projectId || null,
+            includeReadModels: body.includeReadModels,
+          }),
+        });
         return;
       }
       if (url.pathname === '/workers/autonomous/stop' && request.method === 'POST') {
@@ -297,7 +463,10 @@ export function createAgentProjectHttpServer({
   });
 
   if (autonomousScheduler.enabled || autonomousScheduler.autoStart) {
-    scheduler.start({ runImmediately: Boolean(autonomousScheduler.runImmediately) });
+    scheduler.start({
+      ...autonomousScheduler,
+      runImmediately: Boolean(autonomousScheduler.runImmediately),
+    });
   }
 
   return {

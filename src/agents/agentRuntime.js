@@ -1909,6 +1909,36 @@ export function evaluateManagerScenarioReadiness({ project = {}, team = project.
   const latestCycle = ledger[0] || null;
   const projectMessages = messages.filter((message) => !project.id || !message.projectId || message.projectId === project.id);
   const add = (id, passed, label, detail = '') => ({ id, passed: Boolean(passed), label, detail });
+  const agentNameById = Object.fromEntries(team
+    .filter((agent) => agent.id)
+    .map((agent) => [agent.id, agent.name || agent.id]));
+  const hasDurableChangeSyncReceipt = (change, agentId) => {
+    const agentState = projectStates[agentId] || {};
+    const agentName = agentNameById[agentId] || agentId;
+    const teamSyncAgentIds = change.teamSyncAgentIds || [];
+    const matchesChange = (text = '') => !change.requestText || String(text).includes(change.requestText);
+    const directReceipt = (record = {}) => (
+      (record.directTargetIds || []).includes(agentId)
+      || (record.payload?.directTargetIds || []).includes(agentId)
+      || (Number(record.receiptCount || record.payload?.receiptCount || 0) >= teamSyncAgentIds.length && teamSyncAgentIds.length > 0)
+      || String(record.summary || record.log || '').includes(`@${agentName}`)
+      || /@all\b/i.test(String(record.summary || record.log || ''))
+    );
+
+    return (agentState.inbox || []).some((item) => item.source === 'change-sync' && item.taskId === change.taskId)
+      || (agentState.worklog || []).some((item) => item.kind === 'change-sync-received' && matchesChange(item.text))
+      || projectLogs.some((log) => (
+        log.eventType === 'change-sync'
+        && (!change.syncMessageId || log.id === `log_${change.syncMessageId}` || String(log.id || '').includes(change.syncMessageId) || matchesChange(log.log))
+        && directReceipt(log)
+      ))
+      || eventLedger.some((event) => (
+        event.type === 'change-sync'
+        && (!change.syncMessageId || event.entityIds?.messageId === change.syncMessageId || (event.evidenceIds || []).includes(`log_${change.syncMessageId}`) || matchesChange(event.summary))
+        && directReceipt(event)
+      ))
+      || Boolean(change.teamStateSynced && teamSyncAgentIds.includes(agentId) && (change.syncMessageId || change.teamSyncCount));
+  };
 
   const changeWithOwnerSync = changes.find((change) => {
     const ownerState = projectStates[change.ownerId] || {};
@@ -1925,10 +1955,7 @@ export function evaluateManagerScenarioReadiness({ project = {}, team = project.
     change.status === 'confirmed-and-synced'
     && change.teamStateSynced
     && (change.teamSyncAgentIds || []).length > 0
-    && (change.teamSyncAgentIds || []).every((agentId) => (
-      (projectStates[agentId]?.inbox || []).some((item) => item.source === 'change-sync' && item.taskId === change.taskId)
-      || (projectStates[agentId]?.worklog || []).some((item) => item.kind === 'change-sync-received' && item.text?.includes(change.requestText))
-    ))
+    && (change.teamSyncAgentIds || []).every((agentId) => hasDurableChangeSyncReceipt(change, agentId))
   ));
   const logTypes = new Set(projectLogs.map((log) => log.eventType).filter(Boolean));
   const managementLogTypes = ['management-check-in', 'peer-management-check-in', 'review-sweep'];

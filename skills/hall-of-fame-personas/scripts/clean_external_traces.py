@@ -7,7 +7,7 @@ import argparse
 import shutil
 from pathlib import Path
 
-from paths import BUILD_DIR, LEGACY_PERSONAS_DIR, SKILL_DIR
+from paths import BUILD_DIR, BUILD_NUWA_STAGING_DIR, LEGACY_PERSONAS_DIR, SKILL_DIR
 
 
 def clean(*, dry_run: bool) -> None:
@@ -18,6 +18,11 @@ def clean(*, dry_run: bool) -> None:
         removed.append(str(legacy_nuwa))
         if not dry_run:
             shutil.rmtree(legacy_nuwa)
+
+    if BUILD_NUWA_STAGING_DIR.exists():
+        removed.append(str(BUILD_NUWA_STAGING_DIR))
+        if not dry_run:
+            shutil.rmtree(BUILD_NUWA_STAGING_DIR)
 
     if LEGACY_PERSONAS_DIR.exists():
         for path in LEGACY_PERSONAS_DIR.glob("*/nuwa.md"):

@@ -4,6 +4,8 @@
 node_modules
 dist
 .tmp
+__pycache__/
+*.py[cod]
 .env
 .env/local
 .env/*.local
@@ -16,4 +18,5 @@ tools/
 
 # Legacy external-artifact paths
 skills/hall-of-fame-personas/build/nuwa/
+skills/hall-of-fame-personas/build/nuwa_staging/
 skills/hall-of-fame-personas/personas/**/nuwa.md
