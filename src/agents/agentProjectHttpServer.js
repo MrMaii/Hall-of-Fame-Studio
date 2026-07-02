@@ -202,7 +202,7 @@ function createAutonomousSchedulerController({
       }
       const shouldTickAutopilotSessions = Boolean(input.tickAutopilotSessions || input.runAutopilotSessions || input.autopilotSessions);
       const autopilotResult = shouldTickAutopilotSessions
-        ? api.handle({
+        ? await (api.handleAsync || api.handle).call(api, {
             method: 'POST',
             path: '/workers/autopilot/due',
             headers: runtimeHeaders({ method: 'POST', path: '/workers/autopilot/due' }),
@@ -218,6 +218,8 @@ function createAutonomousSchedulerController({
               forceProjectIds: input.forceAutopilotProjectIds || input.forceProjectIds || [],
               loopCount: input.autopilotLoopCount || input.loopCount || 1,
               targetKind: input.autopilotTargetKind || input.targetKind,
+              useProviderEvidenceSearch: Boolean(input.useProviderEvidenceSearch || input.autopilotUseProviderEvidenceSearch || input.providerEvidenceSearchEnabled || input.autopilotRequestBodyOverrides?.useProviderEvidenceSearch),
+              providerEvidenceSearchEnabled: input.autopilotProviderEvidenceSearchEnabled ?? input.providerEvidenceSearchEnabled,
               requestBodyOverrides: {
                 includeReadModels: false,
                 ...(input.autopilotRequestBodyOverrides || {}),

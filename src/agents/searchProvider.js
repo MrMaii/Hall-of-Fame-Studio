@@ -117,6 +117,7 @@ export function createSearchProvider({
   apiKeySource = 'direct-config',
   secretVaultStatus = null,
   endpoint = '',
+  endpointSource = 'direct-config',
   enabled = false,
   timeoutMs = DEFAULT_TIMEOUT_MS,
   maxResults = DEFAULT_MAX_RESULTS,
@@ -124,20 +125,29 @@ export function createSearchProvider({
   requestTemplate = null,
   fetchImpl = globalThis.fetch,
 } = {}) {
-  const resolvedProvider = normalizeProvider(provider);
-  const resolvedEndpoint = cleanBaseUrl(endpoint);
-  const configured = resolvedProvider === 'deterministic'
-    || Boolean(resolvedEndpoint && (apiKey || resolvedProvider === 'http-json'));
-  const providerEnabled = Boolean(enabled && configured && (resolvedProvider === 'deterministic' || typeof fetchImpl === 'function'));
+  let currentProvider = normalizeProvider(provider);
+  let currentEndpoint = cleanBaseUrl(endpoint);
+  let currentEndpointSource = currentEndpoint ? endpointSource || 'direct-config' : 'missing';
+  let currentApiKey = apiKey || '';
+  let currentApiKeySource = apiKeySource || 'direct-config';
+  let runtimeEnabled = Boolean(enabled);
+  let runtimeEnabledSource = runtimeEnabled ? 'startup-config' : 'disabled';
+  const isConfigured = () => currentProvider === 'deterministic'
+    || Boolean(currentEndpoint && (currentApiKey || currentProvider === 'http-json'));
+  const providerEnabled = () => Boolean(runtimeEnabled && isConfigured() && (currentProvider === 'deterministic' || typeof fetchImpl === 'function'));
   const limiter = createLimiter(maxConcurrency);
 
   const status = () => ({
-    provider: resolvedProvider,
-    enabled: providerEnabled,
-    configured,
-    endpoint: redactUrl(resolvedEndpoint),
-    hasApiKey: Boolean(apiKey),
-    apiKeySource: apiKey ? apiKeySource : (resolvedProvider === 'deterministic' ? 'not-required' : 'missing'),
+    provider: currentProvider,
+    enabled: providerEnabled(),
+    runtimeEnabled,
+    enabledSource: runtimeEnabledSource,
+    configured: isConfigured(),
+    endpoint: redactUrl(currentEndpoint),
+    hasEndpoint: Boolean(currentEndpoint),
+    endpointSource: currentEndpoint ? currentEndpointSource : 'missing',
+    hasApiKey: Boolean(currentApiKey),
+    apiKeySource: currentApiKey ? currentApiKeySource : (currentProvider === 'deterministic' ? 'not-required' : 'missing'),
     secretVault: secretVaultStatus
       ? {
         provider: secretVaultStatus.provider || 'unknown',
@@ -163,21 +173,21 @@ export function createSearchProvider({
     extraBody = {},
   } = {}) {
     const resultLimit = Math.max(1, Number(inputMaxResults || maxResults) || DEFAULT_MAX_RESULTS);
-    if (!providerEnabled) {
+    if (!providerEnabled()) {
       return {
         ok: false,
         skipped: true,
-        reason: configured ? 'search-provider-disabled' : 'search-provider-not-configured',
-        provider: resolvedProvider,
+        reason: isConfigured() ? 'search-provider-disabled' : 'search-provider-not-configured',
+        provider: currentProvider,
         status: status(),
       };
     }
 
-    if (resolvedProvider === 'deterministic') {
+    if (currentProvider === 'deterministic') {
       const sources = deterministicSources({ query, purpose, maxResults: resultLimit, now });
       return {
         ok: true,
-        provider: resolvedProvider,
+        provider: currentProvider,
         searchMode: 'deterministic-provider',
         query,
         sources,
@@ -198,7 +208,7 @@ export function createSearchProvider({
       const method = String(template.method || 'POST').toUpperCase();
       const headers = {
         'content-type': 'application/json',
-        ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}),
+        ...(currentApiKey ? { authorization: `Bearer ${currentApiKey}` } : {}),
         ...(template.headers || {}),
       };
       const body = {
@@ -209,8 +219,8 @@ export function createSearchProvider({
         ...(template.body || {}),
       };
       const url = method === 'GET'
-        ? `${resolvedEndpoint}${resolvedEndpoint.includes('?') ? '&' : '?'}q=${encodeURIComponent(query)}&maxResults=${encodeURIComponent(resultLimit)}`
-        : resolvedEndpoint;
+        ? `${currentEndpoint}${currentEndpoint.includes('?') ? '&' : '?'}q=${encodeURIComponent(query)}&maxResults=${encodeURIComponent(resultLimit)}`
+        : currentEndpoint;
       const response = await fetchImpl(url, {
         method,
         headers,
@@ -222,7 +232,7 @@ export function createSearchProvider({
       if (!response.ok) {
         return {
           ok: false,
-          provider: resolvedProvider,
+          provider: currentProvider,
           statusCode: response.status,
           error: redactSensitiveText(data?.error?.message || data?.message || raw.slice(0, 400)),
           status: status(),
@@ -231,7 +241,7 @@ export function createSearchProvider({
       const sources = extractHttpSources(data, now).slice(0, resultLimit);
       return {
         ok: true,
-        provider: resolvedProvider,
+        provider: currentProvider,
         searchMode: 'http-json-provider',
         query,
         sources,
@@ -246,7 +256,7 @@ export function createSearchProvider({
     } catch (error) {
       return {
         ok: false,
-        provider: resolvedProvider,
+        provider: currentProvider,
         error: error.name === 'AbortError' ? 'search request timed out' : redactSensitiveText(error.message || String(error)),
         status: status(),
       };
@@ -256,9 +266,36 @@ export function createSearchProvider({
   }
 
   return {
-    provider: resolvedProvider,
-    enabled: providerEnabled,
-    configured,
+    get provider() {
+      return currentProvider;
+    },
+    get enabled() {
+      return providerEnabled();
+    },
+    get configured() {
+      return isConfigured();
+    },
+    setApiKey(nextApiKey = '', source = 'runtime-secret-vault') {
+      currentApiKey = String(nextApiKey || '');
+      currentApiKeySource = source || currentApiKeySource;
+      if (currentApiKey) {
+        runtimeEnabled = true;
+        runtimeEnabledSource = source || runtimeEnabledSource;
+      }
+      return status();
+    },
+    setEndpoint(nextEndpoint = '', source = 'runtime-secret-vault', nextProvider = 'http-json') {
+      const cleanEndpoint = cleanBaseUrl(nextEndpoint);
+      currentEndpoint = cleanEndpoint;
+      currentEndpointSource = cleanEndpoint ? source || currentEndpointSource : 'missing';
+      if (cleanEndpoint) {
+        const normalizedProvider = normalizeProvider(nextProvider || currentProvider || 'http-json');
+        currentProvider = normalizedProvider === 'none' ? 'http-json' : normalizedProvider;
+        runtimeEnabled = true;
+        runtimeEnabledSource = source || runtimeEnabledSource;
+      }
+      return status();
+    },
     status,
     search(input = {}) {
       return limiter.schedule(() => performSearch(input));
@@ -270,13 +307,16 @@ export function createSearchProvider({
 }
 
 export function createSearchProviderFromEnv(env = globalThis.process?.env || {}, options = {}) {
+  const endpoint = options.endpoint || env.SEARCH_ENDPOINT || env.SEARCH_PROVIDER_ENDPOINT || '';
+  const provider = options.provider || env.SEARCH_PROVIDER || (endpoint ? 'http-json' : DEFAULT_SEARCH_PROVIDER);
   return createSearchProvider({
-    provider: env.SEARCH_PROVIDER || DEFAULT_SEARCH_PROVIDER,
-    apiKey: env.SEARCH_API_KEY || env.SEARCH_PROVIDER_API_KEY || '',
-    apiKeySource: options.apiKeySource || (options.secretVaultStatus?.ready ? 'local-secret-vault' : 'environment'),
+    provider,
+    apiKey: options.apiKey || env.SEARCH_API_KEY || env.SEARCH_PROVIDER_API_KEY || '',
+    apiKeySource: options.apiKeySource || (options.apiKey ? 'local-secret-vault' : (options.secretVaultStatus?.ready ? 'local-secret-vault' : 'environment')),
     secretVaultStatus: options.secretVaultStatus || null,
-    endpoint: env.SEARCH_ENDPOINT || env.SEARCH_PROVIDER_ENDPOINT || '',
-    enabled: parseBoolean(env.SEARCH_PROVIDER_ENABLED, false),
+    endpoint,
+    endpointSource: options.endpointSource || (options.endpoint ? 'local-secret-vault' : (endpoint ? 'environment' : 'missing')),
+    enabled: parseBoolean(env.SEARCH_PROVIDER_ENABLED, Boolean(options.apiKey || endpoint || normalizeProvider(provider) === 'deterministic')),
     timeoutMs: Number(env.SEARCH_TIMEOUT_MS || DEFAULT_TIMEOUT_MS),
     maxResults: Number(env.SEARCH_MAX_RESULTS || DEFAULT_MAX_RESULTS),
     maxConcurrency: Number(env.SEARCH_MAX_CONCURRENCY || DEFAULT_MAX_CONCURRENCY),

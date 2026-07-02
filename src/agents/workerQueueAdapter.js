@@ -41,6 +41,7 @@ function rowsFromSnapshot(workerQueueSnapshot = {}) {
   return [
     ...(workerQueueSnapshot.projectQueue || []),
     ...(workerQueueSnapshot.agentQueue || []),
+    ...(workerQueueSnapshot.autopilotQueue || []),
   ].map((row) => ({
     ...row,
     adapterQueue: row.queue || row.workerKind || 'worker',

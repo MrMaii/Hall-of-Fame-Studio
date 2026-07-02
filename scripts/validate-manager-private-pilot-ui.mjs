@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { createServer } from 'node:http';
 import { existsSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
+import { readFile, rm } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
@@ -13,9 +13,15 @@ import { createLocalSecretVault } from '../src/agents/secretVault.js';
 
 const ROOT_DIR = fileURLToPath(new URL('..', import.meta.url));
 const DIST_DIR = join(ROOT_DIR, 'dist');
-const ACCEPTANCE_ROOT = fileURLToPath(new URL('../.tmp/product-team-acceptance', import.meta.url));
+const ACCEPTANCE_RUN_ID = (process.env.HOFS_MANAGER_PRIVATE_PILOT_RUN_ID || `manager-private-pilot-ui-${process.pid}`)
+  .replace(/[^a-zA-Z0-9_.-]/g, '-');
+const ACCEPTANCE_ROOT = fileURLToPath(new URL(`../.tmp/product-team-acceptance/${ACCEPTANCE_RUN_ID}/`, import.meta.url));
 const STATIC_PORTS = [4186, 4187, 4188, 4189, 4190];
-const ACCEPTANCE_STORE = new URL('../.tmp/product-team-acceptance/store.json', import.meta.url);
+const ACCEPTANCE_STORE = new URL(`../.tmp/product-team-acceptance/${ACCEPTANCE_RUN_ID}/store.json`, import.meta.url);
+const HANDOFF_PREP_TIMEOUT_MS = Math.max(
+  60_000,
+  Number.parseInt(process.env.HOFS_PRIVATE_PILOT_HANDOFF_TIMEOUT_MS || '900000', 10) || 900_000,
+);
 const BACKEND_STORAGE_KEY = 'hall_of_fame_studio.agent_backend_url.v1';
 const LANGUAGE_STORAGE_KEY = 'hall_of_fame_studio.language.v1';
 const PROJECT_ID = 'product_team_acceptance_project';
@@ -64,12 +70,23 @@ function preparePrivatePilotHandoffStore() {
   const result = spawnSync(process.execPath, [stageScript, 'private-pilot-launch-handoff'], {
     cwd: ROOT_DIR,
     stdio: 'inherit',
+    timeout: HANDOFF_PREP_TIMEOUT_MS,
     env: {
       ...process.env,
+      HOFS_PRODUCT_TEAM_RUN_ID: ACCEPTANCE_RUN_ID,
+      HOFS_PRODUCT_TEAM_PRESERVE_TMP: '1',
       HOFS_PROGRESS: process.env.HOFS_PROGRESS || '1',
     },
   });
-  if (result.error) throw result.error;
+  if (result.error) {
+    if (result.error.code === 'ETIMEDOUT') {
+      throw new Error(`Private-pilot launch-handoff preparation timed out after ${HANDOFF_PREP_TIMEOUT_MS}ms for run ${ACCEPTANCE_RUN_ID}.`);
+    }
+    throw result.error;
+  }
+  if (result.signal) {
+    throw new Error(`Private-pilot launch-handoff preparation ended by ${result.signal} for run ${ACCEPTANCE_RUN_ID}.`);
+  }
   assert(result.status === 0, `Private-pilot launch-handoff preparation failed with status ${result.status}.`);
   assert(existsSync(ACCEPTANCE_STORE), 'Private-pilot launch-handoff store must exist after staged acceptance preparation.');
 }
@@ -279,6 +296,7 @@ async function waitForButtonEnabled(page, testId, message, { timeoutMs = 15000 }
     return Boolean(button && !button.disabled);
   }, selector, { timeout: timeoutMs }).catch(async () => {
     const disabled = await locator.isDisabled().catch(() => 'missing');
+    if (disabled === false) return;
     throw new Error(`${message} Disabled state: ${disabled}`);
   });
   return locator;
@@ -575,4 +593,7 @@ try {
   await browser?.close().catch(() => {});
   await backendServer.close().catch(() => {});
   await new Promise((resolve) => staticRuntime.server.close(resolve)).catch(() => {});
+  if (process.env.HOFS_MANAGER_PRIVATE_PILOT_PRESERVE_TMP !== '1') {
+    await rm(ACCEPTANCE_ROOT, { recursive: true, force: true }).catch(() => {});
+  }
 }

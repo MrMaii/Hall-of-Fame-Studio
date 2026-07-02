@@ -47,6 +47,8 @@ const filePath = process.env.AGENT_PROJECT_STORE || new URL('../.tmp/agent-proje
 const securityAuditLogPath = process.env.AGENT_SECURITY_AUDIT_LOG || undefined;
 const defaultRuntimeRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../.tmp/agent-projects');
 const runtimeRoot = resolve(process.env.AGENT_PROJECT_RUNTIME_ROOT || defaultRuntimeRoot);
+const defaultSecretVaultRecordsFile = resolve(dirname(fileURLToPath(import.meta.url)), '../.tmp/agent-secret-vault-records.json');
+if (!process.env.SECRET_VAULT_RECORDS_FILE) process.env.SECRET_VAULT_RECORDS_FILE = defaultSecretVaultRecordsFile;
 const port = Number(process.env.AGENT_PROJECT_PORT || 8787);
 const host = process.env.AGENT_PROJECT_HOST || '127.0.0.1';
 const autonomousSchedulerEnabled = envFlag('AGENT_AUTONOMOUS_SCHEDULER');
@@ -61,8 +63,90 @@ const accessReplayProtection = envFlag('AGENT_ACCESS_REPLAY_PROTECTION');
 const accessAuditFailClosed = envFlag('AGENT_ACCESS_AUDIT_FAIL_CLOSED');
 const secretVault = createSecretVaultFromEnv(process.env);
 const secretVaultStatus = secretVault.status();
-const llmProvider = createModelProviderFromEnv(process.env, { secretVaultStatus });
-const searchProvider = createSearchProviderFromEnv(process.env, { secretVaultStatus });
+const providerApiKeyNames = {
+  model: ['model.apikey', 'model.api_key', 'model.api-key', 'llm.apikey', 'llm.api_key', 'openai.apikey', 'openai.api_key'],
+  search: ['search.apikey', 'search.api_key', 'search.api-key', 'web-search.apikey', 'web_search.api_key'],
+};
+const providerEndpointNames = {
+  search: ['search.endpoint', 'search.url', 'search.base_url', 'search-provider.endpoint', 'search_provider.endpoint', 'web-search.endpoint', 'web_search.endpoint'],
+};
+const normalizeProviderSecretTarget = (value = '') => {
+  const normalized = String(value || '').toLowerCase().replace(/_/g, '-');
+  if (['api-key', 'apikey', 'key', 'token', 'credential'].includes(normalized)) return 'api-key';
+  if (['endpoint', 'url', 'base-url', 'baseurl', 'provider-endpoint'].includes(normalized)) return 'endpoint';
+  return '';
+};
+const providerSecretBindingForRecord = (record = {}) => {
+  const name = String(record.name || record.id || '').toLowerCase();
+  const scope = String(record.metadata?.scope || '').toLowerCase();
+  const target = normalizeProviderSecretTarget(
+    record.metadata?.secretKind
+    || record.metadata?.target
+    || record.metadata?.providerSecretKind
+    || '',
+  );
+  if (
+    providerEndpointNames.search.includes(name)
+    || (scope === 'search-provider' && target === 'endpoint')
+  ) {
+    return { kind: 'search', target: 'endpoint' };
+  }
+  if (
+    providerApiKeyNames.model.includes(name)
+    || (scope === 'model-provider' && (!target || target === 'api-key'))
+  ) {
+    return { kind: 'model', target: 'api-key' };
+  }
+  if (
+    providerApiKeyNames.search.includes(name)
+    || (scope === 'search-provider' && (!target || target === 'api-key'))
+  ) {
+    return { kind: 'search', target: 'api-key' };
+  }
+  return { kind: '', target: '' };
+};
+const findVaultProviderRecord = (kind = '', target = 'api-key') => {
+  const normalizedKind = String(kind || '').toLowerCase();
+  const expectedScope = `${normalizedKind}-provider`;
+  const expectedTarget = normalizeProviderSecretTarget(target) || 'api-key';
+  const expectedNames = expectedTarget === 'endpoint'
+    ? (providerEndpointNames[normalizedKind] || [])
+    : (providerApiKeyNames[normalizedKind] || []);
+  const records = typeof secretVault.exportRecords === 'function' ? secretVault.exportRecords() : [];
+  return records.find((record) => expectedNames.includes(String(record.name || record.id || '').toLowerCase()))
+    || records.find((record) => {
+      const binding = providerSecretBindingForRecord(record);
+      return binding.kind === normalizedKind
+        && binding.target === expectedTarget
+        && String(record.metadata?.scope || '').toLowerCase() === expectedScope;
+    })
+    || null;
+};
+const openVaultProviderKey = async (kind = '') => {
+  const record = findVaultProviderRecord(kind, 'api-key');
+  if (!record || typeof secretVault.open !== 'function') return '';
+  return secretVault.open(record);
+};
+const openVaultProviderEndpoint = async (kind = '') => {
+  const record = findVaultProviderRecord(kind, 'endpoint');
+  if (!record || typeof secretVault.open !== 'function') return '';
+  return secretVault.open(record);
+};
+const modelApiKeyFromVault = secretVaultStatus.ready ? await openVaultProviderKey('model') : '';
+const searchApiKeyFromVault = secretVaultStatus.ready ? await openVaultProviderKey('search') : '';
+const searchEndpointFromVault = secretVaultStatus.ready ? await openVaultProviderEndpoint('search') : '';
+const llmProvider = createModelProviderFromEnv(process.env, {
+  secretVaultStatus,
+  apiKey: modelApiKeyFromVault,
+  apiKeySource: modelApiKeyFromVault ? 'local-secret-vault' : undefined,
+});
+const searchProvider = createSearchProviderFromEnv(process.env, {
+  secretVaultStatus,
+  apiKey: searchApiKeyFromVault,
+  apiKeySource: searchApiKeyFromVault ? 'local-secret-vault' : undefined,
+  endpoint: searchEndpointFromVault,
+  endpointSource: searchEndpointFromVault ? 'local-secret-vault' : undefined,
+});
 const projectRuntime = createLocalProjectRuntime({
   rootPath: runtimeRoot,
   enableCommandExecution: envFlag('AGENT_WORKSPACE_EXEC'),

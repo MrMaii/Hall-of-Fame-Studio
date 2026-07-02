@@ -16,6 +16,7 @@ import {
   evaluateAutonomousSchedule,
   evaluateManagerScenarioReadiness,
   buildAgentChatReplies,
+  EVENT_LEDGER_RETAINED_LIMIT,
   isLeaderAssignmentRequest,
   isPeerHandoffRequest,
   isFeatureChangeRequest,
@@ -44,6 +45,7 @@ import { createAgentProjectFileStore } from '../src/agents/agentProjectFileStore
 import { createAgentProjectHttpServer } from '../src/agents/agentProjectHttpServer.js';
 import { createAgentProjectMemoryStore } from '../src/agents/agentProjectStore.js';
 import { createLocalProjectRuntime } from '../src/agents/localProjectRuntime.js';
+import { createSearchProvider } from '../src/agents/searchProvider.js';
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
@@ -85,6 +87,10 @@ function hasContiguousSequences(events = []) {
   return events.every((event, index) => index === 0 || event.sequence === events[index - 1].sequence + 1);
 }
 
+function cloneJson(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
 async function waitForCondition(read, predicate, message, { timeoutMs = 5000, intervalMs = 100 } = {}) {
   const deadline = Date.now() + timeoutMs;
   let lastValue = null;
@@ -101,6 +107,7 @@ const appSource = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8
 const serviceSource = readFileSync(new URL('../src/agents/agentProjectService.js', import.meta.url), 'utf8');
 const apiSource = readFileSync(new URL('../src/agents/agentProjectApi.js', import.meta.url), 'utf8');
 const httpServerSource = readFileSync(new URL('../src/agents/agentProjectHttpServer.js', import.meta.url), 'utf8');
+const workerQueueAdapterSource = readFileSync(new URL('../src/agents/workerQueueAdapter.js', import.meta.url), 'utf8');
 const agentProjectServerSource = readFileSync(new URL('./agent-project-server.mjs', import.meta.url), 'utf8');
 const packageSource = readFileSync(new URL('../package.json', import.meta.url), 'utf8');
 const productTeamAcceptanceSource = readFileSync(new URL('./validate-product-team-acceptance-scenario.mjs', import.meta.url), 'utf8');
@@ -135,13 +142,17 @@ assert(appSource.includes('project.initiation?.roleNegotiation?.transcript') && 
 assert((appSource.match(/openProjectChatProof\(activeProject/g) || []).length >= 20 && appSource.includes('await ensureProofMessagesAvailable(project, ids'), 'Every dashboard chat proof button must route through the backend-aware proof opener.');
 assert(!appSource.includes('manager_demo_assign_${index}') && !appSource.includes('manager_demo_change_${index}'), 'Manager demo must preserve runtime message ids so task proof links resolve.');
 assert(appSource.includes("dataSource: 'sample-fixture'") && appSource.includes('sampleFixtureMeta') && appSource.includes('project-sample-fixture-banner') && appSource.includes('Load Sample Fixture') && appSource.includes('Sample fixture only / not a real project path'), 'Manager demo must be labeled as a sample fixture and kept visibly separate from the real project path.');
-assert(appSource.includes('createKickoffProjectFromMeeting') && appSource.includes("requestAgentBackend('/projects/initiate'"), 'Real initiation approval must dispatch through the backend kickoff service boundary.');
+assert(appSource.includes("requestAgentBackend('/product-team-missions'") && appSource.includes('productTeamMissionRun') && appSource.includes('Product Team Mission Runner approved kickoff and started backend autonomy'), 'Real initiation approval must dispatch through the backend Product Team Mission Runner boundary.');
 assert(appSource.includes("requestAgentBackend('/kickoff-meetings'") && appSource.includes('initiationMeetingSession') && appSource.includes('initiation-meeting-session-proof'), 'Real initiation flow must create a durable kickoff meeting session before approval.');
-assert(appSource.includes('/kickoff-meetings/${encodeURIComponent(sessionId)}/approve') && appSource.includes('approveKickoffMeetingSession'), 'Real initiation approval must approve the saved kickoff meeting session when available.');
+assert(appSource.includes('kickoffMeetingId: sessionId || undefined') && appSource.includes('reuseExistingKickoffMeeting: Boolean(sessionId)') && serviceSource.includes('reuseExistingKickoffMeeting') && serviceSource.includes('reusedKickoffMeeting'), 'Real initiation approval must reuse the saved kickoff meeting session through the Product Team Mission Runner when available.');
+assert(appSource.includes('backend-product-team-mission-runs-snapshot') && appSource.includes('backendProductTeamMissionRuns') && appSource.includes('backendLatestProductTeamMissionRun') && appSource.includes('Mission route:'), 'Backend Manager Snapshot must render Product Team Mission Runner receipts and routes after initiation approval.');
+assert(appSource.includes('backend-product-team-mission-chat-proof') && appSource.includes('backend-product-team-mission-timeline-proof') && appSource.includes('backend-product-team-mission-flow-node') && serviceSource.includes('meeting.evidence?.roleTranscriptIds'), 'Backend Manager Snapshot must let the Manager jump from Mission Runner receipt to chat proof, timeline proof, and the Flow Graph mission node.');
+assert(appSource.includes('refreshProjectInitiationReadModels') && appSource.includes('kickoffReadModelRefresh') && appSource.includes('readRoutes.projectRoute') && appSource.includes('readRoutes.mainTranscriptRoute') && appSource.includes('readRoutes.timelineRoute') && appSource.includes('readRoutes.eventsRoute') && appSource.includes('includeReadModels: false'), 'React initiation approval must consume receipt-first kickoff responses and refresh project/transcript/timeline read models from backend routes.');
 assert(serviceSource.includes('kickoff-generation-provenance/v1') && serviceSource.includes('productionClaim') && serviceSource.includes('deterministic-validation') && serviceSource.includes('model-provider-backed'), 'Kickoff meeting generation must label deterministic validation fallback separately from provider-backed model meetings.');
 assert(appSource.includes('initiation-meeting-generation-source') && appSource.includes('initiation-result-generation-source') && appSource.includes('validation fallback') && appSource.includes('provider-backed model'), 'Initiation UI must expose kickoff generation provenance instead of hiding deterministic/model fallback status.');
 assert(appSource.includes('kickoff-dashboard-generation-source') && appSource.includes('kickoffGenerationProvenance') && appSource.includes('Kickoff Generation Source'), 'Project dashboard must keep kickoff generation provenance visible after approval, not only during initiation.');
 assert(appSource.includes('isDevelopmentInitiationFallbackEnabled') && appSource.includes('No local fallback project was created.') && appSource.includes('local-kickoff-development-fallback') && appSource.includes('Backend initiation approval failed'), 'Backend-connected initiation must fail closed by default and keep local project creation behind an explicit development fallback flag.');
+assert(appSource.includes('isDevelopmentFallbackSwitchEnabled') && appSource.includes('if (!import.meta.env?.DEV) return false;') && appSource.includes("window[windowFlag] === true") && appSource.includes("import.meta.env?.[envFlag] === 'true'"), 'Explicit development fallback switches must be ignored by production builds so browser storage or console flags cannot turn real backend failures into local success.');
 assert(appSource.includes('initiation-backend-error'), 'Backend-connected initiation failures must be visible in the initiation flow instead of silently creating a local project.');
 assert(!appSource.includes('Backend initiation failed, used local runtime'), 'Backend-connected initiation must not silently create local fallback projects by default.');
 assert(appSource.includes('start-initiation-button') && appSource.includes('initiation-approve-create'), 'Real initiation flow must expose stable UI hooks for backend-connected approval validation.');
@@ -150,6 +161,7 @@ assert(appSource.includes('initiation-meeting-leader-slate') && appSource.includ
 assert(appSource.includes('initiationActionDrafts') && appSource.includes('initiation-next-action-') && appSource.includes('initiation-add-next-action'), 'Real initiation result must let managers edit first execution next actions before approval.');
 assert(appSource.includes('initiation-meeting-next-actions') && appSource.includes('initiation-meeting-next-action-') && appSource.includes('initiation-meeting-save-next-actions') && appSource.includes('initiation-meeting-next-action-resolution') && appSource.includes('/next-actions') && appSource.includes('These become the first Leader assignments after approval'), 'Real initiation meeting must let managers persist first execution action resolution during the meeting.');
 assert(appSource.includes('initiation-meeting-director-clarification') && appSource.includes('initiation-meeting-role-question-list') && appSource.includes('role questions answered') && appSource.includes('initiation-meeting-save-clarification') && appSource.includes('/clarify'), 'Real initiation meeting must let managers answer specific Agent role questions before approval.');
+assert(appSource.includes('const submitInitiationMeetingInput = async') && appSource.includes('Kickoff meeting input saved through backend clarification') && appSource.includes('Initiation meeting input must be attached to a backend kickoff meeting session.') && appSource.includes('No local mock meeting response was saved.') && !appSource.includes('runRoomSimulation(text, meetingProject);'), 'Initiation meeting free input must persist as backend kickoff clarification instead of generating local mock meeting turns.');
 assert(appSource.includes('initiationConfirmedTeamIds') && appSource.includes('initiation-meeting-confirmed-team-') && appSource.includes('Removed after meeting'), 'Real initiation meeting must let managers finalize the project team during the meeting.');
 assert(serviceSource.includes("trigger: 'initiation-approval'") && serviceSource.includes('initiation-approved-first-work-pulse'), 'Real initiation approval must immediately start the first autonomous work pulse.');
 assert(serviceSource.includes('First Pulse'), 'Real initiation approval must mirror the first autonomous work pulse into group chat.');
@@ -207,7 +219,7 @@ assert(appSource.includes('eventLedgerSummary.replayProjection.kickoffSpeechCoun
 assert(appSource.includes('syncBackendTimelineAndEvents') && appSource.includes('/timeline') && appSource.includes('/events') && appSource.includes('timelineReadModel') && appSource.includes('eventLedgerReadModel') && appSource.includes('backend-sync-timeline-events') && appSource.includes('Sync Timeline'), 'Project dashboard must consume backend timeline and event-ledger read models when online instead of treating browser project logs as the only workflow source.');
 assert(appSource.includes('Backend Worker Station') && appSource.includes('/workers/autonomous/status') && appSource.includes('/workers/autonomous/${action}') && appSource.includes("runBackendSchedulerAction('start')") && appSource.includes("runBackendSchedulerAction('stop')") && appSource.includes('backend-scheduler-agent-controls') && appSource.includes('AGENT CONTROL: STRATEGY'), 'Project dashboard must expose backend autonomous scheduler status and Agent autonomy controls.');
 assert(appSource.includes('Agent Runs') && appSource.includes('agentProcessedCount') && appSource.includes('Agent Skips'), 'Backend Worker Station must surface per-Agent scheduler counters.');
-assert(appSource.includes('runImmediately: true') && appSource.includes('includeReadModels: false') && appSource.includes('manager-ui-scheduler-start-pulse') && appSource.includes('backend-scheduler-start-first-work') && !appSource.includes('persistActiveProject') && appSource.includes('silent = false') && appSource.includes('Immediate Start') && appSource.includes('Latest Backend Work') && appSource.includes('backend-last-result'), 'Backend Worker Station start must immediately kick current-project and Agent startup work through lightweight receipts, refresh silently, and surface the latest processed project/Agent result without PUT-ing browser project state.');
+assert(appSource.includes('runImmediately: true') && appSource.includes('includeReadModels: false') && appSource.includes('manager-ui-scheduler-start-pulse') && appSource.includes('Starting backend scheduler') && appSource.includes('startPending: true') && appSource.includes('startPending: false') && appSource.includes('lastStartedRunImmediately: false') && !appSource.includes('backend-scheduler-start-first-work') && !appSource.includes('persistActiveProject') && appSource.includes('silent = false') && appSource.includes('Immediate Start') && appSource.includes('Latest Backend Work') && appSource.includes('backend-last-result'), 'Backend Worker Station start must immediately kick current-project and Agent startup work through lightweight receipts, refresh silently, avoid optimistic browser-authored worker results, and surface the latest processed project/Agent result only after backend proof returns.');
 assert(appSource.includes('projectHasBackendSyncEvidence') && appSource.includes('!allowLocalRuntimeFallbackForActiveProject(project)') && appSource.includes('backendStation.projectCatalog') && appSource.includes('backendStation.lastManagerDashboardSyncAt') && appSource.includes('Local autonomous cycle blocked; backend route required') && appSource.includes('Local fallback disabled for backend-synced project.'), 'Browser-local autonomous scheduler and direct local autonomous cycle calls must be disabled for backend-synced real projects even when the local station status is stale; local cycles are allowed only for offline-only, demo/sample, or explicit development fallback projects.');
 assert(httpServerSource.includes('lastStartedRunImmediately') && httpServerSource.includes('state.lastResult') && httpServerSource.includes('forceAgentRun') && httpServerSource.includes('scheduler-start-agent-sweep'), 'HTTP scheduler status must preserve immediate-start, startup Agent sweep, and latest worker result evidence.');
 assert(appSource.includes('manager-ui-backend-pulse') && appSource.includes('Server Pulse'), 'Project dashboard must expose a backend-backed project pulse path.');
@@ -217,6 +229,7 @@ assert(httpServerSource.includes('cadence: input.projectCadence || input.cadence
 assert(appSource.includes('Sync State') && appSource.includes('syncBackendProjectState') && appSource.includes('applyBackendProjectSnapshot') && appSource.includes('saveActiveProjectToBackend') && appSource.includes('backend-save-project') && appSource.includes('Browser snapshot save is disabled for real backend projects.') && appSource.includes('disabled={backendStation.loading || !canSeedActiveProjectSnapshotToBackend(activeProject)}'), 'Project dashboard must sync backend project snapshots back into the manager UI and limit browser snapshot saves to sample/dev fallback projects.');
 assert(appSource.includes('mergeProjectMessages') && appSource.includes('Project sync:'), 'Backend project sync must merge returned chat messages without duplicating the manager transcript.');
 assert(appSource.includes('syncBackendProjectCatalog') && appSource.includes('/projects') && appSource.includes('projectCatalog') && appSource.includes('backend-sync-project-catalog') && appSource.includes('Sync Backend Projects'), 'Project dashboard must list/load backend projects from the backend catalog instead of treating localStorage as the only project source.');
+assert(appSource.includes('readStoredProjectArray') && appSource.includes('isBackendManagedBrowserCacheProject') && appSource.includes('cachedBackendManagedProjectIds') && appSource.includes('cachedBrowserProjectIds') && appSource.includes('!isBackendManagedBrowserCacheProject(project)') && appSource.includes('!backendManagedCachedIds.has(message.projectId || DEFAULT_CHAT_PROJECT_ID)') && appSource.includes('projectId === DEFAULT_CHAT_PROJECT_ID || browserProjectIds.has(projectId)') && appSource.includes('if (!project) return false;') && appSource.includes('isBackendManagedRealProject') && appSource.includes('canPersistProjectToBrowserCache') && appSource.includes('canPersistChatMessageToBrowserCache') && appSource.includes('const browserCacheProjects = projects.filter(canPersistProjectToBrowserCache)') && appSource.includes('const browserCacheMessages = chatMessages') && appSource.includes('!isBackendManagedRealProject(project)'), 'Browser localStorage project/chat cache must exclude backend-managed real projects and orphan project messages on startup and on write while keeping offline/demo/dev fallback cache available.');
 assert(appSource.includes('syncBackendManagerDashboard') && appSource.includes('/manager-dashboard') && appSource.includes('Backend Manager Snapshot') && appSource.includes('backend-manager-dashboard-snapshot'), 'Project dashboard must pull and show the backend manager-dashboard aggregate snapshot.');
 assert(appSource.includes('Manager dashboard sync:') && appSource.includes('Proof Routes') && appSource.includes('Ops Agents') && appSource.includes('Management Checks') && appSource.includes('Assignment Rows') && appSource.includes('Change Rows'), 'Backend manager-dashboard snapshot must expose readiness proof, operations, management, assignment, and change counts.');
 assert(appSource.includes('syncBackendManagerCommandCenter') && appSource.includes('/manager-command-center') && appSource.includes('Command center sync:') && appSource.includes('Sync Command') && appSource.includes('backend-sync-command-center') && appSource.includes('backend-manager-command-center-snapshot'), 'Project dashboard must sync and show the standalone manager command center endpoint without pre-writing stale browser snapshots.');
@@ -229,6 +242,7 @@ assert(appSource.includes('syncBackendManagerActionQueue') && appSource.includes
 assert(appSource.includes('syncBackendAgentAutonomousActionQueue') && appSource.includes('/agent-autonomous-action-queue') && appSource.includes('Agent autonomous queue sync:') && appSource.includes('Sync Agent Queue') && appSource.includes('backend-sync-agent-autonomous-action-queue') && appSource.includes('backend-agent-autonomous-action-queue-snapshot') && appSource.includes('runAgentAutonomousActionQueueRow') && appSource.includes('backend-agent-autonomous-action-run-'), 'Project dashboard must sync, show, and run the standalone Agent autonomous action queue endpoint without local mock mutation.');
 assert(appSource.includes('syncBackendManagerReadyPackage') && appSource.includes('/manager-ready-package') && appSource.includes('Ready package sync:') && appSource.includes('Manager Ready Package') && appSource.includes('backend-sync-ready-package') && appSource.includes('backend-manager-ready-package-snapshot'), 'Project dashboard must sync and show the manager ready package endpoint without pre-writing stale browser snapshots.');
 assert(appSource.includes('syncBackendReadyPackageSubmodels') && appSource.includes('/brainstorm-layer') && appSource.includes('/artifact-quality-audit') && appSource.includes('/submission-review-workflow') && appSource.includes('/product-team-delivery-trace') && appSource.includes('missingProductTeamDeliveryTrace') && appSource.includes('fetch-product-team-delivery-trace') && appSource.includes('/product-team-operating-loop') && appSource.includes('missingProductTeamOperatingLoop') && appSource.includes('fetch-product-team-operating-loop') && appSource.includes('/evidence-quality-audit') && appSource.includes('/evidence-source-review-workflow') && appSource.includes('/evidence-custody-readiness') && appSource.includes('readyPackageSubmodels') && appSource.includes('backend-sync-proof-models') && appSource.includes('Sync Proof Models'), 'Manager Ready Package proof subpanels must refresh standalone backend read models and expose backend-required missing state for delivery trace and operating loop instead of depending only on embedded package snapshots or frontend summary fallbacks.');
+assert(serviceSource.includes('productTeamAcceptanceChainRoutes') && serviceSource.includes('readyForGenericProductTeamAcceptance') && serviceSource.includes('readyForBsideProductTeamRun') && appSource.includes('proof-map-product-team-acceptance-chain') && appSource.includes('Generic Product-Team Acceptance Chain'), 'Readiness Proof Map and Manager UI must expose the generic product-team acceptance chain as a route-backed C/A acceptance proof instead of scattered mock panels.');
 assert(
   appSource.includes('missingBrainstormLayer')
     && appSource.includes('missingArtifactQualityAudit')
@@ -249,12 +263,20 @@ assert(
 assert(appSource.includes('includeLaunchControls') && appSource.includes('/production-launch-control-center') && appSource.includes('/production-evidence-integrity-audit') && appSource.includes('/production-operations-control-receipts') && appSource.includes('/production-deployment-control-receipts') && appSource.includes('/production-security-control-receipts') && appSource.includes('/production-provider-control-receipts') && appSource.includes('backendReadyPackageSubmodels.productionLaunchControlCenter') && appSource.includes('backendReadyPackageSubmodels.productionSecurityControlReceiptWorkflow'), 'Manager Ready Package launch/control panels must prefer standalone backend read models when full proof-model sync is requested.');
 assert(appSource.includes('allowReadyPackageDerivedFallbacks') && appSource.includes('backendOnlineForReadyPackage') && appSource.includes('missingProductionLaunchGapRegister') && appSource.includes('missingProductionLaunchControlCenter') && appSource.includes('missingProductionEvidenceIntegrityAudit') && appSource.includes('missingProductionLaunchEvidenceDossier') && appSource.includes('missingProductionControlReceiptWorkflow') && appSource.includes('frontendMockSuppressed') && appSource.includes('backend-model-missing'), 'Backend-online real Manager Ready Package launch/control panels must show missing backend read models instead of synthesizing production fallback shapes.');
 assert(apiSource.includes('productionControlReceiptReadModels') && apiSource.includes('productionOperationsControlReceiptWorkflowRoute') && apiSource.includes('productionDeploymentControlReceiptWorkflowRoute') && apiSource.includes('productionSecurityControlReceiptWorkflowRoute') && apiSource.includes('productionProviderControlReceiptWorkflowRoute'), 'Production-control receipt POST routes must support lightweight receipt responses with explicit standalone read-model refresh routes.');
+assert(apiSource.includes('launchApprovalReadModels') && apiSource.includes('launchApprovalWorkflowRoute') && apiSource.includes('privatePilotGoLiveReadinessRoute') && apiSource.includes("route.action === 'launch-approvals'") && apiSource.includes('includeReadModels'), 'Launch approval POST routes must support receipt-first responses with explicit launch/go-live refresh routes.');
+assert(apiSource.includes('securityBoundaryReadModels') && apiSource.includes('membershipPolicyRoute') && apiSource.includes('identitySessionsRoute') && apiSource.includes('securityAccessAuditRoute') && apiSource.includes("route.action === 'identity-sessions'") && apiSource.includes("route.action === 'membership-policy'"), 'Security membership and identity-session write routes must support receipt-first responses with explicit security refresh routes.');
 assert(appSource.includes('refreshBackendManagerView') && appSource.includes('Sync Manager View'), 'Backend Worker Station must let managers manually refresh only the aggregate manager-dashboard view.');
 assert(appSource.includes('applyBackendManagerDashboardPayload') && appSource.includes('payload.managerDashboard') && appSource.includes('payload.managerReadyPackage') && appSource.includes('applyBackendManagerDashboardPayload(kickoffResult)'), 'Backend command responses must be able to update the manager dashboard and ready package snapshots without an extra fetch.');
 assert(appSource.includes('backend-url-input') && appSource.includes('Save URL') && appSource.includes('hall_of_fame_studio.agent_backend_url.v1'), 'Backend Worker Station must let managers configure and persist the backend URL.');
 assert(appSource.includes('shouldAttemptBackendProjectWrite') && appSource.includes("runBackendProjectCommand('chat'") && appSource.includes("runBackendProjectCommand('meeting'"), 'Project chat and War Room inputs must attempt backend project commands through the configured endpoint instead of trusting a possibly stale station status flag.');
 assert(appSource.includes('allowLocalRuntimeFallbackForActiveProject') && appSource.includes('projectHasBackendSyncEvidence') && appSource.includes('Backend chat failed; local fallback disabled for backend-online project') && appSource.includes('Backend meeting failed; local fallback disabled for backend-online project') && appSource.includes('used allowed local runtime fallback'), 'Backend-synced real project inputs must fail closed instead of silently mutating browser state; local runtime fallback is limited to offline-only, demo/sample, or explicit development mode.');
-assert(appSource.includes('const handleTerminalSubmit = async') && appSource.includes("const backendResult = await runBackendProjectCommand('meeting'") && appSource.includes('Backend legacy terminal meeting failed; local fallback disabled for backend-online project'), 'Legacy War Room terminal input must use the same backend-first meeting command and fail closed for backend-online real projects.');
+assert(appSource.includes('projectInputUiStateKey') && appSource.includes('chatInputDrafts') && appSource.includes('roomInputDrafts') && appSource.includes('activeChannelDrafts') && !appSource.includes("const [chatInput, setChatInput] = useState('')") && !appSource.includes("const [roomInput, setRoomInput] = useState('')") && !appSource.includes("const [activeChannelId, setActiveChannelId] = useState('main')"), 'Project chat input, War Room meeting input, and active chat channel must be project-scoped before they can write backend chat or meeting proof.');
+assert(appSource.includes('focusedChatProofIdDrafts') && appSource.includes('focusedTimelineProofIdDrafts') && appSource.includes('selectedTimelineEventDrafts') && !appSource.includes('const [focusedChatProofIds, setFocusedChatProofIds] = useState([])') && !appSource.includes('const [focusedTimelineProofIds, setFocusedTimelineProofIds] = useState([])') && !appSource.includes('const [selectedTimelineEventId, setSelectedTimelineEventId] = useState(null)'), 'Chat proof focus, timeline proof focus, and selected timeline event must be project-scoped Manager monitoring state.');
+assert(serviceSource.includes('runRoundtableExchange') && serviceSource.includes("schemaVersion: 'meeting-agent-turn/v1'") && serviceSource.includes('meetingAgentTurns') && serviceSource.includes("source: 'war-room-meeting-agent-turn'") && serviceSource.includes("eventType: 'meeting-agent-turn'"), 'Backend meeting commands must generate durable Agent meeting turns and timeline logs instead of leaving War Room discussion as frontend-only simulation.');
+assert(apiSource.includes('meetingAgentTurns: result.meetingAgentTurns || []') && apiSource.includes('meetingProtocol: result.meetingProtocol || null'), 'Backend API must expose generated Agent meeting turns to frontend War Room consumers.');
+assert(appSource.includes('playBackendMeetingTurns') && appSource.includes('backendResult?.meetingAgentTurns') && appSource.includes("source: turn.source || 'war-room-meeting-agent-turn'") && appSource.includes('backendTurnEvents.length') && appSource.includes('blockMissingBackendMeetingTurns') && appSource.includes('Backend meeting returned no Agent turns; local simulation blocked') && !appSource.includes('if (!renderedBackendTurns) runRoomSimulation(text, nextProject);'), 'React War Room must play backend-authored meeting turns and block frontend local meeting simulation when backend-online projects return no Agent turns.');
+assert(appSource.includes('const startMeeting = async') && appSource.includes("const backendResult = await runBackendProjectCommand('meeting'") && appSource.includes('BACKEND WAR ROOM SESSION OPENED') && appSource.includes('Backend meeting start failed; local fallback disabled for backend-online project'), 'Legacy War Room session start must write through the backend meeting command and fail closed for backend-online real projects.');
+assert(appSource.includes('const handleTerminalSubmit = async') && appSource.includes("const backendResult = await runBackendProjectCommand('meeting'") && appSource.includes('Backend legacy terminal meeting failed; local fallback disabled for backend-online project') && appSource.includes('Backend legacy terminal meeting returned no Agent turns; local route simulation blocked') && appSource.includes('Backend legacy terminal meeting response lacked meetingAgentTurns; no local mock meeting was created.'), 'Legacy War Room terminal input must use the same backend-first meeting command and fail closed for backend-online real projects, including missing backend Agent turns.');
 assert(!appSource.includes('Backend chat failed, used local runtime') && !appSource.includes('Backend meeting failed, used local runtime'), 'Backend-connected chat and meeting inputs must not silently create local fallback success by default.');
 assert(serviceSource.includes('contractProjectAgent') && serviceSource.includes("schemaVersion: 'agent-contract/v1'") && serviceSource.includes("eventType: 'agent-contracted'") && serviceSource.includes("type: 'agent-contracted'"), 'Backend service must expose a proofed Agent contract roster mutation.');
 assert(apiSource.includes("route.tail[0] === 'contract'") && apiSource.includes('service.contractProjectAgent') && apiSource.includes('agentContract'), 'Backend API must expose Agent marketplace contract as a project roster route.');
@@ -265,20 +287,27 @@ assert(appSource.includes('backendSchedulerAgentSweepBody') && appSource.include
 assert(serviceSource.includes('runAutonomousRunControlLoop') && serviceSource.includes("schemaVersion: 'autonomous-run-control-loop-run/v1'") && serviceSource.includes('autonomousRunControlLoopLedger') && serviceSource.includes('autonomousRunControlLoopRoutes'), 'Backend service must expose a bounded autonomous run-control loop receipt with ledger and proof-map routes.');
 assert(apiSource.includes("route.tail[0] === 'run-loop'") && apiSource.includes('service.runAutonomousRunControlLoop') && apiSource.includes('autonomousRunControlLoop'), 'Backend API must expose the autonomous run-control bounded loop route.');
 assert(appSource.includes('runAutonomousRunControlLoop') && appSource.includes('backend-autonomous-run-control-loop-run') && appSource.includes('backend-autonomous-run-control-loop-receipt') && appSource.includes('Loop receipt:'), 'React Backend Worker Station must let the manager run and inspect a bounded autonomous run-control loop receipt.');
-assert(serviceSource.includes('startAutonomousRunControlSession') && serviceSource.includes('tickAutonomousRunControlSession') && serviceSource.includes('pauseAutonomousRunControlSession') && serviceSource.includes("schemaVersion: 'autonomous-run-control-session/v1'") && serviceSource.includes("schemaVersion: 'autonomous-run-control-session-tick/v1'") && serviceSource.includes("schemaVersion: 'autopilot-delivery-target/v1'") && serviceSource.includes("schemaVersion: 'autopilot-delivery-target-control/v1'") && serviceSource.includes('buildAutopilotTargetExecutionOverrides') && serviceSource.includes("schemaVersion: 'autonomous-run-control-target-selection/v1'") && serviceSource.includes('targetMissingStageIds') && serviceSource.includes('autonomousRunControlSessionRoutes'), 'Backend service must expose proofed autonomous run-control sessions, session tick routes, Product Team delivery target tracking, target execution overrides, and target-aware action selection.');
-assert(serviceSource.includes('runDueAutonomousRunControlSessions') && serviceSource.includes("schemaVersion: 'autopilot-due-worker-summary/v1'") && serviceSource.includes("schemaVersion: 'autopilot-session-schedule/v1'") && serviceSource.includes('autopilotQueue') && serviceSource.includes("autopilotDueWorker: '/workers/autopilot/due'"), 'Backend service must expose bounded Autopilot session due-worker scanning and queue rows for scheduler-owned autonomous sessions.');
-assert(apiSource.includes("route.tail[0] === 'sessions'") && apiSource.includes('service.startAutonomousRunControlSession') && apiSource.includes('service.tickAutonomousRunControlSession') && apiSource.includes('service.pauseAutonomousRunControlSession'), 'Backend API must expose autonomous run-control session start/tick/pause routes.');
-assert(apiSource.includes("workerRoute?.worker === 'autopilot'") && apiSource.includes('service.runDueAutonomousRunControlSessions') && apiSource.includes("schemaVersion: result.schemaVersion || 'autopilot-due-worker-summary/v1'"), 'Backend API must expose a bounded Autopilot due-worker route for scheduler-owned session ticks.');
-assert(httpServerSource.includes('/workers/autopilot/due') && httpServerSource.includes("schemaVersion: 'scheduler-autopilot-controls/v1'") && httpServerSource.includes('tickAutopilotSessions') && httpServerSource.includes('autopilotProcessedCount'), 'HTTP scheduler must be able to opt into Autopilot session ticks and expose the controls/counters it used.');
+assert(serviceSource.includes('startAutonomousRunControlSession') && serviceSource.includes('tickAutonomousRunControlSession') && serviceSource.includes('tickAutonomousRunControlSessionWithProviderEvidence') && serviceSource.includes('pauseAutonomousRunControlSession') && serviceSource.includes("schemaVersion: 'autonomous-run-control-session/v1'") && serviceSource.includes("schemaVersion: 'autonomous-run-control-session-tick/v1'") && serviceSource.includes("schemaVersion: 'autopilot-delivery-target/v1'") && serviceSource.includes("schemaVersion: 'autopilot-delivery-target-control/v1'") && serviceSource.includes('buildAutopilotTargetExecutionOverrides') && serviceSource.includes("schemaVersion: 'autonomous-run-control-target-selection/v1'") && serviceSource.includes('targetMissingStageIds') && serviceSource.includes('autonomousRunControlSessionRoutes'), 'Backend service must expose proofed autonomous run-control sessions, session tick routes, Product Team delivery target tracking, target execution overrides, target-aware action selection, and an async provider-evidence session tick path.');
+assert(serviceSource.includes('runDueAutonomousRunControlSessions') && serviceSource.includes('runDueAutonomousRunControlSessionsWithProviderEvidence') && serviceSource.includes("schemaVersion: 'autopilot-due-worker-summary/v1'") && serviceSource.includes("schemaVersion: 'autopilot-session-schedule/v1'") && serviceSource.includes('autopilotQueue') && serviceSource.includes("autopilotDueWorker: '/workers/autopilot/due'"), 'Backend service must expose bounded Autopilot session due-worker scanning, async provider-evidence due ticks, and queue rows for scheduler-owned autonomous sessions.');
+assert(serviceSource.includes('autonomousRunControlSessionTickLedger || []).map') && serviceSource.includes("workerKind: 'autopilot-session'") && serviceSource.includes("autopilotQueue: 'oldest-active-session-per-project-then-due-time'") && workerQueueAdapterSource.includes('workerQueueSnapshot.autopilotQueue'), 'Autopilot session ticks must be exported as worker execution receipts and imported by the queue adapter lane, not left as UI-only session ledger proof.');
+assert(apiSource.includes("route.tail[0] === 'sessions'") && apiSource.includes('service.startAutonomousRunControlSession') && apiSource.includes('service.tickAutonomousRunControlSession') && apiSource.includes('service.tickAutonomousRunControlSessionWithProviderEvidence') && apiSource.includes('service.pauseAutonomousRunControlSession'), 'Backend API must expose autonomous run-control session start/tick/pause routes, including the async provider-evidence tick branch.');
+assert(apiSource.includes("workerRoute?.worker === 'autopilot'") && apiSource.includes('service.runDueAutonomousRunControlSessions') && apiSource.includes('service.runDueAutonomousRunControlSessionsWithProviderEvidence') && apiSource.includes("schemaVersion: result.schemaVersion || 'autopilot-due-worker-summary/v1'") && apiSource.includes('providerEvidenceSearchEnabled: true'), 'Backend API must expose bounded Autopilot due-worker routes for scheduler-owned session ticks, including async provider-evidence due-worker responses.');
+assert(apiSource.includes('autonomousRunControlReadModels') && apiSource.includes('autonomousRunControlSessionsRoute') && apiSource.includes('autonomousRunControlSessionTickRoute') && apiSource.includes("schedulerTickRoute: '/workers/autonomous/tick'") && apiSource.includes("autopilotDueWorkerRoute: '/workers/autopilot/due'"), 'Autonomous Run Control writes must return dedicated session, scheduler, due-worker, Flow, Proof, timeline, and Agent refresh routes when read models are deferred.');
+assert(httpServerSource.includes('/workers/autopilot/due') && httpServerSource.includes('api.handleAsync || api.handle') && httpServerSource.includes('useProviderEvidenceSearch') && httpServerSource.includes("schemaVersion: 'scheduler-autopilot-controls/v1'") && httpServerSource.includes('tickAutopilotSessions') && httpServerSource.includes('autopilotProcessedCount'), 'HTTP scheduler must be able to opt into async Autopilot session ticks, pass provider-evidence controls, and expose the controls/counters it used.');
 assert(appSource.includes('startAutonomousRunControlSession') && appSource.includes('tickAutonomousRunControlSession') && appSource.includes('pauseAutonomousRunControlSession') && appSource.includes('backend-autonomous-run-control-session-start') && appSource.includes('backend-autonomous-run-control-session-tick-receipt') && appSource.includes('Autopilot session:') && appSource.includes('targetReadyCount'), 'React Backend Worker Station must let the manager start, tick, pause, and inspect an autonomous run-control session with delivery target progress.');
-assert(appSource.includes('runAutopilotSessionThroughScheduler') && appSource.includes('ensureBackendAutopilotSessionForScheduler') && appSource.includes("requestAgentBackend('/workers/autonomous/tick'") && appSource.includes('tickAutopilotSessions: true') && appSource.includes('backend-autonomous-run-control-session-scheduler-tick') && appSource.includes('backend-scheduler-autopilot-controls') && appSource.includes('backend-autonomous-run-control-session-worker-receipt') && appSource.includes('Autopilot worker: /workers/autonomous/tick -> /workers/autopilot/due'), 'React Backend Worker Station must confirm a durable backend Autopilot session, advance it through the scheduler-owned due-worker lane, and show the Autopilot scheduler receipt.');
+assert(appSource.includes('runAutopilotSessionThroughScheduler') && appSource.includes('ensureBackendAutopilotSessionForScheduler') && appSource.includes('extractAutopilotProviderEvidenceReceipt') && appSource.includes("requestAgentBackend('/workers/autonomous/tick'") && appSource.includes('tickAutopilotSessions: true') && appSource.includes('providerEvidenceSearchEnabled: true') && appSource.includes('backend-autonomous-run-control-session-scheduler-tick') && appSource.includes('backend-scheduler-autopilot-controls') && appSource.includes('backend-autonomous-run-control-session-worker-receipt') && appSource.includes('backend-autopilot-provider-evidence-receipt') && appSource.includes('Provider evidence:') && appSource.includes('Autopilot worker: /workers/autonomous/tick -> /workers/autopilot/due'), 'React Backend Worker Station must confirm a durable backend Autopilot session, advance it through the scheduler-owned due-worker lane, request provider evidence, and show the Autopilot scheduler/provider evidence receipt.');
+assert(appSource.includes('chatProofIdsFromAttachment') && appSource.includes('providerEvidenceMessageId') && appSource.includes('providerEvidenceTranscriptRoute') && appSource.includes('flow-open-transcript-') && appSource.includes('Transcript proof'), 'Manager Flow Graph attachments must expose provider-evidence transcript proof jumps into backend Group Chat.');
+assert(appSource.includes('const enterProjectScene = (mode)') && appSource.includes('projectMode === mode') && !appSource.includes("sceneTransition || projectMode !== 'dashboard'"), 'Project proof navigation must allow Flow Graph and other project scenes to jump directly into chat/timeline proof views, not only from the dashboard.');
+assert(appSource.includes('refreshAutonomousRunControlReadModels') && appSource.includes('readRoutes.autonomousRunControlSessionsRoute') && appSource.includes('readRoutes.productTeamOperatingLoopRoute') && appSource.includes('readRoutes.autonomousCycleConsistencyRoute'), 'React must consume Autonomous Run Control receipt read-model routes for C/A session, operating-loop, cycle-consistency, Flow, Proof, timeline, and Agent queue refresh.');
 assert(appSource.includes('runBackendAgentMessage') && appSource.includes('/message') && appSource.includes('Agent Message') && appSource.includes('agent-message-send-'), 'Project dashboard must expose backend-backed Agent-to-Agent message publishing controls.');
 assert(appSource.includes('Agent Communication Flow') && appSource.includes('agentCommunicationRows') && appSource.includes('Sender Worklog') && appSource.includes('Agent chat proof'), 'Project dashboard must expose Agent-to-Agent communication flow proof.');
 assert(appSource.includes('agent-message-delivery-matrix') && appSource.includes('Agent Message Delivery Matrix') && appSource.includes('Direct Receipt') && appSource.includes('Target Inbox') && appSource.includes('Delivery chat proof') && appSource.includes('Delivered Messages'), 'Project dashboard must expose per-target Agent message delivery from group chat receipt to target inbox.');
+assert(appSource.includes('proof-map-agent-message-routes') && appSource.includes('backendAgentMessageSummary') && appSource.includes('Agent-to-Agent message routes') && appSource.includes('Agent message timeline proof'), 'Manager Proof Map must render backend Agent-to-Agent message routes with timeline proof exits.');
 assert(appSource.includes('agent-priority-') && appSource.includes('latestAgentWorker.managementPriority') && appSource.includes('priorityReasons.slice'), 'Project dashboard must expose visible Agent worker priority and reasons in each Team row.');
 assert(appSource.includes('agent-state-detail-') && appSource.includes('Latest Inbox') && appSource.includes('Open Obligation') && appSource.includes('Latest Worklog') && appSource.includes('Next Agent Run'), 'Project dashboard must expose each Agent as an independent visible state surface.');
 assert(appSource.includes('selectedAgentFocusId') && appSource.includes('agent-focus-open-') && appSource.includes('agent-focus-panel-') && appSource.includes('Agent Focus Workspace') && appSource.includes('Owned Task Evidence') && appSource.includes('agent-focus-chat-proof-') && appSource.includes('agent-focus-timeline-proof-') && appSource.includes('Management Surface') && appSource.includes('agent-focus-management-proof-'), 'Project dashboard must let managers open a dedicated per-Agent focus workspace with plan, inbox, obligations, owned tasks, management surface, and proof routes.');
-assert(appSource.includes('agentDashboardSnapshots') && appSource.includes('syncBackendAgentDashboard') && appSource.includes('/agents/${encodeURIComponent(agentId)}/dashboard') && appSource.includes('Backend Agent Dashboard') && appSource.includes('agent-focus-backend-dashboard-') && appSource.includes('agent-focus-backend-cadence-') && appSource.includes('agent-focus-backend-control-runs-') && appSource.includes('agent-focus-control-run-receipt-') && appSource.includes('agent-focus-dashboard-source-') && appSource.includes('agent-focus-backend-dashboard-required-') && appSource.includes('Sync Agent Dashboard') && appSource.includes('local Agent state stays visible as project snapshot context') && appSource.includes('Next Run') && appSource.includes('Management Priority') && appSource.includes('Routine') && appSource.includes('Control Runs'), 'Per-Agent focus workspace must sync and display the backend Agent dashboard read model, show backend-required missing state for real projects, and expose cadence, management priority, fixed routine, and autonomous control run receipts when online.');
+assert(appSource.includes('agentDashboardSnapshots') && appSource.includes('agentDashboardSnapshotKey') && appSource.includes('agentDashboardSnapshotFor') && appSource.includes('syncBackendAgentDashboard') && appSource.includes('/agents/${encodeURIComponent(agentId)}/dashboard') && appSource.includes('Backend Agent Dashboard') && appSource.includes('agent-focus-backend-dashboard-') && appSource.includes('agent-focus-backend-cadence-') && appSource.includes('agent-focus-backend-control-runs-') && appSource.includes('agent-focus-control-run-receipt-') && appSource.includes('agent-focus-dashboard-source-') && appSource.includes('agent-focus-backend-dashboard-required-') && appSource.includes('Sync Agent Dashboard') && appSource.includes('local Agent state stays visible as project snapshot context') && appSource.includes('Next Run') && appSource.includes('Management Priority') && appSource.includes('Routine') && appSource.includes('Control Runs'), 'Per-Agent focus workspace must sync and display the backend Agent dashboard read model, scope cached snapshots by project plus Agent, show backend-required missing state for real projects, and expose cadence, management priority, fixed routine, and autonomous control run receipts when online.');
+assert(appSource.includes('projectAgentUiStateKey') && appSource.includes('projectSubmissionUiStateKey') && appSource.includes('agentWorkDraftFor') && appSource.includes('agentMessageDraftFor') && appSource.includes('submissionReviewDraftFor') && !appSource.includes('agentWorkDrafts[agent.id]') && !appSource.includes('agentMessageDrafts[agent.id]') && !appSource.includes('submissionReviewDrafts[row.id]'), 'Agent Focus workspace drafts and Reviewer composer state must be project-scoped before they can write backend Agent work, messages, or reviews.');
 assert(appSource.includes('agent-focus-pulse-') && appSource.includes('Run Agent Pulse') && appSource.includes('runBackendAgentPulse(agent.id)'), 'Per-Agent focus workspace must let managers trigger that Agent fixed work pulse directly.');
 assert(appSource.includes('agent-inbox-proof-') && appSource.includes('agent-obligation-proof-') && appSource.includes('agent-worklog-timeline-') && appSource.includes('openProjectChatProof') && appSource.includes('openProjectTimelineProof'), 'Project dashboard must let managers jump from each Agent state surface to exact chat and timeline proof.');
 assert(appSource.includes('Leader Assignment Flow') && appSource.includes('Group @Assignment') && appSource.includes('Assignee Inbox') && appSource.includes('Acknowledgement') && appSource.includes('Work Pulse') && appSource.includes('Assignment chat proof') && appSource.includes('Assignment timeline proof'), 'Project dashboard must expose a manager-readable Leader @assignment flow from group chat to Agent inbox, acknowledgement, work pulse, and timeline proof.');
@@ -288,7 +317,7 @@ assert(appSource.includes('assignmentTimelineMatrixRows') && appSource.includes(
 assert(serviceSource.includes('assignmentTimelineMatrix') && serviceSource.includes('assignmentTimelineMatrixRows') && serviceSource.includes('timelineReadyCount') && serviceSource.includes('assignmentTimelineLogIds'), 'Backend manager dashboard must expose Leader assignment timeline matrix rows.');
 assert(appSource.includes('assignment-work-progress-matrix') && appSource.includes('Assignment Work Progress Matrix') && appSource.includes('Progress Chat') && appSource.includes('Timeline Progress') && appSource.includes('Completion Proof') && appSource.includes('Progress timeline proof') && appSource.includes('Completion timeline proof') && appSource.includes('Assignment Progress'), 'Project dashboard must expose assigned-work progress, latest update, and completion proof mapped to the timeline.');
 assert(serviceSource.includes('assignmentWorkProgressRows') && serviceSource.includes('assignmentWorkProgress') && serviceSource.includes('progressReadyCount') && serviceSource.includes('completionReadyCount'), 'Backend manager dashboard must expose assigned-work progress and completion rows.');
-assert(appSource.includes('managerAssignmentDraft') && appSource.includes('Leader Assignment Composer') && appSource.includes('manager-leader-assignment-composer') && appSource.includes('manager-assignment-composer-input') && appSource.includes('manager-assignment-composer-target') && appSource.includes('manager-assignment-composer-submit') && appSource.includes('submitManagerLeaderAssignment'), 'Project dashboard must let managers type custom work for the confirmed Leader to @assign in group chat.');
+assert(appSource.includes('managerAssignmentDraft') && appSource.includes('projectManagerUiStateKey') && appSource.includes('managerAssignmentDraftFor') && appSource.includes('updateManagerAssignmentDraft') && appSource.includes('Leader Assignment Composer') && appSource.includes('manager-leader-assignment-composer') && appSource.includes('manager-assignment-composer-input') && appSource.includes('manager-assignment-composer-target') && appSource.includes('manager-assignment-composer-submit') && appSource.includes('submitManagerLeaderAssignment') && !appSource.includes('setManagerAssignmentDraft(prev'), 'Project dashboard must let managers type custom work for the confirmed Leader to @assign in group chat, with the draft scoped to the active project.');
 assert(appSource.includes('Manager Proof Map') && appSource.includes('manager-proof-map') && appSource.includes('managerProofMapRows') && appSource.includes('openManagerProofMapRow') && appSource.includes('Every readiness condition has a direct evidence route') && appSource.includes('transcriptProofCoverageSummary') && appSource.includes('proof-map-transcript-proof-coverage') && appSource.includes('Open transcript coverage proof'), 'Manager Scenario Readiness must expose an actionable proof map for every manager-ready condition, including backend transcript proof coverage.');
 assert(appSource.includes('proof-map-') && appSource.includes('Kickoff chat proof') && appSource.includes('Group chat proof') && appSource.includes('Timeline proof') && appSource.includes('Change proof') && appSource.includes('Management proof'), 'Manager Proof Map must route checks to kickoff, group chat, timeline, change, and management evidence.');
 assert(appSource.includes('Scenario Control Center') && appSource.includes('scenario-control-center') && appSource.includes('Kickoff Decisions') && appSource.includes('24/7 Work Pulse') && appSource.includes('Agent Management Sync') && appSource.includes('Mid-project Change Intake') && appSource.includes('Manager Evidence Exit') && appSource.includes('scenario-control-action-'), 'Project dashboard must expose a manager-first scenario control center from kickoff decisions through 24/7 work, management sync, change intake, and proof exit.');
@@ -297,6 +326,9 @@ assert(appSource.includes('const backendCommandAvailable = shouldAttemptBackendP
 assert(appSource.includes('if (!activeProject || !backendCommandAvailable || !action || !action.canRun) return null;') && appSource.includes('if (!activeProject || !backendCommandAvailable) return null;') && appSource.includes('disabled={!backendCommandAvailable || backendStation.loading || !action.canRun}') && appSource.includes('disabled={!backendCommandAvailable || backendStation.loading || !row.canRun || row.routeResolved === false}'), 'Autonomous Run Control and Agent Autonomous Queue actions must attempt backend routes whenever the project has a backend command target, even if the station status label is stale.');
 assert(appSource.includes('const canSeedActiveProjectSnapshotToBackend = (project = activeProject)') && appSource.includes('if (!canSeedActiveProjectSnapshotToBackend(activeProject))') && appSource.includes('Backend project not found; local snapshot seeding is disabled for real projects.'), 'Hidden backend project seeding must be limited to sample/dev fallback projects; real backend command paths must fail closed instead of PUT-ing stale browser snapshots.');
 assert(appSource.includes('runBackendPrivatePilotReceipt') && appSource.includes('manager-ui-private-pilot-receipt') && appSource.includes('includeReadModels: false'), 'Manager UI must record private-pilot launch receipts through backend command routes with receipt-first refresh, not frontend state mutation.');
+assert(apiSource.includes('providerEvalRunReadModels') && apiSource.includes("route.action === 'provider-eval-runs'") && apiSource.includes('providerEvalRunWorkflowRoute') && apiSource.includes('providerControlledRunRoute') && apiSource.includes('managerReadyPackageRoute'), 'Provider eval run writes must support receipt-first provider/manager read-model refresh routes instead of embedding large Manager snapshots.');
+assert(appSource.includes('backend-provider-eval-record-shadow-replay') && appSource.includes('manager-ui-provider-eval-receipt') && appSource.includes("workflowKey: 'providerEvalRunWorkflow'") && appSource.includes("receiptKey: 'providerEvalRun'"), 'Manager UI must let C-side operators record provider eval shadow replay through the backend receipt path.');
+assert(appSource.includes('runBackendProductionControlReceipt') && appSource.includes('manager-ui-production-control-receipt') && appSource.includes("evidenceEnvironment: 'local-rehearsal'") && appSource.includes('backend-production-operations-record-controls') && appSource.includes('backend-production-deployment-record-controls') && appSource.includes('backend-production-security-record-controls') && appSource.includes('backend-production-provider-record-controls'), 'Manager UI production-control buttons must write backend local-rehearsal receipts instead of frontend state or public-production certification.');
 assert(
   appSource.includes('backend-private-pilot-record-release-candidate')
     && appSource.includes('backend-private-pilot-record-launch-run')
@@ -326,7 +358,8 @@ assert(appSource.includes('backendOrAllowedFallback') && appSource.includes('fro
 assert(appSource.includes('managerReadModelSourceLabel') && appSource.includes('managerReadModelSourceClass') && appSource.includes('manager-command-center-source') && appSource.includes('manager-scenario-walkthrough-source') && appSource.includes('manager-action-playbook-source') && appSource.includes('manager-use-case-audit-source') && appSource.includes('sync-protocol-audit-source'), 'Manager governance surfaces must expose visible backend-backed/demo/backend-required source labels for C-side proof controls.');
 assert(appSource.includes('manager-flow-graph/missing-backend') && appSource.includes('manager-flow-source-label') && appSource.includes('manager-flow-backend-required') && appSource.includes('backendFlowGraphReady') && appSource.includes('const allowFlowFrontendFallbacks = allowLocalRuntimeFallbackForActiveProject(activeProject)') && appSource.includes('onClick={() => syncBackendManagerFlowGraph({ silent: false })}') && appSource.includes('disabled={!backendCommandAvailable || backendStation.loading}') && appSource.includes('onClick={() => confirmManagerFlowNode(selectedNode.id, true)}') && appSource.includes('onClick={() => confirmManagerFlowNode(selectedNode.id, false)}'), 'Manager Flow Graph must suppress frontend fallback rows for backend-synced real projects and keep Sync/Confirm/Supersede backend-attemptable from the configured command target rather than a stale frontend online status label.');
 assert(appSource.includes('agent-workbench-') && appSource.includes('runBackendAgentEvidenceSearch') && appSource.includes('runBackendAgentArtifactSubmission') && appSource.includes('runBackendAgentArtifactDraft'), 'Agent Focus Workspace must expose a backend-backed Agent Workbench for evidence, artifact submissions, and draft submissions.');
-assert(appSource.includes('/evidence-searches') && appSource.includes('/submissions') && appSource.includes('/artifact-drafts') && appSource.includes('includeReadModels: false') && appSource.includes('refreshAgentWriteReadModels'), 'Agent Workbench writes must use backend Agent routes with lightweight read-model receipts and explicit read-model refreshes instead of frontend mock rows.');
+assert(appSource.includes('/evidence-searches') && appSource.includes('/submissions') && appSource.includes('/artifact-drafts') && appSource.includes('includeReadModels: false') && appSource.includes('refreshAgentWriteReadModels') && appSource.includes('readRoutes.projectRoute') && appSource.includes('readRoutes.readinessProofMapRoute') && appSource.includes('readRoutes.transcriptsRoute') && appSource.includes('readRoutes.timelineRoute') && appSource.includes('readRoutes.eventsRoute') && appSource.includes('projectPayload?.project'), 'Agent Workbench writes must use backend Agent routes with lightweight read-model receipts and explicit project/proof/transcript/timeline/event refreshes instead of frontend mock rows.');
+assert(apiSource.includes('projectMessagesRoute') && apiSource.includes('mainTranscriptRoute') && apiSource.includes('readinessProofMapRoute') && apiSource.includes('timelineRoute') && apiSource.includes('eventsRoute'), 'Lightweight backend read-model receipts must expose project, proof map, transcript, timeline, and event refresh routes for Agent and Manager writes.');
 assert(appSource.includes('if (!activeProject || !agentId || !shouldAttemptBackendProjectWrite(activeProject)) return;') && appSource.includes('if (!activeProject?.id || !submission?.id || !shouldAttemptBackendProjectWrite(activeProject)) return;') && appSource.includes('disabled={!backendCommandAvailable || backendStation.loading || workbenchTaskOptions.length === 0}') && appSource.includes('disabled={!backendCommandAvailable || backendStation.loading || workbenchReviewOptions.length === 0}') && appSource.includes('disabled={!backendCommandAvailable || backendStation.loading}') && appSource.includes('disabled={!backendCommandAvailable || backendStation.loading || !rowReviewerId}') && appSource.includes('disabled={!backendCommandAvailable || backendStation.loading || !selectedMessageTarget}'), 'Agent Workbench, Reviewer composer, Agent Pulse, and Agent-to-Agent message controls must remain backend-attemptable from the configured backend command target instead of relying on a stale frontend online label.');
 assert(appSource.includes('AGENT_WORKBENCH_ARTIFACT_TYPES') && appSource.includes('discovery-report') && appSource.includes('brainstorm-board') && appSource.includes('evidence-packet') && appSource.includes('product-brief') && appSource.includes('decision-proposal') && appSource.includes('risk-review') && appSource.includes('implementation-plan') && appSource.includes('final-deliverable'), 'Agent Workbench must stay generic to product-team artifact nodes rather than becoming a research-only surface.');
 assert(serviceSource.includes('agent-artifact-storage-proof/v1') && serviceSource.includes('artifactStorageProofChecksum') && serviceSource.includes('artifact-storage-proof-ready') && serviceSource.includes('artifact-storage-proofs'), 'Agent submissions must carry checksummed artifact storage proof through the standard submission contract, artifact audit, archive manifest, and persistence/read-model surfaces.');
@@ -343,9 +376,12 @@ assert(serviceSource.includes('kickoffMeetingRoute') && serviceSource.includes('
 assert(serviceSource.includes('requestBodyTemplate') && serviceSource.includes('requestBodyRequired') && serviceSource.includes('rerunnable: true') && serviceSource.includes('manager-action-playbook-24-7-pulse') && serviceSource.includes("apiPath: '/workers/autonomous/tick'") && serviceSource.includes('forceAgentRun') && serviceSource.includes('manager-action-playbook-management-sync'), 'Backend manager action queue must expose request body templates and rerunnable metadata for runnable POST actions, including scheduler-backed 24/7 pulses.');
 assert(appSource.includes('Body template:') && appSource.includes('Next body:') && appSource.includes('Run route:') && appSource.includes('requestBodyTemplate') && appSource.includes('runApiPath') && appSource.includes('/manager-action-queue/${encodeURIComponent(actionId)}/run') && appSource.includes('runManagerActionPlaybookRow'), 'Project dashboard must display request body templates and execute action queue items through the backend run endpoint.');
 assert(appSource.includes('Manager Action Run Ledger') && appSource.includes('manager-action-run-ledger') && appSource.includes('Run proof') && appSource.includes('backendManagerActionRuns'), 'Project dashboard must expose Action Queue execution receipts with timeline proof jumps.');
-assert(appSource.includes('managerChangeDraft') && appSource.includes('Manager Change Intake') && appSource.includes('manager-change-intake-composer') && appSource.includes('manager-change-composer-input') && appSource.includes('manager-change-composer-mode') && appSource.includes('manager-change-composer-submit') && appSource.includes('submitManagerChangeIntake') && appSource.includes('submitProjectMeetingMessage') && appSource.includes('submitProjectChatMessage'), 'Project dashboard must let managers type a custom mid-project change and send it to War Room, Google Chat, or both.');
+assert(appSource.includes('managerChangeDraft') && appSource.includes('projectManagerUiStateKey') && appSource.includes('managerChangeDraftFor') && appSource.includes('updateManagerChangeDraft') && appSource.includes('Manager Change Intake') && appSource.includes('manager-change-intake-composer') && appSource.includes('manager-change-composer-input') && appSource.includes('manager-change-composer-mode') && appSource.includes('manager-change-composer-submit') && appSource.includes('submitManagerChangeIntake') && appSource.includes('submitProjectMeetingMessage') && appSource.includes('submitProjectChatMessage') && !appSource.includes('setManagerChangeDraft(prev'), 'Project dashboard must let managers type a custom mid-project change and send it to War Room, Google Chat, or both, with the draft scoped to the active project.');
 assert(existsSync(new URL('./validate-manager-backend-ui.mjs', import.meta.url)) && packageSource.includes('ui:manager-backend'), 'Backend-connected manager UI validation must be available as a package script.');
 assert(existsSync(new URL('./validate-manager-backend-core-ui.mjs', import.meta.url)) && packageSource.includes('ui:manager-backend:core'), 'Fast Backend Worker Station C/A control validation must be available as a package script.');
+assert(existsSync(new URL('./validate-manager-provider-proof-ui.mjs', import.meta.url)) && packageSource.includes('ui:manager-provider-proof'), 'Focused Manager provider proof UI validation must be available as a package script.');
+assert(existsSync(new URL('./validate-settings-agents-server-ui.mjs', import.meta.url)) && packageSource.includes('ui:settings-agents-server'), 'Settings API key UI validation must run against the real agents:server Secret Vault path.');
+assert(existsSync(new URL('./validate-manager-mission-runner-ui.mjs', import.meta.url)) && packageSource.includes('ui:manager-mission-runner') && packageSource.includes('ui:real-user-zero-to-autonomy'), 'Real user zero-to-autonomy browser validation must be available through the Mission Runner script and clear customer-facing alias.');
 assert(existsSync(new URL('./validate-manager-private-pilot-ui.mjs', import.meta.url)) && packageSource.includes('ui:manager-private-pilot'), 'C-side private-pilot browser validation must be available as a package script.');
 assert(
   packageSource.includes('agents:product-team:private-pilot:release')
@@ -371,6 +407,12 @@ assert(
 );
 assert(
   privatePilotUiValidationSource.includes('private-pilot-launch-handoff')
+    && privatePilotUiValidationSource.includes('ACCEPTANCE_RUN_ID')
+    && privatePilotUiValidationSource.includes('HOFS_MANAGER_PRIVATE_PILOT_RUN_ID')
+    && privatePilotUiValidationSource.includes('HOFS_PRODUCT_TEAM_RUN_ID: ACCEPTANCE_RUN_ID')
+    && privatePilotUiValidationSource.includes('HANDOFF_PREP_TIMEOUT_MS')
+    && privatePilotUiValidationSource.includes('Private-pilot launch-handoff preparation timed out')
+    && privatePilotUiValidationSource.includes('../.tmp/product-team-acceptance/${ACCEPTANCE_RUN_ID}/store.json')
     && privatePilotUiValidationSource.includes('backend-launch-approval-record-manager')
     && privatePilotUiValidationSource.includes('backend-launch-approval-record-security')
     && privatePilotUiValidationSource.includes('backend-project-evidence-export-request')
@@ -381,7 +423,7 @@ assert(
     && privatePilotUiValidationSource.includes('backend-private-pilot-record-acceptance-report')
     && privatePilotUiValidationSource.includes('/manager-flow-graph')
     && privatePilotUiValidationSource.includes('/readiness-proof-map'),
-  'C-side private-pilot browser validation must click all four real receipt buttons and verify backend Flow Graph plus Proof Map evidence.',
+  'C-side private-pilot browser validation must use an isolated backend handoff checkpoint with bounded preparation, click all real receipt buttons, and verify backend Flow Graph plus Proof Map evidence.',
 );
 assert(backendUiValidationSource.includes("clickDashboardStep(page, 'google_change')") && backendUiValidationSource.includes("clickDashboardStep(page, 'meeting_change')") && backendUiValidationSource.includes("clickDashboardStep(page, 'dual_channel_change')"), 'Backend-connected manager UI validation must exercise online Google Chat, War Room, and dual-channel changes.');
 assert(backendUiValidationSource.includes('agent-message-send-musk') && backendUiValidationSource.includes('manager-ui-agent-message-proof'), 'Backend-connected manager UI validation must exercise online Agent-to-Agent messages.');
@@ -409,6 +451,7 @@ assert(serviceSource.includes('runAgentWorkCycle') && serviceSource.includes('ag
 assert(serviceSource.includes('submitWorkArtifact') && serviceSource.includes('workSubmissionId') && serviceSource.includes("tags: ['autonomous-worker', 'agent-initiative'") && serviceSource.includes('submitAgentArtifact({'), 'Independent Agent worker cycles must be able to submit completed autonomous work through the standard Agent submission contract.');
 assert(serviceSource.includes('resolveAgentWorkArtifactType') && serviceSource.includes('inferAgentWorkArtifactType') && serviceSource.includes("workArtifactType: 'auto'"), 'Autonomous Agent workers must be able to infer generic product-team artifact types from task intent instead of only submitting progress briefs.');
 assert(serviceSource.includes('shouldAgentWorkerRecordEvidenceSearch') && serviceSource.includes('buildAgentWorkerEvidenceSearchPayload') && serviceSource.includes('recordAgentEvidenceSearch({') && serviceSource.includes('evidenceSearchResult'), 'Autonomous Agent workers must be able to record standard evidence-search proof for evidence-oriented tasks.');
+assert(serviceSource.includes('runAgentWorkCycleWithProviderEvidence') && serviceSource.includes('runAgentAutonomousActionQueueItemWithProviderEvidence') && serviceSource.includes('useProviderEvidenceSearch') && serviceSource.includes('providerEvidenceSearchPlanned') && serviceSource.includes('evidenceSearchProviderReceipt') && serviceSource.includes("schemaVersion: 'agent-worker-provider-evidence/v1'"), 'Autonomous Agent workers and Agent Queue rows must have a controlled provider-backed evidence bridge from strategy-selected worker cycles to standard evidence-search nodes.');
 assert(serviceSource.includes('reviewPendingSubmission') && serviceSource.includes('pendingSubmissionForReviewer') && serviceSource.includes('reviewAgentSubmission({') && serviceSource.includes('submissionReviewId'), 'Independent Reviewer worker cycles must be able to review pending submissions through the standard submission-review contract.');
 assert(serviceSource.includes('automaticReviewVerdictForSubmission') && serviceSource.includes("['auto', 'automatic', 'autonomous-review'].includes(reviewVerdictMode)"), 'Reviewer worker cycles must support automatic verdict selection for scheduler-driven review loops.');
 assert(serviceSource.includes('respondToReviewObligation') && serviceSource.includes('pendingReviewResponseForAgent') && serviceSource.includes('reviewResponseSubmissionId') && serviceSource.includes("tags: ['review-response', 'revision-loop'"), 'Independent Agent worker cycles must be able to respond to requested-change review obligations through linked revision submissions.');
@@ -422,6 +465,7 @@ assert(serviceSource.includes('agentManagementPriority') && serviceSource.includ
 assert(serviceSource.includes('managementSignalItems') && serviceSource.includes('management-response') && serviceSource.includes('managementResponseTargetIds'), 'Independent Agent workers must respond to manager and peer-manager signals as a closed management loop.');
 assert(serviceSource.includes('agent-work-cycle-management') && serviceSource.includes('managementTargetIds'), 'Independent Agent worker cycles must publish auditable management check-ins to managed Agents.');
 assert(apiSource.includes("route.tail[1] === 'work-cycle'") && apiSource.includes('service.runAgentWorkCycle'), 'Backend API must expose per-Agent work cycles as an Agent subresource.');
+assert(apiSource.includes('service.runAgentWorkCycleWithProviderEvidence') && apiSource.includes('service.runAgentAutonomousActionQueueItemWithProviderEvidence') && apiSource.includes('agent-work-cycle-provider-evidence-requires-async-handler') && apiSource.includes('providerEvidenceSearch: result.providerEvidenceSearch'), 'Backend API must expose async provider-backed Agent work cycles and Agent Queue runs without routing them through the sync handler.');
 assert(apiSource.includes('workSubmission: result.workSubmission') && apiSource.includes('submission: item.result.submission'), 'Agent work-cycle API and due-worker responses must expose autonomous work submissions when the worker creates them.');
 assert(apiSource.includes('evidenceSearch: result.evidenceSearch') && apiSource.includes('evidenceSearch: item.result.evidenceSearch'), 'Agent work-cycle API and due-worker responses must expose autonomous evidence-search receipts when the worker creates them.');
 assert(apiSource.includes('review: result.review') && apiSource.includes('reviewedSubmission: item.result.reviewedSubmission'), 'Agent work-cycle API and due-worker responses must expose Reviewer worker review receipts when created.');
@@ -435,7 +479,8 @@ assert(httpServerSource.includes('useAutonomousStrategy: Boolean(input.useAgentA
 assert(httpServerSource.includes('const start = (input = {})') && httpServerSource.includes('submitAgentWorkArtifacts: Boolean(input.submitAgentWorkArtifacts)') && httpServerSource.includes('respondToReviewObligations: Boolean(input.respondToReviewObligations)') && httpServerSource.includes('scheduler.start({') && httpServerSource.includes('...body'), 'HTTP scheduler start must forward Agent submission, strategy, and revision-response controls from the HTTP body to its immediate startup sweep.');
 assert(httpServerSource.includes('scheduledTickInput') && httpServerSource.includes('tick(scheduledTickInput)') && httpServerSource.includes('...autonomousScheduler') && httpServerSource.includes('startupAgentControlSummary') && httpServerSource.includes('scheduledAgentControlSummary') && httpServerSource.includes('lastTickAgentControlSummary'), 'HTTP scheduler autostart and interval ticks must preserve and expose startup Agent strategy/submission controls, not only the manual start request.');
 assert(serviceSource.includes('buildEnvAutonomousAgentControlSummary') && serviceSource.includes('schedulerAgentControls') && serviceSource.includes('AGENT_AUTONOMOUS_AGENT_STRATEGY') && serviceSource.includes('AGENT_AUTONOMOUS_AGENT_REVIEW_RESPONSES'), 'Deployment preflight must expose the configured unattended Agent autonomy controls alongside scheduler readiness.');
-assert(agentProjectServerSource.includes('AGENT_AUTONOMOUS_AGENT_STRATEGY') && agentProjectServerSource.includes('AGENT_AUTONOMOUS_AGENT_SUBMISSIONS') && agentProjectServerSource.includes('AGENT_AUTONOMOUS_AGENT_REVIEWS') && agentProjectServerSource.includes('AGENT_AUTONOMOUS_AGENT_REVIEW_RESPONSES') && agentProjectServerSource.includes('includeReadModels: false'), 'Local agents:server must expose explicit env controls for unattended Agent strategy, submissions, reviews, and review-response loops without heavy embedded read models.');
+assert(agentProjectServerSource.includes('AGENT_AUTONOMOUS_AGENT_STRATEGY') && agentProjectServerSource.includes('AGENT_AUTONOMOUS_AGENT_SUBMISSIONS') && agentProjectServerSource.includes('AGENT_AUTONOMOUS_AGENT_REVIEWS') && agentProjectServerSource.includes('AGENT_AUTONOMOUS_AGENT_REVIEW_RESPONSES') && agentProjectServerSource.includes('createSecretVaultFromEnv') && agentProjectServerSource.includes('SECRET_VAULT_RECORDS_FILE') && agentProjectServerSource.includes('openVaultProviderKey') && agentProjectServerSource.includes('includeReadModels: false'), 'Local agents:server must expose explicit env controls for unattended Agent strategy, submissions, reviews, review-response loops, and restartable Secret Vault startup without heavy embedded read models.');
+assert(packageSource.includes('agents:server:validate') && existsSync(new URL('./validate-agent-project-server-secret-vault.mjs', import.meta.url)), 'Local agents:server Secret Vault validation must be available as a package script.');
 assert(apiSource.includes('managementPriority') && apiSource.includes('managementReasons'), 'Backend API must expose management priority metadata for due per-Agent workers.');
 assert(serviceSource.includes('getTranscriptIndex') && serviceSource.includes('getChannelTranscript') && serviceSource.includes('buildTranscriptIndex') && serviceSource.includes('archivedProofMessages'), 'Backend service must expose project transcript index and per-channel transcript reads with archived proof recovery.');
 assert(apiSource.includes("route.action === 'transcripts'") && apiSource.includes('service.getTranscriptIndex') && apiSource.includes('service.getChannelTranscript'), 'Backend API must expose transcript index and channel transcript endpoints.');
@@ -459,10 +504,11 @@ assert(apiSource.includes('publicProjectResult') && apiSource.includes('managerD
 assert(apiSource.includes('managerDashboard: service.getManagerDashboard(item.projectId)') && apiSource.includes('managerReadyPackage: service.getManagerReadyPackage(item.projectId)'), 'Backend due-worker processed responses must include manager dashboard and ready package snapshots.');
 assert(serviceSource.includes('getAgentDashboard') && serviceSource.includes('buildAgentDashboardSnapshot') && serviceSource.includes('managementProofLogIds') && serviceSource.includes('ownedTasks') && serviceSource.includes('dashboardPath'), 'Backend service must expose an independent per-Agent dashboard read model with task and management proof.');
 assert(apiSource.includes("section === 'dashboard'") && apiSource.includes('service.getAgentDashboard'), 'Backend API must expose per-Agent dashboard endpoints.');
-assert(serviceSource.includes('submitAgentMessage') && serviceSource.includes('agent-to-agent-message') && serviceSource.includes('targetAgentIds'), 'Backend service must expose Agent-authored messages with explicit target Agent delivery.');
+assert(serviceSource.includes('submitAgentMessage') && serviceSource.includes('agent-to-agent-message') && serviceSource.includes('targetAgentIds') && serviceSource.includes("eventType: 'agent-message'") && serviceSource.includes('agentMessageRoutes') && serviceSource.includes('readyForAgentMessageDelivery'), 'Backend service must expose Agent-authored messages with explicit target Agent delivery, timeline proof, and Readiness Proof Map routes.');
 assert(apiSource.includes("route.tail[1] === 'message'") && apiSource.includes('service.submitAgentMessage'), 'Backend API must expose Agent-to-Agent message endpoints.');
 assert(serviceSource.includes('createKickoffMeetingSession') && serviceSource.includes('addKickoffMeetingClarification') && serviceSource.includes('confirmKickoffMeetingLeader') && serviceSource.includes('confirmKickoffMeetingNextActions') && serviceSource.includes('approveKickoffMeetingSession') && serviceSource.includes('buildRoleQuestionResolutions') && serviceSource.includes('buildLeaderElectionResolution') && serviceSource.includes('buildNextActionResolution') && serviceSource.includes('awaiting-manager-decision'), 'Backend service must expose a durable kickoff meeting session with role-question, Leader election, and next-action confirmation before project approval.');
 assert(apiSource.includes('parseKickoffMeetingRoute') && apiSource.includes("parts[0] !== 'kickoff-meetings'") && apiSource.includes('service.clarifyKickoffMeeting') && apiSource.includes('service.confirmKickoffMeetingLeader') && apiSource.includes('service.confirmKickoffMeetingNextActions') && apiSource.includes('service.approveKickoffMeeting'), 'Backend API must expose kickoff meeting session create/read/clarify/leader/next-actions/approve routes.');
+assert(apiSource.includes('projectInitiationReadModels') && apiSource.includes('kickoffMeetingApprovalRoute') && apiSource.includes('mainTranscriptRoute') && apiSource.includes("path === '/projects/initiate'") && apiSource.includes("kickoffMeetingRoute.action === 'approve'"), 'Project initiation and kickoff approval routes must support receipt-first responses with project/transcript/proof refresh routes.');
 
 const roleNegotiation = createKickoffRoleNegotiation(team, brief, { projectId, projectName });
 assert(roleNegotiation.transcript.some((item) => item.type === 'role-question'), 'Kickoff must include role clarification questions.');
@@ -512,15 +558,15 @@ assert(receiptProbe.directTargetIds.includes('turing'), 'Message receipts must i
 assert(receiptProbe.visibility.receiptCount === confirmedTeam.length, 'Message visibility summary must preserve receipt count.');
 const prunedLedgerProject = {
   id: 'ledger_pruned_project',
-  eventLedger: Array.from({ length: 1000 }, (_, index) => ({
+  eventLedger: Array.from({ length: EVENT_LEDGER_RETAINED_LIMIT }, (_, index) => ({
     id: `evt_old_${index}`,
     type: 'retained-event',
     time: '2026-05-28T09:00:00.000Z',
     sequence: 501 + index,
   })),
   eventLedgerFirstSequence: 501,
-  eventLedgerLastSequence: 1500,
-  eventLedgerEventCount: 1500,
+  eventLedgerLastSequence: EVENT_LEDGER_RETAINED_LIMIT + 500,
+  eventLedgerEventCount: EVENT_LEDGER_RETAINED_LIMIT + 500,
 };
 const prunedAppend = appendProjectEvents(prunedLedgerProject, [{
   id: 'evt_after_prune',
@@ -530,9 +576,9 @@ const prunedAppend = appendProjectEvents(prunedLedgerProject, [{
   summary: 'Append after ledger retention window.',
 }]);
 const prunedSummary = summarizeProjectEventLedger(prunedAppend);
-assert(prunedAppend.eventLedger.at(-1).sequence === 1501, 'Append-only event ledger must continue from the last known sequence after pruning.');
-assert(prunedSummary.firstSequence === 502 && prunedSummary.lastSequence === 1501, 'Pruned event-ledger projection must preserve the retained sequence window.');
-assert(prunedSummary.eventCount === 1501 && prunedSummary.retainedCount === 1000, 'Pruned event-ledger projection must distinguish total and retained counts.');
+assert(prunedAppend.eventLedger.at(-1).sequence === EVENT_LEDGER_RETAINED_LIMIT + 501, 'Append-only event ledger must continue from the last known sequence after pruning.');
+assert(prunedSummary.firstSequence === 502 && prunedSummary.lastSequence === EVENT_LEDGER_RETAINED_LIMIT + 501, 'Pruned event-ledger projection must preserve the retained sequence window.');
+assert(prunedSummary.eventCount === EVENT_LEDGER_RETAINED_LIMIT + 501 && prunedSummary.retainedCount === EVENT_LEDGER_RETAINED_LIMIT, 'Pruned event-ledger projection must distinguish total and retained counts.');
 const plainLegacyProject = backfillProjectEventLedger({
   id: 'plain_legacy_project',
   name: 'Plain Legacy Project',
@@ -1168,6 +1214,9 @@ const serviceMeetingChange = projectService.submitMeetingMessage({
 });
 assert(serviceMeetingChange.route === 'war-room-meeting-change', 'Project service must route meeting feature changes through the War Room change protocol.');
 assert(serviceMeetingChange.messages[0].id === 'svc_meeting_source', 'Project service must expose the War Room source message.');
+assert(serviceMeetingChange.meetingAgentTurns?.length >= 1 && serviceMeetingChange.messages.some((message) => message.schemaVersion === 'meeting-agent-turn/v1'), 'Project service must return backend-authored Agent meeting turns for War Room animation.');
+assert(serviceMeetingChange.meetingAgentTurns.every((turn) => turn.timelineLogIds?.length >= 1) && serviceMeetingChange.project.logs.some((log) => log.eventType === 'meeting-agent-turn' && serviceMeetingChange.meetingAgentTurns.some((turn) => turn.timelineLogIds.includes(log.id))), 'Project service must persist Agent meeting turns into the timeline with returned timeline log ids.');
+assert(serviceMeetingChange.project.eventLedger.some((event) => event.source === 'war-room-meeting-agent-turn' && serviceMeetingChange.meetingAgentTurns.some((turn) => event.entityIds?.messageId === turn.messageId)), 'Project service must persist Agent meeting turns into the unified event ledger.');
 assert(serviceMeetingChange.project.eventLedger.some((event) => event.source === 'war-room-meeting-message' && event.entityIds?.messageId === 'svc_meeting_source'), 'Project service must persist meeting source messages into the unified ledger.');
 assert(serviceMeetingChange.responses.changeResponse.changeRecord.source === 'war-room-meeting-change-request', 'Project service meeting changes must preserve War Room source metadata.');
 assert(serviceMeetingChange.responses.changeOwnerStartWorkResponse?.cycle?.trigger === 'change-owner-start-work', 'Project service meeting changes must immediately start the responsible owner work pulse.');
@@ -1197,6 +1246,8 @@ assert(serviceTranscriptIndex.channels.some((channel) => channel.channelId === '
 assert(serviceTranscriptIndex.channels.some((channel) => channel.channelId === 'google_chat' && channel.messageCount > 0), 'Project service transcript index must expose Google Chat channel messages.');
 const serviceMainTranscript = projectService.getChannelTranscript(projectId, 'main');
 assert(serviceMainTranscript.messages.length > 0 && serviceMainTranscript.archivedProofMessages.length > 0 && serviceMainTranscript.proofIds.length >= serviceMainTranscript.messages.length, 'Project service channel transcript must return current messages, archived proof messages, and proof ids.');
+assert(serviceMainTranscript.messages.some((message) => message.schemaVersion === 'meeting-agent-turn/v1' && message.source === 'war-room-meeting-agent-turn'), 'Project service channel transcript must expose backend-authored Agent meeting turns.');
+assert(projectService.getTimeline(projectId).logs.some((log) => log.eventType === 'meeting-agent-turn' && log.messageId), 'Project service timeline route must expose backend-authored Agent meeting turns.');
 
 const serviceLeaderAssignment = projectService.submitChatMessage({
   projectId,
@@ -1408,6 +1459,406 @@ const autoBrainstormPulse = projectService.runAgentWorkCycle({
 });
 assert(autoBrainstormPulse.submission?.artifactType === 'brainstorm-board' && autoBrainstormPulse.strategyDecision?.controls?.workArtifactType === 'brainstorm-board', 'Autonomous worker artifact inference must turn brainstorm task intent into a brainstorm-board submission node.');
 assert(projectService.getTaskEvidence(projectId, autoBrainstormTaskId).submissions.some((submission) => submission.id === autoBrainstormPulse.submission?.id && submission.artifactType === 'brainstorm-board'), 'Task evidence must include autonomous worker-inferred brainstorm-board submissions.');
+const providerEvidenceTaskId = 'svc_provider_evidence_worker_task';
+const providerEvidenceProject = cloneJson(projectService.getProject(projectId));
+const providerEvidenceTaskText = 'Search and package provider-backed evidence for the generic product-team workflow';
+const providerEvidenceState = providerEvidenceProject.agentStates?.turing || {};
+const providerSeedProject = {
+  ...providerEvidenceProject,
+  tasks: [
+    {
+      id: providerEvidenceTaskId,
+      text: providerEvidenceTaskText,
+      assignee: 'Alan Turing',
+      ownerId: 'turing',
+      status: 'in-progress',
+      workPulseCount: 1,
+    },
+    ...(providerEvidenceProject.tasks || []),
+  ],
+  agentStates: {
+    ...(providerEvidenceProject.agentStates || {}),
+    turing: {
+      ...providerEvidenceState,
+      currentPlan: {
+        ...(providerEvidenceState.currentPlan || {}),
+        taskId: providerEvidenceTaskId,
+        focus: providerEvidenceTaskText,
+      },
+      obligations: [
+        {
+          id: 'svc_provider_evidence_worker_obligation',
+          taskId: providerEvidenceTaskId,
+          text: providerEvidenceTaskText,
+          status: 'open',
+        },
+      ],
+    },
+  },
+  agentSubmissions: [],
+  submissionReviews: [],
+};
+const providerEvidencePolicy = {
+  enabled: true,
+  mode: 'enforced',
+  allowedSearchProviders: ['deterministic'],
+  defaultToolGrants: ['search:evidence'],
+  maxRequestsPerProjectHour: 10,
+  dailyBudgetCents: 100,
+  searchCostCentsPerRequest: 1,
+  retryAttempts: 0,
+  circuitFailureThreshold: 3,
+  circuitWindowMinutes: 15,
+  circuitCooldownSeconds: 300,
+};
+const providerWorkerService = createAgentProjectService({
+  store: createAgentProjectMemoryStore({
+    projects: [cloneJson(providerSeedProject)],
+    messages: cloneJson(projectService.getMessages(projectId)),
+  }),
+  searchProvider: createSearchProvider({ provider: 'deterministic', enabled: true, maxResults: 2 }),
+  providerPolicy: providerEvidencePolicy,
+});
+const providerQueueService = createAgentProjectService({
+  store: createAgentProjectMemoryStore({
+    projects: [cloneJson(providerSeedProject)],
+    messages: cloneJson(projectService.getMessages(projectId)),
+  }),
+  searchProvider: createSearchProvider({ provider: 'deterministic', enabled: true, maxResults: 2 }),
+  providerPolicy: providerEvidencePolicy,
+});
+const providerAutopilotService = createAgentProjectService({
+  store: createAgentProjectMemoryStore({
+    projects: [cloneJson(providerSeedProject)],
+    messages: cloneJson(projectService.getMessages(projectId)),
+  }),
+  searchProvider: createSearchProvider({ provider: 'deterministic', enabled: true, maxResults: 2 }),
+  providerPolicy: providerEvidencePolicy,
+});
+const providerAutopilotDueService = createAgentProjectService({
+  store: createAgentProjectMemoryStore({
+    projects: [cloneJson(providerSeedProject)],
+    messages: cloneJson(projectService.getMessages(projectId)),
+  }),
+  searchProvider: createSearchProvider({ provider: 'deterministic', enabled: true, maxResults: 2 }),
+  providerPolicy: providerEvidencePolicy,
+});
+const providerEvidenceTargetControl = {
+  schemaVersion: 'autopilot-delivery-target-control/v1',
+  targetKind: 'product-team-delivery-trace',
+  targetStageId: 'evidence-quality',
+  targetIntent: 'Ask the autonomous team to record provider-backed evidence/search proof and submit an evidence packet.',
+  targetReason: 'Harness forces the evidence-quality stage to prove async provider-backed Autopilot execution.',
+  preferredLane: 'agent-autonomy',
+  workArtifactType: 'evidence-packet',
+  agentWorkArtifactType: 'evidence-packet',
+  submitWorkArtifact: true,
+  submitAgentWorkArtifacts: true,
+  submitWorkArtifactOn: 'always',
+  recordEvidenceSearch: true,
+  evidenceSearchQuery: 'autopilot provider evidence for generic product team',
+  evidenceSearchPurpose: 'Prove Autopilot session ticks can execute provider-backed evidence through Agent Queue.',
+  useAgentAutonomousStrategy: true,
+  reviewPendingSubmission: true,
+  reviewPendingSubmissions: true,
+  respondToReviewObligation: true,
+  respondToReviewObligations: true,
+  includeReadModels: false,
+};
+const providerAgentQueue = providerQueueService.getAgentAutonomousActionQueue(projectId, {
+  now: '2026-05-28T14:07:40.000Z',
+});
+const providerQueueRow = providerAgentQueue.rows.find((row) => row.agentId === 'turing');
+assert(providerQueueRow?.providerEvidenceSearchPlanned === true
+  && providerQueueRow.requestBodyTemplate?.useProviderEvidenceSearch === true
+  && providerQueueRow.initiative?.providerEvidenceSearchPlanned === true
+  && providerAgentQueue.summary?.providerEvidenceSearchRowCount >= 1, 'Agent autonomous action queue must automatically plan provider-backed evidence search for evidence-packet work when the search provider is enabled.');
+const providerQueueRun = await providerQueueService.runAgentAutonomousActionQueueItemWithProviderEvidence({
+  projectId,
+  agentId: 'turing',
+  now: '2026-05-28T14:07:42.000Z',
+  force: true,
+  requestBodyOverrides: { includeReadModels: false },
+});
+assert(providerQueueRun.route === 'agent-autonomous-action-queue-item-run'
+  && providerQueueRun.providerEvidenceSearch?.status === 'completed'
+  && providerQueueRun.evidenceSearch?.provider === 'deterministic'
+  && providerQueueRun.agentAutonomousActionRun?.providerUsageId === providerQueueRun.providerUsage?.id
+  && providerQueueRun.agentAutonomousActionRun?.evidenceSearchId === providerQueueRun.evidenceSearch?.id
+  && providerQueueRun.project.agentAutonomousActionRunLedger?.some((run) => run.id === providerQueueRun.agentAutonomousActionRun.id && run.providerReceiptId === providerQueueRun.evidenceSearch?.providerReceiptId), 'Agent autonomous action queue provider runs must execute through provider-backed work cycles and persist run/evidence/provider links.');
+const providerAutopilotSessionStart = providerAutopilotService.startAutonomousRunControlSession({
+  projectId,
+  sessionId: 'provider_evidence_autopilot_session',
+  now: '2026-05-28T14:07:43.000Z',
+  forceNewSession: true,
+  maxLoops: 2,
+  maxStepsPerLoop: 1,
+  maxTotalSteps: 2,
+  requestBodyOverrides: {
+    includeReadModels: false,
+    useProviderEvidenceSearch: true,
+  },
+});
+const providerAutopilotTick = await providerAutopilotService.tickAutonomousRunControlSessionWithProviderEvidence({
+  projectId,
+  sessionId: providerAutopilotSessionStart.autonomousRunControlSession.id,
+  now: '2026-05-28T14:07:44.000Z',
+  requestBodyOverrides: {
+    includeReadModels: false,
+    useProviderEvidenceSearch: true,
+    autopilotTargetControl: providerEvidenceTargetControl,
+  },
+});
+assert(providerAutopilotTick.route === 'autonomous-run-control-session-tick', 'Autopilot provider-evidence session ticks must return the normal session tick route.');
+assert(providerAutopilotTick.providerEvidenceSearch?.status === 'completed' && providerAutopilotTick.evidenceSearch?.provider === 'deterministic', `Autopilot provider-evidence session ticks must complete deterministic provider-backed evidence search: ${JSON.stringify({
+  providerEvidenceSearch: providerAutopilotTick.providerEvidenceSearch,
+  evidenceProvider: providerAutopilotTick.evidenceSearch?.provider,
+  skipped: providerAutopilotTick.providerEvidenceSearchSkippedReason,
+  tickProvider: providerAutopilotTick.autonomousRunControlSessionTick?.providerEvidenceSearch?.provider,
+  actionLanes: providerAutopilotTick.autonomousRunControlSessionTick?.actionLanes,
+})}`);
+assert(providerAutopilotTick.autonomousRunControlSessionTick?.providerEvidenceSearch?.status === 'completed' && providerAutopilotTick.autonomousRunControlSessionTick?.actionLanes?.includes('agent-autonomy'), 'Autopilot provider-evidence session ticks must record provider evidence and Agent lane ownership in the tick receipt.');
+assert(providerAutopilotTick.autonomousRunControlSessionTick?.providerUsageId === providerAutopilotTick.providerUsage?.id, 'Autopilot provider-evidence session ticks must link tick receipt to provider usage.');
+assert(providerAutopilotTick.autonomousRunControlRuns?.some((run) => run.providerUsageId === providerAutopilotTick.providerUsage?.id && run.evidenceSearchId === providerAutopilotTick.evidenceSearch?.id), 'Autopilot provider-evidence session ticks must link run receipt to provider usage and evidence search.');
+assert(providerAutopilotTick.project.autonomousRunControlSessionTickLedger?.some((tick) => tick.id === providerAutopilotTick.autonomousRunControlSessionTick.id && tick.evidenceSearchId === providerAutopilotTick.evidenceSearch?.id), 'Autopilot provider-evidence session ticks must persist tick/evidence proof into the project ledger.');
+const providerAutopilotTickMessageId = providerAutopilotTick.autonomousRunControlSessionTick?.providerEvidenceMessageId;
+const providerAutopilotTickTranscript = providerAutopilotService.getChannelTranscript(projectId, 'main');
+assert(providerAutopilotTickMessageId
+  && providerAutopilotTick.autonomousRunControlSessionTick.resultMessageIds?.includes(providerAutopilotTickMessageId)
+  && providerAutopilotTick.messages?.some((message) => message.id === providerAutopilotTickMessageId && message.type === 'autopilot-provider-evidence' && message.evidenceSearchId === providerAutopilotTick.evidenceSearch?.id)
+  && providerAutopilotService.getMessages(projectId).some((message) => message.id === providerAutopilotTickMessageId && message.providerUsageId === providerAutopilotTick.providerUsage?.id)
+  && providerAutopilotTickTranscript.proofIds?.includes(providerAutopilotTickMessageId), 'Autopilot provider-evidence ticks must publish a group-chat coordination message and link it into tick result messages, stored transcripts, evidence search, and provider usage proof.');
+const providerAutopilotDueSessionStart = providerAutopilotDueService.startAutonomousRunControlSession({
+  projectId,
+  sessionId: 'provider_evidence_autopilot_due_session',
+  now: '2026-05-28T14:07:44.500Z',
+  forceNewSession: true,
+  maxLoops: 2,
+  maxStepsPerLoop: 1,
+  maxTotalSteps: 2,
+  requestBodyOverrides: {
+    includeReadModels: false,
+    useProviderEvidenceSearch: true,
+  },
+});
+const providerAutopilotDueWorker = await providerAutopilotDueService.runDueAutonomousRunControlSessionsWithProviderEvidence({
+  now: '2026-05-28T14:07:44.750Z',
+  forceDue: true,
+  forceProjectIds: [projectId],
+  maxProjects: 1,
+  maxSessionsPerProject: 1,
+  loopCount: 1,
+  providerEvidenceSearchEnabled: true,
+  requestBodyOverrides: {
+    includeReadModels: false,
+    useProviderEvidenceSearch: true,
+    autopilotTargetControl: providerEvidenceTargetControl,
+  },
+});
+const providerAutopilotDueProcessed = providerAutopilotDueWorker.processed.find((row) => row.sessionId === providerAutopilotDueSessionStart.autonomousRunControlSession.id);
+assert(providerAutopilotDueWorker.schemaVersion === 'autopilot-due-worker-summary/v1'
+  && providerAutopilotDueWorker.providerEvidenceSearchEnabled === true
+  && providerAutopilotDueProcessed?.providerEvidenceSearch?.status === 'completed'
+  && providerAutopilotDueProcessed?.evidenceSearchId
+  && providerAutopilotDueProcessed?.providerUsageId
+  && providerAutopilotDueProcessed?.providerEvidenceMessageId
+  && providerAutopilotDueProcessed?.result?.autonomousRunControlSessionTick?.providerUsageId === providerAutopilotDueProcessed.providerUsageId, 'Autopilot due-worker must advance due sessions through the async provider-evidence lane and link provider/evidence proof into the session tick.');
+const providerAutopilotDueFlowGraph = providerAutopilotDueService.getManagerFlowGraph(projectId);
+const providerAutopilotDueProofMap = providerAutopilotDueService.getReadinessProofMap(projectId);
+const providerAutopilotDueTranscript = providerAutopilotDueService.getChannelTranscript(projectId, 'main');
+const providerAutopilotDueTickNode = providerAutopilotDueFlowGraph.nodes?.find((node) => (
+  node.source === 'autonomousRunControlSessionTicks'
+  && node.attachments?.some((attachment) => attachment.type === 'autopilot-provider-evidence' && attachment.evidenceSearchId === providerAutopilotDueProcessed.evidenceSearchId)
+));
+assert(providerAutopilotDueTickNode
+  && providerAutopilotDueTickNode.attachments.some((attachment) => attachment.providerUsageId === providerAutopilotDueProcessed.providerUsageId)
+  && providerAutopilotDueTickNode.attachments.some((attachment) => attachment.providerEvidenceMessageId === providerAutopilotDueProcessed.providerEvidenceMessageId && attachment.providerEvidenceTranscriptRoute?.includes(providerAutopilotDueProcessed.providerEvidenceMessageId))
+  && providerAutopilotDueFlowGraph.edges?.some((edge) => edge.fromNodeId === providerAutopilotDueTickNode.id && edge.toNodeId === `evidence-search-${providerAutopilotDueProcessed.evidenceSearchId}` && edge.label === 'Provider evidence recorded'), 'Manager Flow Graph must attach provider evidence receipts to Autopilot due-worker tick nodes and link them to the evidence-search node.');
+assert(providerAutopilotDueProofMap.autonomousRunControlSessionTickRoutes?.some((route) => (
+  route.id === providerAutopilotDueProcessed.tickId
+  && route.providerEvidenceSearch?.status === 'completed'
+  && route.evidenceSearchId === providerAutopilotDueProcessed.evidenceSearchId
+  && route.providerUsageId === providerAutopilotDueProcessed.providerUsageId
+  && route.evidenceSearchRoute?.endsWith(`/evidence-searches/${providerAutopilotDueProcessed.evidenceSearchId}`)
+  && route.providerUsageRoute?.includes(providerAutopilotDueProcessed.providerUsageId)
+  && route.providerEvidenceMessageId === providerAutopilotDueProcessed.providerEvidenceMessageId
+  && route.providerEvidenceTranscriptRoute?.includes(providerAutopilotDueProcessed.providerEvidenceMessageId)
+)), 'Readiness Proof Map must expose provider evidence/search/usage/transcript routes from Autopilot due-worker tick receipts.');
+assert(providerAutopilotDueTranscript.proofIds?.includes(providerAutopilotDueProcessed.providerEvidenceMessageId)
+  && providerAutopilotDueService.getMessages(projectId).some((message) => message.id === providerAutopilotDueProcessed.providerEvidenceMessageId && message.type === 'autopilot-provider-evidence'), 'Autopilot due-worker provider evidence must be visible in backend Group Chat transcript proof, not only in worker ledgers.');
+const providerAgentPulse = await providerWorkerService.runAgentWorkCycleWithProviderEvidence({
+  projectId,
+  agentId: 'turing',
+  now: '2026-05-28T14:07:45.000Z',
+  trigger: 'service-agent-worker-provider-evidence',
+  submitWorkArtifact: true,
+  workArtifactType: 'evidence-packet',
+  workArtifactReviewerAgentId: 'curie',
+  useProviderEvidenceSearch: true,
+  requireProviderEvidenceSearch: true,
+  evidenceSearchQuery: 'generic product team provider evidence',
+  evidenceSearchPurpose: 'Prove autonomous Agent workers can use configured provider search before submitting evidence packets.',
+  maxResults: 2,
+});
+assert(providerAgentPulse.evidenceSearch?.provider === 'deterministic'
+  && providerAgentPulse.evidenceSearch.searchMode === 'deterministic-provider'
+  && providerAgentPulse.evidenceSearch.providerReceiptId
+  && providerAgentPulse.providerUsage?.operation === 'search:evidence', 'Provider-backed Agent worker cycles must route through configured search providers and persist evidence-search/provider-usage receipts.');
+assert(providerAgentPulse.workSubmission?.sourceRefs?.some((ref) => ref.type === 'evidence-search' && ref.id === providerAgentPulse.evidenceSearch?.id)
+  && providerAgentPulse.project.agentWorkerLedger?.[0]?.evidenceSearchProvider === 'deterministic'
+  && providerAgentPulse.project.providerUsageLedger?.some((row) => row.providerReceiptId === providerAgentPulse.evidenceSearch?.providerReceiptId), 'Provider-backed Agent worker submissions must link their evidence-search node, worker ledger, and provider usage ledger.');
+const providerApi = createFileBackedAgentProjectApi({
+  filePath: new URL('../.tmp/provider-agent-work-cycle-api-store.json', import.meta.url),
+  projects: [cloneJson(providerSeedProject)],
+  messages: cloneJson(projectService.getMessages(projectId)),
+  replaceWithSeed: true,
+  searchProvider: createSearchProvider({ provider: 'deterministic', enabled: true, maxResults: 2 }),
+  providerPolicy: providerEvidencePolicy,
+});
+const providerApiResponse = await providerApi.handleAsync({
+  method: 'POST',
+  path: `/projects/${projectId}/agents/turing/work-cycle`,
+  body: {
+    now: '2026-05-28T14:07:50.000Z',
+    trigger: 'api-agent-worker-provider-evidence',
+    submitWorkArtifact: true,
+    workArtifactType: 'evidence-packet',
+    workArtifactReviewerAgentId: 'curie',
+    useProviderEvidenceSearch: true,
+    requireProviderEvidenceSearch: true,
+    evidenceSearchQuery: 'api generic product team provider evidence',
+    evidenceSearchPurpose: 'Prove API async Agent worker cycles can call configured provider search.',
+    maxResults: 2,
+    includeReadModels: false,
+  },
+});
+assert(providerApiResponse.status === 200
+  && providerApiResponse.body.evidenceSearch?.provider === 'deterministic'
+  && providerApiResponse.body.providerEvidenceSearch?.status === 'completed'
+  && providerApiResponse.body.providerUsage?.providerReceiptId === providerApiResponse.body.evidenceSearch?.providerReceiptId
+  && providerApiResponse.body.readModels?.included === false, 'Agent work-cycle API must expose async provider-backed evidence receipts with lightweight read-model refresh routes.');
+const providerQueueApi = createFileBackedAgentProjectApi({
+  filePath: new URL('../.tmp/provider-agent-action-queue-api-store.json', import.meta.url),
+  projects: [cloneJson(providerSeedProject)],
+  messages: cloneJson(projectService.getMessages(projectId)),
+  replaceWithSeed: true,
+  searchProvider: createSearchProvider({ provider: 'deterministic', enabled: true, maxResults: 2 }),
+  providerPolicy: providerEvidencePolicy,
+});
+const providerQueueApiResponse = await providerQueueApi.handleAsync({
+  method: 'POST',
+  path: `/projects/${projectId}/agent-autonomous-action-queue/turing/run`,
+  body: {
+    now: '2026-05-28T14:07:55.000Z',
+    force: true,
+    includeReadModels: false,
+  },
+});
+assert(providerQueueApiResponse.status === 200
+  && providerQueueApiResponse.body.route === 'agent-autonomous-action-queue-item-run'
+  && providerQueueApiResponse.body.providerEvidenceSearch?.status === 'completed'
+  && providerQueueApiResponse.body.evidenceSearch?.provider === 'deterministic'
+  && providerQueueApiResponse.body.agentAutonomousActionRun?.providerUsageId === providerQueueApiResponse.body.providerUsage?.id
+  && providerQueueApiResponse.body.readModels?.included === false, 'Agent autonomous action queue API must run provider-planned evidence rows through the async provider-backed worker path.');
+const providerAutopilotApi = createFileBackedAgentProjectApi({
+  filePath: new URL('../.tmp/provider-autopilot-session-api-store.json', import.meta.url),
+  projects: [cloneJson(providerSeedProject)],
+  messages: cloneJson(projectService.getMessages(projectId)),
+  replaceWithSeed: true,
+  searchProvider: createSearchProvider({ provider: 'deterministic', enabled: true, maxResults: 2 }),
+  providerPolicy: providerEvidencePolicy,
+});
+const providerAutopilotApiStart = providerAutopilotApi.handle({
+  method: 'POST',
+  path: `/projects/${projectId}/autonomous-run-control/sessions/start`,
+  body: {
+    sessionId: 'api_provider_evidence_autopilot_session',
+    now: '2026-05-28T14:07:56.000Z',
+    forceNewSession: true,
+    maxLoops: 2,
+    maxStepsPerLoop: 1,
+    maxTotalSteps: 2,
+    requestBodyOverrides: {
+      includeReadModels: false,
+      useProviderEvidenceSearch: true,
+    },
+    includeReadModels: false,
+  },
+});
+assert(providerAutopilotApiStart.status === 200 && providerAutopilotApiStart.body.autonomousRunControlSession?.id === 'api_provider_evidence_autopilot_session', 'Autopilot provider API test must start a bounded session before async provider tick.');
+const providerAutopilotApiTick = await providerAutopilotApi.handleAsync({
+  method: 'POST',
+  path: `/projects/${projectId}/autonomous-run-control/sessions/api_provider_evidence_autopilot_session/tick`,
+  body: {
+    now: '2026-05-28T14:07:57.000Z',
+    useProviderEvidenceSearch: true,
+    requestBodyOverrides: {
+      includeReadModels: false,
+      useProviderEvidenceSearch: true,
+      autopilotTargetControl: providerEvidenceTargetControl,
+    },
+    includeReadModels: false,
+  },
+});
+assert(providerAutopilotApiTick.status === 200
+  && providerAutopilotApiTick.body.route === 'autonomous-run-control-session-tick'
+  && providerAutopilotApiTick.body.providerEvidenceSearch?.status === 'completed'
+  && providerAutopilotApiTick.body.evidenceSearch?.provider === 'deterministic'
+  && providerAutopilotApiTick.body.autonomousRunControlSessionTick?.providerUsageId === providerAutopilotApiTick.body.providerUsage?.id
+  && providerAutopilotApiTick.body.readModels?.included === false, 'Autopilot session tick API must expose the async provider-backed evidence lane with lightweight read-model routes.');
+const providerAutopilotDueApi = createFileBackedAgentProjectApi({
+  filePath: new URL('../.tmp/provider-autopilot-due-api-store.json', import.meta.url),
+  projects: [cloneJson(providerSeedProject)],
+  messages: cloneJson(projectService.getMessages(projectId)),
+  replaceWithSeed: true,
+  searchProvider: createSearchProvider({ provider: 'deterministic', enabled: true, maxResults: 2 }),
+  providerPolicy: providerEvidencePolicy,
+});
+const providerAutopilotDueApiStart = providerAutopilotDueApi.handle({
+  method: 'POST',
+  path: `/projects/${projectId}/autonomous-run-control/sessions/start`,
+  body: {
+    sessionId: 'api_provider_evidence_autopilot_due_session',
+    now: '2026-05-28T14:07:58.000Z',
+    forceNewSession: true,
+    maxLoops: 2,
+    maxStepsPerLoop: 1,
+    maxTotalSteps: 2,
+    requestBodyOverrides: {
+      includeReadModels: false,
+      useProviderEvidenceSearch: true,
+    },
+    includeReadModels: false,
+  },
+});
+assert(providerAutopilotDueApiStart.status === 200 && providerAutopilotDueApiStart.body.autonomousRunControlSession?.id === 'api_provider_evidence_autopilot_due_session', 'Autopilot provider due-worker API test must start a bounded session before async due-worker tick.');
+const providerAutopilotDueApiResponse = await providerAutopilotDueApi.handleAsync({
+  method: 'POST',
+  path: '/workers/autopilot/due',
+  body: {
+    now: '2026-05-28T14:07:59.000Z',
+    forceDue: true,
+    forceProjectIds: [projectId],
+    maxProjects: 1,
+    maxSessionsPerProject: 1,
+    loopCount: 1,
+    providerEvidenceSearchEnabled: true,
+    requestBodyOverrides: {
+      includeReadModels: false,
+      useProviderEvidenceSearch: true,
+      autopilotTargetControl: providerEvidenceTargetControl,
+    },
+    includeReadModels: false,
+  },
+});
+const providerAutopilotDueApiProcessed = providerAutopilotDueApiResponse.body.processed?.find((row) => row.sessionId === 'api_provider_evidence_autopilot_due_session');
+assert(providerAutopilotDueApiResponse.status === 200
+  && providerAutopilotDueApiResponse.body.providerEvidenceSearchEnabled === true
+  && providerAutopilotDueApiProcessed?.providerEvidenceSearch?.status === 'completed'
+  && providerAutopilotDueApiProcessed?.evidenceSearch?.provider === 'deterministic'
+  && providerAutopilotDueApiProcessed?.autonomousRunControlSessionTick?.providerUsageId === providerAutopilotDueApiProcessed.providerUsage?.id
+  && providerAutopilotDueApiProcessed?.readModels?.included === false
+  && providerAutopilotDueApiProcessed?.readModels?.autopilotDueWorkerRoute === '/workers/autopilot/due', 'Autopilot due-worker API must expose async provider-backed evidence ticks with lightweight session/proof refresh routes.');
 const dueAgentSchedule = evaluateAgentWorkSchedule({
   project: {
     ...secondAgentPulse.project,
@@ -1728,9 +2179,35 @@ assert(serviceAutopilotQueueSnapshot.autopilotQueue?.some((row) => row.workerKin
   && row.sessionId === serviceAutopilotDueSessionStart.autonomousRunControlSession.id
   && row.runApiPath === '/workers/autopilot/due'
   && row.directRunApiPath?.includes('/autonomous-run-control/sessions/')
-  && row.requestBody?.sessionId === serviceAutopilotDueSessionStart.autonomousRunControlSession.id)
+  && row.requestBody?.sessionId === serviceAutopilotDueSessionStart.autonomousRunControlSession.id
+  && row.requestBody?.requestBodyOverrides?.schedulerWorker === 'autopilot-due-worker')
   && serviceAutopilotQueueSnapshot.workerRoutes?.autopilotDueWorker === '/workers/autopilot/due'
   && serviceAutopilotQueueSnapshot.summary?.autopilotSessionCount >= 1, 'Worker queue snapshot must expose bounded Autopilot session rows and worker route contracts.');
+const serviceAutopilotExecutionReceipt = serviceAutopilotQueueSnapshot.executionReceipts?.find((receipt) => receipt.workerKind === 'autopilot-session' && receipt.sessionId === serviceAutopilotDueSessionStart.autonomousRunControlSession.id);
+assert(serviceAutopilotExecutionReceipt?.idempotencyKey
+  && serviceAutopilotExecutionReceipt?.leaseKey
+  && serviceAutopilotExecutionReceipt?.receiptChecksum, 'Worker queue snapshot must expose Autopilot session tick execution receipts with session idempotency, lease, and checksum proof.');
+const serviceAutopilotQueueAdapterPlan = projectService.getWorkerQueueAdapterPlan(projectId, {
+  now: '2026-05-28T15:54:07.000Z',
+  forceDue: true,
+  forceProjectIds: [projectId],
+});
+assert(serviceAutopilotQueueAdapterPlan.status === 'ready-for-queue-adapter-pilot'
+  && serviceAutopilotQueueAdapterPlan.summary?.autopilotQueueRowCount >= 1
+  && serviceAutopilotQueueAdapterPlan.summary?.autopilotDueRowCount >= 1
+  && serviceAutopilotQueueAdapterPlan.queuePlans?.some((plan) => plan.id === 'autopilot-session' && plan.workerRoute === '/workers/autopilot/due' && plan.dueCount >= 1)
+  && serviceAutopilotQueueAdapterPlan.verificationGates?.some((gate) => gate.id === 'concurrency-policy' && gate.passed && gate.detail.includes('oldest-active-session-per-project-then-due-time')), 'Worker queue adapter plan must promote Autopilot sessions into the managed queue/cron cutover contract.');
+const serviceAutopilotQueueAdapterDryRun = projectService.getWorkerQueueAdapterDryRun(projectId, {
+  now: '2026-05-28T15:54:07.000Z',
+  forceDue: true,
+  forceProjectIds: [projectId],
+});
+assert(serviceAutopilotQueueAdapterDryRun.status === 'passed'
+  && serviceAutopilotQueueAdapterDryRun.summary?.autopilotQueueRowCount >= 1
+  && serviceAutopilotQueueAdapterDryRun.summary?.autopilotDueRowCount >= 1
+  && serviceAutopilotQueueAdapterDryRun.summary?.autopilotDispatchCount >= 1
+  && serviceAutopilotQueueAdapterDryRun.summary?.autopilotExecutionReceiptCount >= 1
+  && serviceAutopilotQueueAdapterDryRun.adapterExecution?.snapshotParityReceipt?.parityReady === true, 'Worker queue adapter dry-run must import, lease, dispatch, acknowledge, and parity-check Autopilot session rows.');
 assert(serviceAutopilotQueueSnapshot.agentQueue?.every((row) => row.initiative?.schemaVersion === 'agent-autonomous-initiative/v1' && row.requestBody?.agentInitiativeId === row.initiativeId && row.agentAutonomousActionRunApiPath?.includes('/agent-autonomous-action-queue/')) && serviceAutopilotQueueSnapshot.summary?.agentInitiativeCount >= serviceAutopilotQueueSnapshot.summary?.agentCount, 'Worker queue snapshot must bind Agent worker rows to Agent initiative proof for scheduler import and lease auditing.');
 const serviceAutopilotDashboard = projectService.getManagerDashboard(projectId, { fresh: true });
 assert(serviceAutopilotDashboard.autonomousRunControlSessions?.rows?.some((row) => row.id === serviceAutopilotSessionStart.autonomousRunControlSession.id && row.actionLanes?.length > 0 && row.targetSnapshot?.schemaVersion === 'autopilot-delivery-target/v1' && Array.isArray(row.targetMissingStageIds)) && serviceAutopilotDashboard.autonomousRunControlSessions?.tickRows?.some((row) => row.id === serviceAutopilotSessionTick.autonomousRunControlSessionTick.id && row.actionLanes?.length > 0 && row.targetSnapshot?.schemaVersion === 'autopilot-delivery-target/v1' && row.targetControl?.schemaVersion === 'autopilot-delivery-target-control/v1' && Array.isArray(row.targetMissingStageIds)) && serviceAutopilotDashboard.autonomousRunControlLoops?.rows?.some((row) => row.actionLanes?.length > 0 && row.targetSelections?.some((selection) => selection.schemaVersion === 'autonomous-run-control-target-selection/v1')), 'Manager Dashboard must expose autonomous run-control session, tick, and loop rows with lane ownership, delivery target progress, and target-aware selection proof.');
@@ -1778,10 +2255,23 @@ assert(serviceAgentMessage.route === 'agent-message' && serviceAgentMessage.mess
 assert(serviceAgentMessage.project.agentStates.turing.inbox.some((item) => item.sourceMessageId === 'svc_agent_to_agent_source' && item.source === 'agent-to-agent-message'), 'Agent-authored messages must arrive in the target Agent inbox.');
 assert(serviceAgentMessage.project.agentStates.musk.worklog.some((item) => item.sourceMessageId === 'svc_agent_to_agent_source'), 'Agent-authored messages must be recorded in the sender Agent worklog.');
 assert(serviceAgentMessage.project.eventLedger.some((event) => event.source === 'agent-to-agent-message' && event.entityIds?.messageId === 'svc_agent_to_agent_source'), 'Agent-authored messages must be appended to the unified event ledger.');
+assert(serviceAgentMessage.agentMessageTimelineLog?.eventType === 'agent-message' && serviceAgentMessage.project.logs.some((log) => log.id === serviceAgentMessage.agentMessageTimelineLog.id && log.messageId === 'svc_agent_to_agent_source'), 'Agent-authored messages must write timeline proof linked to the source message.');
 const serviceAgentMessageTargetDashboard = projectService.getAgentDashboard(projectId, 'turing');
 assert(serviceAgentMessageTargetDashboard.proof.chatProofIds.includes('svc_agent_to_agent_source') && serviceAgentMessageTargetDashboard.messages.some((message) => message.id === 'svc_agent_to_agent_source'), 'Target Agent dashboard must expose Agent-to-Agent message proof.');
 const serviceManagerDashboardAfterAgentMessage = projectService.getManagerDashboard(projectId);
 assert(serviceManagerDashboardAfterAgentMessage.agentCommunicationFlow.rows.some((row) => row.messageId === 'svc_agent_to_agent_source' && row.inboxSeen && row.senderWorklogSeen), 'Project service manager dashboard must expose Agent communication flow from sender worklog to target inbox.');
+const serviceAgentMessageProofMap = projectService.getReadinessProofMap(projectId);
+assert(serviceAgentMessageProofMap.agentMessageRoutes?.some((route) => (
+  route.messageId === 'svc_agent_to_agent_source'
+  && route.apiPath?.endsWith('/transcripts/main')
+  && route.readyForAgentMessageDelivery === true
+  && route.proofIds?.includes('svc_agent_to_agent_source')
+  && route.timelineLogIds?.includes(serviceAgentMessage.agentMessageTimelineLog.id)
+  && route.eventIds?.length > 0
+  && route.inboxSeen === true
+  && route.senderWorklogSeen === true
+)), 'Readiness Proof Map must expose Agent-to-Agent message delivery as a routed backend proof surface.');
+assert(serviceAgentMessageProofMap.agentMessageSummary?.readyForAgentMessageDelivery === true && serviceAgentMessageProofMap.agentMessageSummary.proofIds?.includes('svc_agent_to_agent_source'), 'Readiness Proof Map must summarize Agent-to-Agent message delivery readiness.');
 const serviceSnapshot = projectService.snapshot();
 assert(serviceSnapshot.projects.length === 1 && serviceSnapshot.messages.some((message) => message.id === 'svc_meeting_source'), 'Project service snapshot must expose persisted projects and message history for API responses.');
 const reloadedStore = createAgentProjectMemoryStore({
@@ -1831,16 +2321,80 @@ const fileServiceChange = fileService.submitChatMessage({
   messageId: 'svc_file_google_source',
 });
 assert(fileServiceChange.route === 'feature-change', 'File-backed service must route Google Chat changes.');
+const fileAutopilotSessionStart = fileService.startAutonomousRunControlSession({
+  projectId,
+  sessionId: 'file_restart_autopilot_session',
+  now: '2026-05-28T15:24:00.000Z',
+  actor: 'File Store Autopilot',
+  reason: 'file-store-autopilot-resume-proof',
+  forceNewSession: true,
+  maxLoops: 3,
+  maxStepsPerLoop: 1,
+  maxTotalSteps: 3,
+  requestBodyOverrides: {
+    includeReadModels: false,
+    forceDue: true,
+    submitAgentWorkArtifacts: true,
+    reviewPendingSubmissions: true,
+    respondToReviewObligations: true,
+  },
+});
+assert(fileAutopilotSessionStart.autonomousRunControlSession?.id === 'file_restart_autopilot_session' && fileAutopilotSessionStart.autonomousRunControlSession.status === 'running', 'File-backed service must persist an active Autopilot session before process restart.');
 assert(existsSync(fileStorePath), 'File-backed project store must write its JSON snapshot to disk.');
 let persistedSnapshot = JSON.parse(readFileSync(fileStorePath, 'utf8'));
 assert(persistedSnapshot.messages.some((message) => message.id === 'svc_file_google_source'), 'File-backed project store must persist appended chat messages.');
 assert(persistedSnapshot.projects[0]?.eventLedger?.some((event) => event.entityIds?.messageId === 'svc_file_google_source'), 'File-backed project store must persist project event-ledger updates.');
+assert(persistedSnapshot.projects[0]?.autonomousRunControlSessionLedger?.some((session) => session.id === 'file_restart_autopilot_session' && session.status === 'running'), 'File-backed project store must persist active Autopilot sessions before restart.');
 const restartedFileStore = createAgentProjectFileStore({
   filePath: fileStorePath,
   hydrateProject: hydrateAgentProject,
 });
 const restartedFileService = createAgentProjectService({ store: restartedFileStore });
 assert(restartedFileService.getMessages(projectId).some((message) => message.id === 'svc_file_google_source'), 'Restarted file-backed service must reload persisted message history.');
+assert(restartedFileService.getAutonomousRunControlSessions(projectId).sessions?.some((session) => session.id === 'file_restart_autopilot_session' && session.status === 'running'), 'Restarted file-backed service must reload active Autopilot session state from disk.');
+const restartedFileAutopilotDueWorker = restartedFileService.runDueAutonomousRunControlSessions({
+  now: '2026-05-28T15:25:00.000Z',
+  forceDue: true,
+  forceProjectIds: [projectId],
+  maxProjects: 1,
+  maxSessionsPerProject: 10,
+  loopCount: 1,
+  requestBodyOverrides: {
+    includeReadModels: false,
+    submitAgentWorkArtifacts: true,
+    reviewPendingSubmissions: true,
+    respondToReviewObligations: true,
+  },
+});
+assert(restartedFileAutopilotDueWorker.processed.some((row) => row.sessionId === 'file_restart_autopilot_session'
+  && row.tickId
+  && row.result?.autonomousRunControlSessionTick?.sessionId === 'file_restart_autopilot_session'
+  && row.result?.autonomousRunControlSessionTick?.targetControl?.schemaVersion === 'autopilot-delivery-target-control/v1'), 'Restarted file-backed service must resume active Autopilot sessions through the due-worker and produce normal tick receipts.');
+const restartedFileAutopilotQueue = restartedFileService.getProjectWorkerQueue(projectId, {
+  now: '2026-05-28T15:25:01.000Z',
+  forceDue: true,
+  forceProjectIds: [projectId],
+});
+assert(restartedFileAutopilotQueue.executionReceipts?.some((receipt) => receipt.workerKind === 'autopilot-session'
+  && receipt.sessionId === 'file_restart_autopilot_session'
+  && receipt.idempotencyKey
+  && receipt.leaseKey
+  && receipt.receiptChecksum), 'Restarted file-backed worker queue must expose Autopilot tick execution receipts with session idempotency and lease proof.');
+const restartedFileAutopilotAdapterDryRun = restartedFileService.getWorkerQueueAdapterDryRun(projectId, {
+  now: '2026-05-28T15:25:02.000Z',
+  forceDue: true,
+  forceProjectIds: [projectId],
+});
+assert(restartedFileAutopilotAdapterDryRun.status === 'passed'
+  && restartedFileAutopilotAdapterDryRun.summary?.autopilotQueueRowCount >= 1
+  && restartedFileAutopilotAdapterDryRun.summary?.autopilotDispatchCount >= 1
+  && restartedFileAutopilotAdapterDryRun.summary?.autopilotExecutionReceiptCount >= 1, 'Restarted file-backed queue adapter dry-run must import, dispatch, and acknowledge resumed Autopilot session rows.');
+const restartedFileOperationsReadiness = restartedFileService.getOperationsReadiness(projectId, { fresh: true });
+assert(restartedFileOperationsReadiness.observability?.metrics?.autopilotResumeReady === true
+  && restartedFileOperationsReadiness.observability.metrics.autopilotExecutionReceiptCount >= 1
+  && restartedFileOperationsReadiness.observability.metrics.queueAdapterAutopilotDispatchCount >= 1, 'Operations readiness must expose resumed Autopilot session receipt and queue-adapter recovery metrics after file-store restart.');
+assert(typeof restartedFileOperationsReadiness.observability?.metrics?.providerAuditRecoveryReady === 'boolean'
+  && restartedFileOperationsReadiness.gates.some((gate) => gate.id === 'provider-audit-recovery-contract'), 'Operations readiness must expose provider audit recovery metrics and gate shape after file-store restart.');
 const filePostRestartCycle = restartedFileService.runAutonomousCycle({
   projectId,
   cadence: 'hourly',
@@ -1854,6 +2408,7 @@ assert(filePostRestartCycle.project.autonomousSchedulerLedger?.[0]?.trigger === 
 assert(restartedFileService.evaluateReadiness(projectId).status === 'manager-ready', 'Restarted file-backed service must preserve manager readiness after disk reload.');
 persistedSnapshot = JSON.parse(readFileSync(fileStorePath, 'utf8'));
 assert(persistedSnapshot.projects[0]?.autonomousSchedulerLedger?.[0]?.trigger === 'file-store-worker-after-restart', 'File-backed project store must persist post-restart worker state.');
+assert(persistedSnapshot.projects[0]?.autonomousRunControlSessionTickLedger?.some((tick) => tick.sessionId === 'file_restart_autopilot_session' && tick.workerKind === 'autopilot-session' && tick.executionReceipt?.receiptChecksum), 'File-backed project store must persist resumed Autopilot tick worker execution receipts after restart.');
 const apiStorePath = new URL('../.tmp/agent-manager-api-store.json', import.meta.url);
 const apiRuntimeRoot = fileURLToPath(new URL('../.tmp/agent-manager-api-runtime', import.meta.url));
 const apiWorkspaceRoot = fileURLToPath(new URL('../.tmp/agent-manager-api-workspace', import.meta.url));
@@ -1866,7 +2421,7 @@ const apiProjectRuntime = createLocalProjectRuntime({
 checkpoint('file-backed API and local runtime');
 const projectApi = createFileBackedAgentProjectApi({
   filePath: apiStorePath,
-  projects: [filePostRestartCycle.project],
+  projects: [restartedFileService.getProject(projectId)],
   messages: restartedFileService.getMessages(projectId),
   replaceWithSeed: true,
   projectRuntime: apiProjectRuntime,
@@ -1982,6 +2537,105 @@ apiResponse = contractApi.handle({
   path: `/projects/${projectId}/manager-flow-graph`,
 });
 assert(apiResponse.status === 200 && apiResponse.body.nodes?.some((node) => node.subtype === 'agent-contracted' && node.agentId === 'ada' && node.category === 'collaboration'), 'Agent contract route must appear as a collaboration node in the backend Flow Graph.');
+apiResponse = contractApi.handle({
+  method: 'POST',
+  path: `/projects/${projectId}/launch-approvals`,
+  body: {
+    includeReadModels: false,
+    mode: 'private-pilot',
+    decision: 'approved',
+    approverRole: 'manager',
+    approverId: 'director',
+    approverName: 'Product Director',
+    reason: 'Validate lightweight launch approval response routes.',
+    now: '2026-05-28T16:01:50.000Z',
+  },
+});
+assert(apiResponse.status === 200 && apiResponse.body.launchApproval?.schemaVersion === 'launch-approval/v1', 'Launch approval route must return a lightweight approval receipt.');
+assert(apiResponse.body.launchApprovalWorkflow?.schemaVersion === 'launch-approval-workflow/v1', 'Launch approval route must return the updated workflow snapshot.');
+assert(
+  apiResponse.body.readModels?.included === false
+    && apiResponse.body.readModels.launchApprovalWorkflowRoute?.endsWith('/launch-approvals')
+    && apiResponse.body.readModels.productionLaunchAuditRoute?.endsWith('/production-launch-audit')
+    && apiResponse.body.readModels.projectEvidenceExportWorkflowRoute?.endsWith('/project-evidence-exports')
+    && apiResponse.body.readModels.privatePilotGoLiveReadinessRoute?.endsWith('/private-pilot-go-live-readiness'),
+  'Launch approval route must return explicit launch/go-live read-model refresh routes when includeReadModels is false.',
+);
+assert(!apiResponse.body.managerReadyPackage && !apiResponse.body.managerDashboard, 'Launch approval route must not embed large Manager read models when includeReadModels is false.');
+apiResponse = contractApi.handle({
+  method: 'PUT',
+  path: `/projects/${projectId}/membership-policy`,
+  body: {
+    includeReadModels: false,
+    policy: {
+      schemaVersion: 'project-membership-policy/v1',
+      managerUserIds: ['director'],
+      securityAdminUserIds: ['security-lead'],
+      runtimeUserIds: ['scheduler'],
+      agentIds: confirmedTeam.map((agent) => agent.id),
+      reviewerAgentIds: ['curie'],
+      agentUserIds: Object.fromEntries(confirmedTeam.map((agent) => [agent.id, [`agent-runtime-${agent.id}`]])),
+      reviewerUserIds: {
+        curie: ['agent-runtime-curie'],
+      },
+    },
+    updatedBy: 'security-lead',
+    source: 'manager-scenario-security-receipt',
+    now: '2026-05-28T16:01:55.000Z',
+  },
+});
+assert(apiResponse.status === 200 && apiResponse.body.projectMembershipPolicy?.schemaVersion === 'project-membership-policy/v1', 'Project membership policy route must persist a lightweight security policy receipt.');
+assert(
+  apiResponse.body.readModels?.included === false
+    && apiResponse.body.readModels.membershipPolicyRoute?.endsWith('/membership-policy')
+    && apiResponse.body.readModels.securityBoundaryRoute?.endsWith('/security-boundary')
+    && apiResponse.body.readModels.securityAuditStreamRoute?.endsWith('/security-audit-stream'),
+  'Project membership policy route must return explicit security read-model refresh routes when includeReadModels is false.',
+);
+assert(!apiResponse.body.managerReadyPackage && !apiResponse.body.managerDashboard, 'Project membership policy route must not embed large Manager read models when includeReadModels is false.');
+apiResponse = contractApi.handle({
+  method: 'POST',
+  path: `/projects/${projectId}/identity-sessions`,
+  body: {
+    includeReadModels: false,
+    role: 'manager',
+    userId: 'director',
+    issuerRole: 'security-admin',
+    issuerId: 'security-lead',
+    ttlMs: 60 * 60 * 1000,
+    scope: ['project', 'manager-dashboard'],
+    source: 'manager-scenario-identity-session',
+    now: '2026-05-28T16:01:56.000Z',
+  },
+});
+assert(apiResponse.status === 200 && apiResponse.body.identitySession?.schemaVersion === 'identity-session/v1' && apiResponse.body.tokenContract?.returnedOnce === true, 'Identity-session route must issue a lightweight local session receipt.');
+const managerScenarioIdentitySessionId = apiResponse.body.identitySession.id;
+assert(
+  apiResponse.body.readModels?.included === false
+    && apiResponse.body.readModels.identitySessionsRoute?.endsWith('/identity-sessions')
+    && apiResponse.body.readModels.securityAccessAuditRoute?.endsWith('/security-access-audit')
+    && apiResponse.body.readModels.securityBoundaryRoute?.endsWith('/security-boundary'),
+  'Identity-session issue route must return explicit security read-model refresh routes when includeReadModels is false.',
+);
+assert(!apiResponse.body.managerReadyPackage && !apiResponse.body.managerDashboard && !apiResponse.body.securityBoundary, 'Identity-session route must not embed large Manager or Security Boundary read models when includeReadModels is false.');
+apiResponse = contractApi.handle({
+  method: 'POST',
+  path: `/projects/${projectId}/identity-sessions/${encodeURIComponent(managerScenarioIdentitySessionId)}/revoke`,
+  body: {
+    includeReadModels: false,
+    revokedBy: 'security-lead',
+    reason: 'Manager scenario verifies lightweight identity-session revoke routes.',
+    now: '2026-05-28T16:01:57.000Z',
+  },
+});
+assert(apiResponse.status === 200 && apiResponse.body.identitySession?.status === 'revoked', 'Identity-session revoke route must return a lightweight revocation receipt.');
+assert(
+  apiResponse.body.readModels?.included === false
+    && apiResponse.body.readModels.identitySessionsRoute?.endsWith('/identity-sessions')
+    && apiResponse.body.readModels.securityBoundaryRoute?.endsWith('/security-boundary'),
+  'Identity-session revoke route must return explicit security refresh routes when includeReadModels is false.',
+);
+assert(!apiResponse.body.managerReadyPackage && !apiResponse.body.managerDashboard && !apiResponse.body.securityBoundary, 'Identity-session revoke route must not embed large Manager or Security Boundary read models when includeReadModels is false.');
 checkpoint('file API manager ready package');
 const lightweightProductionReceiptCases = [
   {
@@ -2148,14 +2802,24 @@ apiResponse = projectApi.handle({
     selectedLeaderId: 'turing',
     reviewerId: 'curie',
     now: '2026-05-28T16:10:00.000Z',
+    includeReadModels: false,
   },
 });
 assert(apiResponse.status === 200 && apiResponse.body.route === 'kickoff-meeting-approved' && apiResponse.body.meeting.status === 'approved', 'Agent project API must approve kickoff meeting sessions into projects.');
 assert(apiResponse.body.project.team.some((agent) => agent.id === 'turing' && agent.isLeader) && apiResponse.body.kickoffCharter?.governance?.leaderId === 'turing', 'API kickoff meeting approval must persist the manager-confirmed Leader marker.');
-assert(apiResponse.body.managerDashboard?.kickoffExecutionFlow?.firstPulse?.started, 'API kickoff meeting approval responses must include manager-dashboard first-pulse evidence.');
-assert(apiResponse.body.managerReadyPackage?.managerDashboard?.kickoffExecutionFlow?.firstPulse?.started, 'API kickoff meeting approval responses must include manager-ready package first-pulse evidence.');
-assert(apiResponse.body.project?.initiation?.generationProvenance?.schemaVersion === 'kickoff-generation-provenance/v1' && apiResponse.body.managerDashboard?.kickoffMeetingFlow?.generationProvenance?.productionClaim === 'blocked', 'API kickoff meeting approval responses must carry generation provenance into the project and manager dashboard.');
-assert(apiResponse.body.managerDashboard?.kickoffMeetingFlow?.conversationRows?.some((row) => row.stage === 'director-clarification' && /system Agent owns integration proof/i.test(row.text || '')), 'API kickoff meeting approval responses must include manager clarification conversation evidence.');
+assert(apiResponse.body.readModels?.included === false && apiResponse.body.readModels.projectRoute?.endsWith('/api_kickoff_project') && apiResponse.body.readModels.transcriptsRoute?.endsWith('/transcripts') && apiResponse.body.readModels.readinessProofMapRoute?.endsWith('/readiness-proof-map') && apiResponse.body.readModels.kickoffMeetingApprovalRoute?.endsWith('/approve'), 'API kickoff meeting approval must return lightweight project/transcript/proof refresh routes.');
+assert(!apiResponse.body.managerDashboard && !apiResponse.body.managerReadyPackage, 'API kickoff meeting approval must not embed large Manager read models when includeReadModels is false.');
+apiResponse = projectApi.handle({
+  method: 'GET',
+  path: '/projects/api_kickoff_project/manager-dashboard',
+});
+assert(apiResponse.status === 200 && apiResponse.body.kickoffExecutionFlow?.firstPulse?.started, 'API kickoff meeting approval read-model refresh must expose manager-dashboard first-pulse evidence.');
+assert(apiResponse.body.kickoffMeetingFlow?.generationProvenance?.productionClaim === 'blocked' && apiResponse.body.kickoffMeetingFlow?.conversationRows?.some((row) => row.stage === 'director-clarification' && /system Agent owns integration proof/i.test(row.text || '')), 'API kickoff meeting approval read-model refresh must expose generation provenance and clarification evidence.');
+apiResponse = projectApi.handle({
+  method: 'GET',
+  path: '/projects/api_kickoff_project/manager-ready-package',
+});
+assert(apiResponse.status === 200 && apiResponse.body.managerDashboard?.kickoffExecutionFlow?.firstPulse?.started, 'API kickoff meeting approval read-model refresh must expose manager-ready package first-pulse evidence.');
 checkpoint('file API kickoff approval');
 apiResponse = projectApi.handle({
   method: 'GET',
@@ -2188,6 +2852,8 @@ apiResponse = projectApi.handle({
   },
 });
 assert(apiResponse.status === 200 && apiResponse.body.route === 'war-room-meeting-change', 'Agent project API must route War Room meeting changes.');
+assert(apiResponse.body.meetingAgentTurns?.length >= 1 && apiResponse.body.messages.some((message) => message.schemaVersion === 'meeting-agent-turn/v1'), 'Agent project API must return backend-authored Agent meeting turns for frontend War Room playback.');
+assert(apiResponse.body.meetingAgentTurns.every((turn) => turn.timelineLogIds?.length >= 1), 'Agent project API meeting turns must return timeline log ids for frontend proof navigation.');
 assert(apiResponse.body.responses?.changeResponse?.discussionMessages?.length >= 3, 'Agent project API must return meeting discussion responses for backend-connected War Room animation.');
 assert(apiResponse.body.readModels?.included === false && apiResponse.body.readModels.managerReadyPackageRoute?.endsWith('/manager-ready-package'), 'Agent project API meeting command responses must support lightweight manager-ready package refresh.');
 apiResponse = projectApi.handle({
@@ -2765,6 +3431,12 @@ try {
   httpBody = await httpResponse.json();
   const httpAutopilotSessionId = httpBody.autonomousRunControlSession?.id;
   assert(httpResponse.status === 200 && httpAutopilotSessionId, 'HTTP server must start an Autopilot session that the scheduler can later advance.');
+  assert(httpBody.readModels?.included === false
+    && httpBody.readModels.autonomousRunControlSessionsRoute?.endsWith('/autonomous-run-control/sessions')
+    && httpBody.readModels.autonomousRunControlSessionTickRoute?.endsWith(`/autonomous-run-control/sessions/${encodeURIComponent(httpAutopilotSessionId)}/tick`)
+    && httpBody.readModels.autopilotDueWorkerRoute === '/workers/autopilot/due'
+    && httpBody.readModels.schedulerTickRoute === '/workers/autonomous/tick'
+    && httpBody.readModels.readinessProofMapRoute?.endsWith('/readiness-proof-map'), 'HTTP Autopilot session start must return dedicated lightweight session, scheduler, due-worker, and proof refresh routes.');
   httpResponse = await fetch(`${httpRuntime.url}/workers/autonomous/tick`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -2800,6 +3472,14 @@ try {
     && item.tickId
     && item.actionLanes?.length > 0
     && item.autonomousRunControlSessionTick?.targetControl?.schemaVersion === 'autopilot-delivery-target-control/v1'), 'HTTP scheduler tick endpoint must process active Autopilot sessions through the backend Autopilot due-worker path.');
+  assert(httpBody.result.autopilotProcessed.some((item) => item.projectId === `${projectId}_http_scheduler_due`
+    && item.sessionId === httpAutopilotSessionId
+    && item.readModels?.included === false
+    && item.readModels.autonomousRunControlSessionsRoute?.endsWith('/autonomous-run-control/sessions')
+    && item.readModels.autonomousRunControlSessionTickRoute?.endsWith(`/autonomous-run-control/sessions/${encodeURIComponent(httpAutopilotSessionId)}/tick`)
+    && item.readModels.autopilotDueWorkerRoute === '/workers/autopilot/due'
+    && item.readModels.schedulerTickRoute === '/workers/autonomous/tick'
+    && item.readModels.managerFlowGraphRoute?.endsWith('/manager-flow-graph')), 'HTTP scheduler Autopilot processed items must include lightweight session, due-worker, scheduler, and Flow refresh routes.');
   assert(httpBody.result.agentProcessed.some((item) => item.projectId === `${projectId}_http_scheduler_due` && item.evidenceSearch?.searchMode === 'worker-local-evidence-search' && item.evidenceSearch?.sources?.length >= 3), 'HTTP scheduler tick endpoint must record autonomous evidence search proof for evidence-oriented Agent tasks.');
   assert(httpBody.result.agentProcessed.some((item) => item.projectId === `${projectId}_http_scheduler_due` && item.workSubmission?.artifactType === 'evidence-packet' && item.workSubmission?.sourceRefs?.some((source) => source.type === 'evidence-search')), 'HTTP scheduler tick endpoint must infer evidence-packet submissions and link the autonomous evidence search.');
   assert(httpBody.result.agentProcessed.some((item) => item.projectId === `${projectId}_http_scheduler_due` && item.review?.verdict === 'changes-requested' && item.reviewedSubmission?.artifactType === 'evidence-packet'), 'HTTP scheduler tick endpoint must review inferred evidence-packet autonomous submissions through the standard review contract.');
@@ -3244,6 +3924,7 @@ try {
       selectedLeaderId: 'musk',
       reviewerId: 'curie',
       now: '2026-05-28T19:00:00.000Z',
+      includeReadModels: false,
       tasks: [
         { id: 'http_kickoff_task_1', text: 'Prepare backend kickoff evidence packet', assignee: 'Alan Turing', status: 'pending' },
         { id: 'http_kickoff_task_2', text: 'Review kickoff timeline proof', assignee: 'Marie Curie', status: 'pending' },
@@ -3256,7 +3937,11 @@ try {
   assert(kickoffBody.project.initiation.roleNegotiation.transcript.some((item) => item.type === 'role-question'), 'Backend kickoff endpoint must produce role-clarification evidence.');
   assert(kickoffBody.project.initiation.leaderElection.transcript.every((item) => item.type === 'leader-campaign'), 'Backend kickoff endpoint must produce Leader campaign evidence.');
   assert(kickoffBody.project.initiation.nextActionResolution?.managerConfirmed && kickoffBody.project.initiation.nextActionResolution.actionIds.includes('http_kickoff_task_1'), 'Backend kickoff endpoint must produce confirmed next-action resolution evidence.');
-  assert(kickoffBody.managerDashboard?.kickoffExecutionFlow?.nextActionResolutionDelivery?.allAgentsReceived && kickoffBody.project.team.every((agent) => kickoffBody.project.agentStates?.[agent.id]?.obligations?.some((item) => item.sourceMessageId === 'decision_http_kickoff_project_next_actions')), 'Backend kickoff endpoint must deliver confirmed next-action decisions into every Agent obligation list.');
+  assert(kickoffBody.readModels?.included === false && kickoffBody.readModels.projectRoute?.endsWith(`/projects/${kickoffProjectId}`) && kickoffBody.readModels.mainTranscriptRoute?.endsWith('/transcripts/main') && kickoffBody.readModels.managerDashboardRoute?.endsWith('/manager-dashboard'), 'Backend kickoff endpoint must support lightweight project/transcript/manager refresh routes.');
+  assert(!kickoffBody.managerDashboard && !kickoffBody.managerReadyPackage, 'Backend kickoff endpoint must not embed large Manager read models when includeReadModels is false.');
+  const kickoffInitiationDashboardResponse = await fetch(`${kickoffHttpRuntime.url}/projects/${kickoffProjectId}/manager-dashboard`);
+  const kickoffInitiationDashboardBody = await kickoffInitiationDashboardResponse.json();
+  assert(kickoffInitiationDashboardResponse.status === 200 && kickoffInitiationDashboardBody.kickoffExecutionFlow?.nextActionResolutionDelivery?.allAgentsReceived && kickoffBody.project.team.every((agent) => kickoffBody.project.agentStates?.[agent.id]?.obligations?.some((item) => item.sourceMessageId === 'decision_http_kickoff_project_next_actions')), 'Backend kickoff endpoint read-model refresh must expose confirmed next-action delivery into every Agent obligation list.');
   assert(kickoffBody.project.kickoffCharter?.governance?.leaderId === 'musk', 'Backend kickoff endpoint must persist kickoff charter governance.');
   assert(kickoffBody.roleNegotiation?.transcript?.length > 0 && kickoffBody.leaderElection?.transcript?.length > 0, 'Backend kickoff endpoint must return meeting and Leader election details for UI approval flows.');
   assert(kickoffBody.kickoffCharter?.governance?.leaderId === 'musk' && kickoffBody.assignmentPackage?.assignmentMessages?.length > 0, 'Backend kickoff endpoint must return charter and assignment package details.');
@@ -3265,11 +3950,11 @@ try {
   assert(kickoffBody.project.eventLedger.some((event) => event.type === 'leader-assignment'), 'Backend kickoff endpoint must write Leader assignments to the unified event ledger.');
   assert(kickoffBody.messages.some((message) => message.time === 'First Pulse'), 'Backend kickoff endpoint must publish the first autonomous pulse into chat messages.');
   assert(kickoffBody.project.autonomousSchedulerLedger?.[0]?.trigger === 'initiation-approval', 'Backend kickoff endpoint must immediately start the first autonomous work pulse.');
-  assert(kickoffBody.managerDashboard?.kickoffMeetingFlow?.leaderMarkerPersisted && kickoffBody.managerDashboard?.assignmentFlow?.rows?.some((row) => row.taskId === 'http_kickoff_task_1'), 'Backend kickoff command response must include manager-dashboard kickoff and assignment flow data.');
-  assert(kickoffBody.managerDashboard?.kickoffExecutionFlow?.firstPulse?.started && kickoffBody.managerDashboard?.kickoffExecutionFlow?.nextActions?.some((row) => row.id === 'http_kickoff_task_1'), 'Backend kickoff command response must include kickoff execution flow and first-pulse proof.');
+  assert(kickoffInitiationDashboardBody.kickoffMeetingFlow?.leaderMarkerPersisted && kickoffInitiationDashboardBody.assignmentFlow?.rows?.some((row) => row.taskId === 'http_kickoff_task_1'), 'Backend kickoff command read-model refresh must include manager-dashboard kickoff and assignment flow data.');
+  assert(kickoffInitiationDashboardBody.kickoffExecutionFlow?.firstPulse?.started && kickoffInitiationDashboardBody.kickoffExecutionFlow?.nextActions?.some((row) => row.id === 'http_kickoff_task_1'), 'Backend kickoff command read-model refresh must include kickoff execution flow and first-pulse proof.');
   assert(kickoffBody.project.initiation?.generationProvenance?.schemaVersion === 'kickoff-generation-provenance/v1'
-    && kickoffBody.managerDashboard?.kickoffMeetingFlow?.generationProvenance?.productionClaim === 'blocked',
-  'Backend kickoff command response must preserve kickoff generation provenance into the project and Manager Dashboard.');
+    && kickoffInitiationDashboardBody.kickoffMeetingFlow?.generationProvenance?.productionClaim === 'blocked',
+  'Backend kickoff command read-model refresh must preserve kickoff generation provenance into the project and Manager Dashboard.');
 
   const kickoffGetResponse = await fetch(`${kickoffHttpRuntime.url}/projects/${kickoffProjectId}`);
   const kickoffGetBody = await kickoffGetResponse.json();

@@ -530,6 +530,30 @@ export function classifyAccessRequest({ method = 'GET', path = '/', body = {} } 
       allowedRoles: ['manager', 'security-admin'],
     });
   }
+  if (resolvedPath === '/secret-vault/status' || resolvedPath === '/secret-vault/records') {
+    return accessRoute({
+      routeKey: resolvedPath === '/secret-vault/status' ? 'secret-vault-status' : 'secret-vault-records',
+      capability: 'read secret vault metadata',
+      sensitivity: 'secret-vault-metadata',
+      allowedRoles: ['security-admin', 'runtime-platform'],
+    });
+  }
+  if (resolvedPath === '/provider-vault-bindings') {
+    return accessRoute({
+      routeKey: 'provider-vault-bindings',
+      capability: 'read provider to secret-vault binding status',
+      sensitivity: 'provider-vault-binding-metadata',
+      allowedRoles: ['manager', 'security-admin', 'runtime-platform'],
+    });
+  }
+  if (resolvedPath === '/secret-vault/seal' || resolvedPath === '/secret-vault/rotate') {
+    return accessRoute({
+      routeKey: resolvedPath === '/secret-vault/seal' ? 'secret-vault-seal' : 'secret-vault-rotate',
+      capability: resolvedPath === '/secret-vault/seal' ? 'seal provider secret' : 'rotate secret vault records',
+      sensitivity: 'secret-vault-write',
+      allowedRoles: ['security-admin', 'runtime-platform'],
+    });
+  }
   if (resolvedPath === '/llm/test' || resolvedPath === '/search/test') {
     return accessRoute({
       routeKey: resolvedPath === '/llm/test' ? 'llm-test' : 'search-test',
@@ -743,6 +767,15 @@ export function classifyAccessRequest({ method = 'GET', path = '/', body = {} } 
       allowedRoles: ['manager', 'runtime-platform', 'security-admin'],
     });
   }
+  if (action === 'settings-integration-readiness') {
+    return accessRoute({
+      routeKey: 'settings-integration-readiness',
+      capability: 'read Settings integration readiness',
+      sensitivity: 'settings-integration-route-and-readiness-metadata',
+      projectId,
+      allowedRoles: ['manager', 'runtime-platform', 'security-admin'],
+    });
+  }
   if (action === 'production-infrastructure-rehearsal') {
     return accessRoute({
       routeKey: 'production-infrastructure-rehearsal',
@@ -935,6 +968,15 @@ export function classifyAccessRequest({ method = 'GET', path = '/', body = {} } 
       allowedRoles: ['manager', 'runtime-platform', 'security-admin'],
     });
   }
+  if (action === 'provider-vault-bindings') {
+    return accessRoute({
+      routeKey: 'provider-vault-bindings',
+      capability: 'read provider to secret-vault binding status',
+      sensitivity: 'provider-vault-binding-metadata',
+      projectId,
+      allowedRoles: ['manager', 'runtime-platform', 'security-admin'],
+    });
+  }
   if (action === 'provider-controlled-run') {
     return accessRoute({
       routeKey: 'provider-controlled-run',
@@ -1041,6 +1083,7 @@ export function classifyAccessRequest({ method = 'GET', path = '/', body = {} } 
   if ([
     'chat',
     'meeting',
+    'transcripts',
     'autonomous-cycle',
     'manager-flow-graph',
     'manager-command-center',
@@ -1390,6 +1433,7 @@ export function buildAccessControlPolicySnapshot() {
       { id: 'pilot-launch-readiness-read', roles: ['manager', 'security-admin', 'observer'], examples: ['/projects/:id/pilot-launch-readiness'] },
       { id: 'deployment-preflight-read', roles: ['manager', 'security-admin', 'observer'], examples: ['/projects/:id/deployment-preflight'] },
       { id: 'adapter-gateway-preflight-read', roles: ['manager', 'runtime-platform', 'security-admin'], examples: ['/projects/:id/adapter-gateway-preflight'] },
+      { id: 'settings-integration-readiness-read', roles: ['manager', 'runtime-platform', 'security-admin'], examples: ['/projects/:id/settings-integration-readiness'] },
       { id: 'production-launch-audit-read', roles: ['manager', 'security-admin', 'observer'], examples: ['/projects/:id/production-launch-audit'] },
       { id: 'project-evidence-archive-export', roles: ['manager', 'security-admin', 'observer'], examples: ['/projects/:id/project-evidence-archive'] },
       { id: 'project-evidence-export-approval', roles: ['manager', 'security-admin', 'operations-owner'], examples: ['/projects/:id/project-evidence-exports'] },

@@ -8,7 +8,7 @@ import {
 import { createTranslator, localizeText, normalizeLanguage } from '../i18n/runtime.js';
 
 export const DIRECTOR_AGENT_ID = 'director';
-const EVENT_LEDGER_RETAINED_LIMIT = 1000;
+export const EVENT_LEDGER_RETAINED_LIMIT = 5000;
 
 const ROLE_PATTERNS = [
   { test: /manager|lead|founder|steward|driver|vision|strategy/i, capability: 'orchestration' },
@@ -411,7 +411,8 @@ function legacyAutonomousSchedulerLedgerEvents(schedulerRecords = []) {
 
 export function backfillProjectEventLedger(project = {}) {
   const currentSummary = summarizeProjectEventLedger(project);
-  if (currentSummary.contiguous && currentSummary.replayProjection.replayReady) return project;
+  const retainedProjection = projectEventReplayProjection(project, { includeRecovered: false });
+  if (currentSummary.contiguous && retainedProjection.replayReady) return project;
 
   const generatedEvents = uniqueLedgerEvents(sortLedgerEvents([
     ...(project.eventLedger || []),
@@ -444,6 +445,7 @@ export function summarizeProjectEventLedger(project = {}) {
   ));
   const latestByType = Object.fromEntries(events.map((event) => [event.type, event]));
   const replayProjection = projectEventReplayProjection(project);
+  const replayCoverage = replayProjection.coverage || {};
   return {
     eventCount: project.eventLedgerEventCount || project.eventLedgerLastSequence || events.length,
     retainedCount: events.length,
@@ -454,20 +456,35 @@ export function summarizeProjectEventLedger(project = {}) {
     latestByType,
     replayProjection,
     coverage: {
-      kickoff: Boolean(typeCounts['kickoff-charter-approved']),
-      kickoffRoleQuestion: Boolean(typeCounts['kickoff-role-question']),
-      kickoffRoleVolunteer: Boolean(typeCounts['kickoff-role-volunteer']),
-      kickoffLeaderCampaign: Boolean(typeCounts['kickoff-leader-campaign']),
-      leaderAssignment: Boolean(typeCounts['leader-assignment']),
-      change: Boolean(typeCounts['change-confirmed-and-synced']),
-      peerHandoff: Boolean(typeCounts['peer-handoff-accepted']),
-      autonomous: Boolean(typeCounts['autonomous-scheduler']),
+      kickoff: Boolean(typeCounts['kickoff-charter-approved'] || replayCoverage.kickoff),
+      kickoffRoleQuestion: Boolean(typeCounts['kickoff-role-question'] || replayCoverage.kickoffRoleQuestion),
+      kickoffRoleVolunteer: Boolean(typeCounts['kickoff-role-volunteer'] || replayCoverage.kickoffRoleVolunteer),
+      kickoffLeaderCampaign: Boolean(typeCounts['kickoff-leader-campaign'] || replayCoverage.kickoffLeaderCampaign),
+      leaderAssignment: Boolean(typeCounts['leader-assignment'] || replayCoverage.leaderAssignment),
+      change: Boolean(typeCounts['change-confirmed-and-synced'] || replayCoverage.change),
+      peerHandoff: Boolean(typeCounts['peer-handoff-accepted'] || replayCoverage.peerHandoff),
+      autonomous: Boolean(typeCounts['autonomous-scheduler'] || replayCoverage.autonomous),
     },
   };
 }
 
-export function projectEventReplayProjection(project = {}) {
-  const events = project.eventLedger || [];
+function replayEventsForProject(project = {}, { includeRecovered = true } = {}) {
+  if (!includeRecovered) return project.eventLedger || [];
+  return uniqueLedgerEvents(sortLedgerEvents([
+    ...(project.eventLedger || []),
+    ...legacyKickoffLedgerEvents(project),
+    ...legacyChangeLedgerEvents(project.changeLedger || []),
+    ...legacyPeerHandoffLedgerEvents(project.peerHandoffs || []),
+    ...legacyAutonomousSchedulerLedgerEvents(project.autonomousSchedulerLedger || []),
+  ]));
+}
+
+export function projectEventReplayProjection(project = {}, { includeRecovered = true } = {}) {
+  const events = replayEventsForProject(project, { includeRecovered });
+  const typeCounts = events.reduce((counts, event) => ({
+    ...counts,
+    [event.type]: (counts[event.type] || 0) + 1,
+  }), {});
   const byType = (type) => events.filter((event) => event.type === type);
   const roleQuestions = byType('kickoff-role-question');
   const roleVolunteers = byType('kickoff-role-volunteer');
@@ -481,6 +498,7 @@ export function projectEventReplayProjection(project = {}) {
   const taskCompletions = byType('task-completed');
 
   return {
+    typeCounts,
     kickoffSpeechCount: roleQuestions.length + roleVolunteers.length + leaderCampaigns.length,
     roleQuestionCount: roleQuestions.length,
     roleVolunteerCount: roleVolunteers.length,
@@ -493,6 +511,16 @@ export function projectEventReplayProjection(project = {}) {
     managementEventCount: managementEvents.length,
     taskCompletionCount: taskCompletions.length,
     latestEvent: events[events.length - 1] || null,
+    coverage: {
+      kickoff: Boolean(typeCounts['kickoff-charter-approved']),
+      kickoffRoleQuestion: Boolean(typeCounts['kickoff-role-question']),
+      kickoffRoleVolunteer: Boolean(typeCounts['kickoff-role-volunteer']),
+      kickoffLeaderCampaign: Boolean(typeCounts['kickoff-leader-campaign']),
+      leaderAssignment: Boolean(typeCounts['leader-assignment']),
+      change: Boolean(typeCounts['change-confirmed-and-synced']),
+      peerHandoff: Boolean(typeCounts['peer-handoff-accepted']),
+      autonomous: Boolean(typeCounts['autonomous-scheduler']),
+    },
     replayReady: Boolean(
       roleQuestions.length
       && roleVolunteers.length

@@ -82,6 +82,8 @@ function publicResult(result = {}) {
     readiness: result.readiness,
     cycle: result.cycle,
     responses: result.responses || {},
+    meetingAgentTurns: result.meetingAgentTurns || [],
+    meetingProtocol: result.meetingProtocol || null,
     roleNegotiation: result.roleNegotiation,
     leaderElection: result.leaderElection,
     kickoffCharter: result.kickoffCharter,
@@ -365,13 +367,23 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
     readModels: {
       included: false,
       reason: 'deferred-by-request',
+      projectRoute: projectId ? `/projects/${projectId}` : null,
+      projectMessagesRoute: projectId ? `/projects/${projectId}/messages` : null,
       managerDashboardRoute: projectId ? `/projects/${projectId}/manager-dashboard` : null,
       managerReadyPackageRoute: projectId ? `/projects/${projectId}/manager-ready-package` : null,
       managerFlowGraphRoute: projectId ? `/projects/${projectId}/manager-flow-graph` : null,
+      readinessProofMapRoute: projectId ? `/projects/${projectId}/readiness-proof-map` : null,
+      transcriptsRoute: projectId ? `/projects/${projectId}/transcripts` : null,
+      mainTranscriptRoute: projectId ? `/projects/${projectId}/transcripts/main` : null,
+      meetingSummariesRoute: projectId ? `/projects/${projectId}/meeting-summaries` : null,
+      timelineRoute: projectId ? `/projects/${projectId}/timeline` : null,
+      eventsRoute: projectId ? `/projects/${projectId}/events` : null,
       productTeamDeliveryTraceRoute: projectId ? `/projects/${projectId}/product-team-delivery-trace` : null,
       teamCollaborationDiagnosticsRoute: projectId ? `/projects/${projectId}/team-collaboration-diagnostics` : null,
+      collaborationIntentQueueRoute: projectId ? `/projects/${projectId}/collaboration-intent-queue` : null,
       runtimeContractsRoute: projectId ? `/projects/${projectId}/runtime-contracts` : null,
       autonomousCycleConsistencyRoute: projectId ? `/projects/${projectId}/autonomous-cycle-consistency` : null,
+      runtimeAutonomyStatusRoute: projectId ? `/projects/${projectId}/runtime-autonomy-status` : null,
       autonomousRunControlRoute: projectId ? `/projects/${projectId}/autonomous-run-control` : null,
       agentAutonomousActionQueueRoute: projectId ? `/projects/${projectId}/agent-autonomous-action-queue` : null,
       agentDashboardRoute: projectId && agentId ? `/projects/${projectId}/agents/${agentId}/dashboard` : null,
@@ -379,11 +391,16 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
     },
   });
   const productionControlReceiptReadModels = (projectId, extraRoutes = {}) => deferredReadModels(projectId, '', {
+    productionInfrastructureRehearsalRoute: projectId ? `/projects/${projectId}/production-infrastructure-rehearsal` : null,
+    productionOperationsReadinessRoute: projectId ? `/projects/${projectId}/production-operations-readiness` : null,
     productionLaunchAuditRoute: projectId ? `/projects/${projectId}/production-launch-audit` : null,
     productionLaunchGapRegisterRoute: projectId ? `/projects/${projectId}/production-launch-gap-register` : null,
     productionLaunchControlCenterRoute: projectId ? `/projects/${projectId}/production-launch-control-center` : null,
     productionLaunchEvidenceDossierRoute: projectId ? `/projects/${projectId}/production-launch-evidence-dossier` : null,
     productionEvidenceIntegrityAuditRoute: projectId ? `/projects/${projectId}/production-evidence-integrity-audit` : null,
+    deploymentPreflightRoute: projectId ? `/projects/${projectId}/deployment-preflight` : null,
+    adapterGatewayPreflightRoute: projectId ? `/projects/${projectId}/adapter-gateway-preflight` : null,
+    launchApprovalWorkflowRoute: projectId ? `/projects/${projectId}/launch-approvals` : null,
     ...extraRoutes,
   });
   const projectEvidenceExportReadModels = (projectId, exportRequestId = '', extraRoutes = {}) => deferredReadModels(projectId, '', {
@@ -397,6 +414,36 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
     productionLaunchAuditRoute: projectId ? `/projects/${projectId}/production-launch-audit` : null,
     ...extraRoutes,
   });
+  const launchApprovalReadModels = (projectId, extraRoutes = {}) => deferredReadModels(projectId, '', {
+    launchApprovalWorkflowRoute: projectId ? `/projects/${projectId}/launch-approvals` : null,
+    pilotLaunchReadinessRoute: projectId ? `/projects/${projectId}/pilot-launch-readiness` : null,
+    productionLaunchAuditRoute: projectId ? `/projects/${projectId}/production-launch-audit` : null,
+    projectEvidenceExportWorkflowRoute: projectId ? `/projects/${projectId}/project-evidence-exports` : null,
+    privatePilotGoLiveReadinessRoute: projectId ? `/projects/${projectId}/private-pilot-go-live-readiness` : null,
+    ...extraRoutes,
+  });
+  const securityBoundaryReadModels = (projectId, extraRoutes = {}) => deferredReadModels(projectId, '', {
+    securityBoundaryRoute: projectId ? `/projects/${projectId}/security-boundary` : null,
+    securityAccessAuditRoute: projectId ? `/projects/${projectId}/security-access-audit` : null,
+    securityAuditStreamRoute: projectId ? `/projects/${projectId}/security-audit-stream` : null,
+    membershipPolicyRoute: projectId ? `/projects/${projectId}/membership-policy` : null,
+    identitySessionsRoute: projectId ? `/projects/${projectId}/identity-sessions` : null,
+    providerReadinessRoute: projectId ? `/projects/${projectId}/provider-readiness` : null,
+    ...extraRoutes,
+  });
+  const projectInitiationReadModels = (projectId, extraRoutes = {}) => deferredReadModels(projectId, '', {
+    projectRoute: projectId ? `/projects/${projectId}` : null,
+    projectMessagesRoute: projectId ? `/projects/${projectId}/messages` : null,
+    transcriptsRoute: projectId ? `/projects/${projectId}/transcripts` : null,
+    mainTranscriptRoute: projectId ? `/projects/${projectId}/transcripts/main` : null,
+    timelineRoute: projectId ? `/projects/${projectId}/timeline` : null,
+    eventsRoute: projectId ? `/projects/${projectId}/events` : null,
+    tasksRoute: projectId ? `/projects/${projectId}/tasks` : null,
+    readinessRoute: projectId ? `/projects/${projectId}/readiness` : null,
+    readinessProofMapRoute: projectId ? `/projects/${projectId}/readiness-proof-map` : null,
+    agentsRoute: projectId ? `/projects/${projectId}/agents` : null,
+    ...extraRoutes,
+  });
   const privatePilotReceiptReadModels = (projectId, extraRoutes = {}) => deferredReadModels(projectId, '', {
     pilotLaunchReadinessRoute: projectId ? `/projects/${projectId}/pilot-launch-readiness` : null,
     productionLaunchAuditRoute: projectId ? `/projects/${projectId}/production-launch-audit` : null,
@@ -407,10 +454,42 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
     privatePilotLaunchRunWorkflowRoute: projectId ? `/projects/${projectId}/private-pilot-launch-runs` : null,
     privatePilotLaunchHealthCheckWorkflowRoute: projectId ? `/projects/${projectId}/private-pilot-launch-health-checks` : null,
     privatePilotAcceptanceReportWorkflowRoute: projectId ? `/projects/${projectId}/private-pilot-acceptance-reports` : null,
+    productionInfrastructureRehearsalRoute: projectId ? `/projects/${projectId}/production-infrastructure-rehearsal` : null,
     productionOperationsReadinessRoute: projectId ? `/projects/${projectId}/production-operations-readiness` : null,
     readinessProofMapRoute: projectId ? `/projects/${projectId}/readiness-proof-map` : null,
     ...extraRoutes,
   });
+  const providerEvalRunReadModels = (projectId, extraRoutes = {}) => deferredReadModels(projectId, '', {
+    providerReadinessRoute: projectId ? `/projects/${projectId}/provider-readiness` : null,
+    providerControlledRunRoute: projectId ? `/projects/${projectId}/provider-controlled-run` : null,
+    providerEvalRunWorkflowRoute: projectId ? `/projects/${projectId}/provider-eval-runs` : null,
+    pilotLaunchReadinessRoute: projectId ? `/projects/${projectId}/pilot-launch-readiness` : null,
+    privatePilotReleaseCandidateWorkflowRoute: projectId ? `/projects/${projectId}/private-pilot-release-candidates` : null,
+    privatePilotLaunchRunWorkflowRoute: projectId ? `/projects/${projectId}/private-pilot-launch-runs` : null,
+    productionLaunchAuditRoute: projectId ? `/projects/${projectId}/production-launch-audit` : null,
+    ...extraRoutes,
+  });
+  const autonomousRunControlReadModels = (projectId, agentId = '', sessionId = '', extraRoutes = {}) => {
+    const activeSessionId = sessionId ? encodeURIComponent(sessionId) : 'active';
+    return deferredReadModels(projectId, agentId, {
+      readinessProofMapRoute: projectId ? `/projects/${projectId}/readiness-proof-map` : null,
+      timelineRoute: projectId ? `/projects/${projectId}/timeline` : null,
+      eventsRoute: projectId ? `/projects/${projectId}/events` : null,
+      transcriptsRoute: projectId ? `/projects/${projectId}/transcripts` : null,
+      autonomousRunControlRoute: projectId ? `/projects/${projectId}/autonomous-run-control` : null,
+      autonomousRunControlSessionsRoute: projectId ? `/projects/${projectId}/autonomous-run-control/sessions` : null,
+      autonomousRunControlSessionTickRoute: projectId ? `/projects/${projectId}/autonomous-run-control/sessions/${activeSessionId}/tick` : null,
+      autonomousRunControlSessionPauseRoute: projectId ? `/projects/${projectId}/autonomous-run-control/sessions/${activeSessionId}/pause` : null,
+      autonomousRunControlLoopRunRoute: projectId ? `/projects/${projectId}/autonomous-run-control/run-loop` : null,
+      agentAutonomousActionQueueRoute: projectId ? `/projects/${projectId}/agent-autonomous-action-queue` : null,
+      productTeamOperatingLoopRoute: projectId ? `/projects/${projectId}/product-team-operating-loop` : null,
+      autonomousCycleConsistencyRoute: projectId ? `/projects/${projectId}/autonomous-cycle-consistency` : null,
+      workerQueueRoute: projectId ? `/projects/${projectId}/worker-queue` : null,
+      schedulerTickRoute: '/workers/autonomous/tick',
+      autopilotDueWorkerRoute: '/workers/autopilot/due',
+      ...extraRoutes,
+    });
+  };
   const publicProjectResult = (
     result = {},
     projectId = result.project?.id,
@@ -436,8 +515,97 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
       const includeReadModels = shouldIncludeReadModels(body);
       const kickoffMeetingRoute = parseKickoffMeetingRoute(path);
       const route = parseProjectRoute(path);
+      const workerRoute = parseWorkerRoute(path);
       const denied = request._accessChecked ? null : authorizeRequest({ ...request, method, path, body });
       if (denied) return denied;
+
+      if (method === 'GET' && path === '/secret-vault/status') {
+        return json(200, {
+          secretVaultStatus: service.getSecretVaultStatus ? service.getSecretVaultStatus() : { enabled: false },
+        });
+      }
+      if (method === 'GET' && path === '/secret-vault/records') {
+        return json(200, {
+          secretVaultRecords: service.listSecretVaultRecords ? service.listSecretVaultRecords() : {
+            schemaVersion: 'secret-vault-record-list/v1',
+            records: [],
+          },
+        });
+      }
+      if (method === 'GET' && path === '/provider-vault-bindings') {
+        return json(200, {
+          providerVaultBindings: service.getProviderVaultBindings ? service.getProviderVaultBindings() : {
+            schemaVersion: 'provider-vault-bindings/v1',
+            bindings: [],
+          },
+        });
+      }
+      if (method === 'GET' && path === '/local-mvp-startup-readiness') {
+        return json(200, {
+          localMvpStartupReadiness: service.getLocalMvpStartupReadiness
+            ? service.getLocalMvpStartupReadiness()
+            : {
+              schemaVersion: 'local-mvp-startup-readiness/v1',
+              status: 'backend-required',
+              readyForSettingsEntry: false,
+              readyForFirstProjectRun: false,
+            },
+        });
+      }
+      if (method === 'GET' && path === '/settings/health-readiness') {
+        return json(200, {
+          settingsHealthReadiness: service.getSettingsHealthReadiness
+            ? service.getSettingsHealthReadiness()
+            : {
+              schemaVersion: 'settings-health-readiness/v1',
+              status: 'backend-required',
+              rows: [],
+              summary: { readyForProduction: false },
+            },
+        });
+      }
+      if (method === 'GET' && path === '/settings/runtime-readiness') {
+        return json(200, {
+          settingsRuntimeReadiness: service.getSettingsRuntimeReadiness
+            ? service.getSettingsRuntimeReadiness()
+            : {
+              schemaVersion: 'settings-runtime-readiness/v1',
+              status: 'backend-required',
+              rows: [],
+              summary: { readyForProduction: false },
+            },
+        });
+      }
+      if (method === 'POST' && path === '/secret-vault/seal') {
+        if (typeof service.sealSecretVaultRecord !== 'function') {
+          return json(400, { error: 'secret-vault-not-configured' });
+        }
+        try {
+          const result = await service.sealSecretVaultRecord(body);
+          return json(200, result);
+        } catch (error) {
+          return json(400, {
+            error: 'secret-vault-seal-failed',
+            message: error.message || String(error),
+            secretVaultStatus: service.getSecretVaultStatus ? service.getSecretVaultStatus() : { enabled: false },
+          });
+        }
+      }
+      if (method === 'POST' && path === '/secret-vault/rotate') {
+        if (typeof service.rotateSecretVaultRecords !== 'function') {
+          return json(400, { error: 'secret-vault-not-configured' });
+        }
+        try {
+          const result = await service.rotateSecretVaultRecords(body);
+          return json(200, result);
+        } catch (error) {
+          return json(400, {
+            error: 'secret-vault-rotate-failed',
+            message: error.message || String(error),
+            secretVaultStatus: service.getSecretVaultStatus ? service.getSecretVaultStatus() : { enabled: false },
+          });
+        }
+      }
 
       if (method === 'POST' && path === '/llm/test') {
         if (typeof service.testModelProvider !== 'function') {
@@ -466,6 +634,7 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
           ...publicProjectResult(result, resultProjectId, language, { includeReadModels }),
           artifactDraft: result.artifactDraft,
           providerUsage: result.providerUsage || null,
+          providerVaultBinding: result.providerVaultBinding || null,
           modelProviderStatus: result.modelProviderStatus || (service.getModelProviderStatus ? service.getModelProviderStatus() : { enabled: false }),
           submission: result.submission || null,
           artifact: result.artifact || null,
@@ -495,6 +664,8 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
           evidenceSearch: result.evidenceSearch,
           sourceSnapshots: result.sourceSnapshots || [],
           providerReceipt: result.providerReceipt || null,
+          providerUsage: result.providerUsage || null,
+          providerVaultBinding: result.providerVaultBinding || null,
           log: result.log,
           task: result.task,
           submission: result.submission,
@@ -506,6 +677,210 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
                 managerReadyPackage: service.getManagerReadyPackage(resultProjectId, { language }),
               }
             : deferredReadModels(resultProjectId, agentId)),
+        });
+      }
+      if (
+        method === 'POST'
+        && route?.action === 'agents'
+        && route.tail[1] === 'work-cycle'
+        && body.useProviderEvidenceSearch
+      ) {
+        if (typeof service.runAgentWorkCycleWithProviderEvidence !== 'function') {
+          return json(400, { error: 'agent-work-cycle-provider-evidence-not-configured' });
+        }
+        const agentId = decodeURIComponent(route.tail[0]);
+        const result = await service.runAgentWorkCycleWithProviderEvidence({ projectId: route.projectId, agentId, ...body });
+        const resultProjectId = result.project?.id || route.projectId;
+        const includeReadModels = shouldIncludeReadModels(body);
+        return json(200, {
+          ...publicProjectResult(result, resultProjectId, language, { includeReadModels }),
+          submission: result.submission,
+          artifact: result.artifact,
+          evidenceSearch: result.evidenceSearch,
+          evidenceSearchLog: result.evidenceSearchLog,
+          evidenceSearchSourceSnapshots: result.evidenceSearchSourceSnapshots,
+          workSubmission: result.workSubmission,
+          review: result.review,
+          reviewedSubmission: result.reviewedSubmission,
+          reviewResponseSubmission: result.reviewResponseSubmission,
+          reviewResponseArtifact: result.reviewResponseArtifact,
+          strategyDecision: result.strategyDecision,
+          providerUsage: result.providerUsage || null,
+          providerEvidenceSearch: result.providerEvidenceSearch || null,
+          providerVaultBinding: result.providerVaultBinding || result.providerEvidenceSearch?.providerVaultBinding || null,
+          searchProvider: result.searchProviderStatus || (service.getSearchProviderStatus ? service.getSearchProviderStatus() : { enabled: false }),
+          ...(includeReadModels ? {} : deferredReadModels(resultProjectId, agentId)),
+        });
+      }
+      if (
+        method === 'POST'
+        && route?.action === 'agent-autonomous-action-queue'
+        && route.tail[1] === 'run'
+      ) {
+        const agentId = decodeURIComponent(route.tail[0] || 'next');
+        if (typeof service.runAgentAutonomousActionQueueItemWithProviderEvidence !== 'function') {
+          return json(400, { error: 'agent-autonomous-action-provider-evidence-not-configured' });
+        }
+        const result = await service.runAgentAutonomousActionQueueItemWithProviderEvidence({
+          projectId: route.projectId,
+          agentId,
+          ...body,
+        });
+        const resultProjectId = result.project?.id || route.projectId;
+        const includeReadModels = shouldIncludeReadModels(body);
+        return json(200, {
+          ...publicProjectResult(result, resultProjectId, language, {
+            includeReadModels,
+            agentId: result.agentAutonomousAction?.agentId || result.agentAutonomousActionRun?.agentId,
+          }),
+          agentAutonomousAction: result.agentAutonomousAction,
+          agentAutonomousActionRun: result.agentAutonomousActionRun,
+          agentAutonomousActionQueue: result.agentAutonomousActionQueue,
+          submission: result.submission,
+          workSubmission: result.workSubmission,
+          evidenceSearch: result.evidenceSearch,
+          evidenceSearchLog: result.evidenceSearchLog,
+          providerUsage: result.providerUsage || null,
+          providerEvidenceSearch: result.providerEvidenceSearch || null,
+          autonomousProviderPreflight: result.autonomousProviderPreflight || result.agentAutonomousActionRun?.autonomousProviderPreflight || null,
+          autonomousActionDecision: result.autonomousActionDecision || result.agentAutonomousActionRun?.autonomousActionDecision || null,
+          review: result.review,
+          reviewResponseSubmission: result.reviewResponseSubmission,
+          ...(includeReadModels ? {} : deferredReadModels(
+            resultProjectId,
+            result.agentAutonomousAction?.agentId || result.agentAutonomousActionRun?.agentId,
+          )),
+        });
+      }
+      if (
+        method === 'POST'
+        && route?.action === 'autonomous-run-control'
+        && route.tail[0] === 'sessions'
+        && route.tail[2] === 'tick'
+        && (
+          body.useProviderEvidenceSearch
+          || body.requestBodyOverrides?.useProviderEvidenceSearch
+          || body.requestBodyOverrides?.autopilotTargetControl?.targetStageId === 'evidence-quality'
+          || body.requestBodyOverrides?.targetControl?.targetStageId === 'evidence-quality'
+        )
+      ) {
+        if (typeof service.tickAutonomousRunControlSessionWithProviderEvidence !== 'function') {
+          return json(400, { error: 'autopilot-provider-evidence-tick-not-configured' });
+        }
+        const result = await service.tickAutonomousRunControlSessionWithProviderEvidence({
+          projectId: route.projectId,
+          sessionId: decodeURIComponent(route.tail[1] || 'active'),
+          ...body,
+        });
+        const resultProjectId = result.project?.id || route.projectId;
+        const includeReadModels = shouldIncludeReadModels(body);
+        return json(200, {
+          ...publicProjectResult(result, resultProjectId, language, {
+            includeReadModels,
+            agentId: result.autonomousRunControlSession?.agentIds?.[0] || result.autonomousRunControlSessionTick?.agentIds?.[0],
+          }),
+          autonomousRunControlSession: result.autonomousRunControlSession,
+          autonomousRunControlSessionTick: result.autonomousRunControlSessionTick,
+          autonomousRunControlSessions: result.autonomousRunControlSessions,
+          autonomousRunControlLoops: result.autonomousRunControlLoops,
+          autonomousRunControlRuns: result.autonomousRunControlRuns,
+          autonomousRunControl: result.autonomousRunControl,
+          providerEvidenceSearch: result.providerEvidenceSearch || null,
+          providerUsage: result.providerUsage || null,
+          autonomousProviderPreflight: result.autonomousProviderPreflight || result.autonomousRunControlSessionTick?.autonomousProviderPreflight || null,
+          autonomousActionDecision: result.autonomousActionDecision || result.autonomousRunControlSessionTick?.autonomousActionDecision || result.agentAutonomousActionRun?.autonomousActionDecision || null,
+          evidenceSearch: result.evidenceSearch || null,
+          agentAutonomousAction: result.agentAutonomousAction || null,
+          agentAutonomousActionRun: result.agentAutonomousActionRun || null,
+          ...(includeReadModels ? {} : autonomousRunControlReadModels(
+            resultProjectId,
+            result.autonomousRunControlSession?.agentIds?.[0] || result.autonomousRunControlSessionTick?.agentIds?.[0],
+            result.autonomousRunControlSession?.id || result.autonomousRunControlSessionTick?.sessionId || decodeURIComponent(route.tail[1] || 'active'),
+          )),
+        });
+      }
+      if (
+        method === 'POST'
+        && workerRoute?.worker === 'autopilot'
+        && workerRoute.action === 'due'
+        && (
+          body.useProviderEvidenceSearch
+          || body.providerEvidenceSearchEnabled
+          || body.requestBodyOverrides?.useProviderEvidenceSearch
+          || body.requestBodyOverrides?.requireProviderEvidenceSearch
+          || body.requestBodyOverrides?.autopilotTargetControl?.targetStageId === 'evidence-quality'
+          || body.requestBodyOverrides?.targetControl?.targetStageId === 'evidence-quality'
+          || service.getSearchProviderStatus?.().enabled
+        )
+      ) {
+        if (typeof service.runDueAutonomousRunControlSessionsWithProviderEvidence !== 'function') {
+          return json(400, { error: 'autopilot-provider-evidence-due-worker-not-configured' });
+        }
+        const result = await service.runDueAutonomousRunControlSessionsWithProviderEvidence(body);
+        const readModelCache = new Map();
+        const readModelsFor = (projectId) => {
+          const key = String(projectId || '');
+          if (!readModelCache.has(key)) {
+            readModelCache.set(key, {
+              managerDashboard: service.getManagerDashboard(projectId, { language }),
+              managerReadyPackage: service.getManagerReadyPackage(projectId, { language }),
+              readinessProofMap: service.getReadinessProofMap(projectId),
+              managerFlowGraph: service.getManagerFlowGraph(projectId, { language }),
+            });
+          }
+          return readModelCache.get(key);
+        };
+        return json(200, {
+          schemaVersion: result.schemaVersion || 'autopilot-due-worker-summary/v1',
+          providerEvidenceSearchEnabled: true,
+          processed: result.processed.map((item) => {
+            const readModels = includeReadModels ? readModelsFor(item.projectId) : null;
+            return {
+              projectId: item.projectId,
+              sessionId: item.sessionId,
+              reason: item.reason,
+              dueAt: item.dueAt,
+              nextRunAt: item.nextRunAt,
+              statusAfter: item.statusAfter,
+              tickId: item.tickId,
+              loopReceiptIds: item.loopReceiptIds,
+              runReceiptIds: item.runReceiptIds,
+              actionLanes: item.actionLanes,
+              targetStageId: item.targetStageId,
+              providerEvidenceSearch: item.providerEvidenceSearch || item.result?.providerEvidenceSearch || null,
+              providerUsage: item.result?.providerUsage || null,
+              providerUsageId: item.providerUsageId || item.result?.providerUsage?.id || null,
+              autonomousProviderPreflight: item.autonomousProviderPreflight || item.result?.autonomousProviderPreflight || item.result?.autonomousRunControlSessionTick?.autonomousProviderPreflight || null,
+              autonomousProviderPreflightChecksum: item.autonomousProviderPreflightChecksum || item.result?.autonomousProviderPreflight?.checksum || item.result?.autonomousRunControlSessionTick?.autonomousProviderPreflightChecksum || null,
+              autonomousProviderPreflightAction: item.autonomousProviderPreflightAction || item.result?.autonomousProviderPreflight?.action || item.result?.autonomousRunControlSessionTick?.autonomousProviderPreflightAction || null,
+              autonomousActionDecision: item.autonomousActionDecision || item.result?.autonomousActionDecision || item.result?.autonomousRunControlSessionTick?.autonomousActionDecision || item.result?.agentAutonomousActionRun?.autonomousActionDecision || null,
+              autonomousActionDecisionChecksum: item.autonomousActionDecisionChecksum || item.result?.autonomousActionDecision?.checksum || item.result?.autonomousRunControlSessionTick?.autonomousActionDecisionChecksum || item.result?.agentAutonomousActionRun?.autonomousActionDecisionChecksum || null,
+              autonomousActionDecisionAction: item.autonomousActionDecisionAction || item.result?.autonomousActionDecision?.action || item.result?.autonomousRunControlSessionTick?.autonomousActionDecisionAction || item.result?.agentAutonomousActionRun?.autonomousActionDecisionAction || null,
+              evidenceSearch: item.result?.evidenceSearch || null,
+              evidenceSearchId: item.evidenceSearchId || item.result?.evidenceSearch?.id || null,
+              agentAutonomousAction: item.result?.agentAutonomousAction || null,
+              agentAutonomousActionRun: item.result?.agentAutonomousActionRun || null,
+              messageCount: item.result?.messages?.length || 0,
+              project: item.result?.project,
+              autonomousRunControlSession: item.result?.autonomousRunControlSession,
+              autonomousRunControlSessionTick: item.result?.autonomousRunControlSessionTick,
+              autonomousRunControlLoops: item.result?.autonomousRunControlLoops || [],
+              autonomousRunControlRuns: item.result?.autonomousRunControlRuns || [],
+              ...(includeReadModels
+                ? {
+                    managerDashboard: readModels.managerDashboard,
+                    managerReadyPackage: readModels.managerReadyPackage,
+                    readinessProofMap: readModels.readinessProofMap,
+                    managerFlowGraph: readModels.managerFlowGraph,
+                  }
+                : autonomousRunControlReadModels(item.projectId, '', item.sessionId, {
+                    autonomousRunControlSessionTickRoute: item.sessionId ? `/projects/${item.projectId}/autonomous-run-control/sessions/${encodeURIComponent(item.sessionId)}/tick` : `/projects/${item.projectId}/autonomous-run-control/sessions/active/tick`,
+                  })),
+            };
+          }),
+          skipped: result.skipped,
+          messages: result.messages,
+          messageCount: result.messages.length,
         });
       }
       if (method === 'GET' && route?.action === 'persistence-adapter-dry-run' && typeof service.getPersistenceAdapterDryRunAsync === 'function') {
@@ -611,7 +986,41 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
         }
         if (method === 'POST' && path === '/projects/initiate') {
           const result = service.initiateProject(body);
-          return json(200, publicProjectResult(result, result.project?.id, language));
+          const resultProjectId = result.project?.id;
+          const includeReadModels = shouldIncludeReadModels(body);
+          return json(200, {
+            ...publicProjectResult(result, resultProjectId, language, { includeReadModels }),
+            ...(includeReadModels ? {} : projectInitiationReadModels(resultProjectId)),
+          });
+        }
+        if (method === 'POST' && path === '/product-team-missions') {
+          const result = service.startProductTeamMission({ ...body, language });
+          const resultProjectId = result.project?.id;
+          const includeReadModels = shouldIncludeReadModels(body);
+          return json(200, {
+            ...publicProjectResult(result, resultProjectId, language, { includeReadModels }),
+            productTeamMissionRun: result.productTeamMissionRun,
+            kickoffApproval: result.kickoffApproval,
+            autonomousRunControlSession: result.autonomousRunControlSession,
+            autonomousRunControlSessionTick: result.autonomousRunControlSessionTick,
+            autonomousRunControlSessions: result.autonomousRunControlSessions,
+            autonomousRunControl: result.autonomousRunControl,
+            productTeamDeliveryTrace: result.productTeamDeliveryTrace,
+            productTeamOperatingLoop: result.productTeamOperatingLoop,
+            collaborationIntentQueue: result.collaborationIntentQueue,
+            ...(includeReadModels
+              ? {
+                  managerFlowGraph: service.getManagerFlowGraph(resultProjectId, { language }),
+                  readinessProofMap: service.getReadinessProofMap(resultProjectId),
+                }
+              : projectInitiationReadModels(resultProjectId, {
+                  productTeamMissionRunsRoute: resultProjectId ? `/projects/${resultProjectId}/product-team-missions` : null,
+                  productTeamMissionRunRoute: resultProjectId && result.productTeamMissionRun?.id ? `/projects/${resultProjectId}/product-team-missions/${encodeURIComponent(result.productTeamMissionRun.id)}` : null,
+                  productTeamOperatingLoopRoute: resultProjectId ? `/projects/${resultProjectId}/product-team-operating-loop` : null,
+                  collaborationIntentQueueRoute: resultProjectId ? `/projects/${resultProjectId}/collaboration-intent-queue` : null,
+                  autonomousRunControlSessionsRoute: resultProjectId ? `/projects/${resultProjectId}/autonomous-run-control/sessions` : null,
+                })),
+          });
         }
         if (method === 'GET' && path === '/snapshot') {
           return json(200, service.snapshot());
@@ -624,6 +1033,70 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
         if (method === 'GET' && path === '/search/status') {
           return json(200, {
             searchProvider: service.getSearchProviderStatus ? service.getSearchProviderStatus() : { enabled: false },
+          });
+        }
+        if (method === 'GET' && path === '/settings/provider-readiness') {
+          return json(200, {
+            settingsProviderReadiness: service.getSettingsProviderReadiness
+              ? service.getSettingsProviderReadiness()
+              : { schemaVersion: 'settings-provider-readiness/v1', status: 'backend-required' },
+          });
+        }
+        if (method === 'GET' && path === '/secret-vault/status') {
+          return json(200, {
+            secretVaultStatus: service.getSecretVaultStatus ? service.getSecretVaultStatus() : { enabled: false },
+          });
+        }
+        if (method === 'GET' && path === '/secret-vault/records') {
+          return json(200, {
+            secretVaultRecords: service.listSecretVaultRecords ? service.listSecretVaultRecords() : {
+              schemaVersion: 'secret-vault-record-list/v1',
+              records: [],
+            },
+          });
+        }
+        if (method === 'GET' && path === '/provider-vault-bindings') {
+          return json(200, {
+            providerVaultBindings: service.getProviderVaultBindings ? service.getProviderVaultBindings() : {
+              schemaVersion: 'provider-vault-bindings/v1',
+              bindings: [],
+            },
+          });
+        }
+        if (method === 'GET' && path === '/local-mvp-startup-readiness') {
+          return json(200, {
+            localMvpStartupReadiness: service.getLocalMvpStartupReadiness
+              ? service.getLocalMvpStartupReadiness()
+              : {
+                schemaVersion: 'local-mvp-startup-readiness/v1',
+                status: 'backend-required',
+                readyForSettingsEntry: false,
+                readyForFirstProjectRun: false,
+              },
+          });
+        }
+        if (method === 'GET' && path === '/settings/health-readiness') {
+          return json(200, {
+            settingsHealthReadiness: service.getSettingsHealthReadiness
+              ? service.getSettingsHealthReadiness()
+              : {
+                schemaVersion: 'settings-health-readiness/v1',
+                status: 'backend-required',
+                rows: [],
+                summary: { readyForProduction: false },
+              },
+          });
+        }
+        if (method === 'GET' && path === '/settings/runtime-readiness') {
+          return json(200, {
+            settingsRuntimeReadiness: service.getSettingsRuntimeReadiness
+              ? service.getSettingsRuntimeReadiness()
+              : {
+                schemaVersion: 'settings-runtime-readiness/v1',
+                status: 'backend-required',
+                rows: [],
+                summary: { readyForProduction: false },
+              },
           });
         }
         if (kickoffMeetingRoute) {
@@ -663,11 +1136,21 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
             })));
           }
           if (method === 'POST' && kickoffMeetingRoute.action === 'approve') {
+            const includeReadModels = shouldIncludeReadModels(body);
             const result = service.approveKickoffMeeting({
               meetingId: kickoffMeetingRoute.meetingId,
               ...body,
             });
-            return json(200, publicProjectResult(result, result.project?.id));
+            const resultProjectId = result.project?.id;
+            return json(200, {
+              ...publicProjectResult(result, resultProjectId, language, { includeReadModels }),
+              ...(includeReadModels
+                ? {}
+                : projectInitiationReadModels(resultProjectId, {
+                    kickoffMeetingRoute: `/kickoff-meetings/${encodeURIComponent(kickoffMeetingRoute.meetingId)}`,
+                    kickoffMeetingApprovalRoute: `/kickoff-meetings/${encodeURIComponent(kickoffMeetingRoute.meetingId)}/approve`,
+                  })),
+            });
           }
           return json(404, { error: 'kickoff-meeting-route-not-found', path });
         }
@@ -811,7 +1294,9 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
                       readinessProofMap: readModels.readinessProofMap,
                       managerFlowGraph: readModels.managerFlowGraph,
                     }
-                  : deferredReadModels(item.projectId)),
+                  : autonomousRunControlReadModels(item.projectId, '', item.sessionId, {
+                      autonomousRunControlSessionTickRoute: item.sessionId ? `/projects/${item.projectId}/autonomous-run-control/sessions/${encodeURIComponent(item.sessionId)}/tick` : `/projects/${item.projectId}/autonomous-run-control/sessions/active/tick`,
+                    })),
               };
             }),
             skipped: result.skipped,
@@ -842,11 +1327,79 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
           const channelId = decodeURIComponent(route.tail[0]);
           return json(200, service.getChannelTranscript(route.projectId, channelId));
         }
+        if (method === 'GET' && route.action === 'meeting-summaries') {
+          return json(200, { meetingSummaries: service.getMeetingSummaries(route.projectId, { language }) });
+        }
+        if (method === 'POST' && route.action === 'transcripts') {
+          const result = service.createTranscriptChannel({
+            projectId: route.projectId,
+            ...body,
+            channelId: body.channelId || (route.tail[0] ? decodeURIComponent(route.tail[0]) : ''),
+          });
+          const resultProjectId = result.project?.id || route.projectId;
+          const includeReadModels = shouldIncludeReadModels(body);
+          return json(200, {
+            ...publicProjectResult(result, resultProjectId, language, { includeReadModels }),
+            transcriptChannel: result.transcriptChannel,
+            transcriptChannelReceipt: result.transcriptChannelReceipt,
+            ...(includeReadModels
+              ? {}
+              : deferredReadModels(resultProjectId, '', {
+                  transcriptChannelRoute: result.transcriptChannel?.channelId
+                    ? `/projects/${resultProjectId}/transcripts/${encodeURIComponent(result.transcriptChannel.channelId)}`
+                    : null,
+                })),
+          });
+        }
+        if (method === 'GET' && route.action === 'product-team-missions') {
+          if (!route.tail.length) {
+            return json(200, { productTeamMissionRuns: service.listProductTeamMissionRuns(route.projectId) });
+          }
+          const missionId = decodeURIComponent(route.tail[0]);
+          return json(200, { productTeamMissionRun: service.getProductTeamMissionRun(route.projectId, missionId) });
+        }
         if (method === 'GET' && route.action === 'timeline') {
           return json(200, service.getTimeline(route.projectId));
         }
         if (method === 'GET' && route.action === 'events') {
           return json(200, service.getEventLedger(route.projectId));
+        }
+        if (route.action === 'project-settings') {
+          if (method === 'GET') {
+            return json(200, { projectSettings: service.getProjectSettings(route.projectId) });
+          }
+          if (['PUT', 'POST'].includes(method)) {
+            const includeReadModels = shouldIncludeReadModels(body);
+            const settingsInput = {
+              projectId: route.projectId,
+              updatedBy: body.updatedBy || body.actorUserId || body.userId || 'manager',
+              source: body.source || 'project-settings-api',
+              now: body.now,
+            };
+            if (Object.prototype.hasOwnProperty.call(body, 'language')) settingsInput.language = body.language;
+            if (Object.prototype.hasOwnProperty.call(body, 'privacyPolicy')) settingsInput.privacyPolicy = body.privacyPolicy;
+            if (Object.prototype.hasOwnProperty.call(body, 'providerBudgetPolicy')) settingsInput.providerBudgetPolicy = body.providerBudgetPolicy;
+            if (Object.prototype.hasOwnProperty.call(body, 'workspacePolicy')) settingsInput.workspacePolicy = body.workspacePolicy;
+            if (Object.prototype.hasOwnProperty.call(body, 'toolGrantPolicy')) settingsInput.toolGrantPolicy = body.toolGrantPolicy;
+            const result = service.setProjectSettings(settingsInput);
+            const resultProjectId = result.project?.id || route.projectId;
+            return json(200, {
+              ...publicProjectResult(result, resultProjectId, language, { includeReadModels }),
+              projectSettings: result.projectSettings,
+              projectSettingsAuditEntry: result.projectSettingsAuditEntry,
+              log: result.log,
+              ...(includeReadModels
+                ? {
+                    managerDashboard: service.getManagerDashboard(resultProjectId, { language: result.projectSettings.effectiveLanguage }),
+                    managerReadyPackage: service.getManagerReadyPackage(resultProjectId, { language: result.projectSettings.effectiveLanguage }),
+                    managerFlowGraph: service.getManagerFlowGraph(resultProjectId, { language: result.projectSettings.effectiveLanguage }),
+                  }
+                : deferredReadModels(resultProjectId, '', {
+                    projectSettingsRoute: `/projects/${resultProjectId}/project-settings`,
+                  })),
+            });
+          }
+          return json(405, { error: 'method-not-allowed', method, path });
         }
         if (method === 'GET' && route.action === 'submissions') {
           if (!route.tail.length) {
@@ -884,6 +1437,18 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
         if (method === 'GET' && route.action === 'evidence-quality-audit') {
           return json(200, { evidenceQualityAudit: service.getEvidenceQualityAudit(route.projectId, { language }) });
         }
+        if (method === 'GET' && route.action === 'evidence-index-readiness') {
+          return json(200, { evidenceIndexReadiness: service.getEvidenceIndexReadiness(route.projectId, { language }) });
+        }
+        if (method === 'GET' && route.action === 'memory-readiness') {
+          return json(200, { projectMemoryReadiness: service.getProjectMemoryReadiness(route.projectId, { language }) });
+        }
+        if (method === 'GET' && route.action === 'budget-alert-readiness') {
+          return json(200, { budgetAlertReadiness: service.getBudgetAlertReadiness(route.projectId, { language }) });
+        }
+        if (method === 'GET' && route.action === 'error-reporting-readiness') {
+          return json(200, { errorReportingReadiness: service.getErrorReportingReadiness(route.projectId, { language }) });
+        }
         if (method === 'GET' && route.action === 'brainstorm-layer') {
           return json(200, { brainstormLayer: service.getBrainstormLayer(route.projectId, { language }) });
         }
@@ -902,11 +1467,69 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
         if (method === 'GET' && route.action === 'team-collaboration-diagnostics') {
           return json(200, { teamCollaborationDiagnostics: service.getTeamCollaborationDiagnostics(route.projectId, { language }) });
         }
+        if (method === 'GET' && route.action === 'collaboration-intent-queue') {
+          return json(200, { collaborationIntentQueue: service.getCollaborationIntentQueue(route.projectId, { language }) });
+        }
+        if (method === 'POST' && route.action === 'collaboration-intent-queue' && route.tail[1] === 'run') {
+          const result = service.runCollaborationIntentQueueItem({
+            projectId: route.projectId,
+            intentId: decodeURIComponent(route.tail[0] || 'next'),
+            requestBodyOverrides: body,
+            now: body.now,
+            force: Boolean(body.force || body.forceRun),
+          });
+          const resultProjectId = result.project?.id || route.projectId;
+          const includeReadModels = shouldIncludeReadModels(body);
+          return json(200, {
+            ...publicProjectResult(result, resultProjectId, language, {
+              includeReadModels,
+              agentId: result.collaborationIntentRun?.agentId || result.agentAutonomousActionRun?.agentId || result.autonomousRunControlRun?.agentId,
+            }),
+            collaborationIntent: result.collaborationIntent,
+            collaborationIntentRun: result.collaborationIntentRun,
+            collaborationIntentQueue: result.collaborationIntentQueue,
+            productTeamOperatingLoop: result.productTeamOperatingLoop,
+            autonomousRunControl: result.autonomousRunControl,
+            autonomousRunControlRun: result.autonomousRunControlRun,
+            managerAction: result.managerAction,
+            managerActionRun: result.managerActionRun,
+            managerActionQueue: result.managerActionQueue,
+            agentAutonomousAction: result.agentAutonomousAction,
+            agentAutonomousActionRun: result.agentAutonomousActionRun,
+            agentAutonomousActionQueue: result.agentAutonomousActionQueue,
+            evidenceSearch: result.evidenceSearch,
+            evidenceSearchLog: result.evidenceSearchLog,
+            evidenceSearchSourceSnapshots: result.evidenceSearchSourceSnapshots,
+            review: result.review,
+            reviewedSubmission: result.reviewedSubmission,
+            reviewResponseSubmission: result.reviewResponseSubmission,
+            reviewResponseArtifact: result.reviewResponseArtifact,
+            submission: result.submission,
+            workSubmission: result.workSubmission,
+            workSubmissionLog: result.workSubmissionLog,
+            artifact: result.artifact,
+            providerReceipt: result.providerReceipt,
+            autonomousActionDecision: result.autonomousActionDecision || result.agentAutonomousActionRun?.autonomousActionDecision || result.autonomousRunControlRun?.autonomousActionDecision || null,
+            ...(includeReadModels ? {} : autonomousRunControlReadModels(
+              resultProjectId,
+              result.collaborationIntentRun?.agentId || result.agentAutonomousActionRun?.agentId || result.autonomousRunControlRun?.agentId,
+              result.autonomousRunControlRun?.autopilotSessionId || body.autopilotSessionId || body.sessionId,
+              {
+                collaborationIntentQueueRoute: resultProjectId ? `/projects/${resultProjectId}/collaboration-intent-queue` : null,
+                productTeamOperatingLoopRoute: resultProjectId ? `/projects/${resultProjectId}/product-team-operating-loop` : null,
+                managerFlowGraphRoute: resultProjectId ? `/projects/${resultProjectId}/manager-flow-graph` : null,
+              },
+            )),
+          });
+        }
         if (method === 'GET' && route.action === 'runtime-contracts') {
           return json(200, { runtimeContracts: service.getRuntimeContracts(route.projectId, { language }) });
         }
         if (method === 'GET' && route.action === 'autonomous-cycle-consistency') {
           return json(200, { autonomousCycleConsistency: service.getAutonomousCycleConsistency(route.projectId, { language }) });
+        }
+        if (method === 'GET' && route.action === 'runtime-autonomy-status') {
+          return json(200, { runtimeAutonomyStatus: service.getRuntimeAutonomyStatus(route.projectId, { language }) });
         }
         if (method === 'POST' && route.action === 'evidence-source-review-workflow') {
           const result = service.reviewEvidenceSource({ projectId: route.projectId, ...body });
@@ -1070,6 +1693,9 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
             });
           }
           if (method === 'POST' && route.tail[1] === 'work-cycle') {
+            if (body.useProviderEvidenceSearch) {
+              return json(400, { error: 'agent-work-cycle-provider-evidence-requires-async-handler' });
+            }
             const result = service.runAgentWorkCycle({ projectId: route.projectId, agentId, ...body });
             const resultProjectId = result.project?.id || route.projectId;
             const includeReadModels = shouldIncludeReadModels(body);
@@ -1347,16 +1973,20 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
             return json(200, { launchApprovalWorkflow: service.getLaunchApprovalWorkflow(route.projectId, { language }) });
           }
           if (method === 'POST') {
+            const includeReadModels = shouldIncludeReadModels(body);
             const result = service.recordLaunchApproval({
               projectId: route.projectId,
               ...body,
             });
+            const resultProjectId = result.project?.id || route.projectId;
             return json(200, {
-              ...publicProjectResult(result, result.project?.id || route.projectId, language),
+              ...publicProjectResult(result, resultProjectId, language, { includeReadModels }),
               launchApproval: result.launchApproval,
               launchApprovalWorkflow: result.launchApprovalWorkflow,
               log: result.log,
-              managerReadyPackage: service.getManagerReadyPackage(result.project?.id || route.projectId, { language }),
+              ...(includeReadModels
+                ? { managerReadyPackage: service.getManagerReadyPackage(resultProjectId, { language }) }
+                : launchApprovalReadModels(resultProjectId)),
             });
           }
           return json(405, { error: 'method-not-allowed', method, path });
@@ -1366,6 +1996,7 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
             return json(200, { identitySessions: service.getIdentitySessions(route.projectId) });
           }
           if (method === 'POST' && route.tail[0] && route.tail[1] === 'revoke') {
+            const includeReadModels = shouldIncludeReadModels(body);
             const result = service.revokeIdentitySession({
               projectId: route.projectId,
               sessionId: decodeURIComponent(route.tail[0]),
@@ -1373,32 +2004,74 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
               reason: body.reason || body.summary || '',
               now: body.now,
             });
+            const resultProjectId = result.project?.id || route.projectId;
             return json(200, {
-              ...publicProjectResult(result, result.project?.id || route.projectId, language),
+              ...publicProjectResult(result, resultProjectId, language, { includeReadModels }),
               identitySession: result.identitySession,
               identitySessions: result.identitySessions,
               log: result.log,
-              securityBoundary: service.getSecurityBoundary(route.projectId, { language }),
-              managerReadyPackage: service.getManagerReadyPackage(result.project?.id || route.projectId, { language }),
+              ...(includeReadModels
+                ? {
+                    securityBoundary: service.getSecurityBoundary(resultProjectId, { language }),
+                    managerReadyPackage: service.getManagerReadyPackage(resultProjectId, { language }),
+                  }
+                : securityBoundaryReadModels(resultProjectId, {
+                    identitySessionsRoute: `/projects/${resultProjectId}/identity-sessions`,
+                  })),
             });
           }
           if (method === 'POST' && !route.tail.length) {
+            const includeReadModels = shouldIncludeReadModels(body);
             const result = service.issueIdentitySession({
               projectId: route.projectId,
               ...body,
             });
+            const resultProjectId = result.project?.id || route.projectId;
             return json(200, {
-              ...publicProjectResult(result, result.project?.id || route.projectId, language),
+              ...publicProjectResult(result, resultProjectId, language, { includeReadModels }),
               identitySession: result.identitySession,
               identitySessions: result.identitySessions,
               token: result.token,
               tokenContract: result.tokenContract,
               log: result.log,
-              securityBoundary: service.getSecurityBoundary(route.projectId, { language }),
-              managerReadyPackage: service.getManagerReadyPackage(result.project?.id || route.projectId, { language }),
+              ...(includeReadModels
+                ? {
+                    securityBoundary: service.getSecurityBoundary(resultProjectId, { language }),
+                    managerReadyPackage: service.getManagerReadyPackage(resultProjectId, { language }),
+                  }
+                : securityBoundaryReadModels(resultProjectId, {
+                    identitySessionsRoute: `/projects/${resultProjectId}/identity-sessions`,
+                  })),
             });
           }
           return json(405, { error: 'method-not-allowed', method, path });
+        }
+        if (method === 'POST' && route.action === 'mvp-readiness' && route.tail[0] === 'operator-actions' && route.tail[2] === 'run') {
+          const actionId = decodeURIComponent(route.tail[1] || 'next');
+          const result = service.runMvpReadinessOperatorAction({
+            projectId: route.projectId,
+            actionId,
+            ...body,
+          });
+          const resultProjectId = result.project?.id || route.projectId;
+          const includeReadModels = shouldIncludeReadModels(body);
+          return json(200, {
+            ...publicProjectResult(result, resultProjectId, language, { includeReadModels }),
+            mvpReadinessOperatorAction: result.mvpReadinessOperatorAction,
+            mvpReadinessOperatorActionRun: result.mvpReadinessOperatorActionRun,
+            mvpReadiness: result.mvpReadiness,
+            log: result.log,
+            ...(includeReadModels ? {} : deferredReadModels(resultProjectId, '', {
+              mvpReadinessRoute: `/projects/${resultProjectId}/mvp-readiness`,
+              readinessProofMapRoute: `/projects/${resultProjectId}/readiness-proof-map`,
+              managerFlowGraphRoute: `/projects/${resultProjectId}/manager-flow-graph`,
+              timelineRoute: `/projects/${resultProjectId}/timeline`,
+              eventsRoute: `/projects/${resultProjectId}/events`,
+              operatorActionRunRoute: `/projects/${resultProjectId}/mvp-readiness/operator-actions/${encodeURIComponent(result.mvpReadinessOperatorActionRun?.actionId || actionId)}/run`,
+              operatorActionTargetRoute: result.mvpReadinessOperatorActionRun?.apiPath || null,
+              operatorActionAutonomousRunRoute: result.mvpReadinessOperatorActionRun?.autonomousRunControlRunApiPath || null,
+            })),
+          });
         }
         if (method === 'GET' && route.action === 'mvp-readiness') {
           return json(200, { mvpReadiness: service.getMvpReadiness(route.projectId, { language }) });
@@ -1504,6 +2177,38 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
         if (method === 'GET' && route.action === 'provider-readiness') {
           return json(200, { providerReadiness: service.getProviderReadiness(route.projectId, { language }) });
         }
+        if (method === 'GET' && route.action === 'settings-provider-readiness') {
+          return json(200, {
+            settingsProviderReadiness: service.getSettingsProviderReadiness
+              ? service.getSettingsProviderReadiness(route.projectId)
+              : { schemaVersion: 'settings-provider-readiness/v1', projectId: route.projectId, status: 'backend-required' },
+          });
+        }
+        if (method === 'GET' && route.action === 'settings-runtime-readiness') {
+          return json(200, {
+            settingsRuntimeReadiness: service.getSettingsRuntimeReadiness
+              ? service.getSettingsRuntimeReadiness(route.projectId)
+              : { schemaVersion: 'settings-runtime-readiness/v1', projectId: route.projectId, status: 'backend-required' },
+          });
+        }
+        if (method === 'GET' && route.action === 'settings-integration-readiness') {
+          return json(200, {
+            settingsIntegrationReadiness: service.getSettingsIntegrationReadiness
+              ? service.getSettingsIntegrationReadiness(route.projectId, { language })
+              : { schemaVersion: 'settings-integration-readiness/v1', projectId: route.projectId, status: 'backend-required' },
+          });
+        }
+        if (method === 'GET' && route.action === 'provider-vault-bindings') {
+          return json(200, {
+            providerVaultBindings: service.getProviderVaultBindings
+              ? service.getProviderVaultBindings(route.projectId)
+              : {
+                schemaVersion: 'provider-vault-bindings/v1',
+                projectId: route.projectId,
+                bindings: [],
+              },
+          });
+        }
         if (method === 'GET' && route.action === 'provider-controlled-run') {
           return json(200, { providerControlledRun: service.getProviderControlledRun(route.projectId, { language }) });
         }
@@ -1512,17 +2217,21 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
             return json(200, { providerEvalRunWorkflow: service.getProviderEvalRunWorkflow(route.projectId, { language }) });
           }
           if (method === 'POST') {
+            const includeReadModels = shouldIncludeReadModels(body);
             const result = service.recordProviderEvalRun({
               projectId: route.projectId,
               ...body,
             });
+            const resultProjectId = result.project?.id || route.projectId;
             return json(200, {
-              ...publicProjectResult(result, result.project?.id || route.projectId, language),
+              ...publicProjectResult(result, resultProjectId, language, { includeReadModels }),
               providerEvalRun: result.providerEvalRun,
               providerEvalRunWorkflow: result.providerEvalRunWorkflow,
               providerControlledRun: result.providerControlledRun,
               log: result.log,
-              managerReadyPackage: service.getManagerReadyPackage(result.project?.id || route.projectId, { language, fresh: true }),
+              ...(includeReadModels
+                ? { managerReadyPackage: service.getManagerReadyPackage(resultProjectId, { language, fresh: true }) }
+                : providerEvalRunReadModels(resultProjectId)),
             });
           }
           return json(405, { error: 'method-not-allowed', method, path });
@@ -1610,6 +2319,7 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
             return json(200, service.getProjectMembershipPolicy(route.projectId));
           }
           if (['PUT', 'POST'].includes(method)) {
+            const includeReadModels = shouldIncludeReadModels(body);
             const result = service.setProjectMembershipPolicy({
               projectId: route.projectId,
               policy: body.policy || body.projectMembershipPolicy || body,
@@ -1617,13 +2327,18 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
               source: body.source || 'membership-policy-api',
               now: body.now,
             });
+            const resultProjectId = result.project?.id || route.projectId;
             return json(200, {
-              ...publicProjectResult(result, result.project?.id || route.projectId, language),
+              ...publicProjectResult(result, resultProjectId, language, { includeReadModels }),
               projectMembershipPolicy: result.projectMembershipPolicy,
               projectMembershipSummary: result.projectMembershipSummary,
               projectMembershipAuditEntry: result.projectMembershipAuditEntry,
               log: result.log,
-              managerReadyPackage: service.getManagerReadyPackage(result.project?.id || route.projectId, { language }),
+              ...(includeReadModels
+                ? { managerReadyPackage: service.getManagerReadyPackage(resultProjectId, { language }) }
+                : securityBoundaryReadModels(resultProjectId, {
+                    membershipPolicyRoute: `/projects/${resultProjectId}/membership-policy`,
+                  })),
             });
           }
           return json(405, { error: 'method-not-allowed', method, path });
@@ -1670,6 +2385,18 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
             managerActionQueue: result.managerActionQueue,
             managerScenarioWalkthrough: result.managerScenarioWalkthrough,
             managerScenarioWalkthroughStep: result.managerScenarioWalkthroughStep,
+            schedulerTick: result.schedulerTick,
+            workSubmission: result.workSubmission || result.submission,
+            submission: result.submission || result.workSubmission,
+            workSubmissionLog: result.workSubmissionLog,
+            artifact: result.artifact,
+            evidenceSearch: result.evidenceSearch,
+            evidenceSearchLog: result.evidenceSearchLog,
+            evidenceSearchSourceSnapshots: result.evidenceSearchSourceSnapshots,
+            review: result.review,
+            reviewedSubmission: result.reviewedSubmission,
+            reviewResponseSubmission: result.reviewResponseSubmission,
+            reviewResponseArtifact: result.reviewResponseArtifact,
           });
         }
         if (method === 'GET' && route.action === 'manager-requirement-matrix') {
@@ -1706,6 +2433,11 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
             autonomousRunControlSessionTick: result.autonomousRunControlSessionTick,
             autonomousRunControlSessions: result.autonomousRunControlSessions,
             autonomousRunControl: result.autonomousRunControl,
+            ...(includeReadModels ? {} : autonomousRunControlReadModels(
+              resultProjectId,
+              result.autonomousRunControlSession?.agentIds?.[0],
+              result.autonomousRunControlSession?.id,
+            )),
           });
         }
         if (method === 'POST' && route.action === 'autonomous-run-control' && route.tail[0] === 'sessions' && route.tail[2] === 'tick') {
@@ -1727,6 +2459,11 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
             autonomousRunControlLoops: result.autonomousRunControlLoops,
             autonomousRunControlRuns: result.autonomousRunControlRuns,
             autonomousRunControl: result.autonomousRunControl,
+            ...(includeReadModels ? {} : autonomousRunControlReadModels(
+              resultProjectId,
+              result.autonomousRunControlSession?.agentIds?.[0] || result.autonomousRunControlSessionTick?.agentIds?.[0],
+              result.autonomousRunControlSession?.id || result.autonomousRunControlSessionTick?.sessionId || decodeURIComponent(route.tail[1] || 'active'),
+            )),
           });
         }
         if (method === 'POST' && route.action === 'autonomous-run-control' && route.tail[0] === 'sessions' && route.tail[2] === 'pause') {
@@ -1742,6 +2479,11 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
             autonomousRunControlSession: result.autonomousRunControlSession,
             autonomousRunControlSessions: result.autonomousRunControlSessions,
             autonomousRunControl: result.autonomousRunControl,
+            ...(includeReadModels ? {} : autonomousRunControlReadModels(
+              resultProjectId,
+              result.autonomousRunControlSession?.agentIds?.[0],
+              result.autonomousRunControlSession?.id || decodeURIComponent(route.tail[1] || 'active'),
+            )),
           });
         }
         if (method === 'POST' && route.action === 'autonomous-run-control' && route.tail[0] === 'run-loop') {
@@ -1762,6 +2504,11 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
             autonomousRunControl: result.autonomousRunControl,
             managerActionQueue: result.managerActionQueue,
             agentAutonomousActionQueue: result.agentAutonomousActionQueue,
+            ...(includeReadModels ? {} : autonomousRunControlReadModels(
+              resultProjectId,
+              result.autonomousRunControlLoop?.agentIds?.[0],
+              result.autonomousRunControlLoop?.autopilotSessionId || body.autopilotSessionId || body.sessionId,
+            )),
           });
         }
         if (method === 'POST' && route.action === 'autonomous-run-control' && route.tail[1] === 'run') {
@@ -1788,8 +2535,23 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
             agentAutonomousActionQueue: result.agentAutonomousActionQueue,
             submission: result.submission,
             workSubmission: result.workSubmission,
+            workSubmissionLog: result.workSubmissionLog,
+            artifact: result.artifact,
+            evidenceSearch: result.evidenceSearch,
+            evidenceSearchLog: result.evidenceSearchLog,
+            evidenceSearchSourceSnapshots: result.evidenceSearchSourceSnapshots,
+            sourceSnapshots: result.sourceSnapshots,
+            providerReceipt: result.providerReceipt,
+            autonomousActionDecision: result.autonomousActionDecision || result.agentAutonomousActionRun?.autonomousActionDecision || null,
             review: result.review,
+            reviewedSubmission: result.reviewedSubmission,
             reviewResponseSubmission: result.reviewResponseSubmission,
+            reviewResponseArtifact: result.reviewResponseArtifact,
+            ...(includeReadModels ? {} : autonomousRunControlReadModels(
+              resultProjectId,
+              result.autonomousRunControlAction?.agentId || result.agentAutonomousAction?.agentId || result.agentAutonomousActionRun?.agentId,
+              result.autonomousRunControlRun?.autopilotSessionId || body.autopilotSessionId || body.sessionId,
+            )),
           });
         }
         if (method === 'GET' && route.action === 'agent-autonomous-action-queue') {
@@ -1813,6 +2575,11 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
             agentAutonomousActionQueue: result.agentAutonomousActionQueue,
             submission: result.submission,
             workSubmission: result.workSubmission,
+            evidenceSearch: result.evidenceSearch,
+            evidenceSearchLog: result.evidenceSearchLog,
+            evidenceSearchSourceSnapshots: result.evidenceSearchSourceSnapshots,
+            sourceSnapshots: result.sourceSnapshots,
+            providerReceipt: result.providerReceipt,
             review: result.review,
             reviewResponseSubmission: result.reviewResponseSubmission,
           });
@@ -1831,6 +2598,18 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
             managerActionRun: result.managerActionRun,
             managerActionLog: result.managerActionLog,
             managerActionQueue: result.managerActionQueue,
+            schedulerTick: result.schedulerTick,
+            workSubmission: result.workSubmission || result.submission,
+            submission: result.submission || result.workSubmission,
+            workSubmissionLog: result.workSubmissionLog,
+            artifact: result.artifact,
+            evidenceSearch: result.evidenceSearch,
+            evidenceSearchLog: result.evidenceSearchLog,
+            evidenceSearchSourceSnapshots: result.evidenceSearchSourceSnapshots,
+            review: result.review,
+            reviewedSubmission: result.reviewedSubmission,
+            reviewResponseSubmission: result.reviewResponseSubmission,
+            reviewResponseArtifact: result.reviewResponseArtifact,
           });
         }
         if (method === 'PUT' && route.action === 'get') {

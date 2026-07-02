@@ -20,6 +20,7 @@ import {
   isLeaderAssignmentRequest,
   isPeerHandoffRequest,
   publishAutonomousCycleChat,
+  runRoundtableExchange,
   summarizeProjectEventLedger,
 } from './agentRuntime.js';
 import { createAgentProjectMemoryStore } from './agentProjectStore.js';
@@ -68,6 +69,197 @@ const AGENT_EVIDENCE_PROVIDER_RECEIPT_LIMIT = 120;
 const PROJECT_AGENT_CONTRACT_LIMIT = 120;
 const SECURITY_ACCESS_AUDIT_LIMIT = 240;
 const PROJECT_MEMBERSHIP_AUDIT_LIMIT = 80;
+const PROJECT_SETTINGS_AUDIT_LIMIT = 80;
+const PROJECT_PRIVACY_RETENTION_MODES = new Set(['project-local', 'session-only', 'manual-export']);
+const PROJECT_PRIVACY_PROVIDER_LOG_MODES = new Set(['redacted', 'metadata-only']);
+const PROJECT_PROVIDER_BUDGET_CURRENCIES = new Set(['USD']);
+const PROJECT_WORKSPACE_INTERFACE_DENSITIES = new Set(['comfortable', 'compact', 'expanded']);
+const PROJECT_WORKSPACE_DEFAULT_VISIBILITIES = new Set(['team', 'manager-only', 'private']);
+const PROJECT_WORKSPACE_AUTOSAVE_CADENCES_SECONDS = new Set([30, 60, 120, 300]);
+const PROJECT_TOOL_GRANTS = [
+  'provider:test',
+  'model:kickoff',
+  'model:intent',
+  'model:artifact-draft',
+  'search:evidence',
+];
+const PROJECT_TOOL_GRANT_SET = new Set(PROJECT_TOOL_GRANTS);
+const PROJECT_INTEGRATION_CAPABILITY_ROWS = [
+  {
+    id: 'provider-budget-policy',
+    label: 'Provider budget policy',
+    status: 'backend-backed',
+    category: 'provider-governance',
+    backendRouteKey: 'projectSettings',
+    requiredBackendRoute: '/projects/:projectId/project-settings',
+    managerVisibleControl: 'Settings Integrations Usage Budget',
+    detail: 'Daily budget and hourly request limits are persisted as project settings and consumed by Provider Readiness / Provider Controlled Run.',
+    productionBlocker: 'centralized cost alerting and provider audit storage',
+  },
+  {
+    id: 'agent-tool-grant-policy',
+    label: 'Agent tool grant policy',
+    status: 'backend-backed',
+    category: 'provider-governance',
+    backendRouteKey: 'projectSettings',
+    requiredBackendRoute: '/projects/:projectId/project-settings',
+    managerVisibleControl: 'Settings Integrations External Tools',
+    detail: 'Default provider-test/model/search grants are persisted as project settings and enforced before provider calls.',
+    productionBlocker: 'task-scoped authorization and managed runtime identity',
+  },
+  {
+    id: 'vector-store',
+    label: 'Evidence index / vector store',
+    status: 'backend-backed',
+    category: 'evidence-index',
+    backendRouteKey: 'evidenceIndexReadiness',
+    requiredBackendRoute: '/projects/:projectId/evidence-index-readiness',
+    managerVisibleControl: 'Settings Integrations Vector Store',
+    detail: 'Local evidence and artifact nodes can be indexed through a backend readiness route; editable retrieval memory still requires a managed vector adapter.',
+    editable: false,
+    productionBlocker: 'managed vector adapter, retention policy, and source-custody audit',
+  },
+  {
+    id: 'proxy-webhook',
+    label: 'Proxy and webhook',
+    status: 'backend-backed',
+    category: 'adapter',
+    backendRouteKey: 'adapterGatewayPreflight',
+    requiredBackendRoute: '/projects/:projectId/adapter-gateway-preflight',
+    managerVisibleControl: 'Settings Integrations Proxy/Webhook',
+    detail: 'Adapter Gateway preflight exposes the local/private proxy rehearsal contract; editable webhook delivery still needs signing, retry, and dead-letter policy.',
+    editable: false,
+    productionBlocker: 'private adapter gateway, signature verification, retry/dead-letter storage',
+  },
+  {
+    id: 'mcp-tools',
+    label: 'MCP tools',
+    status: 'backend-backed',
+    category: 'tooling',
+    backendRouteKey: 'providerReadiness',
+    requiredBackendRoute: '/projects/:projectId/provider-readiness',
+    managerVisibleControl: 'Settings Integrations MCP',
+    detail: 'Provider Readiness exposes the local tool governance boundary behind Agent grants; editable MCP registry setup still needs managed runtime identity.',
+    editable: false,
+    productionBlocker: 'tool registry, task-scoped grants, runtime identity, and provider audit',
+  },
+  {
+    id: 'budget-alerts',
+    label: 'Budget alerts',
+    status: 'backend-backed',
+    category: 'operations',
+    backendRouteKey: 'budgetAlertReadiness',
+    requiredBackendRoute: '/projects/:projectId/budget-alert-readiness',
+    managerVisibleControl: 'Settings Integrations Budget Alerts',
+    detail: 'Local budget and request headroom are exposed through a backend readiness route; real alert routing still needs managed operations controls.',
+    editable: false,
+    productionBlocker: 'centralized metrics, alert routing, and on-call ownership',
+  },
+  {
+    id: 'error-reporting',
+    label: 'Error reporting',
+    status: 'backend-backed',
+    category: 'operations',
+    backendRouteKey: 'errorReportingReadiness',
+    requiredBackendRoute: '/projects/:projectId/error-reporting-readiness',
+    managerVisibleControl: 'Settings Integrations Error Reporting',
+    detail: 'Local error signals, alert rules, and recovery proof are exposed through a backend readiness route; centralized logs/traces still require managed operations controls.',
+    editable: false,
+    productionBlocker: 'centralized logs, traces, incident system, and restore drill',
+  },
+];
+const PROJECT_WORKSPACE_CAPABILITY_ROWS = [
+  {
+    id: 'global-interface-language',
+    label: 'Global interface language',
+    status: 'browser-local',
+    category: 'local-preference',
+    backendRouteKey: 'browserLocalPreference',
+    requiredBackendRoute: 'browser-local:language',
+    managerVisibleControl: 'Settings Workspace Global Language',
+    detail: 'The global UI language is intentionally a browser-local preference and is not treated as a backend project fact.',
+    productionBlocker: 'none; not a project runtime control',
+  },
+  {
+    id: 'project-language',
+    label: 'Project language',
+    status: 'backend-backed',
+    category: 'localization',
+    backendRouteKey: 'projectSettings',
+    requiredBackendRoute: '/projects/:projectId/project-settings',
+    managerVisibleControl: 'Settings Workspace Project Language',
+    detail: 'The project language is persisted through project-settings/v1 and is used by backend read models.',
+    productionBlocker: 'localized provider evals and customer acceptance policy',
+  },
+  {
+    id: 'interface-density',
+    label: 'Interface density',
+    status: 'backend-backed',
+    category: 'workspace-policy',
+    backendRouteKey: 'projectSettings',
+    requiredBackendRoute: '/projects/:projectId/project-settings',
+    managerVisibleControl: 'Settings Workspace Interface Density',
+    detail: 'Interface density is persisted as project-workspace-policy/v1 through project-settings/v1 for shared Manager and Agent surfaces.',
+    productionBlocker: 'cross-device preference sync and managed workspace policy rollout',
+  },
+  {
+    id: 'default-visibility',
+    label: 'Default visibility',
+    status: 'backend-backed',
+    category: 'workspace-policy',
+    backendRouteKey: 'projectSettings',
+    requiredBackendRoute: '/projects/:projectId/project-settings',
+    managerVisibleControl: 'Settings Workspace Default Visibility',
+    detail: 'Default visibility is persisted as project-workspace-policy/v1 and can govern local MVP collaboration surface defaults.',
+    productionBlocker: 'membership-aware visibility policy and audit storage',
+  },
+  {
+    id: 'autosave-cadence',
+    label: 'Autosave cadence',
+    status: 'backend-backed',
+    category: 'workspace-policy',
+    backendRouteKey: 'projectSettings',
+    requiredBackendRoute: '/projects/:projectId/project-settings',
+    managerVisibleControl: 'Settings Workspace Autosave Cadence',
+    detail: 'Autosave cadence is persisted as project-workspace-policy/v1 so local MVP save timing is a project fact, not a browser-only timer.',
+    productionBlocker: 'managed persistence adapter, conflict policy, and recovery audit',
+  },
+  {
+    id: 'project-rules',
+    label: 'Runtime contract rules',
+    status: 'backend-backed',
+    category: 'runtime-contract',
+    backendRouteKey: 'runtimeContracts',
+    requiredBackendRoute: '/projects/:projectId/runtime-contracts',
+    managerVisibleControl: 'Settings Workspace Project Rules',
+    detail: 'Local MVP runtime rules are exposed as the backend runtime-contract-freeze/v1 manifest for Agent autonomy, submission, evidence, review, transcript, Flow, and Proof contracts.',
+    editable: false,
+    productionBlocker: 'runtime contract approval and policy-version audit',
+  },
+  {
+    id: 'long-term-memory',
+    label: 'Long-term memory',
+    status: 'backend-backed',
+    category: 'memory',
+    backendRouteKey: 'memoryReadiness',
+    requiredBackendRoute: '/projects/:projectId/memory-readiness',
+    managerVisibleControl: 'Settings Workspace Long-Term Memory',
+    detail: 'Project memory readiness is exposed as a backend read model over transcripts, evidence/artifact index proof, and persistence adapter planning. User-editable managed memory remains disabled.',
+    editable: false,
+    productionBlocker: 'managed database/vector adapter, retention policy, and restore drill',
+  },
+  {
+    id: 'meeting-summaries',
+    label: 'Meeting summaries',
+    status: 'backend-backed',
+    category: 'collaboration-record',
+    backendRouteKey: 'meetingSummaries',
+    requiredBackendRoute: '/projects/:projectId/meeting-summaries',
+    managerVisibleControl: 'Settings Workspace Meeting Summaries',
+    detail: 'Meeting summaries are derived from backend transcripts, timeline logs, and event-ledger proof without using browser-only chat state.',
+    productionBlocker: 'summary provenance, transcript retention, and human review policy',
+  },
+];
 const IDENTITY_SESSION_LIMIT = 120;
 const PROVIDER_USAGE_LEDGER_LIMIT = 240;
 const PROJECT_PROVIDER_EVAL_RUN_LIMIT = 120;
@@ -80,6 +272,7 @@ const PRODUCTION_OPERATIONS_CONTROL_RECEIPT_LIMIT = 120;
 const PRODUCTION_SECURITY_CONTROL_RECEIPT_LIMIT = 120;
 const PRODUCTION_PROVIDER_CONTROL_RECEIPT_LIMIT = 120;
 const PRODUCTION_DEPLOYMENT_CONTROL_RECEIPT_LIMIT = 120;
+const MVP_READINESS_OPERATOR_ACTION_RUN_LIMIT = 120;
 const SECURITY_AUDIT_STREAM_GENESIS_HASH = 'stream_genesis_v1';
 const PRODUCTION_SECURITY_CONTROL_IDS = [
   'managed-identity-provider',
@@ -1122,7 +1315,22 @@ function buildAgentAutonomousStrategyDecision({
     evidenceSearchConfidence: controls.evidenceSearchConfidence || 'high',
   };
 
-  if (pendingReviewResponse?.review) {
+  const explicitReviewSubmissionRequested = Boolean(
+    controls.reviewPendingSubmission
+    && controls.reviewSubmissionId
+    && pendingReviewSubmission?.id
+  );
+  if (explicitReviewSubmissionRequested) {
+    selectedAction = 'review-pending-submission';
+    priority = 90;
+    rationale.push('Caller targeted a specific pending submission review, so that review takes priority over unrelated obligations.');
+    nextControls.reviewPendingSubmission = true;
+    nextControls.reviewSubmissionId = pendingReviewSubmission.id;
+    nextControls.agentReviewVerdict = controls.agentReviewVerdict || 'auto';
+    nextControls.agentReviewRequestedChanges = controls.agentReviewRequestedChanges || [];
+    nextControls.submitWorkArtifact = false;
+    nextControls.respondToReviewObligation = false;
+  } else if (pendingReviewResponse?.review) {
     selectedAction = 'respond-to-review-obligation';
     priority = 95;
     rationale.push('Agent has an open changes-requested review obligation that should be closed before new work expands.');
@@ -1276,6 +1484,7 @@ function buildAgentAutonomousInitiativeRow({
       || controls.reviewResponseReviewerAgentId
       || null,
     evidenceSearchPlanned: Boolean(requestBody.recordEvidenceSearch || controls.recordEvidenceSearch || artifactType === 'evidence-packet'),
+    providerEvidenceSearchPlanned: Boolean(requestBody.useProviderEvidenceSearch || controls.useProviderEvidenceSearch),
     runApiPath: queueRow.runApiPath || null,
     agentWorkCycleApiPath: queueRow.agentWorkCycleApiPath || null,
     strategyDecisionId: queueRow.strategyDecision?.id || null,
@@ -1290,10 +1499,125 @@ function buildAgentAutonomousInitiativeRow({
   });
 }
 
+function buildAutonomousActionDecision({
+  projectId = null,
+  queueRow = {},
+  requestBody = {},
+  now = nowIso(),
+  force = false,
+  providerPreflight = null,
+  source = 'agent-autonomous-action-queue',
+} = {}) {
+  const strategyDecision = queueRow.strategyDecision || null;
+  const selectedAction = queueRow.selectedAction || strategyDecision?.selectedAction || 'monitor-project';
+  const artifactType = normalizeAgentSubmissionArtifactType(
+    requestBody.workArtifactType
+    || requestBody.agentWorkArtifactType
+    || requestBody.reviewResponseArtifactType
+    || strategyDecision?.controls?.workArtifactType
+    || strategyDecision?.controls?.reviewResponseArtifactType
+    || 'progress-brief',
+  );
+  const canRun = Boolean(queueRow.canRun || force);
+  const action = !canRun
+    ? 'blocked'
+    : force && !queueRow.canRun
+      ? 'force-run'
+      : selectedAction === 'monitor-project'
+        ? 'monitor'
+        : 'run-now';
+  const reasons = uniqueStrings([
+    ...(queueRow.rationale || strategyDecision?.rationale || []),
+    force && !queueRow.canRun ? 'Caller forced execution despite queue row not being marked runnable.' : null,
+    !canRun ? 'Queue row is not runnable.' : null,
+    providerPreflight?.schemaVersion === 'autonomous-provider-preflight/v1'
+      ? `Provider preflight action: ${providerPreflight.action}.`
+      : null,
+  ].filter(Boolean));
+  const targetIds = uniqueStrings([
+    queueRow.taskId,
+    requestBody.taskId,
+    requestBody.reviewSubmissionId,
+    requestBody.reviewResponseId,
+    strategyDecision?.inputs?.taskId,
+    strategyDecision?.inputs?.pendingReviewSubmissionId,
+    strategyDecision?.inputs?.pendingReviewResponseId,
+  ].filter(Boolean));
+  const decision = redactSensitiveObject({
+    id: `autonomous_action_decision_${projectId || 'project'}_${queueRow.agentId || queueRow.id || 'agent'}_${Date.parse(now) || Date.now()}`,
+    schemaVersion: 'autonomous-action-decision/v1',
+    projectId,
+    source,
+    decidedAt: now,
+    agentId: queueRow.agentId || null,
+    agentName: queueRow.name || queueRow.agentName || null,
+    role: queueRow.role || null,
+    queueRowId: queueRow.id || null,
+    queueRowChecksum: queueRow.checksum || null,
+    action,
+    canRun,
+    forced: Boolean(force),
+    selectedAction,
+    actionLabel: queueRow.actionLabel || actionLabelForAgentStrategy(selectedAction),
+    nextStep: queueRow.nextStep || strategyDecision?.nextStep || null,
+    priority: queueRow.managementPriority || strategyDecision?.priority || 0,
+    rationale: reasons.slice(0, 8),
+    strategyDecisionId: strategyDecision?.id || queueRow.strategyDecisionId || null,
+    strategyDecision,
+    initiative: queueRow.initiative || null,
+    initiativeId: queueRow.initiativeId || queueRow.initiative?.id || null,
+    initiativeArtifactType: queueRow.initiativeArtifactType || queueRow.initiative?.artifactType || artifactType,
+    artifactType,
+    taskId: queueRow.taskId || requestBody.taskId || strategyDecision?.inputs?.taskId || null,
+    targetIds,
+    providerEvidenceRequested: Boolean(requestBody.useProviderEvidenceSearch || requestBody.requireProviderEvidenceSearch),
+    providerPreflight: providerPreflight ? redactSensitiveObject(providerPreflight) : null,
+    providerPreflightChecksum: providerPreflight?.checksum || null,
+    providerPreflightAction: providerPreflight?.action || null,
+    evidenceSearchPlanned: Boolean(requestBody.recordEvidenceSearch || artifactType === 'evidence-packet'),
+    reviewPlanned: Boolean(requestBody.reviewPendingSubmission || requestBody.reviewSubmissionId),
+    revisionPlanned: Boolean(requestBody.respondToReviewObligation || requestBody.reviewResponseId),
+    submissionPlanned: Boolean(requestBody.submitWorkArtifact || requestBody.submitAgentWorkArtifacts),
+    proofIds: uniqueStrings([
+      ...(queueRow.proofIds || []),
+      strategyDecision?.id,
+      queueRow.initiativeId,
+      queueRow.initiative?.id,
+    ].filter(Boolean)),
+    timelineLogIds: uniqueStrings(queueRow.timelineLogIds || []),
+    eventIds: uniqueStrings(queueRow.eventIds || []),
+    backendRoutes: {
+      agentAutonomousActionQueue: projectId ? `/projects/${projectId}/agent-autonomous-action-queue` : null,
+      run: queueRow.runApiPath || null,
+      delegatedWorkCycle: queueRow.agentWorkCycleApiPath || null,
+      managerFlowGraph: projectId ? `/projects/${projectId}/manager-flow-graph` : null,
+      readinessProofMap: projectId ? `/projects/${projectId}/readiness-proof-map` : null,
+    },
+    readyForProduction: false,
+  });
+  decision.checksum = persistenceChecksum({
+    projectId,
+    source,
+    agentId: decision.agentId,
+    queueRowId: decision.queueRowId,
+    queueRowChecksum: decision.queueRowChecksum,
+    action,
+    selectedAction,
+    strategyDecisionId: decision.strategyDecisionId,
+    initiativeId: decision.initiativeId,
+    artifactType,
+    targetIds,
+    providerPreflightChecksum: decision.providerPreflightChecksum,
+    proofIds: decision.proofIds,
+  });
+  return decision;
+}
+
 function buildAgentAutonomousActionQueue({
   project = {},
   now = nowIso(),
   intervalMs,
+  providerEvidenceSearchEnabled = false,
 } = {}) {
   const projectId = project.id || null;
   const rows = (project.team || []).filter((agent) => agent?.id).map((agent) => {
@@ -1345,14 +1669,24 @@ function buildAgentAutonomousActionQueue({
       ...(latestWorker?.timelineLogIds || []),
     ].filter(Boolean));
     const canRun = Boolean(projectId && strategyDecision.selectedAction !== 'monitor-project');
+    const plannedArtifactType = strategyDecision.controls?.workArtifactType || 'progress-brief';
+    const plannedEvidenceSearch = Boolean(
+      strategyDecision.controls?.recordEvidenceSearch
+      || normalizeAgentSubmissionArtifactType(plannedArtifactType) === 'evidence-packet'
+    );
+    const useProviderEvidenceSearch = Boolean(providerEvidenceSearchEnabled && plannedEvidenceSearch);
     const requestBodyTemplate = {
       useAutonomousStrategy: true,
       submitWorkArtifact: true,
-      workArtifactType: strategyDecision.controls?.workArtifactType || 'progress-brief',
+      workArtifactType: plannedArtifactType,
       workArtifactReviewerAgentId: strategyDecision.controls?.workArtifactReviewerAgentId || null,
       recordEvidenceSearch: Boolean(strategyDecision.controls?.recordEvidenceSearch),
       evidenceSearchQuery: strategyDecision.controls?.evidenceSearchQuery || null,
       evidenceSearchPurpose: strategyDecision.controls?.evidenceSearchPurpose || null,
+      ...(useProviderEvidenceSearch ? {
+        useProviderEvidenceSearch: true,
+        requireProviderEvidenceSearch: false,
+      } : {}),
       reviewPendingSubmission: true,
       reviewSubmissionId: strategyDecision.controls?.reviewSubmissionId || null,
       agentReviewVerdict: strategyDecision.controls?.agentReviewVerdict || 'auto',
@@ -1371,6 +1705,7 @@ function buildAgentAutonomousActionQueue({
       agentId: agent.id,
       selectedAction: strategyDecision.selectedAction,
       requestBodyTemplate,
+      providerEvidenceSearchEnabled: Boolean(providerEvidenceSearchEnabled),
       proofIds,
       timelineLogIds,
       latestEventIds,
@@ -1399,6 +1734,7 @@ function buildAgentAutonomousActionQueue({
         runApiPath: projectId ? `/projects/${projectId}/agent-autonomous-action-queue/${encodeURIComponent(agent.id)}/run` : null,
         agentWorkCycleApiPath: projectId ? `/projects/${projectId}/agents/${encodeURIComponent(agent.id)}/work-cycle` : null,
         requestBodyTemplate,
+        providerEvidenceSearchPlanned: useProviderEvidenceSearch,
         proofIds,
         timelineLogIds,
         eventIds: latestEventIds,
@@ -1439,6 +1775,7 @@ function buildAgentAutonomousActionQueue({
       initiativeId: initiative.id,
       initiativeArtifactType: initiative.artifactType,
       initiativeIntent: initiative.intent,
+      providerEvidenceSearchPlanned: useProviderEvidenceSearch,
       proofIds,
       timelineLogIds,
       eventIds: latestEventIds,
@@ -1458,6 +1795,7 @@ function buildAgentAutonomousActionQueue({
     schemaVersion: 'agent-autonomous-action-queue/v1',
     projectId,
     rows: rows.map((row) => [row.agentId, row.selectedAction, row.canRun, row.nextRunAt]),
+    providerEvidenceSearchRowCount: rows.filter((row) => row.providerEvidenceSearchPlanned).length,
     proofIds,
     timelineLogIds,
     eventIds,
@@ -1492,6 +1830,7 @@ function buildAgentAutonomousActionQueue({
       initiativeCount: rows.filter((row) => row.initiative?.schemaVersion === 'agent-autonomous-initiative/v1').length,
       readyInitiativeCount: rows.filter((row) => row.initiative?.canRun).length,
       initiativeArtifactTypes: uniqueStrings(rows.map((row) => row.initiative?.artifactType).filter(Boolean)),
+      providerEvidenceSearchRowCount: rows.filter((row) => row.providerEvidenceSearchPlanned).length,
       readyCount: readyRows.length,
       dueCount: rows.filter((row) => row.due).length,
       proofIdCount: proofIds.length,
@@ -1696,6 +2035,7 @@ function buildWorkerRunControlFields(run = {}, {
 } = {}) {
   const resolvedWorkerKind = normalizeWorkerKind(workerKind || run.workerKind);
   const resolvedProjectId = run.projectId || projectId || null;
+  const resolvedSessionId = run.sessionId || run.autopilotSessionId || null;
   const reason = workerRunReason(run);
   const ranAt = run.ranAt || run.time || run.startedAt || run.completedAt || now;
   const dueAt = run.dueAt || ranAt;
@@ -1703,6 +2043,7 @@ function buildWorkerRunControlFields(run = {}, {
     workerKind: resolvedWorkerKind,
     projectId: resolvedProjectId,
     agentId: run.agentId || null,
+    sessionId: resolvedSessionId,
     dueAt,
     reason,
   });
@@ -1728,6 +2069,7 @@ function buildWorkerRunControlFields(run = {}, {
     projectId: resolvedProjectId,
     workerKind: resolvedWorkerKind,
     agentId: run.agentId || null,
+    sessionId: resolvedSessionId,
     taskId: run.taskId || null,
     status: executionStatus,
     idempotencyKey,
@@ -1746,6 +2088,7 @@ function buildWorkerRunControlFields(run = {}, {
       projectId: resolvedProjectId,
       workerKind: resolvedWorkerKind,
       agentId: run.agentId || null,
+      sessionId: resolvedSessionId,
       status: executionStatus,
       acked: executionStatus === 'succeeded',
       idempotencyKey,
@@ -1762,6 +2105,7 @@ function buildWorkerRunControlFields(run = {}, {
     projectId: resolvedProjectId,
     workerKind: resolvedWorkerKind,
     agentId: run.agentId || null,
+    sessionId: resolvedSessionId,
     status: 'dead-lettered',
     reason: reason || 'worker-failed-after-retries',
     attemptCount: retry.attemptCount,
@@ -1772,6 +2116,7 @@ function buildWorkerRunControlFields(run = {}, {
       workerKind: resolvedWorkerKind,
       projectId: resolvedProjectId,
       agentId: run.agentId || null,
+      sessionId: resolvedSessionId,
     }),
     idempotencyKey,
     leaseKey,
@@ -1780,6 +2125,7 @@ function buildWorkerRunControlFields(run = {}, {
   return {
     workerKind: resolvedWorkerKind,
     projectId: resolvedProjectId,
+    sessionId: resolvedSessionId,
     idempotencyKey,
     leaseKey,
     executionStatus,
@@ -1804,6 +2150,7 @@ function workerRunsForProject(project = {}) {
     ...(project.autonomousLedger || []).map((run) => withWorkerRunControlFields(run, { projectId, workerKind: 'project-autonomous' })),
     ...(project.autonomousSchedulerLedger || []).map((run) => withWorkerRunControlFields(run, { projectId, workerKind: 'project-scheduler' })),
     ...(project.agentWorkerLedger || []).map((run) => withWorkerRunControlFields(run, { projectId, workerKind: 'agent-worker' })),
+    ...(project.autonomousRunControlSessionTickLedger || []).map((run) => withWorkerRunControlFields(run, { projectId, workerKind: 'autopilot-session' })),
   ];
 }
 
@@ -1814,6 +2161,7 @@ function attachWorkerRunControlsToProject(project = {}) {
     autonomousLedger: (project.autonomousLedger || []).map((run) => withWorkerRunControlFields(run, { projectId, workerKind: 'project-autonomous' })),
     autonomousSchedulerLedger: (project.autonomousSchedulerLedger || []).map((run) => withWorkerRunControlFields(run, { projectId, workerKind: 'project-scheduler' })),
     agentWorkerLedger: (project.agentWorkerLedger || []).map((run) => withWorkerRunControlFields(run, { projectId, workerKind: 'agent-worker' })),
+    autonomousRunControlSessionTickLedger: (project.autonomousRunControlSessionTickLedger || []).map((run) => withWorkerRunControlFields(run, { projectId, workerKind: 'autopilot-session' })),
   };
 }
 
@@ -1866,6 +2214,212 @@ export function createDirectorChatMessage({
     targetIds,
     weight: weight ?? (targets.length ? 'Raised' : null),
   }, project.team || [], { seenAt: now });
+}
+
+function transcriptChannelDefaults(channelId = 'main') {
+  const id = slugPart(channelId || 'main');
+  if (id === 'main') {
+    return {
+      name: 'Main',
+      description: 'Default public project channel visible to the whole team.',
+      category: 'text',
+    };
+  }
+  if (id === 'google_chat') {
+    return {
+      name: 'Google Chat',
+      description: 'External @mention bridge; change requests stay visible to the full project team.',
+      category: 'text',
+    };
+  }
+  if (id === 'decisions') {
+    return {
+      name: 'Decisions',
+      description: 'Key decisions, confirmations, and change records.',
+      category: 'decisions',
+    };
+  }
+  const label = id
+    .replace(/[-_]+/g, ' ')
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+  return {
+    name: label || 'Project Room',
+    description: 'Backend-created project collaboration channel visible to project members.',
+    category: /voice|standup|call|room-audio/.test(id) ? 'voice' : 'text',
+  };
+}
+
+function normalizeTranscriptChannel(input = {}) {
+  const seed = input.channelId || input.id || input.name || 'project-room';
+  const channelId = slugPart(seed).replace(/-/g, '_');
+  const defaults = transcriptChannelDefaults(channelId);
+  const category = ['text', 'decisions', 'voice'].includes(input.category)
+    ? input.category
+    : defaults.category;
+  return {
+    schemaVersion: 'transcript-channel/v1',
+    channelId,
+    id: channelId,
+    name: String(input.name || defaults.name || channelId).trim(),
+    description: String(input.description || defaults.description || 'Project collaboration channel.').trim(),
+    category,
+    apiPath: input.projectId ? `/projects/${input.projectId}/transcripts/${encodeURIComponent(channelId)}` : null,
+  };
+}
+
+export function createProjectTranscriptChannel({
+  project = {},
+  messages = [],
+  channelId = '',
+  name = '',
+  description = '',
+  category = 'text',
+  now = nowIso(),
+  actor = 'Director',
+  actorId = 'director',
+  source = 'backend-transcript-channel-create',
+  messageId,
+} = {}) {
+  const existingIndex = buildTranscriptIndex({ project, messages });
+  const requestedChannel = normalizeTranscriptChannel({
+    projectId: project.id,
+    channelId: channelId || name || `room_${(existingIndex.channels || []).length + 1}`,
+    name,
+    description,
+    category,
+  });
+  const existingChannel = (existingIndex.channels || [])
+    .find((channel) => String(channel.channelId || '') === requestedChannel.channelId);
+  if (existingChannel) {
+    return {
+      project,
+      messages: [],
+      route: 'transcript-channel-existing',
+      transcriptChannel: {
+        ...requestedChannel,
+        ...existingChannel,
+        schemaVersion: 'transcript-channel/v1',
+      },
+      transcriptChannelReceipt: {
+        schemaVersion: 'transcript-channel-existing/v1',
+        projectId: project.id || null,
+        channelId: requestedChannel.channelId,
+        route: project.id ? `/projects/${project.id}/transcripts/${encodeURIComponent(requestedChannel.channelId)}` : null,
+      },
+    };
+  }
+
+  const timestamp = Date.parse(now) || Date.now();
+  const channelRoute = project.id ? `/projects/${project.id}/transcripts/${encodeURIComponent(requestedChannel.channelId)}` : null;
+  const generatedMessageId = messageId || `transcript_channel_created_${requestedChannel.channelId}_${timestamp}`;
+  const logId = `log_${generatedMessageId}`;
+  const eventId = `evt_transcript_channel_created_${requestedChannel.channelId}_${timestamp}`;
+  const receiptBase = {
+    schemaVersion: 'transcript-channel-created/v1',
+    id: `transcript_channel_receipt_${project.id || 'project'}_${requestedChannel.channelId}_${timestamp}`,
+    projectId: project.id || null,
+    channelId: requestedChannel.channelId,
+    name: requestedChannel.name,
+    description: requestedChannel.description,
+    category: requestedChannel.category,
+    actor,
+    actorId,
+    source,
+    createdAt: now,
+    messageId: generatedMessageId,
+    timelineLogId: logId,
+    eventId,
+    route: channelRoute,
+  };
+  const transcriptChannelReceipt = {
+    ...receiptBase,
+    checksum: persistenceChecksum(receiptBase),
+  };
+  const systemMessage = attachMessageReceipts({
+    id: generatedMessageId,
+    projectId: project.id || null,
+    channelId: requestedChannel.channelId,
+    type: 'system',
+    schemaVersion: 'transcript-channel-created-message/v1',
+    author: 'System',
+    authorId: 'system',
+    source,
+    time: 'Channel Created',
+    text: `${actor || 'Director'} created #${requestedChannel.name}: ${requestedChannel.description}`,
+    targets: ['all'],
+    targetIds: (project.team || []).map((agent) => agent.id).filter(Boolean),
+    weight: 'Channel Created',
+    channelName: requestedChannel.name,
+    channelCategory: requestedChannel.category,
+    transcriptChannel: requestedChannel,
+    transcriptChannelReceiptId: transcriptChannelReceipt.id,
+    transcriptChannelReceiptChecksum: transcriptChannelReceipt.checksum,
+  }, project.team || [], { seenAt: now, broadcast: true });
+  const log = {
+    id: logId,
+    messageId: generatedMessageId,
+    time: now,
+    agent: actor || 'Director',
+    actor: actor || 'Director',
+    agentId: actorId || null,
+    eventType: 'transcript-channel-created',
+    source,
+    channelId: requestedChannel.channelId,
+    sourceChannelId: requestedChannel.channelId,
+    log: systemMessage.text,
+    transcriptChannelId: requestedChannel.channelId,
+    transcriptChannelName: requestedChannel.name,
+    transcriptChannelReceiptId: transcriptChannelReceipt.id,
+    checksum: transcriptChannelReceipt.checksum,
+  };
+  const projectWithChannel = appendProjectEvents({
+    ...project,
+    transcriptChannelReceipts: [
+      transcriptChannelReceipt,
+      ...(project.transcriptChannelReceipts || []),
+    ].slice(0, 120),
+    logs: [log, ...(project.logs || [])],
+  }, [
+    createProjectLedgerEvent({
+      id: eventId,
+      type: 'transcript-channel-created',
+      time: now,
+      actor: actor || 'Director',
+      summary: systemMessage.text,
+      source,
+      channelId: requestedChannel.channelId,
+      evidenceIds: [generatedMessageId, logId, transcriptChannelReceipt.id, transcriptChannelReceipt.checksum].filter(Boolean),
+      entityIds: {
+        projectId: project.id || null,
+        channelId: requestedChannel.channelId,
+        messageId: generatedMessageId,
+        logId,
+        transcriptChannelReceiptId: transcriptChannelReceipt.id,
+      },
+      payload: {
+        schemaVersion: transcriptChannelReceipt.schemaVersion,
+        channel: requestedChannel,
+        receiptChecksum: transcriptChannelReceipt.checksum,
+      },
+    }),
+  ]);
+
+  return {
+    project: projectWithChannel,
+    messages: [{ ...systemMessage, projectId: project.id }],
+    route: 'transcript-channel-created',
+    transcriptChannel: {
+      ...requestedChannel,
+      createdAt: now,
+      messageId: generatedMessageId,
+      timelineLogId: logId,
+      eventId,
+      receiptId: transcriptChannelReceipt.id,
+      checksum: transcriptChannelReceipt.checksum,
+    },
+    transcriptChannelReceipt,
+    log,
+  };
 }
 
 export function submitProjectChatMessage({
@@ -2063,13 +2617,43 @@ export function submitAgentMessage({
     targetIds,
     language,
   });
+  const agentMessage = result.userMessage || result.messages.find((message) => message.authorId === agent.id) || null;
+  const timelineLogId = agentMessage?.id ? `log_agent_message_${agentMessage.id}` : null;
+  const targetNames = targetIds
+    .map((targetId) => team.find((member) => member.id === targetId || member.name === targetId)?.name || targetId)
+    .filter(Boolean);
+  const agentMessageTimelineLog = agentMessage && timelineLogId ? {
+    id: timelineLogId,
+    messageId: agentMessage.id,
+    time: now,
+    agent: agent.name,
+    actor: agent.name,
+    agentId: agent.id,
+    eventType: 'agent-message',
+    source: 'agent-to-agent-message',
+    channelId: agentMessage.channelId || channelId || 'main',
+    sourceChannelId: agentMessage.channelId || channelId || 'main',
+    log: `${agent.name} messaged ${targetNames.join(', ') || 'the team'}: ${agentMessage.text || text}`,
+    agentMessageId: agentMessage.id,
+    senderAgentId: agent.id,
+    targetAgentIds: targetIds,
+  } : null;
+  const projectWithTimeline = agentMessageTimelineLog ? {
+    ...result.project,
+    logs: [
+      agentMessageTimelineLog,
+      ...(result.project.logs || []).filter((log) => log.id !== agentMessageTimelineLog.id),
+    ],
+  } : result.project;
 
   return {
     ...result,
+    project: projectWithTimeline,
     route: result.route === 'ordinary-chat' ? 'agent-message' : result.route,
-    agent: result.project.agentStates?.[agent.id] || null,
+    agent: projectWithTimeline.agentStates?.[agent.id] || null,
     senderAgentId: agent.id,
     targetAgentIds: targetIds,
+    agentMessageTimelineLog,
   };
 }
 
@@ -2113,8 +2697,96 @@ export function submitProjectMeetingMessage({
     language: currentLanguage,
   });
   const isFeatureChange = isFeatureChangeRequest(trimmedText);
-  const changeResponse = isFeatureChange ? handleFeatureChangeRequest({
+  const meetingDirective = project.meetingSkillBrief
+    ? `${project.meetingSkillBrief}\n\nDirector input:\n${trimmedText}`
+    : trimmedText;
+  const meetingExchange = runRoundtableExchange(team, meetingDirective, {
+    projectId: project.id,
+    projectName: project.name,
+    meetingType: project.lastAutonomousRunAt ? 'sync' : 'kickoff',
+    language: currentLanguage,
+  });
+  const meetingAgentMessages = (meetingExchange?.responses || []).map((turn, index) => {
+    const agent = team.find((member) => member.id === turn.speakerId || member.name === turn.speaker);
+    const turnId = `meeting_turn_${project.id || 'project'}_${turn.speakerId || agent?.id || index}_${Date.parse(now) || Date.now()}_${index}`;
+    return attachMessageReceipts({
+      id: turnId,
+      projectId: project.id,
+      channelId,
+      type: 'meeting-turn',
+      schemaVersion: 'meeting-agent-turn/v1',
+      author: turn.speaker || agent?.name || 'Agent',
+      authorId: turn.speakerId || agent?.id || null,
+      source: 'war-room-meeting-agent-turn',
+      time: 'War Room',
+      text: turn.text || '',
+      score: turn.score,
+      role: turn.role || agent?.role || 'Meeting participant',
+      replyToMessageId: userMessage.id,
+      meetingTurn: {
+        schemaVersion: 'meeting-agent-turn/v1',
+        projectId: project.id,
+        sourceMessageId: userMessage.id,
+        speakerId: turn.speakerId || agent?.id || null,
+        speaker: turn.speaker || agent?.name || 'Agent',
+        role: turn.role || agent?.role || 'Meeting participant',
+        score: turn.score,
+        rank: index + 1,
+        protocolId: meetingExchange?.protocol?.id || null,
+        backendAuthored: true,
+      },
+    }, team, { seenAt: now });
+  });
+  const meetingAgentLogs = meetingAgentMessages.map((message, index) => ({
+    id: `log_${message.id}`,
+    time: now,
+    agent: message.author || 'Agent',
+    agentId: message.authorId || message.meetingTurn?.speakerId || null,
+    log: message.text || '',
+    eventType: 'meeting-agent-turn',
+    source: 'war-room-meeting-agent-turn',
+    sourceChannelId: channelId,
+    messageId: message.id,
+    replyToMessageId: userMessage.id,
+    proofIds: uniqueStrings([message.id]),
+    eventIds: uniqueStrings([`evt_chat_${message.id}`]),
+    rank: index + 1,
+    protocolId: message.meetingTurn?.protocolId || null,
+  }));
+  const projectAfterMeetingTurnsBase = meetingAgentMessages.length ? applyChatMessagesToAgentStates({
     project: projectAfterMeetingMessage,
+    team,
+    messages: meetingAgentMessages,
+    now,
+    source: 'war-room-meeting-agent-turn',
+    language: currentLanguage,
+  }) : projectAfterMeetingMessage;
+  const projectAfterMeetingTurns = meetingAgentLogs.length ? {
+    ...projectAfterMeetingTurnsBase,
+    logs: [...meetingAgentLogs, ...(projectAfterMeetingTurnsBase.logs || [])],
+  } : projectAfterMeetingTurnsBase;
+  const meetingAgentTurns = meetingAgentMessages.map((message, index) => ({
+    schemaVersion: 'meeting-agent-turn/v1',
+    id: message.meetingTurn?.speakerId
+      ? `${message.meetingTurn.speakerId}_${Date.parse(now) || Date.now()}_${index}`
+      : message.id,
+    messageId: message.id,
+    proofIds: uniqueStrings([message.id]),
+    eventIds: uniqueStrings([`evt_chat_${message.id}`]),
+    timelineLogIds: uniqueStrings([meetingAgentLogs[index]?.id]),
+    channelId,
+    source: 'war-room-meeting-agent-turn',
+    speakerId: message.meetingTurn?.speakerId || message.authorId || null,
+    speaker: message.author || 'Agent',
+    role: message.role || message.meetingTurn?.role || 'Meeting participant',
+    score: message.score || message.meetingTurn?.score || 0,
+    rank: index + 1,
+    delayMs: 650 + index * 1450,
+    text: message.text || '',
+    backendAuthored: true,
+  }));
+  const changeResponse = isFeatureChange ? handleFeatureChangeRequest({
+    project: projectAfterMeetingTurns,
     text: trimmedText,
     author: 'director',
     now,
@@ -2136,17 +2808,22 @@ export function submitProjectMeetingMessage({
   }) : null;
 
   return {
-    project: changeOwnerStartWorkResponse?.project || changeResponse?.project || projectAfterMeetingMessage,
+    project: changeOwnerStartWorkResponse?.project || changeResponse?.project || projectAfterMeetingTurns,
     messages: [
       userMessage,
+      ...meetingAgentMessages,
       ...(changeResponse?.discussionMessages || []),
       ...(changeOwnerStartWorkResponse?.messages || []),
     ].map((message) => ({ ...message, projectId: project.id })),
     route: changeResponse ? 'war-room-meeting-change' : 'war-room-meeting-message',
     userMessage,
+    meetingAgentTurns,
+    meetingProtocol: meetingExchange?.protocol || null,
     responses: {
       changeResponse,
       changeOwnerStartWorkResponse,
+      meetingAgentTurns,
+      meetingProtocol: meetingExchange?.protocol || null,
     },
   };
 }
@@ -2342,6 +3019,9 @@ export function runAgentWorkCycle({
   evidenceSearchSources = [],
   evidenceSearchFindings = [],
   evidenceSearchConfidence = 'high',
+  evidenceSearchProvider = '',
+  evidenceSearchMode = '',
+  evidenceSearchProviderReceipt = null,
   useAutonomousStrategy = false,
 } = {}) {
   const currentLanguage = normalizeLanguage(language);
@@ -2414,6 +3094,9 @@ export function runAgentWorkCycle({
       evidenceSearchSources,
       evidenceSearchFindings,
       evidenceSearchConfidence,
+      evidenceSearchProvider,
+      evidenceSearchMode,
+      evidenceSearchProviderReceipt,
     },
   }) : null;
   const strategyControls = strategyDecision?.controls || {};
@@ -2437,13 +3120,16 @@ export function runAgentWorkCycle({
   const resolvedReviewResponseArtifactType = strategyControls.reviewResponseArtifactType || reviewResponseArtifactType;
   const resolvedReviewResponseReviewerAgentId = strategyControls.reviewResponseReviewerAgentId || reviewResponseReviewerAgentId;
   const resolvedRecordEvidenceSearch = strategyDecision
-    ? Boolean(strategyControls.recordEvidenceSearch)
-    : (Boolean(recordEvidenceSearch) || shouldAgentWorkerRecordEvidenceSearch({ task, workArtifactType: resolvedWorkArtifactType }));
+    ? Boolean(strategyControls.recordEvidenceSearch || evidenceSearchProviderReceipt)
+    : (Boolean(recordEvidenceSearch || evidenceSearchProviderReceipt) || shouldAgentWorkerRecordEvidenceSearch({ task, workArtifactType: resolvedWorkArtifactType }));
   const resolvedEvidenceSearchQuery = strategyControls.evidenceSearchQuery || evidenceSearchQuery;
   const resolvedEvidenceSearchPurpose = strategyControls.evidenceSearchPurpose || evidenceSearchPurpose;
   const resolvedEvidenceSearchSources = strategyControls.evidenceSearchSources || evidenceSearchSources;
   const resolvedEvidenceSearchFindings = strategyControls.evidenceSearchFindings || evidenceSearchFindings;
   const resolvedEvidenceSearchConfidence = strategyControls.evidenceSearchConfidence || evidenceSearchConfidence;
+  const resolvedEvidenceSearchProvider = strategyControls.evidenceSearchProvider || evidenceSearchProvider;
+  const resolvedEvidenceSearchMode = strategyControls.evidenceSearchMode || evidenceSearchMode;
+  const resolvedEvidenceSearchProviderReceipt = strategyControls.evidenceSearchProviderReceipt || evidenceSearchProviderReceipt;
   const taskStatus = completed ? 'done' : task ? 'in-progress' : 'monitoring';
   const artifact = routine?.artifact || (currentLanguage === 'zh' ? '时间线证据' : 'timeline evidence');
   const messageId = `agent_work_${agent.id}_${timestamp}`;
@@ -2875,14 +3561,28 @@ export function runAgentWorkCycle({
   let finalMessages = [progressMessage, ...managementResponseMessages, ...managementMessages];
   let evidenceSearchResult = null;
   let workSubmissionResult = null;
+  const explicitEvidenceSearchRequested = Boolean(resolvedRecordEvidenceSearch) && Boolean(
+    resolvedEvidenceSearchProviderReceipt
+    || recordEvidenceSearch
+    || strategyControls.recordEvidenceSearch
+    || resolvedEvidenceSearchQuery
+    || resolvedEvidenceSearchPurpose
+    || resolvedWorkArtifactType === 'evidence-packet'
+  );
+  const explicitProjectWorkArtifactRequested = Boolean(resolvedSubmitWorkArtifact) && Boolean(
+    resolvedSubmitWorkArtifactOn === 'always'
+    || resolvedWorkArtifactType === 'evidence-packet'
+    || resolvedEvidenceSearchProviderReceipt
+  );
   const shouldSubmitWorkArtifact = Boolean(resolvedSubmitWorkArtifact)
-    && Boolean(task)
+    && (Boolean(task) || explicitProjectWorkArtifactRequested)
     && (
       resolvedSubmitWorkArtifactOn === 'always'
       || (resolvedSubmitWorkArtifactOn === 'completion' && completed)
+      || (!task && explicitProjectWorkArtifactRequested)
     );
   const shouldRecordEvidenceSearch = Boolean(resolvedRecordEvidenceSearch)
-    && Boolean(task)
+    && (Boolean(task) || explicitEvidenceSearchRequested)
     && (
       completed
       || resolvedSubmitWorkArtifactOn === 'always'
@@ -2905,11 +3605,14 @@ export function runAgentWorkCycle({
       sources: resolvedEvidenceSearchSources,
       findings: resolvedEvidenceSearchFindings,
       confidence: resolvedEvidenceSearchConfidence,
+      provider: resolvedEvidenceSearchProvider,
+      searchMode: resolvedEvidenceSearchMode,
+      providerReceipt: resolvedEvidenceSearchProviderReceipt,
     });
     evidenceSearchResult = recordAgentEvidenceSearch({
       project: finalProject,
       agentId: agent.id,
-      taskId: task.id,
+      taskId: task?.id || null,
       channelId,
       now,
       language: currentLanguage,
@@ -2925,6 +3628,9 @@ export function runAgentWorkCycle({
               evidenceSearchLogId: evidenceSearchResult.log?.id || null,
               evidenceSearchEventId: evidenceSearchResult.evidenceSearch?.eventId || null,
               evidenceSearchSourceCount: evidenceSearchResult.evidenceSearch?.sources?.length || 0,
+              evidenceSearchProvider: evidenceSearchResult.evidenceSearch?.provider || null,
+              evidenceSearchMode: evidenceSearchResult.evidenceSearch?.searchMode || null,
+              evidenceSearchProviderReceiptId: evidenceSearchResult.evidenceSearch?.providerReceiptId || null,
             }
           : record
       )),
@@ -2948,7 +3654,7 @@ export function runAgentWorkCycle({
         `- Worker cycle: ${cycleId}`,
         `- Trigger: ${trigger}`,
         `- Cadence: ${cadence}`,
-        `- Task: ${task.text || task.id}`,
+        task ? `- Task: ${task.text || task.id}` : `- Project objective: ${project.currentObjective || project.objective || project.summary || project.name || project.id}`,
         `- Timeline proof: ${progressLog.id}`,
         `- Chat proof: ${progressMessage.id}`,
         `- Event proof: ${progressEventId}`,
@@ -2956,7 +3662,7 @@ export function runAgentWorkCycle({
         '',
         `This ${resolvedWorkArtifactLabel} was created by the backend Agent worker after the Agent completed its assigned work pulse.`,
       ].filter(Boolean).join('\n'),
-      taskId: task.id,
+      taskId: task?.id || null,
       status: 'submitted',
       reviewStatus: resolvedWorkArtifactReviewStatus,
       reviewerAgentId: resolvedWorkArtifactReviewerAgentId,
@@ -3656,6 +4362,7 @@ export function recordAgentEvidenceSearch({
       policyDecision: providerReceipt.policyDecision || providerReceipt.decision || {},
       retry: providerReceipt.retry || null,
       circuitBreaker: providerReceipt.circuitBreaker || null,
+      providerVaultBinding: providerReceipt.providerVaultBinding || null,
       request: providerReceipt.request || {},
       startedAt: providerReceipt.startedAt || now,
       completedAt: providerReceipt.completedAt || now,
@@ -5421,6 +6128,105 @@ export function confirmKickoffMeetingNextActions({
   };
 }
 
+const DEFAULT_PRODUCT_TEAM_MISSION_ROSTER = [
+  { id: 'jobs', name: 'Steve Jobs', role: 'Product Visionary', skill: 'product framing' },
+  { id: 'curie', name: 'Marie Curie', role: 'Evidence Reviewer', skill: 'evidence review' },
+  { id: 'turing', name: 'Alan Turing', role: 'System Architect', skill: 'protocol design' },
+  { id: 'da_vinci', name: 'Leonardo da Vinci', role: 'Cross-domain Inventor', skill: 'brainstorm synthesis' },
+];
+
+function buildDefaultProductTeamMissionTasks(team = []) {
+  const findAgent = (pattern, fallbackIndex = 0) => (
+    team.find((agent) => pattern.test(`${agent.id || ''} ${agent.name || ''} ${agent.role || ''} ${agent.skill || ''}`))
+    || team[fallbackIndex]
+    || team[0]
+    || {}
+  );
+  const leader = findAgent(/product|vision|lead|jobs/i, 0);
+  const reviewer = findAgent(/review|evidence|qa|curie/i, 1);
+  const architect = findAgent(/system|architect|protocol|turing/i, 2);
+  const brainstormer = findAgent(/invent|brainstorm|creative|da.?vinci/i, 3);
+  const task = (id, text, owner = {}) => ({
+    id,
+    text,
+    ownerId: owner.id || null,
+    ownerName: owner.name || null,
+    assignee: owner.name || owner.id || null,
+    status: 'pending',
+  });
+  return [
+    task('mission_discovery', 'Produce a discovery report for the product-team mission, including users, problem, constraints, and acceptance evidence.', architect),
+    task('mission_brainstorm', 'Create a brainstorm board with alternative directions from multiple persona viewpoints.', brainstormer),
+    task('mission_evidence', 'Collect and judge evidence for the strongest product direction without turning the mission into a research-only workflow.', reviewer),
+    task('mission_product_brief', 'Draft a manager-readable product brief and decision proposal from the evidence and brainstorm output.', leader),
+    task('mission_review', 'Review the draft, request changes when needed, and verify the revision/final deliverable closure.', reviewer),
+    task('mission_implementation_plan', 'Map the implementation plan, proof surfaces, risks, and handoff path for the selected product direction.', architect),
+  ];
+}
+
+function buildProductTeamMissionConfig(input = {}) {
+  const now = input.now || nowIso();
+  const team = (input.team?.length ? input.team : DEFAULT_PRODUCT_TEAM_MISSION_ROSTER)
+    .filter((agent) => agent?.id || agent?.name)
+    .map((agent, index) => ({
+      id: agent.id || `mission_agent_${index + 1}`,
+      name: agent.name || agent.id || `Mission Agent ${index + 1}`,
+      role: agent.role || agent.title || 'Product Team Agent',
+      title: agent.title || agent.role || 'Product Team Agent',
+      skill: agent.skill || agent.category || 'general product work',
+      category: agent.category || agent.skill || 'general product work',
+    }));
+  if (!team.length) throw new Error('product-team-mission-requires-team');
+  const leader = team.find((agent) => agent.id === input.selectedLeaderId || agent.name === input.selectedLeaderId)
+    || team.find((agent) => /product|vision|lead|jobs/i.test(`${agent.id} ${agent.name} ${agent.role} ${agent.skill}`))
+    || team[0];
+  const reviewer = team.find((agent) => agent.id === input.reviewerId || agent.name === input.reviewerId)
+    || team.find((agent) => agent.id !== leader?.id && /review|evidence|qa|curie/i.test(`${agent.id} ${agent.name} ${agent.role} ${agent.skill}`))
+    || team.find((agent) => agent.id !== leader?.id)
+    || leader;
+  const missionBrief = String(input.missionBrief || input.brief || input.goal || input.objective || '').trim();
+  const name = String(input.name || input.missionName || input.title || 'General Product Team Mission').trim();
+  const projectId = input.projectId || `product_team_mission_project_${Date.parse(now) || Date.now()}`;
+  const meetingId = input.meetingId || `product_team_mission_meeting_${Date.parse(now) || Date.now()}`;
+  const tasks = (input.tasks?.length ? input.tasks : buildDefaultProductTeamMissionTasks(team))
+    .map((task, index) => {
+      const taskObject = typeof task === 'object' && task ? task : {};
+      const owner = team.find((agent) => (
+        agent.id === taskObject.ownerId
+        || agent.id === taskObject.assignee
+        || agent.name === taskObject.assignee
+        || agent.name === taskObject.ownerName
+      )) || leader;
+      return {
+        ...taskObject,
+        id: taskObject.id || `mission_task_${index + 1}`,
+        text: typeof task === 'string' ? task : String(taskObject.text || taskObject.title || '').trim(),
+        ownerId: taskObject.ownerId || owner?.id || null,
+        ownerName: taskObject.ownerName || taskObject.assignee || owner?.name || null,
+        assignee: taskObject.assignee || taskObject.ownerName || owner?.name || owner?.id || null,
+        status: taskObject.status || 'pending',
+      };
+    })
+    .filter((task) => task.text);
+  const selectedTeamIds = uniqueStrings((input.selectedTeamIds?.length
+    ? input.selectedTeamIds
+    : team.map((agent) => agent.id)).filter(Boolean))
+    .filter((agentId) => team.some((agent) => agent.id === agentId));
+  return {
+    now,
+    projectId,
+    meetingId,
+    name,
+    brief: missionBrief || 'Run a generic AI product-team mission from kickoff through autonomous collaboration and deliverable proof.',
+    team,
+    selectedTeamIds,
+    tasks,
+    selectedLeaderId: input.selectedLeaderId || leader?.id || null,
+    reviewerId: input.reviewerId || reviewer?.id || null,
+    language: normalizeLanguage(input.language || 'en'),
+  };
+}
+
 export function addKickoffMeetingClarification({
   meeting = {},
   questionId,
@@ -6126,8 +6932,33 @@ function buildTranscriptIndex({ project = {}, messages = [] } = {}) {
     ...currentMessages.map((message) => message.channelId || 'main'),
     ...recoveredMessages.map((message) => message.channelId || 'main'),
   ]));
+  const channelMetadataById = new Map();
+  [...currentMessages, ...recoveredMessages].forEach((message) => {
+    const id = message.channelId || 'main';
+    if (!id || channelMetadataById.has(id)) return;
+    const transcriptChannel = message.transcriptChannel || {};
+    channelMetadataById.set(id, normalizeTranscriptChannel({
+      projectId: project.id,
+      channelId: id,
+      name: message.channelName || transcriptChannel.name,
+      description: transcriptChannel.description,
+      category: message.channelCategory || transcriptChannel.category,
+    }));
+  });
+  (project.transcriptChannelReceipts || []).forEach((receipt) => {
+    const id = receipt.channelId || '';
+    if (!id || channelMetadataById.has(id)) return;
+    channelMetadataById.set(id, normalizeTranscriptChannel({
+      projectId: project.id,
+      channelId: id,
+      name: receipt.name,
+      description: receipt.description,
+      category: receipt.category,
+    }));
+  });
 
   const channels = channelIds.map((channelId) => {
+    const metadata = channelMetadataById.get(channelId) || normalizeTranscriptChannel({ projectId: project.id, channelId });
     const channelMessages = currentMessages.filter((message) => (message.channelId || 'main') === channelId);
     const channelArchived = archivedMessages.filter((message) => (message.channelId || 'main') === channelId);
     const allProofMessages = [...channelMessages, ...channelArchived];
@@ -6137,6 +6968,7 @@ function buildTranscriptIndex({ project = {}, messages = [] } = {}) {
       sum + (message.visibility?.receiptCount || message.receiptCount || message.heardBy?.length || 0)
     ), 0);
     return {
+      ...metadata,
       channelId,
       messageCount: channelMessages.length,
       archivedProofCount: channelArchived.length,
@@ -6145,6 +6977,7 @@ function buildTranscriptIndex({ project = {}, messages = [] } = {}) {
       directTargetIds,
       receiptCoverage,
       proofIds: allProofMessages.map((message) => message.id).filter(Boolean),
+      apiPath: project.id ? `/projects/${project.id}/transcripts/${encodeURIComponent(channelId)}` : null,
     };
   });
 
@@ -6181,6 +7014,170 @@ function buildChannelTranscript({ project = {}, messages = [], channelId = 'main
       receiptCoverage: 0,
       proofIds: [],
     },
+  };
+}
+
+function isMeetingSummaryMessage(message = {}) {
+  const source = String(message.source || '').toLowerCase();
+  const type = String(message.type || '').toLowerCase();
+  const time = String(message.time || '').toLowerCase();
+  return Boolean(
+    message.meetingTurn
+    || type === 'meeting-turn'
+    || source.includes('meeting')
+    || time.includes('war room')
+    || time.includes('kickoff')
+  );
+}
+
+function meetingSummarySignalCounts(messages = []) {
+  const text = messages.map((message) => message.text || '').join('\n').toLowerCase();
+  const countMatches = (pattern) => (text.match(pattern) || []).length;
+  return {
+    decisionCount: countMatches(/\b(decision|decide|approved|confirm|confirmed|selected|leader|reviewer)\b/g),
+    actionCount: countMatches(/\b(action|next step|todo|task|owner|assign|deliver|submit|draft)\b/g),
+    riskCount: countMatches(/\b(risk|blocker|blocked|concern|dependency|missing|fail|failure)\b/g),
+    evidenceCount: countMatches(/\b(evidence|source|search|proof|citation|validate|validation)\b/g),
+  };
+}
+
+function buildMeetingSummaries({ project = {}, messages = [] } = {}) {
+  const projectId = project.id || null;
+  const transcriptIndex = buildTranscriptIndex({ project, messages });
+  const logs = project.logs || [];
+  const events = project.eventLedger || [];
+  const rows = (transcriptIndex.channels || []).map((channel) => {
+    const transcript = buildChannelTranscript({
+      project,
+      messages,
+      channelId: channel.channelId || 'main',
+    });
+    const allMessages = [
+      ...(transcript.messages || []),
+      ...(transcript.archivedProofMessages || []),
+    ];
+    const meetingMessages = allMessages.filter(isMeetingSummaryMessage);
+    if (!meetingMessages.length) return null;
+    const hasMeetingAnchor = meetingMessages.some((message) => (
+      message.meetingTurn
+      || String(message.type || '').toLowerCase() === 'meeting-turn'
+      || String(message.source || '').toLowerCase().includes('meeting')
+      || String(message.time || '').toLowerCase().includes('war room')
+    ));
+    if (!hasMeetingAnchor) return null;
+    const proofIds = uniqueStrings(meetingMessages.map((message) => message.id));
+    const proofIdSet = new Set(proofIds);
+    const timelineLogs = logs.filter((log) => (
+      proofIdSet.has(String(log.messageId || ''))
+      || proofIdSet.has(String(log.id || '').replace(/^log_/, ''))
+      || (
+        String(log.sourceChannelId || log.channelId || 'main') === String(channel.channelId || 'main')
+        && /meeting|kickoff/i.test(`${log.source || ''} ${log.eventType || ''}`)
+      )
+    ));
+    const timelineLogIds = uniqueStrings(timelineLogs.map((log) => log.id));
+    const eventRows = events.filter((event) => {
+      const evidenceIds = [
+        event.id,
+        ...(event.evidenceIds || []),
+        event.entityIds?.messageId,
+        event.entityIds?.logId,
+      ].filter(Boolean).map(String);
+      return evidenceIds.some((id) => proofIdSet.has(id) || timelineLogIds.includes(id));
+    });
+    const eventIds = uniqueStrings(eventRows.map((event) => event.id));
+    const participantAgentIds = uniqueStrings(meetingMessages.flatMap((message) => [
+      message.authorId,
+      message.meetingTurn?.speakerId,
+      ...(message.targetIds || []),
+      ...(message.directTargetIds || []),
+    ]));
+    const participantNames = uniqueStrings(meetingMessages.flatMap((message) => [
+      message.author,
+      message.meetingTurn?.speaker,
+      ...(message.targets || []),
+    ]));
+    const directorMessage = meetingMessages.find((message) => /director|manager/i.test(String(message.author || message.source || '')))
+      || meetingMessages[0];
+    const latestMessage = meetingMessages[meetingMessages.length - 1] || null;
+    const signals = meetingSummarySignalCounts(meetingMessages);
+    const rowBase = {
+      schemaVersion: 'meeting-summary-row/v1',
+      id: `meeting_summary_${projectId || 'project'}_${channel.channelId || 'main'}`,
+      projectId,
+      channelId: channel.channelId || 'main',
+      channelName: channel.name || channel.channelId || 'main',
+      source: 'backend-transcript-derived',
+      meetingKind: meetingMessages.some((message) => String(message.source || '').includes('kickoff') || String(message.time || '').toLowerCase().includes('kickoff'))
+        ? 'kickoff'
+        : 'roundtable',
+      topic: String(directorMessage?.text || project.currentObjective || project.objective || project.name || 'Project meeting').slice(0, 240),
+      latestText: String(latestMessage?.text || '').slice(0, 240),
+      messageCount: meetingMessages.length,
+      meetingTurnCount: meetingMessages.filter((message) => message.type === 'meeting-turn' || message.meetingTurn).length,
+      directorInputCount: meetingMessages.filter((message) => /director|manager/i.test(String(message.author || message.source || ''))).length,
+      participantAgentIds,
+      participantNames,
+      ...signals,
+      proofIds,
+      timelineLogIds,
+      eventIds,
+      transcriptRoute: projectId ? `/projects/${projectId}/transcripts/${encodeURIComponent(channel.channelId || 'main')}` : null,
+      timelineRoute: projectId ? `/projects/${projectId}/timeline` : null,
+      eventLedgerRoute: projectId ? `/projects/${projectId}/events` : null,
+      readyForLocalMvp: proofIds.length > 0 && timelineLogIds.length > 0,
+      readyForProduction: false,
+    };
+    return {
+      ...rowBase,
+      checksum: persistenceChecksum(rowBase),
+    };
+  }).filter(Boolean);
+  const summary = {
+    rowCount: rows.length,
+    readyCount: rows.filter((row) => row.readyForLocalMvp).length,
+    meetingMessageCount: rows.reduce((sum, row) => sum + (row.messageCount || 0), 0),
+    meetingTurnCount: rows.reduce((sum, row) => sum + (row.meetingTurnCount || 0), 0),
+    participantCount: uniqueStrings(rows.flatMap((row) => row.participantAgentIds || [])).length,
+    proofIdCount: uniqueStrings(rows.flatMap((row) => row.proofIds || [])).length,
+    timelineLogIdCount: uniqueStrings(rows.flatMap((row) => row.timelineLogIds || [])).length,
+    eventIdCount: uniqueStrings(rows.flatMap((row) => row.eventIds || [])).length,
+    readyForLocalMvp: rows.length > 0 && rows.every((row) => row.readyForLocalMvp),
+    readyForProduction: false,
+  };
+  const model = {
+    schemaVersion: 'meeting-summaries/v1',
+    projectId,
+    status: summary.readyForLocalMvp ? 'meeting-summaries-ready' : 'meeting-summary-proof-missing',
+    source: 'backend-transcript-derived',
+    rows,
+    summary,
+    backendRoutes: {
+      meetingSummaries: projectId ? `/projects/${projectId}/meeting-summaries` : null,
+      transcripts: projectId ? `/projects/${projectId}/transcripts` : null,
+      mainTranscript: projectId ? `/projects/${projectId}/transcripts/main` : null,
+      timeline: projectId ? `/projects/${projectId}/timeline` : null,
+      events: projectId ? `/projects/${projectId}/events` : null,
+      managerDashboard: projectId ? `/projects/${projectId}/manager-dashboard` : null,
+      readinessProofMap: projectId ? `/projects/${projectId}/readiness-proof-map` : null,
+    },
+    productionBlockers: [
+      'summary provenance approval',
+      'transcript retention policy',
+      'human review policy for customer-facing summaries',
+      'managed audit storage',
+    ],
+    readyForLocalMvp: summary.readyForLocalMvp,
+    readyForProduction: false,
+  };
+  return {
+    ...model,
+    checksum: persistenceChecksum({
+      schemaVersion: model.schemaVersion,
+      projectId,
+      rows: rows.map((row) => [row.id, row.checksum, row.readyForLocalMvp]),
+      summary,
+    }),
   };
 }
 
@@ -6451,6 +7448,607 @@ function updateProjectMembershipPolicy(project = {}, {
   };
 }
 
+function buildProjectSettingsReadModel(project = {}) {
+  const settings = project.projectSettings || {};
+  const explicitLanguage = project.language || settings.language || null;
+  const privacyPolicy = normalizeProjectPrivacyPolicy(undefined, settings.privacyPolicy);
+  const providerBudgetPolicy = normalizeProjectProviderBudgetPolicy(undefined, settings.providerBudgetPolicy);
+  const workspacePolicy = normalizeProjectWorkspacePolicy(undefined, settings.workspacePolicy);
+  const toolGrantPolicy = normalizeProjectToolGrantPolicy(undefined, settings.toolGrantPolicy);
+  const integrationCapabilities = buildProjectIntegrationCapabilities(project);
+  const workspaceCapabilities = buildProjectWorkspaceCapabilities(project);
+  return {
+    schemaVersion: 'project-settings/v1',
+    projectId: project.id || null,
+    language: explicitLanguage,
+    effectiveLanguage: normalizeLanguage(explicitLanguage || 'en'),
+    privacyPolicy,
+    providerBudgetPolicy,
+    workspacePolicy,
+    toolGrantPolicy,
+    integrationCapabilities,
+    workspaceCapabilities,
+    revision: settings.revision || 0,
+    updatedAt: settings.updatedAt || null,
+    updatedBy: settings.updatedBy || null,
+    source: settings.source || null,
+    checksum: settings.checksum || null,
+    auditCount: project.projectSettingsAudit?.length || 0,
+    backendRoutes: {
+      projectSettings: project.id ? `/projects/${project.id}/project-settings` : null,
+      project: project.id ? `/projects/${project.id}` : null,
+      managerDashboard: project.id ? `/projects/${project.id}/manager-dashboard` : null,
+      managerReadyPackage: project.id ? `/projects/${project.id}/manager-ready-package` : null,
+      managerFlowGraph: project.id ? `/projects/${project.id}/manager-flow-graph` : null,
+    },
+  };
+}
+
+function buildProjectWorkspaceCapabilities(project = {}) {
+  const projectId = project.id || project.projectSettings?.projectId || null;
+  const route = (pathTemplate = '') => (
+    projectId && pathTemplate.startsWith('/projects/')
+      ? pathTemplate.replace(':projectId', encodeURIComponent(projectId))
+      : pathTemplate
+  );
+  const rows = PROJECT_WORKSPACE_CAPABILITY_ROWS.map((item) => ({
+    ...item,
+    schemaVersion: 'project-workspace-capability-row/v1',
+    requiredBackendRoute: route(item.requiredBackendRoute),
+    editable: Object.prototype.hasOwnProperty.call(item, 'editable')
+      ? item.editable === true
+      : item.status === 'backend-backed' || item.status === 'browser-local',
+    readyForLocalMvp: item.status === 'backend-backed' || item.status === 'browser-local',
+    readyForPrivatePilot: item.status === 'backend-backed',
+    readyForProduction: false,
+  }));
+  const backendBackedRows = rows.filter((row) => row.status === 'backend-backed');
+  const backendRequiredRows = rows.filter((row) => row.status === 'backend-required');
+  const browserLocalRows = rows.filter((row) => row.status === 'browser-local');
+  const capabilities = {
+    schemaVersion: 'project-workspace-capabilities/v1',
+    projectId,
+    status: backendRequiredRows.length ? 'workspace-backend-requirements-open' : 'workspace-capabilities-ready',
+    rows,
+    summary: {
+      rowCount: rows.length,
+      backendBackedCount: backendBackedRows.length,
+      backendRequiredCount: backendRequiredRows.length,
+      browserLocalCount: browserLocalRows.length,
+      editableCount: rows.filter((row) => row.editable).length,
+      readyForLocalMvp: backendBackedRows.length >= 1,
+      readyForPrivatePilot: false,
+      readyForProduction: false,
+    },
+    backendRoutes: {
+      projectSettings: projectId ? `/projects/${projectId}/project-settings` : null,
+      project: projectId ? `/projects/${projectId}` : null,
+      transcripts: projectId ? `/projects/${projectId}/transcripts` : null,
+      meetingSummaries: projectId ? `/projects/${projectId}/meeting-summaries` : null,
+      runtimeContracts: projectId ? `/projects/${projectId}/runtime-contracts` : null,
+      persistenceAdapterPlan: projectId ? `/projects/${projectId}/persistence-adapter-plan` : null,
+      memoryReadiness: projectId ? `/projects/${projectId}/memory-readiness` : null,
+      evidenceIndexReadiness: projectId ? `/projects/${projectId}/evidence-index-readiness` : null,
+    },
+    productionBlockers: uniqueStrings(rows.map((row) => row.productionBlocker).filter(Boolean)),
+  };
+  return {
+    ...capabilities,
+    checksum: persistenceChecksum({
+      schemaVersion: capabilities.schemaVersion,
+      projectId,
+      rows: rows.map((row) => [row.id, row.status, row.requiredBackendRoute, row.readyForProduction]),
+    }),
+  };
+}
+
+function buildProjectIntegrationCapabilities(project = {}) {
+  const projectId = project.id || project.projectSettings?.projectId || null;
+  const route = (pathTemplate = '') => (
+    projectId ? pathTemplate.replace(':projectId', encodeURIComponent(projectId)) : pathTemplate
+  );
+  const rows = PROJECT_INTEGRATION_CAPABILITY_ROWS.map((item) => ({
+    ...item,
+    schemaVersion: 'project-integration-capability-row/v1',
+    requiredBackendRoute: route(item.requiredBackendRoute),
+    editable: Object.prototype.hasOwnProperty.call(item, 'editable')
+      ? item.editable === true
+      : item.status === 'backend-backed',
+    readyForLocalMvp: item.status === 'backend-backed',
+    readyForPrivatePilot: item.status === 'backend-backed',
+    readyForProduction: false,
+  }));
+  const backendBackedRows = rows.filter((row) => row.status === 'backend-backed');
+  const backendRequiredRows = rows.filter((row) => row.status === 'backend-required');
+  const capabilities = {
+    schemaVersion: 'project-integration-capabilities/v1',
+    projectId,
+    status: backendRequiredRows.length ? 'integration-backend-requirements-open' : 'integration-local-contracts-ready-production-blocked',
+    rows,
+    summary: {
+      rowCount: rows.length,
+      backendBackedCount: backendBackedRows.length,
+      backendRequiredCount: backendRequiredRows.length,
+      editableCount: rows.filter((row) => row.editable).length,
+      readyForLocalMvp: backendBackedRows.length >= 2,
+      readyForPrivatePilot: false,
+      readyForProduction: false,
+    },
+    backendRoutes: {
+      projectSettings: projectId ? `/projects/${projectId}/project-settings` : null,
+      settingsIntegrationReadiness: projectId ? `/projects/${projectId}/settings-integration-readiness` : null,
+      providerReadiness: projectId ? `/projects/${projectId}/provider-readiness` : null,
+      providerControlledRun: projectId ? `/projects/${projectId}/provider-controlled-run` : null,
+      evidenceIndexReadiness: projectId ? `/projects/${projectId}/evidence-index-readiness` : null,
+      adapterGatewayPreflight: projectId ? `/projects/${projectId}/adapter-gateway-preflight` : null,
+      budgetAlertReadiness: projectId ? `/projects/${projectId}/budget-alert-readiness` : null,
+      errorReportingReadiness: projectId ? `/projects/${projectId}/error-reporting-readiness` : null,
+      operationsReadiness: projectId ? `/projects/${projectId}/operations-readiness` : null,
+    },
+    productionBlockers: uniqueStrings(rows.map((row) => row.productionBlocker).filter(Boolean)),
+  };
+  return {
+    ...capabilities,
+    checksum: persistenceChecksum({
+      schemaVersion: capabilities.schemaVersion,
+      projectId,
+      rows: rows.map((row) => [row.id, row.status, row.requiredBackendRoute, row.readyForProduction]),
+    }),
+  };
+}
+
+function buildSettingsIntegrationReadinessSnapshot({
+  project = {},
+  projectSettings,
+  providerReadiness = {},
+  adapterGatewayPreflight = {},
+  evidenceIndexReadiness = {},
+  budgetAlertReadiness = {},
+  errorReportingReadiness = {},
+  now = nowIso(),
+} = {}) {
+  const projectSettingsReadModel = projectSettings?.schemaVersion === 'project-settings/v1'
+    ? projectSettings
+    : buildProjectSettingsReadModel(project);
+  const capabilities = projectSettingsReadModel.integrationCapabilities || buildProjectIntegrationCapabilities(project);
+  const projectId = project.id || projectSettingsReadModel.projectId || capabilities.projectId || null;
+  const readinessByKey = {
+    projectSettings: {
+      schemaVersion: projectSettingsReadModel.schemaVersion,
+      status: 'project-settings-ready',
+      readyForLocalMvp: Boolean(projectId),
+      readyForProduction: false,
+      checksum: projectSettingsReadModel.checksum || capabilities.checksum || null,
+    },
+    providerReadiness,
+    adapterGatewayPreflight,
+    evidenceIndexReadiness,
+    budgetAlertReadiness,
+    errorReportingReadiness,
+  };
+  const currentReadyFor = (row, source) => {
+    if (row.id === 'provider-budget-policy') return Boolean(projectSettingsReadModel.providerBudgetPolicy?.schemaVersion);
+    if (row.id === 'agent-tool-grant-policy') return Boolean(projectSettingsReadModel.toolGrantPolicy?.schemaVersion);
+    if (row.id === 'vector-store') return Boolean(source.readyForLocalMvp);
+    if (row.id === 'proxy-webhook') return Boolean(source.privateGatewayReady);
+    if (row.id === 'mcp-tools') return source.schemaVersion === 'provider-readiness/v1';
+    if (row.id === 'budget-alerts') return Boolean(source.readyForLocalMvp);
+    if (row.id === 'error-reporting') return Boolean(source.readyForLocalMvp);
+    return Boolean(source.readyForLocalMvp || row.status === 'backend-backed');
+  };
+  const rows = (capabilities.rows || []).map((row) => {
+    const source = readinessByKey[row.backendRouteKey] || {};
+    const routeReady = Boolean(source.schemaVersion);
+    const currentReady = routeReady && currentReadyFor(row, source);
+    const failedLocalCount = Number(
+      source.summary?.failedLocalGateCount
+      || source.summary?.failedGateCount
+      || source.summary?.failedBlockerGateCount
+      || 0
+    );
+    const blockedCount = Number(
+      source.summary?.blockedCount
+      || source.summary?.productionBlockerCount
+      || 0
+    );
+    return {
+      schemaVersion: 'settings-integration-readiness-row/v1',
+      id: row.id,
+      label: row.label,
+      category: row.category || 'integration',
+      capabilityStatus: row.status,
+      editable: row.editable === true,
+      requiredBackendRoute: row.requiredBackendRoute,
+      routeReady,
+      currentStatus: source.status || (routeReady ? 'route-readable' : 'backend-route-missing'),
+      currentReady,
+      currentReadyReason: currentReady
+        ? 'backend contract is readable for this Settings integration row'
+        : routeReady
+          ? 'backend contract is readable but the underlying local readiness gate is not complete'
+          : 'backend contract route has not produced a readable model',
+      readinessSchemaVersion: source.schemaVersion || null,
+      readinessChecksum: source.checksum || null,
+      failedLocalCount,
+      blockedCount,
+      readyForProduction: false,
+      productionBlocker: row.productionBlocker || 'managed production controls',
+    };
+  });
+  const routeReadyCount = rows.filter((row) => row.routeReady).length;
+  const currentReadyCount = rows.filter((row) => row.currentReady).length;
+  const actionRequiredCount = rows.filter((row) => row.routeReady && !row.currentReady).length;
+  const missingRouteCount = rows.filter((row) => !row.routeReady).length;
+  const snapshot = {
+    schemaVersion: 'settings-integration-readiness/v1',
+    projectId,
+    generatedAt: now,
+    status: missingRouteCount
+      ? 'integration-backend-route-missing'
+      : actionRequiredCount
+        ? 'integration-action-required'
+        : 'integration-local-ready-production-blocked',
+    readyForSettingsIntegrationsPanel: Boolean(rows.length && missingRouteCount === 0),
+    readyForLocalMvp: Boolean(rows.length && missingRouteCount === 0 && actionRequiredCount === 0),
+    readyForPrivatePilot: false,
+    readyForProduction: false,
+    capabilities: {
+      schemaVersion: capabilities.schemaVersion,
+      status: capabilities.status,
+      checksum: capabilities.checksum || null,
+      summary: capabilities.summary || {},
+    },
+    rows,
+    backendRoutes: {
+      settingsIntegrationReadiness: projectId ? `/projects/${projectId}/settings-integration-readiness` : null,
+      projectSettings: projectId ? `/projects/${projectId}/project-settings` : null,
+      providerReadiness: projectId ? `/projects/${projectId}/provider-readiness` : null,
+      adapterGatewayPreflight: projectId ? `/projects/${projectId}/adapter-gateway-preflight` : null,
+      evidenceIndexReadiness: projectId ? `/projects/${projectId}/evidence-index-readiness` : null,
+      budgetAlertReadiness: projectId ? `/projects/${projectId}/budget-alert-readiness` : null,
+      errorReportingReadiness: projectId ? `/projects/${projectId}/error-reporting-readiness` : null,
+      managerReadyPackage: projectId ? `/projects/${projectId}/manager-ready-package` : null,
+      readinessProofMap: projectId ? `/projects/${projectId}/readiness-proof-map` : null,
+    },
+    summary: {
+      rowCount: rows.length,
+      routeReadyCount,
+      currentReadyCount,
+      actionRequiredCount,
+      missingRouteCount,
+      editableCount: rows.filter((row) => row.editable).length,
+      readOnlyRouteCount: rows.filter((row) => !row.editable && row.requiredBackendRoute).length,
+      failedLocalCount: rows.reduce((sum, row) => sum + (row.failedLocalCount || 0), 0),
+      blockedCount: rows.reduce((sum, row) => sum + (row.blockedCount || 0), 0),
+      readyForSettingsIntegrationsPanel: Boolean(rows.length && missingRouteCount === 0),
+      readyForLocalMvp: Boolean(rows.length && missingRouteCount === 0 && actionRequiredCount === 0),
+      readyForProduction: false,
+    },
+    validationCommands: [
+      'npm run agents:settings-integration-readiness',
+      'npm run agents:project-settings:integrations',
+      'npm run agents:evidence-index-readiness',
+      'npm run agents:budget-alert-readiness',
+      'npm run agents:error-reporting-readiness',
+    ],
+    productionBlockers: uniqueStrings(rows.map((row) => row.productionBlocker).filter(Boolean)),
+  };
+  snapshot.checksum = persistenceChecksum({
+    schemaVersion: snapshot.schemaVersion,
+    projectId,
+    rows: rows.map((row) => [
+      row.id,
+      row.routeReady,
+      row.currentReady,
+      row.currentStatus,
+      row.readinessChecksum,
+    ]),
+  });
+  return snapshot;
+}
+
+function normalizeProjectPrivacyPolicy(input, previous = {}) {
+  const base = previous?.schemaVersion === 'project-privacy-policy/v1'
+    ? previous
+    : {
+        schemaVersion: 'project-privacy-policy/v1',
+        retentionMode: 'project-local',
+        modelTrainingAllowed: false,
+        providerLogMode: 'redacted',
+        evidenceExportRequiresApproval: true,
+        readyForProduction: false,
+      };
+  if (input === undefined) return base;
+  const value = input && typeof input === 'object' ? input : {};
+  const retentionMode = PROJECT_PRIVACY_RETENTION_MODES.has(value.retentionMode)
+    ? value.retentionMode
+    : base.retentionMode;
+  const providerLogMode = PROJECT_PRIVACY_PROVIDER_LOG_MODES.has(value.providerLogMode)
+    ? value.providerLogMode
+    : base.providerLogMode;
+  return {
+    schemaVersion: 'project-privacy-policy/v1',
+    retentionMode,
+    modelTrainingAllowed: value.modelTrainingAllowed === true,
+    providerLogMode,
+    evidenceExportRequiresApproval: value.evidenceExportRequiresApproval !== false,
+    readyForProduction: false,
+  };
+}
+
+function normalizeProjectProviderBudgetPolicy(input, previous = {}) {
+  const base = previous?.schemaVersion === 'project-provider-budget-policy/v1'
+    ? previous
+    : {
+        schemaVersion: 'project-provider-budget-policy/v1',
+        dailyBudgetCents: 0,
+        maxRequestsPerProjectHour: 0,
+        currency: 'USD',
+        enforcementMode: 'enforced',
+        readyForProduction: false,
+      };
+  if (input === undefined) return base;
+  const value = input && typeof input === 'object' ? input : {};
+  const dailyBudgetCents = Math.max(0, Math.round(Number(value.dailyBudgetCents ?? base.dailyBudgetCents) || 0));
+  const maxRequestsPerProjectHour = Math.max(0, Math.round(Number(value.maxRequestsPerProjectHour ?? base.maxRequestsPerProjectHour) || 0));
+  const currency = PROJECT_PROVIDER_BUDGET_CURRENCIES.has(String(value.currency || base.currency || 'USD').toUpperCase())
+    ? String(value.currency || base.currency || 'USD').toUpperCase()
+    : 'USD';
+  return {
+    schemaVersion: 'project-provider-budget-policy/v1',
+    dailyBudgetCents,
+    maxRequestsPerProjectHour,
+    currency,
+    enforcementMode: 'enforced',
+    readyForProduction: false,
+  };
+}
+
+function normalizeProjectWorkspacePolicy(input, previous = {}) {
+  const base = previous?.schemaVersion === 'project-workspace-policy/v1'
+    ? previous
+    : {
+        schemaVersion: 'project-workspace-policy/v1',
+        interfaceDensity: 'comfortable',
+        defaultVisibility: 'team',
+        autosaveCadenceSeconds: 60,
+        readyForProduction: false,
+      };
+  if (input === undefined) return base;
+  const value = input && typeof input === 'object' ? input : {};
+  const interfaceDensity = PROJECT_WORKSPACE_INTERFACE_DENSITIES.has(value.interfaceDensity)
+    ? value.interfaceDensity
+    : base.interfaceDensity;
+  const defaultVisibility = PROJECT_WORKSPACE_DEFAULT_VISIBILITIES.has(value.defaultVisibility)
+    ? value.defaultVisibility
+    : base.defaultVisibility;
+  const requestedCadence = Number(value.autosaveCadenceSeconds ?? base.autosaveCadenceSeconds);
+  const autosaveCadenceSeconds = PROJECT_WORKSPACE_AUTOSAVE_CADENCES_SECONDS.has(requestedCadence)
+    ? requestedCadence
+    : base.autosaveCadenceSeconds;
+  return {
+    schemaVersion: 'project-workspace-policy/v1',
+    interfaceDensity,
+    defaultVisibility,
+    autosaveCadenceSeconds,
+    readyForProduction: false,
+    productionBlockers: [
+      'managed workspace policy storage',
+      'cross-device preference sync',
+      'managed persistence conflict policy',
+    ],
+  };
+}
+
+function normalizeProjectToolGrantList(value, fallback = PROJECT_TOOL_GRANTS) {
+  if (value === undefined) return [...fallback];
+  const items = Array.isArray(value)
+    ? value
+    : String(value || '').split(',');
+  return uniqueStrings(items
+    .map((item) => String(item || '').trim())
+    .filter((item) => PROJECT_TOOL_GRANT_SET.has(item)));
+}
+
+function normalizeProjectAgentToolGrantMap(value = {}) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  return Object.fromEntries(Object.entries(value)
+    .map(([agentId, grants]) => [
+      String(agentId || '').trim(),
+      normalizeProjectToolGrantList(grants, []),
+    ])
+    .filter(([agentId]) => agentId));
+}
+
+function normalizeProjectToolGrantPolicy(input, previous = {}) {
+  const base = previous?.schemaVersion === 'project-tool-grant-policy/v1'
+    ? previous
+    : {
+        schemaVersion: 'project-tool-grant-policy/v1',
+        defaultToolGrants: [...PROJECT_TOOL_GRANTS],
+        agentToolGrants: {},
+        enforcementMode: 'enforced',
+        readyForProduction: false,
+      };
+  if (input === undefined) return base;
+  const value = input && typeof input === 'object' ? input : {};
+  const defaultToolGrants = Object.prototype.hasOwnProperty.call(value, 'defaultToolGrants')
+    ? normalizeProjectToolGrantList(value.defaultToolGrants, [])
+    : normalizeProjectToolGrantList(base.defaultToolGrants, PROJECT_TOOL_GRANTS);
+  const agentToolGrants = Object.prototype.hasOwnProperty.call(value, 'agentToolGrants')
+    ? normalizeProjectAgentToolGrantMap(value.agentToolGrants)
+    : normalizeProjectAgentToolGrantMap(base.agentToolGrants);
+  return {
+    schemaVersion: 'project-tool-grant-policy/v1',
+    defaultToolGrants,
+    agentToolGrants,
+    enforcementMode: 'enforced',
+    readyForProduction: false,
+    productionBlockers: [
+      'managed runtime identity',
+      'task-scoped authorization',
+      'centralized provider audit',
+    ],
+  };
+}
+
+function updateProjectSettings(project = {}, input = {}) {
+  const {
+    language,
+    privacyPolicy,
+    providerBudgetPolicy,
+    workspacePolicy,
+    toolGrantPolicy,
+    now = nowIso(),
+    updatedBy = '',
+    source = 'project-settings-api',
+  } = input;
+  const languageProvided = Object.prototype.hasOwnProperty.call(input, 'language');
+  const toolGrantPolicyProvided = Object.prototype.hasOwnProperty.call(input, 'toolGrantPolicy');
+  const previousLanguage = project.language || project.projectSettings?.language || null;
+  const inheritsLanguage = languageProvided && (language === undefined || language === null || language === '' || language === 'inherit');
+  const normalizedLanguage = languageProvided
+    ? (inheritsLanguage ? null : normalizeLanguage(language))
+    : (previousLanguage ? normalizeLanguage(previousLanguage) : null);
+  const timestamp = Date.parse(now) || Date.now();
+  const nextRevision = (project.projectSettings?.revision || 0) + 1;
+  const normalizedPrivacyPolicy = normalizeProjectPrivacyPolicy(privacyPolicy, project.projectSettings?.privacyPolicy);
+  const normalizedProviderBudgetPolicy = normalizeProjectProviderBudgetPolicy(providerBudgetPolicy, project.projectSettings?.providerBudgetPolicy);
+  const normalizedWorkspacePolicy = normalizeProjectWorkspacePolicy(workspacePolicy, project.projectSettings?.workspacePolicy);
+  const normalizedToolGrantPolicy = toolGrantPolicyProvided || project.projectSettings?.toolGrantPolicy
+    ? normalizeProjectToolGrantPolicy(toolGrantPolicy, project.projectSettings?.toolGrantPolicy)
+    : null;
+  const integrationCapabilities = buildProjectIntegrationCapabilities({
+    ...project,
+    projectSettings: {
+      ...(project.projectSettings || {}),
+      projectId: project.id,
+    },
+  });
+  const workspaceCapabilities = buildProjectWorkspaceCapabilities({
+    ...project,
+    projectSettings: {
+      ...(project.projectSettings || {}),
+      projectId: project.id,
+    },
+  });
+  const baseSettings = {
+    schemaVersion: 'project-settings/v1',
+    projectId: project.id,
+    language: normalizedLanguage,
+    effectiveLanguage: normalizeLanguage(normalizedLanguage || 'en'),
+    privacyPolicy: normalizedPrivacyPolicy,
+    providerBudgetPolicy: normalizedProviderBudgetPolicy,
+    workspacePolicy: normalizedWorkspacePolicy,
+    ...(normalizedToolGrantPolicy ? { toolGrantPolicy: normalizedToolGrantPolicy } : {}),
+    integrationCapabilities,
+    workspaceCapabilities,
+    revision: nextRevision,
+    updatedAt: now,
+    updatedBy: updatedBy || 'manager',
+    source: source || 'project-settings-api',
+  };
+  const projectSettings = {
+    ...baseSettings,
+    checksum: persistenceChecksum(baseSettings),
+  };
+  const log = {
+    id: `log_project_settings_${project.id}_${timestamp}`,
+    time: now,
+    agent: 'Project Settings',
+    actor: updatedBy || 'Project Settings',
+    eventType: 'project-settings-updated',
+    source: 'project-settings',
+    channelId: 'manager-dashboard',
+    log: `Project settings revision ${nextRevision} updated language to ${normalizedLanguage || 'inherit'}, privacy policy to ${normalizedPrivacyPolicy.retentionMode}/${normalizedPrivacyPolicy.providerLogMode}, provider budget to ${normalizedProviderBudgetPolicy.dailyBudgetCents} cents/${normalizedProviderBudgetPolicy.maxRequestsPerProjectHour || 'unlimited'} hourly requests, workspace policy to ${normalizedWorkspacePolicy.interfaceDensity}/${normalizedWorkspacePolicy.defaultVisibility}/${normalizedWorkspacePolicy.autosaveCadenceSeconds}s, and tool grants to ${normalizedToolGrantPolicy?.defaultToolGrants?.length ?? 'default'} default grant(s) for ${project.name || project.id}.`,
+    projectSettingsRevision: nextRevision,
+    language: normalizedLanguage,
+    effectiveLanguage: projectSettings.effectiveLanguage,
+    privacyPolicy: normalizedPrivacyPolicy,
+    providerBudgetPolicy: normalizedProviderBudgetPolicy,
+    workspacePolicy: normalizedWorkspacePolicy,
+    toolGrantPolicy: normalizedToolGrantPolicy,
+    integrationCapabilities,
+    workspaceCapabilities,
+  };
+  const eventId = `evt_project_settings_${project.id}_${timestamp}`;
+  const auditEntry = {
+    id: `project_settings_audit_${project.id}_${timestamp}`,
+    projectId: project.id,
+    revision: nextRevision,
+    language: normalizedLanguage,
+    effectiveLanguage: projectSettings.effectiveLanguage,
+    privacyPolicy: normalizedPrivacyPolicy,
+    providerBudgetPolicy: normalizedProviderBudgetPolicy,
+    workspacePolicy: normalizedWorkspacePolicy,
+    toolGrantPolicy: normalizedToolGrantPolicy,
+    integrationCapabilities,
+    workspaceCapabilities,
+    updatedAt: now,
+    updatedBy: projectSettings.updatedBy,
+    source: projectSettings.source,
+    logId: log.id,
+    eventId,
+    checksum: projectSettings.checksum,
+  };
+  const projectPatch = {
+    ...project,
+    projectSettings,
+    projectSettingsAudit: [auditEntry, ...(project.projectSettingsAudit || [])].slice(0, PROJECT_SETTINGS_AUDIT_LIMIT),
+    logs: [log, ...(project.logs || [])],
+  };
+  if (normalizedLanguage) {
+    projectPatch.language = normalizedLanguage;
+  } else {
+    delete projectPatch.language;
+  }
+  const updatedProject = appendProjectEvents(projectPatch, [
+    createProjectLedgerEvent({
+      id: eventId,
+      type: 'project-settings-updated',
+      time: now,
+      actor: `Project Settings:${projectSettings.updatedBy}`,
+      summary: log.log,
+      source: 'project-settings',
+      channelId: 'manager-dashboard',
+      evidenceIds: [log.id, auditEntry.id],
+      entityIds: {
+        projectId: project.id,
+        projectSettingsRevision: nextRevision,
+        projectSettingsAuditId: auditEntry.id,
+      },
+      payload: {
+        language: normalizedLanguage,
+        effectiveLanguage: projectSettings.effectiveLanguage,
+        privacyPolicy: normalizedPrivacyPolicy,
+        providerBudgetPolicy: normalizedProviderBudgetPolicy,
+        workspacePolicy: normalizedWorkspacePolicy,
+        toolGrantPolicy: normalizedToolGrantPolicy,
+        integrationCapabilities: {
+          schemaVersion: integrationCapabilities.schemaVersion,
+          status: integrationCapabilities.status,
+          summary: integrationCapabilities.summary,
+          checksum: integrationCapabilities.checksum,
+        },
+        workspaceCapabilities: {
+          schemaVersion: workspaceCapabilities.schemaVersion,
+          status: workspaceCapabilities.status,
+          summary: workspaceCapabilities.summary,
+          checksum: workspaceCapabilities.checksum,
+        },
+        revision: nextRevision,
+        source: projectSettings.source,
+      },
+    }),
+  ]);
+  return {
+    project: updatedProject,
+    projectSettings: buildProjectSettingsReadModel(updatedProject),
+    projectSettingsAuditEntry: auditEntry,
+    log,
+  };
+}
+
 function slugPart(value = 'item') {
   const slug = String(value || 'item')
     .toLowerCase()
@@ -6549,10 +8147,15 @@ function buildAgentWorkerEvidenceSearchPayload({
   sources = [],
   findings = [],
   confidence = 'high',
+  provider = '',
+  searchMode = '',
+  providerReceipt = null,
 } = {}) {
   const taskText = task?.text || task?.title || task?.id || 'completed Agent task';
   const resolvedQuery = query || taskText;
   const resolvedPurpose = purpose || `Collect and package evidence for ${taskText}.`;
+  const resolvedProvider = provider || 'agent-autonomous-worker';
+  const resolvedSearchMode = searchMode || 'worker-local-evidence-search';
   const defaultSources = [
     {
       id: `worker_task_${task?.id || cycleId || 'task'}`,
@@ -6594,23 +8197,23 @@ function buildAgentWorkerEvidenceSearchPayload({
   return {
     query: resolvedQuery,
     purpose: resolvedPurpose,
-    provider: 'agent-autonomous-worker',
-    searchMode: 'worker-local-evidence-search',
-    providerReceipt: {
+    provider: resolvedProvider,
+    searchMode: resolvedSearchMode,
+    providerReceipt: providerReceipt || {
       providerResult: {
         ok: true,
-        provider: 'agent-autonomous-worker',
-        searchMode: 'worker-local-evidence-search',
+        provider: resolvedProvider,
+        searchMode: resolvedSearchMode,
         responseId: `worker_receipt_${cycleId || Date.parse(progressLog?.time || '') || 'cycle'}`,
         sources: resolvedSources,
         findings: resolvedFindings,
         confidence,
       },
       providerStatus: {
-        provider: 'agent-autonomous-worker',
+        provider: resolvedProvider,
         configured: true,
         enabled: true,
-        localRuntime: true,
+        localRuntime: resolvedProvider === 'agent-autonomous-worker',
       },
       policyDecision: {
         allowed: true,
@@ -6963,6 +8566,7 @@ function buildEvidenceProviderReceipt({
   policyDecision = {},
   retry = null,
   circuitBreaker = null,
+  providerVaultBinding = null,
   request = {},
   startedAt = nowIso(),
   completedAt = nowIso(),
@@ -7022,6 +8626,9 @@ function buildEvidenceProviderReceipt({
       failureCount: circuitBreaker.failureCount || 0,
       cooldownUntil: circuitBreaker.cooldownUntil || null,
     } : null,
+    providerVaultBinding: providerVaultBinding ? redactSensitiveObject(providerVaultBinding) : null,
+    providerVaultBindingChecksum: providerVaultBinding?.checksum || providerVaultBinding?.snapshotChecksum || null,
+    providerVaultBindingRoute: providerVaultBinding?.route || null,
     sourceCount: safeResult.sourceCount,
     findingCount: safeResult.findingCount,
     confidence: safeResult.confidence,
@@ -7048,6 +8655,7 @@ function buildEvidenceProviderReceipt({
       policyDecision: receipt.policyDecision,
       retry: receipt.retry,
       circuitBreaker: receipt.circuitBreaker,
+      providerVaultBindingChecksum: receipt.providerVaultBindingChecksum,
       sourceCount: receipt.sourceCount,
       status: receipt.status,
       startedAt,
@@ -7200,6 +8808,8 @@ function buildReadinessProofMap({ project = {}, messages = [] } = {}) {
   const tasks = project.tasks || [];
   const changes = project.changeLedger || [];
   const peerHandoffs = project.peerHandoffs || [];
+  const team = project.team || [];
+  const agentNameById = Object.fromEntries(team.map((agent) => [agent.id, agent.name]));
   const agentStates = project.agentStates || {};
   const charterEvidence = project.kickoffCharter?.evidence || {};
   const transcriptIndex = buildTranscriptIndex({ project, messages });
@@ -7218,6 +8828,9 @@ function buildReadinessProofMap({ project = {}, messages = [] } = {}) {
     agentIds: uniqueStrings([run.agentId].filter(Boolean)),
     selectedAction: run.selectedAction || null,
     strategyDecisionId: run.strategyDecisionId || null,
+    autonomousActionDecisionId: run.autonomousActionDecisionId || run.autonomousActionDecision?.id || null,
+    autonomousActionDecisionChecksum: run.autonomousActionDecisionChecksum || run.autonomousActionDecision?.checksum || null,
+    autonomousActionDecisionAction: run.autonomousActionDecisionAction || run.autonomousActionDecision?.action || null,
     delegatedRunApiPath: run.delegatedRunApiPath || null,
     checksum: run.checksum || null,
   }));
@@ -7237,11 +8850,161 @@ function buildReadinessProofMap({ project = {}, messages = [] } = {}) {
     actionLane: run.actionLane || null,
     delegatedRunKind: run.delegatedRunKind || null,
     delegatedRunApiPath: run.delegatedRunApiPath || null,
+    providerEvidenceSearch: run.providerEvidenceSearch || null,
+    evidenceSearchId: run.evidenceSearchId || run.providerEvidenceSearch?.evidenceSearchId || null,
+    evidenceSearchRoute: projectId && (run.evidenceSearchId || run.providerEvidenceSearch?.evidenceSearchId)
+      ? `/projects/${projectId}/evidence-searches/${encodeURIComponent(run.evidenceSearchId || run.providerEvidenceSearch.evidenceSearchId)}`
+      : null,
+    providerReceiptId: run.providerReceiptId || run.providerEvidenceSearch?.providerReceiptId || null,
+    providerUsageId: run.providerUsageId || run.providerEvidenceSearch?.providerUsageId || null,
     autopilotTargetStageId: run.autopilotTargetStageId || null,
     autopilotTargetControl: run.autopilotTargetControl || null,
     autopilotTargetSelection: run.autopilotTargetSelection || null,
     checksum: run.checksum || null,
   }));
+  const collaborationIntentRunRoutes = (project.collaborationIntentRunLedger || []).slice(0, 12).map((run) => ({
+    id: run.id,
+    projectId,
+    proofKind: 'collaboration-intent-run',
+    proofLabel: run.intent || run.intentId || 'Collaboration intent run',
+    apiPath: run.runApiPath || (projectId && run.intentId ? `/projects/${projectId}/collaboration-intent-queue/${encodeURIComponent(run.intentId)}/run` : null),
+    channelId: 'manager-dashboard',
+    proofIds: uniqueStrings([
+      run.id,
+      run.checksum,
+      run.delegatedReceiptId,
+      ...(run.proofIds || []),
+      ...(run.resultMessageIds || []),
+    ].filter(Boolean)),
+    timelineLogIds: uniqueStrings([run.logId, ...(run.timelineLogIds || [])]),
+    eventIds: uniqueStrings(run.eventIds || []),
+    taskIds: [run.taskId].filter(Boolean),
+    agentIds: uniqueStrings([run.agentId, ...(run.agentIds || [])].filter(Boolean)),
+    intentId: run.intentId || null,
+    source: run.source || null,
+    stage: run.stage || null,
+    lane: run.lane || null,
+    delegatedRunKind: run.delegatedRunKind || null,
+    delegatedRunApiPath: run.delegatedRunApiPath || null,
+    delegatedReceiptId: run.delegatedReceiptId || null,
+    resultRoute: run.resultRoute || null,
+    checksum: run.checksum || null,
+  }));
+  const mvpReadinessOperatorActionRunRoutes = (project.mvpReadinessOperatorActionRuns || []).slice(0, 12).map((run) => ({
+    id: run.id,
+    projectId,
+    proofKind: 'mvp-readiness-operator-action-run',
+    proofLabel: run.actionLabel || run.actionId || 'MVP readiness operator action',
+    apiPath: run.runApiPath || (projectId && run.actionId ? `/projects/${projectId}/mvp-readiness/operator-actions/${encodeURIComponent(run.actionId)}/run` : null),
+    targetApiPath: run.apiPath || null,
+    channelId: 'manager-dashboard',
+    proofIds: uniqueStrings([
+      run.id,
+      run.checksum,
+      run.targetControlChecksum || run.targetControl?.checksum,
+    ].filter(Boolean)),
+    timelineLogIds: uniqueStrings([
+      run.timelineLogId,
+      ...(run.timelineLogIds || []),
+    ].filter(Boolean)),
+    eventIds: uniqueStrings([
+      run.eventId,
+      ...(run.eventIds || []),
+    ].filter(Boolean)),
+    taskIds: [],
+    agentIds: [],
+    actionId: run.actionId || null,
+    actionScope: run.actionScope || null,
+    owner: run.owner || null,
+    productionBlocker: Boolean(run.productionBlocker),
+    autonomousRunnable: Boolean(run.autonomousRunnable),
+    targetStageId: run.targetStageId || run.targetControl?.targetStageId || null,
+    targetGapId: run.targetGapId || run.targetControl?.targetGapId || null,
+    targetStepId: run.targetStepId || run.targetControl?.targetStepId || null,
+    targetControlChecksum: run.targetControlChecksum || run.targetControl?.checksum || null,
+    autonomousRunControlRoute: run.autonomousRunControlRoute || (projectId ? `/projects/${projectId}/autonomous-run-control` : null),
+    autonomousRunControlRunApiPath: run.autonomousRunControlRunApiPath || null,
+    localPilotReadyAtRun: Boolean(run.localPilotReadyAtRun),
+    readyForProductionAtRun: Boolean(run.readyForProductionAtRun),
+    checksum: run.checksum || null,
+  }));
+  const productTeamMissionRunRoutes = (project.productTeamMissionRuns || []).slice(0, 12).map((run) => ({
+    id: run.id,
+    projectId,
+    proofKind: 'product-team-mission-run',
+    proofLabel: run.missionName || 'Product team mission',
+    apiPath: projectId ? `/projects/${projectId}/product-team-missions/${encodeURIComponent(run.id)}` : null,
+    channelId: 'manager-dashboard',
+    proofIds: uniqueStrings([run.id, run.checksum, run.customerAgentHandoff?.checksum, ...(run.proofIds || [])].filter(Boolean)),
+    timelineLogIds: uniqueStrings(run.timelineLogIds || []),
+    eventIds: uniqueStrings([run.eventId, ...(run.eventIds || [])].filter(Boolean)),
+    taskIds: uniqueStrings(run.taskIds || []),
+    agentIds: uniqueStrings(run.agentIds || []),
+    missionType: run.missionType || 'generic-product-team',
+    researchOnly: Boolean(run.researchOnly),
+    kickoffMeetingId: run.kickoffMeetingId || null,
+    kickoffMeetingRoute: run.kickoffMeetingRoute || null,
+    selectedLeaderId: run.selectedLeaderId || null,
+    reviewerId: run.reviewerId || null,
+    autonomousSessionId: run.autonomousSessionId || null,
+    autonomousSessionTickId: run.autonomousSessionTickId || null,
+    customerAgentHandoffStatus: run.customerAgentHandoff?.status || null,
+    customerAgentHandoffChecksum: run.customerAgentHandoff?.checksum || null,
+    customerAgentHandoffReady: Boolean(run.customerAgentHandoff?.readyForLocalAutonomy),
+    customerAgentHandoffFirstTickRecorded: Boolean(run.customerAgentHandoff?.firstTickRecorded),
+    customerAgentHandoffTargetStageId: run.customerAgentHandoff?.targetStageId || null,
+    loopReceiptIds: uniqueStrings(run.loopReceiptIds || []),
+    runReceiptIds: uniqueStrings(run.runReceiptIds || []),
+    targetKind: run.targetKind || null,
+    targetStatus: run.targetStatus || null,
+    targetReady: Boolean(run.targetReady),
+    targetMissingStageIds: uniqueStrings(run.targetMissingStageIds || []),
+    targetNextMissingStageId: run.targetNextMissingStageId || null,
+    readyForProduction: Boolean(run.readyForProduction),
+    productionBlockerReason: run.productionBlockerReason || null,
+    checksum: run.checksum || null,
+  }));
+  const runtimeAutonomyStatusProofIds = uniqueStrings([
+    ...productTeamMissionRunRoutes.flatMap((route) => route.proofIds || []),
+    ...autonomousRunControlRunRoutes.flatMap((route) => route.proofIds || []),
+    ...mvpReadinessOperatorActionRunRoutes.flatMap((route) => route.proofIds || []),
+    ...(project.autonomousRunControlSessionLedger || []).flatMap((session) => [
+      session.id,
+      session.checksum,
+      ...(session.proofIds || []),
+    ]),
+    ...(project.autonomousRunControlSessionTickLedger || []).flatMap((tick) => [
+      tick.id,
+      tick.checksum,
+      ...(tick.proofIds || []),
+    ]),
+  ].filter(Boolean));
+  const runtimeAutonomyStatusLogIds = uniqueStrings([
+    ...productTeamMissionRunRoutes.flatMap((route) => route.timelineLogIds || []),
+    ...autonomousRunControlRunRoutes.flatMap((route) => route.timelineLogIds || []),
+    ...mvpReadinessOperatorActionRunRoutes.flatMap((route) => route.timelineLogIds || []),
+    ...(project.autonomousRunControlSessionLedger || []).flatMap((session) => [
+      session.logId,
+      ...(session.timelineLogIds || []),
+    ]),
+    ...(project.autonomousRunControlSessionTickLedger || []).flatMap((tick) => [
+      tick.logId,
+      ...(tick.timelineLogIds || []),
+    ]),
+  ].filter(Boolean));
+  const runtimeAutonomyStatusEventIds = uniqueStrings([
+    ...productTeamMissionRunRoutes.flatMap((route) => route.eventIds || []),
+    ...autonomousRunControlRunRoutes.flatMap((route) => route.eventIds || []),
+    ...mvpReadinessOperatorActionRunRoutes.flatMap((route) => route.eventIds || []),
+    ...(project.autonomousRunControlSessionLedger || []).flatMap((session) => [
+      session.eventId,
+      ...(session.eventIds || []),
+    ]),
+    ...(project.autonomousRunControlSessionTickLedger || []).flatMap((tick) => [
+      tick.eventId,
+      ...(tick.eventIds || []),
+    ]),
+  ].filter(Boolean));
   const autonomousRunControlLoopRoutes = (project.autonomousRunControlLoopLedger || []).slice(0, 12).map((run) => ({
     id: run.id,
     projectId,
@@ -7262,6 +9025,10 @@ function buildReadinessProofMap({ project = {}, messages = [] } = {}) {
     targetControl: run.targetControl || null,
     targetStageIds: uniqueStrings(run.targetStageIds || []),
     targetSelections: run.targetSelections || [],
+    providerEvidenceSearch: run.providerEvidenceSearch || null,
+    evidenceSearchId: run.providerEvidenceSearch?.evidenceSearchId || null,
+    providerReceiptId: run.providerEvidenceSearch?.providerReceiptId || null,
+    providerUsageId: run.providerEvidenceSearch?.providerUsageId || null,
     checksum: run.checksum || null,
   }));
   const autonomousRunControlSessionRoutes = (project.autonomousRunControlSessionLedger || []).slice(0, 12).map((session) => ({
@@ -7300,6 +9067,13 @@ function buildReadinessProofMap({ project = {}, messages = [] } = {}) {
     targetMissingCount: session.targetMissingCount ?? session.targetSnapshot?.missingCount ?? 0,
     targetMissingStageIds: uniqueStrings(session.targetMissingStageIds || session.targetSnapshot?.missingStageIds || []),
     targetNextMissingStageId: session.targetNextMissingStageId || session.targetSnapshot?.nextMissingStageId || null,
+    providerEvidenceSearch: session.providerEvidenceSearch || null,
+    evidenceSearchId: session.evidenceSearchId || session.providerEvidenceSearch?.evidenceSearchId || null,
+    evidenceSearchRoute: projectId && (session.evidenceSearchId || session.providerEvidenceSearch?.evidenceSearchId)
+      ? `/projects/${projectId}/evidence-searches/${encodeURIComponent(session.evidenceSearchId || session.providerEvidenceSearch.evidenceSearchId)}`
+      : null,
+    providerReceiptId: session.providerEvidenceSearch?.providerReceiptId || null,
+    providerUsageId: session.providerUsageId || session.providerEvidenceSearch?.providerUsageId || null,
     checksum: session.checksum || null,
   }));
   const autonomousRunControlSessionTickRoutes = (project.autonomousRunControlSessionTickLedger || []).slice(0, 12).map((tick) => ({
@@ -7335,6 +9109,21 @@ function buildReadinessProofMap({ project = {}, messages = [] } = {}) {
     targetMissingCount: tick.targetMissingCount ?? tick.targetSnapshot?.missingCount ?? 0,
     targetMissingStageIds: uniqueStrings(tick.targetMissingStageIds || tick.targetSnapshot?.missingStageIds || []),
     targetNextMissingStageId: tick.targetNextMissingStageId || tick.targetSnapshot?.nextMissingStageId || null,
+    providerEvidenceSearch: tick.providerEvidenceSearch || null,
+    evidenceSearchId: tick.evidenceSearchId || tick.providerEvidenceSearch?.evidenceSearchId || null,
+    evidenceSearchRoute: projectId && (tick.evidenceSearchId || tick.providerEvidenceSearch?.evidenceSearchId)
+      ? `/projects/${projectId}/evidence-searches/${encodeURIComponent(tick.evidenceSearchId || tick.providerEvidenceSearch.evidenceSearchId)}`
+      : null,
+    providerReceiptId: tick.providerEvidenceSearch?.providerReceiptId || null,
+    providerUsageId: tick.providerUsageId || tick.providerEvidenceSearch?.providerUsageId || null,
+    providerUsageRoute: projectId && (tick.providerUsageId || tick.providerEvidenceSearch?.providerUsageId)
+      ? `/projects/${projectId}/provider-readiness#${encodeURIComponent(tick.providerUsageId || tick.providerEvidenceSearch.providerUsageId)}`
+      : null,
+    providerEvidenceMessageId: tick.providerEvidenceMessageId || tick.providerEvidenceMessageIds?.[0] || null,
+    providerEvidenceMessageIds: uniqueStrings(tick.providerEvidenceMessageIds || [tick.providerEvidenceMessageId].filter(Boolean)),
+    providerEvidenceTranscriptRoute: projectId && (tick.providerEvidenceMessageId || tick.providerEvidenceMessageIds?.[0])
+      ? `/projects/${projectId}/transcripts/main#${encodeURIComponent(tick.providerEvidenceMessageId || tick.providerEvidenceMessageIds[0])}`
+      : null,
     checksum: tick.checksum || null,
   }));
 
@@ -7449,6 +9238,155 @@ function buildReadinessProofMap({ project = {}, messages = [] } = {}) {
     transcriptProofCoverageExpectedIds.length
     && transcriptProofCoverageMissingIds.length === 0
   );
+  const projectMemoryReadinessProofIds = uniqueStrings([
+    ...transcriptProofCoverageArchivedIds,
+    ...submissionProofIds,
+    ...evidenceSearchProofIds,
+    ...evidenceSourceReviewProofIds,
+    ...submissionReviewProofIds,
+  ]);
+  const projectMemoryReadinessTimelineLogIds = uniqueStrings([
+    ...submissionLogIds,
+    ...evidenceSearchLogIds,
+    ...evidenceSourceReviewLogIds,
+    ...submissionReviewLogIds,
+  ]);
+  const projectMemoryReadinessEventIds = uniqueStrings([
+    ...submissionEventIds,
+    ...evidenceSearchEventIds,
+    ...evidenceSourceReviewEventIds,
+    ...submissionReviewEventIds,
+  ]);
+  const transcriptChannelRoutes = (project.transcriptChannelReceipts || []).map((receipt) => {
+    const channelId = receipt.channelId || 'main';
+    const apiPath = receipt.route || (projectId ? `/projects/${projectId}/transcripts/${encodeURIComponent(channelId)}` : null);
+    const proofIds = uniqueStrings([
+      receipt.messageId,
+      receipt.id,
+      receipt.checksum,
+    ].filter(Boolean));
+    const timelineLogIds = uniqueStrings([
+      receipt.timelineLogId,
+      ...(receipt.timelineLogIds || []),
+    ].filter(Boolean));
+    const eventIds = uniqueStrings([
+      receipt.eventId,
+      ...(receipt.eventIds || []),
+    ].filter(Boolean));
+    return {
+      id: receipt.id || `transcript_channel_${channelId}`,
+      proofKind: 'transcript-channel-created',
+      proofLabel: `${receipt.name || channelId} transcript channel`,
+      apiPath,
+      channelId,
+      proofIds,
+      timelineLogIds,
+      eventIds,
+      taskIds: [],
+      agentIds: [],
+      receiptId: receipt.id || null,
+      receiptSchemaVersion: receipt.schemaVersion || null,
+      messageId: receipt.messageId || null,
+      category: receipt.category || null,
+      actor: receipt.actor || null,
+      actorId: receipt.actorId || null,
+      createdAt: receipt.createdAt || null,
+      checksum: receipt.checksum || null,
+      readyForBackendTranscriptChannel: Boolean(apiPath && proofIds.length && timelineLogIds.length && eventIds.length),
+    };
+  });
+  const transcriptChannelProofIds = uniqueStrings(transcriptChannelRoutes.flatMap((route) => route.proofIds || []));
+  const transcriptChannelTimelineLogIds = uniqueStrings(transcriptChannelRoutes.flatMap((route) => route.timelineLogIds || []));
+  const transcriptChannelEventIds = uniqueStrings(transcriptChannelRoutes.flatMap((route) => route.eventIds || []));
+  const eventIdsForProofEvidence = (proofIds = [], types = []) => {
+    const proofSet = new Set((proofIds || []).filter(Boolean).map(String));
+    const typeSet = new Set((types || []).filter(Boolean).map(String));
+    if (!proofSet.size) return [];
+    return uniqueStrings((project.eventLedger || [])
+      .filter((event) => {
+        const typeMatches = !typeSet.size
+          || typeSet.has(String(event.type || ''))
+          || typeSet.has(String(event.source || ''));
+        const eventProofIds = [
+          event.id,
+          ...(event.evidenceIds || []),
+          event.entityIds?.messageId,
+          event.entityIds?.logId,
+          event.entityIds?.taskId,
+        ].filter(Boolean).map(String);
+        return typeMatches && eventProofIds.some((id) => proofSet.has(id));
+      })
+      .map((event) => event.id));
+  };
+  const agentMessageRoutes = (messages || [])
+    .filter((message) => message.source === 'agent-to-agent-message')
+    .slice(-40)
+    .reverse()
+    .map((message) => {
+      const sender = team.find((agent) => agent.id === message.authorId || agent.name === message.author);
+      const channelId = message.channelId || 'main';
+      const targetIds = uniqueStrings([
+        ...(message.directTargetIds || []),
+        ...(message.targetIds || []),
+      ].filter(Boolean));
+      const targetNames = targetIds.map((id) => agentNameById[id] || id).filter(Boolean);
+      const senderState = sender ? agentStates[sender.id] || {} : {};
+      const targetStates = targetIds.map((targetId) => agentStates[targetId] || {});
+      const proofIds = uniqueStrings([message.id].filter(Boolean));
+      const eventIds = eventIdsForProofEvidence(proofIds, ['agent-message', 'agent-to-agent-message']);
+      const timelineLogIds = uniqueStrings((project.logs || [])
+        .filter((log) => (
+          log.eventType === 'agent-message'
+          && (
+            log.messageId === message.id
+            || log.agentMessageId === message.id
+          )
+        ))
+        .map((log) => log.id));
+      const inboxSeen = targetStates.some((state) => (state.inbox || []).some((item) => item.sourceMessageId === message.id || item.messageId === message.id));
+      const obligationSeen = targetStates.some((state) => (state.obligations || []).some((item) => item.sourceMessageId === message.id || item.messageId === message.id));
+      const senderWorklogSeen = Boolean((senderState.worklog || []).some((item) => item.sourceMessageId === message.id || item.messageId === message.id));
+      const receiptSeen = Boolean(
+        (message.directTargetIds || []).some((targetId) => targetIds.includes(targetId))
+        || (message.heardBy || []).some((targetId) => targetIds.includes(targetId))
+        || (message.receipts || []).some((receipt) => targetIds.includes(receipt.agentId))
+      );
+      return {
+        id: `agent_message_route_${message.id}`,
+        proofKind: 'agent-to-agent-message',
+        proofLabel: `${sender?.name || message.author || 'Agent'} to ${targetNames.join(' / ') || 'team'}`,
+        apiPath: projectId ? `/projects/${projectId}/transcripts/${encodeURIComponent(channelId)}` : null,
+        channelId,
+        proofIds,
+        timelineLogIds,
+        eventIds,
+        taskIds: [],
+        agentIds: uniqueStrings([sender?.id || message.authorId, ...targetIds].filter(Boolean)),
+        messageId: message.id || null,
+        senderId: sender?.id || message.authorId || null,
+        senderName: sender?.name || message.author || 'Agent',
+        targetIds,
+        targetNames,
+        receiptCount: message.visibility?.receiptCount || message.receipts?.length || message.heardBy?.length || 0,
+        directTargetCount: message.visibility?.directTargetCount || targetIds.length,
+        receiptSeen,
+        inboxSeen,
+        obligationSeen,
+        senderWorklogSeen,
+        readyForAgentMessageDelivery: Boolean(
+          projectId
+          && message.id
+          && timelineLogIds.length
+          && eventIds.length
+          && (receiptSeen || targetIds.length === 0)
+          && inboxSeen
+          && senderWorklogSeen
+        ),
+      };
+    });
+  const agentMessageProofIds = uniqueStrings(agentMessageRoutes.flatMap((route) => route.proofIds || []));
+  const agentMessageTimelineLogIds = uniqueStrings(agentMessageRoutes.flatMap((route) => route.timelineLogIds || []));
+  const agentMessageEventIds = uniqueStrings(agentMessageRoutes.flatMap((route) => route.eventIds || []));
   const launchApprovalRecords = project.launchApprovals || [];
   const launchApprovalEventIdsFor = (approval = {}) => uniqueStrings((project.eventLedger || [])
     .filter((event) => event.entityIds?.launchApprovalId === approval.id)
@@ -7466,6 +9404,55 @@ function buildReadinessProofMap({ project = {}, messages = [] } = {}) {
   const providerUsageRecords = project.providerUsageLedger || [];
   const providerUsageProofIds = uniqueStrings(providerUsageRecords.flatMap((record) => [record.id, record.requestChecksum, record.resultChecksum, record.providerReceiptId]).filter(Boolean));
   const providerUsageEventIds = uniqueStrings(providerUsageRecords.map((record) => record.eventId).filter(Boolean));
+  const providerBudgetPolicy = project.projectSettings?.providerBudgetPolicy || {};
+  const providerBudgetPolicyConfigured = Boolean(
+    providerBudgetPolicy.schemaVersion === 'project-provider-budget-policy/v1'
+    && (
+      Number(providerBudgetPolicy.dailyBudgetCents) > 0
+      || Number(providerBudgetPolicy.maxRequestsPerProjectHour) > 0
+    )
+  );
+  const providerBudgetPolicyLogIds = uniqueStrings((project.logs || [])
+    .filter((log) => log.eventType === 'project-settings-updated' && log.providerBudgetPolicy)
+    .map((log) => log.id)
+    .filter(Boolean));
+  const providerBudgetPolicyEventIds = uniqueStrings((project.eventLedger || [])
+    .filter((event) => event.type === 'project-settings-updated' && event.payload?.providerBudgetPolicy)
+    .map((event) => event.id)
+    .filter(Boolean));
+  const budgetAlertProofIds = uniqueStrings([
+    project.projectSettings?.checksum,
+    ...providerUsageProofIds,
+  ].filter(Boolean));
+  const budgetAlertTimelineLogIds = uniqueStrings(providerBudgetPolicyLogIds);
+  const budgetAlertEventIds = uniqueStrings([
+    ...providerBudgetPolicyEventIds,
+    ...providerUsageEventIds,
+  ]);
+  const projectSettingsProofIds = uniqueStrings([
+    project.projectSettings?.checksum,
+    ...(project.projectSettingsAudit || []).map((entry) => entry.id),
+  ].filter(Boolean));
+  const projectSettingsLogIds = uniqueStrings(logIdsForEventTypes(project, ['project-settings-updated']));
+  const projectSettingsEventIds = uniqueStrings(ledgerEventIdsForTypes(project, ['project-settings-updated']));
+  const errorReportingSignalTypes = [
+    'worker-dead-letter',
+    'worker-retryable-failure',
+    'operations-incident-drill',
+    'security-audit-stream-gap',
+    'security-audit-stream-chain-break',
+    'security-audit-stream-hash-mismatch',
+  ];
+  const errorReportingLogIds = uniqueStrings(logIdsForEventTypes(project, errorReportingSignalTypes));
+  const errorReportingEventIds = uniqueStrings(ledgerEventIdsForTypes(project, errorReportingSignalTypes));
+  const errorReportingProofIds = uniqueStrings([
+    ...errorReportingLogIds,
+    ...(project.operationsIncidentDrillReceipts || []).flatMap((receipt) => [
+      receipt.id,
+      receipt.checksum,
+      receipt.receiptChecksum,
+    ]),
+  ].filter(Boolean));
   const providerEvalRunRecords = project.providerEvalRuns || [];
   const providerEvalRunProofIds = uniqueStrings(providerEvalRunRecords.flatMap((record) => [
     record.id,
@@ -7796,18 +9783,25 @@ function buildReadinessProofMap({ project = {}, messages = [] } = {}) {
   const teamCollaborationDiagnosticProofIds = uniqueStrings([
     ...productTeamOperatingLoopProofIds,
     ...assignmentProofIds,
+    ...transcriptChannelProofIds,
+    ...agentMessageProofIds,
   ]);
   const teamCollaborationDiagnosticTimelineLogIds = uniqueStrings([
     ...productTeamOperatingLoopTimelineLogIds,
     ...assignmentLogIds,
+    ...transcriptChannelTimelineLogIds,
+    ...agentMessageTimelineLogIds,
   ]);
   const teamCollaborationDiagnosticEventIds = uniqueStrings([
     ...productTeamOperatingLoopEventIds,
+    ...transcriptChannelEventIds,
+    ...agentMessageEventIds,
     ...ledgerEventIdsForTypes(project, [
       'kickoff-charter',
       'leader-assignment',
       'assignment-acknowledged',
       'agent-message',
+      'transcript-channel-created',
       'autonomous-cycle',
       'agent-submission',
       'submission-review',
@@ -7822,6 +9816,34 @@ function buildReadinessProofMap({ project = {}, messages = [] } = {}) {
     && teamCollaborationDiagnosticProofIds.length
     && teamCollaborationDiagnosticTimelineLogIds.length
     && teamCollaborationDiagnosticEventIds.length
+  );
+  const collaborationIntentQueueProofIds = uniqueStrings([
+    ...teamCollaborationDiagnosticProofIds,
+    ...(agentAutonomousActionQueue.proofIds || []),
+    ...roleNegotiationRoutes.flatMap((route) => route.proofIds || []),
+    ...selfMarketingRoutes.flatMap((route) => route.proofIds || []),
+    ...collaborationIntentRunRoutes.flatMap((route) => route.proofIds || []),
+  ]);
+  const collaborationIntentQueueTimelineLogIds = uniqueStrings([
+    ...teamCollaborationDiagnosticTimelineLogIds,
+    ...(agentAutonomousActionQueue.timelineLogIds || []),
+    ...submissionReviewLogIds,
+    ...collaborationIntentRunRoutes.flatMap((route) => route.timelineLogIds || []),
+  ]);
+  const collaborationIntentQueueEventIds = uniqueStrings([
+    ...teamCollaborationDiagnosticEventIds,
+    ...(agentAutonomousActionQueue.eventIds || []),
+    ...submissionReviewEventIds,
+    ...collaborationIntentRunRoutes.flatMap((route) => route.eventIds || []),
+  ]);
+  const collaborationIntentQueueReady = Boolean(
+    projectId
+    && teamCollaborationDiagnosticsReady
+    && productTeamOperatingLoopReady
+    && productTeamOperatingLoopSelectedActions.length
+    && collaborationIntentQueueProofIds.length
+    && collaborationIntentQueueTimelineLogIds.length
+    && collaborationIntentQueueEventIds.length
   );
   const runtimeContractFreezeProofIds = uniqueStrings([
     ...teamCollaborationDiagnosticProofIds,
@@ -7909,6 +9931,285 @@ function buildReadinessProofMap({ project = {}, messages = [] } = {}) {
     && autonomousCycleConsistencyTimelineLogIds.length
     && autonomousCycleConsistencyEventIds.length
   );
+  const productTeamGeneratedDraftRecords = submissionRecords.filter((submission) => submission.isGeneratedDraft || submission.artifactDraft);
+  const productTeamFinalDeliverableRecords = submissionRecords.filter((submission) => (
+    submission.artifactType === 'final-deliverable'
+    || submission.status === 'final'
+  ));
+  const productTeamAcceptedFinalDeliverableReviewRecords = submissionReviewRecords.filter((review) => {
+    const submission = submissionRecords.find((item) => String(item.id || '') === String(review.submissionId || ''));
+    return review.verdict === 'accepted' && (submission?.artifactType === 'final-deliverable' || submission?.status === 'final');
+  });
+  const productTeamEvidenceSearchUsableCount = evidenceSearchRecords.filter((record) => (
+    ['strong-evidence', 'usable-evidence'].includes(record.evidenceJudgement || record.qualitySummary?.judgement)
+  )).length;
+  const productTeamEvidenceSearchRouteReadyCount = evidenceSearchRecords.filter((record) => {
+    const judgement = record.evidenceJudgement || record.qualitySummary?.judgement || '';
+    const qualityScore = Number(record.qualityScore ?? record.qualitySummary?.averageScore) || 0;
+    const blockedSourceCount = (record.sourceSafetySummary || summarizeEvidenceSourceSafety(record.sources || [])).blockedSourceCount || 0;
+    return blockedSourceCount === 0
+      && (
+        ['strong-evidence', 'usable-evidence', 'needs-corroboration'].includes(judgement)
+        || qualityScore >= 50
+      );
+  }).length;
+  const productTeamEvidenceAverageQualityScore = evidenceSearchRecords.length
+    ? Math.round(evidenceSearchRecords.reduce((sum, record) => sum + (Number(record.qualityScore ?? record.qualitySummary?.averageScore) || 0), 0) / evidenceSearchRecords.length)
+    : 0;
+  const productTeamEvidenceBlockedSourceCount = evidenceSearchRecords.reduce((sum, record) => (
+    sum + ((record.sourceSafetySummary || summarizeEvidenceSourceSafety(record.sources || [])).blockedSourceCount || 0)
+  ), 0);
+  const productTeamAcceptanceStageRow = ({
+    id,
+    label,
+    stage,
+    ready,
+    detail,
+    apiPath,
+    proofIds = [],
+    timelineLogIds = [],
+    eventIds = [],
+    taskIds = [],
+    agentIds = [],
+    artifactIds = [],
+    evidenceSearchIds = [],
+    reviewIds = [],
+  }) => ({
+    id,
+    label,
+    stage,
+    ready: Boolean(ready),
+    status: ready ? 'ready' : 'missing',
+    detail,
+    apiPath: projectId ? apiPath : null,
+    proofIds: uniqueStrings(proofIds).slice(0, 24),
+    timelineLogIds: uniqueStrings(timelineLogIds).slice(0, 24),
+    eventIds: uniqueStrings(eventIds).slice(0, 24),
+    taskIds: uniqueStrings(taskIds).slice(0, 16),
+    agentIds: uniqueStrings(agentIds).slice(0, 16),
+    artifactIds: uniqueStrings(artifactIds).slice(0, 16),
+    evidenceSearchIds: uniqueStrings(evidenceSearchIds).slice(0, 16),
+    reviewIds: uniqueStrings(reviewIds).slice(0, 16),
+  });
+  const productTeamAcceptanceChainRows = [
+    productTeamAcceptanceStageRow({
+      id: 'kickoff-meeting',
+      label: 'Kickoff meeting and governance',
+      stage: 'kickoff',
+      ready: kickoffProofIds.length > 0 && (roleNegotiationRoutes.length > 0 || readiness.checks?.some((check) => check.id === 'kickoff-approved' && check.passed)),
+      detail: `${kickoffProofIds.length} kickoff proof id(s), ${roleNegotiationRoutes.length} role-negotiation route(s).`,
+      apiPath: `/projects/${projectId}/transcripts/main`,
+      proofIds: kickoffProofIds,
+      eventIds: uniqueStrings([
+        ...roleNegotiationRoutes.flatMap((route) => route.eventIds || []),
+        ...ledgerEventIdsForTypes(project, ['kickoff-charter', 'kickoff-role-question', 'kickoff-role-volunteer', 'kickoff-leader-campaign']),
+      ]),
+      agentIds,
+    }),
+    productTeamAcceptanceStageRow({
+      id: 'agent-self-marketing',
+      label: 'Agent self-marketing and role negotiation',
+      stage: 'role-negotiation',
+      ready: selfMarketingRoutes.length > 0
+        && selfMarketingRoutes.some((route) => route.stage === 'self-nomination')
+        && selfMarketingRoutes.some((route) => route.stage === 'leader-campaign'),
+      detail: `${selfMarketingRoutes.length} self-marketing route(s) across self-nomination and leader-campaign stages.`,
+      apiPath: `/projects/${projectId}/readiness-proof-map`,
+      proofIds: selfMarketingRoutes.flatMap((route) => route.proofIds || []),
+      eventIds: selfMarketingRoutes.flatMap((route) => route.eventIds || []),
+      agentIds: selfMarketingRoutes.flatMap((route) => route.agentIds || []),
+    }),
+    productTeamAcceptanceStageRow({
+      id: 'brainstorm-layer',
+      label: 'Brainstorm alternatives and synthesis layer',
+      stage: 'brainstorm',
+      ready: brainstormSubmissionRecords.length > 0 && brainstormAlternativeCount >= 2,
+      detail: `${brainstormSubmissionRecords.length} brainstorm board(s), ${brainstormAlternativeCount} alternative(s).`,
+      apiPath: `/projects/${projectId}/brainstorm-layer`,
+      proofIds: brainstormProofIds,
+      timelineLogIds: brainstormLogIds,
+      eventIds: brainstormEventIds,
+      taskIds: brainstormSubmissionRecords.map((submission) => submission.taskId),
+      agentIds: brainstormSubmissionRecords.map((submission) => submission.agentId),
+      artifactIds: brainstormSubmissionRecords.map((submission) => submission.id),
+    }),
+    productTeamAcceptanceStageRow({
+      id: 'evidence-quality',
+      label: 'Search and evidence judgement',
+      stage: 'evidence',
+      ready: evidenceSearchRecords.length > 0
+        && productTeamEvidenceSearchRouteReadyCount > 0
+        && productTeamEvidenceBlockedSourceCount === 0,
+      detail: `${evidenceSearchRecords.length} evidence search(es), ${productTeamEvidenceSearchUsableCount} usable judgement(s), ${productTeamEvidenceSearchRouteReadyCount} route-ready judgement(s), average quality ${productTeamEvidenceAverageQualityScore}.`,
+      apiPath: `/projects/${projectId}/evidence-quality-audit`,
+      proofIds: evidenceSearchProofIds,
+      timelineLogIds: evidenceSearchLogIds,
+      eventIds: evidenceSearchEventIds,
+      taskIds: evidenceSearchRecords.map((record) => record.taskId),
+      agentIds: evidenceSearchRecords.map((record) => record.agentId),
+      evidenceSearchIds: evidenceSearchRecords.map((record) => record.id),
+    }),
+    productTeamAcceptanceStageRow({
+      id: 'draft-artifact',
+      label: 'Draft artifact generated and submitted',
+      stage: 'draft',
+      ready: productTeamGeneratedDraftRecords.length > 0
+        && productTeamGeneratedDraftRecords.every((submission) => submissionHasArtifactStorageProof(submission)),
+      detail: `${productTeamGeneratedDraftRecords.length} generated draft submission(s) with backend storage proof.`,
+      apiPath: `/projects/${projectId}/artifact-quality-audit`,
+      proofIds: productTeamGeneratedDraftRecords.map((submission) => submission.messageId),
+      timelineLogIds: productTeamGeneratedDraftRecords.map((submission) => submission.timelineLogId),
+      eventIds: productTeamGeneratedDraftRecords.map((submission) => submission.eventId),
+      taskIds: productTeamGeneratedDraftRecords.map((submission) => submission.taskId),
+      agentIds: productTeamGeneratedDraftRecords.map((submission) => submission.agentId),
+      artifactIds: productTeamGeneratedDraftRecords.map((submission) => submission.id),
+    }),
+    productTeamAcceptanceStageRow({
+      id: 'review-and-revision',
+      label: 'Reviewer changes and revision response',
+      stage: 'review-revision',
+      ready: submissionReviewRecords.length > 0
+        && revisionRecords.length > 0
+        && productTeamAcceptedFinalDeliverableReviewRecords.length > 0,
+      detail: `${submissionReviewRecords.length} review(s), ${revisionRecords.length} revision response(s), ${productTeamAcceptedFinalDeliverableReviewRecords.length} accepted final review(s).`,
+      apiPath: `/projects/${projectId}/submission-review-workflow`,
+      proofIds: uniqueStrings([
+        ...submissionReviewProofIds,
+        ...revisionRecords.map((submission) => submission.messageId),
+      ]),
+      timelineLogIds: uniqueStrings([
+        ...submissionReviewLogIds,
+        ...revisionRecords.map((submission) => submission.timelineLogId),
+      ]),
+      eventIds: uniqueStrings([
+        ...submissionReviewEventIds,
+        ...revisionRecords.map((submission) => submission.eventId),
+      ]),
+      taskIds: uniqueStrings([
+        ...submissionReviewRecords.map((review) => review.taskId),
+        ...revisionRecords.map((submission) => submission.taskId),
+      ]),
+      agentIds: uniqueStrings([
+        ...submissionReviewRecords.flatMap((review) => [review.reviewerAgentId, review.submitterAgentId]),
+        ...revisionRecords.flatMap((submission) => [submission.agentId, submission.requestedReviewAgentId]),
+      ]),
+      artifactIds: revisionRecords.map((submission) => submission.id),
+      reviewIds: submissionReviewRecords.map((review) => review.id),
+    }),
+    productTeamAcceptanceStageRow({
+      id: 'final-deliverable',
+      label: 'Final deliverable accepted',
+      stage: 'final-delivery',
+      ready: productTeamFinalDeliverableRecords.length > 0
+        && productTeamAcceptedFinalDeliverableReviewRecords.length > 0,
+      detail: `${productTeamFinalDeliverableRecords.length} final deliverable submission(s), ${productTeamAcceptedFinalDeliverableReviewRecords.length} accepted final review(s).`,
+      apiPath: `/projects/${projectId}/submissions`,
+      proofIds: uniqueStrings([
+        ...productTeamFinalDeliverableRecords.map((submission) => submission.messageId),
+        ...productTeamAcceptedFinalDeliverableReviewRecords.map((review) => review.messageId),
+      ]),
+      timelineLogIds: uniqueStrings([
+        ...productTeamFinalDeliverableRecords.map((submission) => submission.timelineLogId),
+        ...productTeamAcceptedFinalDeliverableReviewRecords.map((review) => review.timelineLogId),
+      ]),
+      eventIds: uniqueStrings([
+        ...productTeamFinalDeliverableRecords.map((submission) => submission.eventId),
+        ...productTeamAcceptedFinalDeliverableReviewRecords.map((review) => review.eventId),
+      ]),
+      taskIds: productTeamFinalDeliverableRecords.map((submission) => submission.taskId),
+      agentIds: uniqueStrings([
+        ...productTeamFinalDeliverableRecords.flatMap((submission) => [submission.agentId, submission.requestedReviewAgentId]),
+        ...productTeamAcceptedFinalDeliverableReviewRecords.flatMap((review) => [review.reviewerAgentId, review.submitterAgentId]),
+      ]),
+      artifactIds: productTeamFinalDeliverableRecords.map((submission) => submission.id),
+      reviewIds: productTeamAcceptedFinalDeliverableReviewRecords.map((review) => review.id),
+    }),
+    productTeamAcceptanceStageRow({
+      id: 'proof-surfaces',
+      label: 'Flow Graph, Proof Map, timeline, transcripts, and event ledger linked',
+      stage: 'proof-surface',
+      ready: transcriptProofCoverageReady
+        && productTeamOperatingLoopProofIds.length > 0
+        && productTeamOperatingLoopTimelineLogIds.length > 0
+        && productTeamOperatingLoopEventIds.length > 0,
+      detail: `${transcriptProofCoverageArchivedIds.length}/${transcriptProofCoverageExpectedIds.length} transcript proof id(s) archived, ${productTeamOperatingLoopTimelineLogIds.length} timeline id(s), ${productTeamOperatingLoopEventIds.length} event id(s).`,
+      apiPath: `/projects/${projectId}/manager-flow-graph`,
+      proofIds: productTeamOperatingLoopProofIds,
+      timelineLogIds: productTeamOperatingLoopTimelineLogIds,
+      eventIds: productTeamOperatingLoopEventIds,
+      taskIds: allTaskEvidenceIds,
+      agentIds,
+    }),
+  ];
+  const productTeamAcceptanceChainReadyRows = productTeamAcceptanceChainRows.filter((row) => row.ready);
+  const productTeamAcceptanceChainMissingRows = productTeamAcceptanceChainRows.filter((row) => !row.ready);
+  const productTeamAcceptanceChainProofIds = uniqueStrings(productTeamAcceptanceChainRows.flatMap((row) => row.proofIds || []));
+  const productTeamAcceptanceChainTimelineLogIds = uniqueStrings(productTeamAcceptanceChainRows.flatMap((row) => row.timelineLogIds || []));
+  const productTeamAcceptanceChainEventIds = uniqueStrings(productTeamAcceptanceChainRows.flatMap((row) => row.eventIds || []));
+  const productTeamAcceptanceChainAgentInitiativeReady = Boolean(
+    productTeamOperatingLoopSelectedActions.length
+    && productTeamOperatingLoopRunnableActionCount > 0
+    && (agentAutonomousActionQueue.readyCount || 0) > 0
+  );
+  const productTeamAcceptanceChainReady = Boolean(
+    projectId
+    && productTeamAcceptanceChainRows.length === 8
+    && productTeamAcceptanceChainMissingRows.length === 0
+    && productTeamAcceptanceChainProofIds.length
+    && productTeamAcceptanceChainTimelineLogIds.length
+    && productTeamAcceptanceChainEventIds.length
+  );
+  const productTeamAcceptanceChainRoutes = projectId ? [{
+    proofKind: 'product-team-acceptance-chain',
+    proofLabel: 'Generic product-team acceptance chain',
+    apiPath: `/projects/${projectId}/product-team-delivery-trace`,
+    channelId: 'manager-dashboard',
+    proofIds: productTeamAcceptanceChainProofIds,
+    timelineLogIds: productTeamAcceptanceChainTimelineLogIds,
+    eventIds: productTeamAcceptanceChainEventIds,
+    taskIds: uniqueStrings(productTeamAcceptanceChainRows.flatMap((row) => row.taskIds || [])),
+    agentIds: uniqueStrings(productTeamAcceptanceChainRows.flatMap((row) => row.agentIds || [])),
+    stageRows: productTeamAcceptanceChainRows,
+    stageIds: productTeamAcceptanceChainRows.map((row) => row.id),
+    readyStageIds: productTeamAcceptanceChainReadyRows.map((row) => row.id),
+    missingStageIds: productTeamAcceptanceChainMissingRows.map((row) => row.id),
+    productTeamDeliveryTraceRoute: `/projects/${projectId}/product-team-delivery-trace`,
+    productTeamOperatingLoopRoute: `/projects/${projectId}/product-team-operating-loop`,
+    collaborationIntentQueueRoute: `/projects/${projectId}/collaboration-intent-queue`,
+    autonomousRunControlRoute: `/projects/${projectId}/autonomous-run-control`,
+    agentAutonomousActionQueueRoute: `/projects/${projectId}/agent-autonomous-action-queue`,
+    managerFlowGraphRoute: `/projects/${projectId}/manager-flow-graph`,
+    readinessProofMapRoute: `/projects/${projectId}/readiness-proof-map`,
+    transcriptRoute: `/projects/${projectId}/transcripts`,
+    timelineRoute: `/projects/${projectId}/timeline`,
+    eventLedgerRoute: `/projects/${projectId}/events`,
+    agencyModel: 'auditable-agent-initiative',
+    readyForAgentInitiative: productTeamAcceptanceChainAgentInitiativeReady,
+    readyForBsideProductTeamRun: productTeamAcceptanceChainReady && productTeamOperatingLoopReady,
+    readyForGenericProductTeamAcceptance: productTeamAcceptanceChainReady,
+    readyForProduction: false,
+    productionBlocked: true,
+    productionBlockerReason: 'Generic product-team acceptance can be proven locally, but public production still requires managed persistence, durable queue/cron, real provider controls, centralized audit, cost guardrails, and operations hardening.',
+  }] : [];
+  const productTeamAcceptanceChainSummary = {
+    count: productTeamAcceptanceChainRoutes.length,
+    routeReady: Boolean(projectId),
+    rowCount: productTeamAcceptanceChainRows.length,
+    readyCount: productTeamAcceptanceChainReadyRows.length,
+    missingCount: productTeamAcceptanceChainMissingRows.length,
+    stageIds: productTeamAcceptanceChainRows.map((row) => row.id),
+    readyStageIds: productTeamAcceptanceChainReadyRows.map((row) => row.id),
+    missingStageIds: productTeamAcceptanceChainMissingRows.map((row) => row.id),
+    nextMissingStageId: productTeamAcceptanceChainMissingRows[0]?.id || null,
+    proofIds: productTeamAcceptanceChainProofIds,
+    timelineLogIds: productTeamAcceptanceChainTimelineLogIds,
+    eventIds: productTeamAcceptanceChainEventIds,
+    readyForAgentInitiative: productTeamAcceptanceChainAgentInitiativeReady,
+    readyForBsideProductTeamRun: productTeamAcceptanceChainReady && productTeamOperatingLoopReady,
+    readyForGenericProductTeamAcceptance: productTeamAcceptanceChainReady,
+    readyForProduction: false,
+    productionBlocked: true,
+  };
 
   const route = (kind, label, path, extra = {}) => ({
     proofKind: kind,
@@ -8087,6 +10388,21 @@ function buildReadinessProofMap({ project = {}, messages = [] } = {}) {
       selfNominationCount: selfMarketingRoutes.filter((item) => item.stage === 'self-nomination').length,
       leaderCampaignCount: selfMarketingRoutes.filter((item) => item.stage === 'leader-campaign').length,
     },
+    productTeamMissionRunRoutes,
+    productTeamMissionRunSummary: {
+      count: productTeamMissionRunRoutes.length,
+      latestMissionRunId: productTeamMissionRunRoutes[0]?.id || null,
+      latestMissionType: productTeamMissionRunRoutes[0]?.missionType || null,
+      researchOnlyCount: productTeamMissionRunRoutes.filter((route) => route.researchOnly).length,
+      autonomousSessionCount: productTeamMissionRunRoutes.filter((route) => route.autonomousSessionId).length,
+      customerAgentHandoffCount: productTeamMissionRunRoutes.filter((route) => route.customerAgentHandoffReady).length,
+      firstTickHandoffCount: productTeamMissionRunRoutes.filter((route) => route.customerAgentHandoffFirstTickRecorded).length,
+      runReceiptCount: productTeamMissionRunRoutes.reduce((sum, route) => sum + (route.runReceiptIds?.length || 0), 0),
+      proofIds: uniqueStrings(productTeamMissionRunRoutes.flatMap((route) => route.proofIds || [])),
+      timelineLogIds: uniqueStrings(productTeamMissionRunRoutes.flatMap((route) => route.timelineLogIds || [])),
+      eventIds: uniqueStrings(productTeamMissionRunRoutes.flatMap((route) => route.eventIds || [])),
+      readyForProduction: false,
+    },
     transcriptProofCoverageRoutes: projectId ? [{
       proofKind: 'transcript-proof-coverage',
       proofLabel: 'Backend transcript proof coverage',
@@ -8153,6 +10469,32 @@ function buildReadinessProofMap({ project = {}, messages = [] } = {}) {
         ...evidenceSourceReviewEventIds,
         ...submissionReviewEventIds,
       ]),
+    },
+    transcriptChannelRoutes,
+    transcriptChannelSummary: {
+      count: transcriptChannelRoutes.length,
+      routeReady: transcriptChannelRoutes.length > 0 && transcriptChannelRoutes.every((route) => route.readyForBackendTranscriptChannel),
+      readyForBackendTranscriptChannels: transcriptChannelRoutes.length > 0 && transcriptChannelRoutes.every((route) => route.readyForBackendTranscriptChannel),
+      readyCount: transcriptChannelRoutes.filter((route) => route.readyForBackendTranscriptChannel).length,
+      channelIds: uniqueStrings(transcriptChannelRoutes.map((route) => route.channelId).filter(Boolean)),
+      latestChannelId: transcriptChannelRoutes[0]?.channelId || null,
+      proofIds: transcriptChannelProofIds,
+      timelineLogIds: transcriptChannelTimelineLogIds,
+      eventIds: transcriptChannelEventIds,
+    },
+    agentMessageRoutes,
+    agentMessageSummary: {
+      count: agentMessageRoutes.length,
+      routeReady: agentMessageRoutes.length > 0 && agentMessageRoutes.every((route) => route.readyForAgentMessageDelivery),
+      readyForAgentMessageDelivery: agentMessageRoutes.length > 0 && agentMessageRoutes.every((route) => route.readyForAgentMessageDelivery),
+      readyCount: agentMessageRoutes.filter((route) => route.readyForAgentMessageDelivery).length,
+      deliveredCount: agentMessageRoutes.filter((route) => route.receiptSeen && route.inboxSeen).length,
+      senderWorklogCount: agentMessageRoutes.filter((route) => route.senderWorklogSeen).length,
+      targetInboxCount: agentMessageRoutes.filter((route) => route.inboxSeen).length,
+      proofIds: agentMessageProofIds,
+      timelineLogIds: agentMessageTimelineLogIds,
+      eventIds: agentMessageEventIds,
+      agentIds: uniqueStrings(agentMessageRoutes.flatMap((route) => route.agentIds || [])),
     },
     agentAutonomousActionRoutes: projectId ? [
       {
@@ -8247,6 +10589,16 @@ function buildReadinessProofMap({ project = {}, messages = [] } = {}) {
       eventIds: uniqueStrings(autonomousRunControlRunRoutes.flatMap((route) => route.eventIds || [])),
       delegatedRunKinds: uniqueStrings(autonomousRunControlRunRoutes.map((route) => route.delegatedRunKind).filter(Boolean)),
     },
+    mvpReadinessOperatorActionRunRoutes,
+    mvpReadinessOperatorActionRunSummary: {
+      count: mvpReadinessOperatorActionRunRoutes.length,
+      proofIds: uniqueStrings(mvpReadinessOperatorActionRunRoutes.flatMap((route) => route.proofIds || [])),
+      timelineLogIds: uniqueStrings(mvpReadinessOperatorActionRunRoutes.flatMap((route) => route.timelineLogIds || [])),
+      eventIds: uniqueStrings(mvpReadinessOperatorActionRunRoutes.flatMap((route) => route.eventIds || [])),
+      productionBlockerCount: mvpReadinessOperatorActionRunRoutes.filter((route) => route.productionBlocker).length,
+      latestRunId: mvpReadinessOperatorActionRunRoutes[0]?.id || null,
+      latestActionId: mvpReadinessOperatorActionRunRoutes[0]?.actionId || null,
+    },
     autonomousRunControlLoopSummary: {
       count: autonomousRunControlLoopRoutes.length,
       proofIds: uniqueStrings(autonomousRunControlLoopRoutes.flatMap((route) => route.proofIds || [])),
@@ -8273,6 +10625,66 @@ function buildReadinessProofMap({ project = {}, messages = [] } = {}) {
         ...autonomousRunControlSessionRoutes.flatMap((route) => route.eventIds || []),
         ...autonomousRunControlSessionTickRoutes.flatMap((route) => route.eventIds || []),
       ]),
+    },
+    runtimeAutonomyStatusRoutes: projectId ? [{
+      proofKind: 'runtime-autonomy-status',
+      proofLabel: 'Runtime autonomy status',
+      apiPath: `/projects/${projectId}/runtime-autonomy-status`,
+      channelId: null,
+      proofIds: runtimeAutonomyStatusProofIds,
+      timelineLogIds: runtimeAutonomyStatusLogIds,
+      eventIds: runtimeAutonomyStatusEventIds,
+      taskIds: uniqueStrings([
+        ...productTeamMissionRunRoutes.flatMap((route) => route.taskIds || []),
+        ...autonomousRunControlRunRoutes.flatMap((route) => route.taskIds || []),
+      ]),
+      agentIds: uniqueStrings([
+        ...productTeamMissionRunRoutes.flatMap((route) => route.agentIds || []),
+        ...autonomousRunControlRunRoutes.flatMap((route) => route.agentIds || []),
+      ]),
+      missionRunCount: productTeamMissionRunRoutes.length,
+      sessionCount: autonomousRunControlSessionRoutes.length,
+      sessionTickCount: autonomousRunControlSessionTickRoutes.length,
+      actionRunCount: autonomousRunControlRunRoutes.length,
+      readyForLocalAutonomy: Boolean(
+        productTeamMissionRunRoutes.length
+        && autonomousRunControlSessionRoutes.length
+        && runtimeAutonomyStatusProofIds.length
+        && runtimeAutonomyStatusLogIds.length
+        && runtimeAutonomyStatusEventIds.length
+      ),
+      readyForUnattendedProduction: false,
+      productionBlocked: true,
+      upstreamRoutes: {
+        productTeamMissions: `/projects/${projectId}/product-team-missions`,
+        autonomousRunControl: `/projects/${projectId}/autonomous-run-control`,
+        workerQueue: `/projects/${projectId}/worker-queue`,
+        workerQueueAdapterDryRun: `/projects/${projectId}/worker-queue-adapter-dry-run`,
+        persistenceSnapshot: `/projects/${projectId}/persistence-snapshot`,
+        productTeamOperatingLoop: `/projects/${projectId}/product-team-operating-loop`,
+        schedulerStatus: '/workers/autonomous/status',
+        autopilotDueWorker: '/workers/autopilot/due',
+      },
+    }] : [],
+    runtimeAutonomyStatusSummary: {
+      count: projectId ? 1 : 0,
+      routeReady: Boolean(projectId),
+      missionRunCount: productTeamMissionRunRoutes.length,
+      sessionCount: autonomousRunControlSessionRoutes.length,
+      sessionTickCount: autonomousRunControlSessionTickRoutes.length,
+      actionRunCount: autonomousRunControlRunRoutes.length,
+      proofIds: runtimeAutonomyStatusProofIds,
+      timelineLogIds: runtimeAutonomyStatusLogIds,
+      eventIds: runtimeAutonomyStatusEventIds,
+      readyForLocalAutonomy: Boolean(
+        productTeamMissionRunRoutes.length
+        && autonomousRunControlSessionRoutes.length
+        && runtimeAutonomyStatusProofIds.length
+        && runtimeAutonomyStatusLogIds.length
+        && runtimeAutonomyStatusEventIds.length
+      ),
+      readyForUnattendedProduction: false,
+      productionBlocked: true,
     },
     submissionRoutes: submissionRecords.map((submission) => {
       const artifactStorageProof = submission.artifactStorageProof
@@ -8601,6 +11013,8 @@ function buildReadinessProofMap({ project = {}, messages = [] } = {}) {
       revisionCount: revisionRecords.length,
       acceptedFinalDeliverableCount: productTeamOperatingLoopAcceptedFinalDeliverableCount,
     },
+    productTeamAcceptanceChainRoutes,
+    productTeamAcceptanceChainSummary,
     managerUseCaseAuditRoutes: projectId ? [{
       proofKind: 'manager-use-case-audit',
       proofLabel: 'Manager Use Case Audit',
@@ -8736,6 +11150,61 @@ function buildReadinessProofMap({ project = {}, messages = [] } = {}) {
       assignmentTaskCount: assignmentTaskIds.length,
       productionBlockerCount: 1,
     },
+    collaborationIntentQueueRoutes: projectId ? [{
+      proofKind: 'collaboration-intent-queue',
+      proofLabel: 'Collaboration Intent Queue',
+      apiPath: `/projects/${projectId}/collaboration-intent-queue`,
+      channelId: 'manager-dashboard',
+      proofIds: collaborationIntentQueueProofIds,
+      timelineLogIds: collaborationIntentQueueTimelineLogIds,
+      eventIds: collaborationIntentQueueEventIds,
+      taskIds: uniqueStrings([
+        ...assignmentTaskIds,
+        ...submissionRecords.map((submission) => submission.taskId),
+        ...submissionReviewRecords.map((review) => review.taskId),
+        ...(agentAutonomousActionQueue.rows || []).map((row) => row.taskId),
+      ].filter(Boolean)),
+      agentIds: uniqueStrings([
+        ...agentIds,
+        ...submissionRecords.flatMap((submission) => [submission.agentId, submission.requestedReviewAgentId]),
+        ...submissionReviewRecords.flatMap((review) => [review.reviewerAgentId, review.submitterAgentId]),
+        ...(agentAutonomousActionQueue.rows || []).map((row) => row.agentId),
+      ].filter(Boolean)),
+      productTeamOperatingLoopRoute: `/projects/${projectId}/product-team-operating-loop`,
+      teamCollaborationDiagnosticsRoute: `/projects/${projectId}/team-collaboration-diagnostics`,
+      agentAutonomousActionQueueRoute: `/projects/${projectId}/agent-autonomous-action-queue`,
+      managerCommandCenterRoute: `/projects/${projectId}/manager-command-center`,
+      submissionReviewWorkflowRoute: `/projects/${projectId}/submission-review-workflow`,
+      transcriptRoute: `/projects/${projectId}/transcripts`,
+      timelineRoute: `/projects/${projectId}/timeline`,
+      eventLedgerRoute: `/projects/${projectId}/events`,
+      readinessProofMapRoute: `/projects/${projectId}/readiness-proof-map`,
+      selectedActions: productTeamOperatingLoopSelectedActions,
+      intentRunCount: collaborationIntentRunRoutes.length,
+      latestIntentRunId: collaborationIntentRunRoutes[0]?.id || null,
+      latestIntentRunRoute: collaborationIntentRunRoutes[0]?.apiPath || null,
+      readyForLocalPilotIntentQueue: collaborationIntentQueueReady,
+      readyForProduction: false,
+      productionBlocker: true,
+      productionBlockerReason: 'Public production collaboration intent routing still needs managed queue/cron, durable audit, cost controls, customer acceptance thresholds, incident recovery, and provider/BYOK policy.',
+    }] : [],
+    collaborationIntentQueueSummary: {
+      count: projectId ? 1 : 0,
+      routeReady: Boolean(projectId),
+      readyForLocalPilotIntentQueue: collaborationIntentQueueReady,
+      readyForProduction: false,
+      proofIds: collaborationIntentQueueProofIds,
+      timelineLogIds: collaborationIntentQueueTimelineLogIds,
+      eventIds: collaborationIntentQueueEventIds,
+      selectedActions: productTeamOperatingLoopSelectedActions,
+      selectedActionCount: productTeamOperatingLoopSelectedActions.length,
+      agentInitiativeCount: agentAutonomousActionQueue.count || 0,
+      readyAgentInitiativeCount: agentAutonomousActionQueue.readyCount || 0,
+      intentRunCount: collaborationIntentRunRoutes.length,
+      latestIntentRunId: collaborationIntentRunRoutes[0]?.id || null,
+      transcriptChannelCount: transcriptIndex.channels?.length || 0,
+      productionBlockerCount: 1,
+    },
     runtimeContractFreezeRoutes: projectId ? [{
       proofKind: 'runtime-contract-freeze',
       proofLabel: 'Runtime Contract Freeze',
@@ -8774,6 +11243,51 @@ function buildReadinessProofMap({ project = {}, messages = [] } = {}) {
       submissionContractReady: Boolean(submissionRecords.length && submissionRecords.every((submission) => submissionHasArtifactStorageProof(submission))),
       evidenceContractReady: Boolean(evidenceSearchRecords.length),
       reviewContractReady: Boolean(submissionReviewRecords.length && revisionRecords.length && productTeamOperatingLoopAcceptedFinalDeliverableCount > 0),
+      productionBlockerCount: 1,
+    },
+    projectMemoryReadinessRoutes: projectId ? [{
+      proofKind: 'project-memory-readiness',
+      proofLabel: 'Project Memory Readiness',
+      apiPath: `/projects/${projectId}/memory-readiness`,
+      channelId: 'manager-dashboard',
+      proofIds: projectMemoryReadinessProofIds,
+      timelineLogIds: projectMemoryReadinessTimelineLogIds,
+      eventIds: projectMemoryReadinessEventIds,
+      taskIds: uniqueStrings([
+        ...submissionRecords.map((submission) => submission.taskId),
+        ...evidenceSearchRecords.map((record) => record.taskId),
+        ...evidenceSourceReviewRecords.map((review) => review.taskId),
+        ...submissionReviewRecords.map((review) => review.taskId),
+      ].filter(Boolean)),
+      agentIds: uniqueStrings([
+        ...agentIds,
+        ...submissionRecords.flatMap((submission) => [submission.agentId, submission.requestedReviewAgentId]),
+        ...evidenceSearchRecords.map((record) => record.agentId),
+        ...evidenceSourceReviewRecords.flatMap((review) => [review.reviewerAgentId, review.sourceOwnerAgentId]),
+        ...submissionReviewRecords.flatMap((review) => [review.reviewerAgentId, review.submitterAgentId]),
+      ].filter(Boolean)),
+      transcriptRoute: `/projects/${projectId}/transcripts`,
+      meetingSummariesRoute: `/projects/${projectId}/meeting-summaries`,
+      evidenceIndexReadinessRoute: `/projects/${projectId}/evidence-index-readiness`,
+      persistenceAdapterPlanRoute: `/projects/${projectId}/persistence-adapter-plan`,
+      readyForLocalMemoryReadiness: true,
+      readyForProduction: false,
+      productionBlocker: true,
+      productionBlockerReason: 'Managed long-term memory still needs managed database/vector adapters, retention/deletion policy, restore drills, and customer export controls.',
+    }] : [],
+    projectMemoryReadinessSummary: {
+      count: projectId ? 1 : 0,
+      routeReady: Boolean(projectId),
+      readyForLocalMemoryReadiness: Boolean(projectId),
+      readyForProduction: false,
+      proofIds: projectMemoryReadinessProofIds,
+      timelineLogIds: projectMemoryReadinessTimelineLogIds,
+      eventIds: projectMemoryReadinessEventIds,
+      transcriptProofCount: transcriptProofCoverageArchivedIds.length,
+      evidenceSearchCount: evidenceSearchRecords.length,
+      evidenceSourceReviewCount: evidenceSourceReviewRecords.length,
+      submissionReviewCount: submissionReviewRecords.length,
+      submissionCount: submissionRecords.length,
       productionBlockerCount: 1,
     },
     autonomousCycleConsistencyRoutes: projectId ? [{
@@ -8961,6 +11475,211 @@ function buildReadinessProofMap({ project = {}, messages = [] } = {}) {
       proofIds: providerUsageProofIds,
       eventIds: providerUsageEventIds,
       productionProviderRunReady: false,
+    },
+    localMvpStartupReadinessRoutes: projectId ? [{
+      proofKind: 'local-mvp-startup-readiness',
+      proofLabel: 'Local MVP Startup Readiness',
+      apiPath: '/local-mvp-startup-readiness',
+      channelId: 'settings',
+      proofIds: projectSettingsProofIds,
+      timelineLogIds: projectSettingsLogIds,
+      eventIds: projectSettingsEventIds,
+      taskIds: [],
+      agentIds: [],
+      projectCatalogRoute: '/projects',
+      settingsProviderReadinessRoute: '/settings/provider-readiness',
+      settingsHealthReadinessRoute: '/settings/health-readiness',
+      secretVaultStatusRoute: '/secret-vault/status',
+      readyForProduction: false,
+      productionBlocker: true,
+      productionBlockerReason: 'Public production startup still needs managed Secret Manager/KMS, persistence, queue/cron, provider audit, observability, and recovery controls.',
+    }] : [],
+    localMvpStartupReadinessSummary: {
+      count: projectId ? 1 : 0,
+      routeReady: Boolean(projectId),
+      readyForProduction: false,
+      proofIds: projectSettingsProofIds,
+      timelineLogIds: projectSettingsLogIds,
+      eventIds: projectSettingsEventIds,
+      productionBlockerCount: 1,
+    },
+    settingsHealthReadinessRoutes: projectId ? [{
+      proofKind: 'settings-health-readiness',
+      proofLabel: 'Settings Health Readiness',
+      apiPath: '/settings/health-readiness',
+      channelId: 'settings',
+      proofIds: projectSettingsProofIds,
+      timelineLogIds: projectSettingsLogIds,
+      eventIds: projectSettingsEventIds,
+      taskIds: [],
+      agentIds: [],
+      localMvpStartupReadinessRoute: '/local-mvp-startup-readiness',
+      settingsProviderReadinessRoute: '/settings/provider-readiness',
+      settingsRuntimeReadinessRoute: '/settings/runtime-readiness',
+      workerStatusRoute: '/workers/autonomous/status',
+      readyForProduction: false,
+      productionBlocker: true,
+      productionBlockerReason: 'Public production health readiness still needs managed queue/cron, centralized observability, alert routing, provider incident controls, and recovery drills.',
+    }] : [],
+    settingsHealthReadinessSummary: {
+      count: projectId ? 1 : 0,
+      routeReady: Boolean(projectId),
+      readyForProduction: false,
+      proofIds: projectSettingsProofIds,
+      timelineLogIds: projectSettingsLogIds,
+      eventIds: projectSettingsEventIds,
+      productionBlockerCount: 1,
+    },
+    settingsProviderReadinessRoutes: projectId ? [{
+      proofKind: 'settings-provider-readiness',
+      proofLabel: 'Settings Provider Readiness',
+      apiPath: `/projects/${projectId}/settings-provider-readiness`,
+      channelId: 'settings',
+      proofIds: projectSettingsProofIds,
+      timelineLogIds: projectSettingsLogIds,
+      eventIds: projectSettingsEventIds,
+      taskIds: [],
+      agentIds: [],
+      globalSettingsProviderReadinessRoute: '/settings/provider-readiness',
+      secretVaultStatusRoute: '/secret-vault/status',
+      secretVaultSealRoute: '/secret-vault/seal',
+      providerVaultBindingsRoute: `/projects/${projectId}/provider-vault-bindings`,
+      providerReadinessRoute: `/projects/${projectId}/provider-readiness`,
+      readyForProduction: false,
+      productionBlocker: true,
+      productionBlockerReason: 'Production provider setup still needs managed Secret Manager/KMS, centralized provider audit, cost controls, incident controls, and provider-specific request isolation.',
+    }] : [],
+    settingsProviderReadinessSummary: {
+      count: projectId ? 1 : 0,
+      routeReady: Boolean(projectId),
+      readyForProduction: false,
+      proofIds: projectSettingsProofIds,
+      timelineLogIds: projectSettingsLogIds,
+      eventIds: projectSettingsEventIds,
+      productionBlockerCount: 1,
+    },
+    settingsRuntimeReadinessRoutes: projectId ? [{
+      proofKind: 'settings-runtime-readiness',
+      proofLabel: 'Settings Runtime Readiness',
+      apiPath: `/projects/${projectId}/settings-runtime-readiness`,
+      channelId: 'settings',
+      proofIds: projectSettingsProofIds,
+      timelineLogIds: projectSettingsLogIds,
+      eventIds: projectSettingsEventIds,
+      taskIds: [],
+      agentIds: [],
+      globalSettingsRuntimeReadinessRoute: '/settings/runtime-readiness',
+      providerVaultBindingsRoute: `/projects/${projectId}/provider-vault-bindings`,
+      deploymentPreflightRoute: `/projects/${projectId}/deployment-preflight`,
+      workerStatusRoute: '/workers/autonomous/status',
+      readyForProduction: false,
+      productionBlocker: true,
+      productionBlockerReason: 'Production runtime readiness still needs managed persistence, managed queue/cron, managed provider rollout, incident controls, and deployment control receipts.',
+    }] : [],
+    settingsRuntimeReadinessSummary: {
+      count: projectId ? 1 : 0,
+      routeReady: Boolean(projectId),
+      readyForProduction: false,
+      proofIds: projectSettingsProofIds,
+      timelineLogIds: projectSettingsLogIds,
+      eventIds: projectSettingsEventIds,
+      productionBlockerCount: 1,
+    },
+    settingsIntegrationReadinessRoutes: projectId ? [{
+      proofKind: 'settings-integration-readiness',
+      proofLabel: 'Settings Integration Readiness',
+      apiPath: `/projects/${projectId}/settings-integration-readiness`,
+      channelId: 'settings',
+      proofIds: projectSettingsProofIds,
+      timelineLogIds: projectSettingsLogIds,
+      eventIds: projectSettingsEventIds,
+      taskIds: [],
+      agentIds: [],
+      projectSettingsRoute: `/projects/${projectId}/project-settings`,
+      providerReadinessRoute: `/projects/${projectId}/provider-readiness`,
+      adapterGatewayPreflightRoute: `/projects/${projectId}/adapter-gateway-preflight`,
+      evidenceIndexReadinessRoute: `/projects/${projectId}/evidence-index-readiness`,
+      budgetAlertReadinessRoute: `/projects/${projectId}/budget-alert-readiness`,
+      errorReportingReadinessRoute: `/projects/${projectId}/error-reporting-readiness`,
+      readyForProduction: false,
+      productionBlocker: true,
+      productionBlockerReason: 'Settings Integrations remain production-blocked until managed adapter delivery, managed vector storage, centralized alerting, centralized observability, managed tool registry, and runtime identity exist.',
+    }] : [],
+    settingsIntegrationReadinessSummary: {
+      count: projectId ? 1 : 0,
+      routeReady: Boolean(projectId),
+      readyForProduction: false,
+      proofIds: projectSettingsProofIds,
+      timelineLogIds: projectSettingsLogIds,
+      eventIds: projectSettingsEventIds,
+      productionBlockerCount: 1,
+    },
+    budgetAlertReadinessRoutes: projectId ? [{
+      proofKind: 'budget-alert-readiness',
+      proofLabel: 'Provider Budget Alert Readiness',
+      apiPath: `/projects/${projectId}/budget-alert-readiness`,
+      channelId: 'manager-dashboard',
+      proofIds: budgetAlertProofIds,
+      timelineLogIds: budgetAlertTimelineLogIds,
+      eventIds: budgetAlertEventIds,
+      taskIds: uniqueStrings([
+        ...evidenceSearchRecords.map((record) => record.taskId),
+        ...submissionRecords.map((submission) => submission.taskId),
+      ].filter(Boolean)),
+      agentIds: uniqueStrings(providerUsageRecords.map((record) => record.agentId).filter(Boolean)),
+      providerUsageCount: providerUsageRecords.length,
+      providerBudgetPolicyConfigured,
+      dailyBudgetCents: Number(providerBudgetPolicy.dailyBudgetCents) || 0,
+      maxRequestsPerProjectHour: Number(providerBudgetPolicy.maxRequestsPerProjectHour) || 0,
+      providerReadinessRoute: `/projects/${projectId}/provider-readiness`,
+      providerControlledRunRoute: `/projects/${projectId}/provider-controlled-run`,
+      projectSettingsRoute: `/projects/${projectId}/project-settings`,
+      readyForLocalBudgetAlerts: true,
+      readyForProduction: false,
+      productionBlocker: true,
+      productionBlockerReason: 'Production cost alerting still needs centralized usage metrics, notification routing, escalation ownership, and managed provider audit storage.',
+    }] : [],
+    budgetAlertReadinessSummary: {
+      count: projectId ? 1 : 0,
+      routeReady: Boolean(projectId),
+      readyForLocalBudgetAlerts: Boolean(projectId),
+      readyForProduction: false,
+      providerBudgetPolicyConfigured,
+      dailyBudgetCents: Number(providerBudgetPolicy.dailyBudgetCents) || 0,
+      maxRequestsPerProjectHour: Number(providerBudgetPolicy.maxRequestsPerProjectHour) || 0,
+      providerUsageCount: providerUsageRecords.length,
+      proofIds: budgetAlertProofIds,
+      timelineLogIds: budgetAlertTimelineLogIds,
+      eventIds: budgetAlertEventIds,
+      productionBlockerCount: 1,
+    },
+    errorReportingReadinessRoutes: projectId ? [{
+      proofKind: 'error-reporting-readiness',
+      proofLabel: 'Error Reporting Readiness',
+      apiPath: `/projects/${projectId}/error-reporting-readiness`,
+      channelId: 'manager-dashboard',
+      proofIds: errorReportingProofIds,
+      timelineLogIds: errorReportingLogIds,
+      eventIds: errorReportingEventIds,
+      taskIds: [],
+      agentIds: [],
+      operationsReadinessRoute: `/projects/${projectId}/operations-readiness`,
+      securityAuditStreamRoute: `/projects/${projectId}/security-audit-stream`,
+      workerQueueRoute: `/projects/${projectId}/worker-queue`,
+      readyForLocalErrorReporting: true,
+      readyForProduction: false,
+      productionBlocker: true,
+      productionBlockerReason: 'Production error reporting still needs centralized logs, traces, managed incident routing, on-call ownership, retention, and restore-drill evidence.',
+    }] : [],
+    errorReportingReadinessSummary: {
+      count: projectId ? 1 : 0,
+      routeReady: Boolean(projectId),
+      readyForLocalErrorReporting: Boolean(projectId),
+      readyForProduction: false,
+      proofIds: errorReportingProofIds,
+      timelineLogIds: errorReportingLogIds,
+      eventIds: errorReportingEventIds,
+      productionBlockerCount: 1,
     },
     providerEvalRunRoutes: projectId ? [{
       proofKind: 'provider-eval-run',
@@ -10091,6 +12810,7 @@ function buildAgentDashboardSnapshot({ project = {}, messages = [], agentId } = 
   const submissionReviewTimelineLogIds = uniqueStrings(ownedSubmissionReviews.map((review) => review.timelineLogId));
   const taskChatProofIds = uniqueStrings(ownedTasks.flatMap((task) => task.evidence.chatIds));
   const taskTimelineLogIds = uniqueStrings(ownedTasks.flatMap((task) => task.evidence.timelineLogIds));
+  const latestWorkerTimelineLogIds = uniqueStrings([latestWorker?.logId, ...(latestWorker?.timelineLogIds || [])]);
   const autonomousRunControlRunProofIds = uniqueStrings(autonomousRunControlRuns.flatMap((run) => run.resultMessageIds || []));
   const autonomousRunControlRunTimelineLogIds = uniqueStrings(autonomousRunControlRuns.flatMap((run) => run.timelineLogIds || []));
   const autonomousRunControlRunEventIds = uniqueStrings(autonomousRunControlRuns.flatMap((run) => run.eventIds || []));
@@ -10140,6 +12860,7 @@ function buildAgentDashboardSnapshot({ project = {}, messages = [], agentId } = 
     || evidenceSearchTimelineLogIds.includes(String(log.id || ''))
     || evidenceSourceReviewTimelineLogIds.includes(String(log.id || ''))
     || submissionReviewTimelineLogIds.includes(String(log.id || ''))
+    || latestWorkerTimelineLogIds.includes(String(log.id || ''))
     || autonomousRunControlRunTimelineLogIds.includes(String(log.id || ''))
     || agentAutonomousActionRunTimelineLogIds.includes(String(log.id || ''))
     || (log.directTargetIds || []).map(String).includes(String(agent.id))
@@ -10152,6 +12873,7 @@ function buildAgentDashboardSnapshot({ project = {}, messages = [], agentId } = 
     ...evidenceSearchTimelineLogIds,
     ...evidenceSourceReviewTimelineLogIds,
     ...submissionReviewTimelineLogIds,
+    ...latestWorkerTimelineLogIds,
     ...autonomousRunControlRunTimelineLogIds,
     ...agentAutonomousActionRunTimelineLogIds,
     ...agentLogs.map((log) => log.id),
@@ -12071,6 +14793,10 @@ function buildManagerDashboardSnapshot({ project = {}, messages = [] } = {}) {
     autopilotTargetStageId: run.autopilotTargetStageId || null,
     autopilotTargetControl: run.autopilotTargetControl || null,
     autopilotTargetSelection: run.autopilotTargetSelection || null,
+    providerEvidenceSearch: run.providerEvidenceSearch || null,
+    evidenceSearchId: run.evidenceSearchId || run.providerEvidenceSearch?.evidenceSearchId || null,
+    providerReceiptId: run.providerReceiptId || run.providerEvidenceSearch?.providerReceiptId || null,
+    providerUsageId: run.providerUsageId || run.providerEvidenceSearch?.providerUsageId || null,
   }));
   const autonomousRunControlLoopRows = (project.autonomousRunControlLoopLedger || []).slice(0, 12).map((run) => ({
     ...run,
@@ -12108,6 +14834,10 @@ function buildManagerDashboardSnapshot({ project = {}, messages = [] } = {}) {
     targetMissingCount: session.targetMissingCount ?? session.targetSnapshot?.missingCount ?? 0,
     targetMissingStageIds: uniqueStrings(session.targetMissingStageIds || session.targetSnapshot?.missingStageIds || []),
     targetNextMissingStageId: session.targetNextMissingStageId || session.targetSnapshot?.nextMissingStageId || null,
+    providerEvidenceSearch: session.providerEvidenceSearch || null,
+    evidenceSearchId: session.evidenceSearchId || session.providerEvidenceSearch?.evidenceSearchId || null,
+    providerReceiptId: session.providerEvidenceSearch?.providerReceiptId || null,
+    providerUsageId: session.providerUsageId || session.providerEvidenceSearch?.providerUsageId || null,
   }));
   const autonomousRunControlSessionTickRows = (project.autonomousRunControlSessionTickLedger || []).slice(0, 12).map((tick) => ({
     ...tick,
@@ -12129,6 +14859,23 @@ function buildManagerDashboardSnapshot({ project = {}, messages = [] } = {}) {
     targetMissingCount: tick.targetMissingCount ?? tick.targetSnapshot?.missingCount ?? 0,
     targetMissingStageIds: uniqueStrings(tick.targetMissingStageIds || tick.targetSnapshot?.missingStageIds || []),
     targetNextMissingStageId: tick.targetNextMissingStageId || tick.targetSnapshot?.nextMissingStageId || null,
+    providerEvidenceSearch: tick.providerEvidenceSearch || null,
+    evidenceSearchId: tick.evidenceSearchId || tick.providerEvidenceSearch?.evidenceSearchId || null,
+    providerReceiptId: tick.providerEvidenceSearch?.providerReceiptId || null,
+    providerUsageId: tick.providerUsageId || tick.providerEvidenceSearch?.providerUsageId || null,
+  }));
+  const productTeamMissionRunRows = (project.productTeamMissionRuns || []).slice(0, 12).map((run) => ({
+    ...run,
+    routeLabel: projectId ? `/projects/${projectId}/product-team-missions/${encodeURIComponent(run.id)}` : '',
+    timelineLogIds: uniqueStrings(run.timelineLogIds || []),
+    eventIds: uniqueStrings([run.eventId, ...(run.eventIds || [])].filter(Boolean)),
+    proofIds: uniqueStrings([run.id, run.checksum, run.customerAgentHandoff?.checksum, ...(run.proofIds || [])].filter(Boolean)),
+    taskIds: uniqueStrings(run.taskIds || []),
+    agentIds: uniqueStrings(run.agentIds || []),
+    runReceiptIds: uniqueStrings(run.runReceiptIds || []),
+    loopReceiptIds: uniqueStrings(run.loopReceiptIds || []),
+    researchOnly: Boolean(run.researchOnly),
+    targetReady: Boolean(run.targetReady),
   }));
   const managerCommandPrimaryAction = nextRunnableWalkthroughStep?.primaryAction
     || nextManagerAction
@@ -12669,6 +15416,15 @@ function buildManagerDashboardSnapshot({ project = {}, messages = [] } = {}) {
     changeRows: managerCommandChangeRows,
     changeReadyCount: managerCommandChangeRows.filter((row) => row.status === 'synced').length,
     recentEvidenceRows: [
+      ...productTeamMissionRunRows.slice(0, 2).map((run) => ({
+        id: run.id,
+        type: 'product-team-mission-run',
+        label: run.missionName || 'Product team mission',
+        detail: run.status || run.routeLabel,
+        time: run.createdAt,
+        proofIds: run.proofIds || [],
+        timelineLogIds: run.timelineLogIds || [],
+      })),
       ...autonomousRunControlRunRows.slice(0, 3).map((run) => ({
         id: run.id,
         type: 'autonomous-run-control-action-run',
@@ -12840,6 +15596,16 @@ function buildManagerDashboardSnapshot({ project = {}, messages = [] } = {}) {
       rows: autonomousRunControlSessionRows,
       tickRows: autonomousRunControlSessionTickRows,
     },
+    productTeamMissionRuns: {
+      count: project.productTeamMissionRuns?.length || 0,
+      latestRun: productTeamMissionRunRows[0] || null,
+      autonomousSessionCount: productTeamMissionRunRows.filter((run) => run.autonomousSessionId).length,
+      customerAgentHandoffCount: productTeamMissionRunRows.filter((run) => run.customerAgentHandoff?.readyForLocalAutonomy).length,
+      firstTickHandoffCount: productTeamMissionRunRows.filter((run) => run.customerAgentHandoff?.firstTickRecorded).length,
+      runReceiptCount: productTeamMissionRunRows.reduce((sum, run) => sum + (run.runReceiptIds?.length || 0), 0),
+      researchOnlyCount: productTeamMissionRunRows.filter((run) => run.researchOnly).length,
+      rows: productTeamMissionRunRows,
+    },
     managerActionContext: {
       projectId,
       kickoffMeetingId,
@@ -13006,6 +15772,7 @@ function buildManagerDashboardSnapshot({ project = {}, messages = [] } = {}) {
     },
     backendRoutes: {
       project: projectId ? `/projects/${projectId}` : null,
+      projectSettings: projectId ? `/projects/${projectId}/project-settings` : null,
       readiness: projectId ? `/projects/${projectId}/readiness` : null,
       readinessProofMap: projectId ? `/projects/${projectId}/readiness-proof-map` : null,
       evidenceQualityAudit: projectId ? `/projects/${projectId}/evidence-quality-audit` : null,
@@ -13032,6 +15799,7 @@ function buildManagerDashboardSnapshot({ project = {}, messages = [] } = {}) {
       pilotLaunchReadiness: projectId ? `/projects/${projectId}/pilot-launch-readiness` : null,
       deploymentPreflight: projectId ? `/projects/${projectId}/deployment-preflight` : null,
       adapterGatewayPreflight: projectId ? `/projects/${projectId}/adapter-gateway-preflight` : null,
+      settingsIntegrationReadiness: projectId ? `/projects/${projectId}/settings-integration-readiness` : null,
       productionLaunchAudit: projectId ? `/projects/${projectId}/production-launch-audit` : null,
       launchApprovals: projectId ? `/projects/${projectId}/launch-approvals` : null,
       mvpReadiness: projectId ? `/projects/${projectId}/mvp-readiness` : null,
@@ -13040,6 +15808,7 @@ function buildManagerDashboardSnapshot({ project = {}, messages = [] } = {}) {
       persistenceAdapterDryRun: projectId ? `/projects/${projectId}/persistence-adapter-dry-run` : null,
       workerQueue: projectId ? `/projects/${projectId}/worker-queue` : null,
       autonomousRunControl: projectId ? `/projects/${projectId}/autonomous-run-control` : null,
+      runtimeAutonomyStatus: projectId ? `/projects/${projectId}/runtime-autonomy-status` : null,
       productTeamOperatingLoop: projectId ? `/projects/${projectId}/product-team-operating-loop` : null,
       autonomousCycleConsistency: projectId ? `/projects/${projectId}/autonomous-cycle-consistency` : null,
       agentAutonomousActionQueue: projectId ? `/projects/${projectId}/agent-autonomous-action-queue` : null,
@@ -13100,6 +15869,16 @@ function buildAutonomousRunControl({
   const workerWaitingCount = (workerSummary.projectWaitingCount || 0) + (workerSummary.agentWaitingCount || 0) + (workerSummary.autopilotSessionWaitingCount || 0);
   const latestSchedulerRecord = operationsBoard.latestSchedulerRecord || (project.autonomousSchedulerLedger || [])[0] || null;
   const latestProjectCycle = operationsBoard.latestProjectCycle || (project.autonomousLedger || [])[0] || null;
+  const latestMvpOperatorTargetRun = (project.mvpReadinessOperatorActionRuns || [])
+    .find((run) => (
+      run?.targetControl?.autonomousRunnable
+      && run.targetControl.targetStageId
+      && isMvpReadinessTargetGapStillOpen({ project, targetControl: run.targetControl })
+    )) || null;
+  const latestMvpOperatorTargetControl = latestMvpOperatorTargetRun?.targetControl || null;
+  const latestMvpOperatorTargetLane = latestMvpOperatorTargetControl?.preferredLane === 'agent-autonomy'
+    ? 'agent-autonomy'
+    : 'worker-scheduler';
   const agentActionRows = uniqueBy(
     [
       nextAgentAction,
@@ -13112,6 +15891,9 @@ function buildAutonomousRunControl({
     ...(managerQueue.rows || []).flatMap((row) => row.proofIds || []),
     latestSchedulerRecord?.messageId,
     latestProjectCycle?.messageId,
+    latestMvpOperatorTargetRun?.id,
+    latestMvpOperatorTargetRun?.checksum,
+    latestMvpOperatorTargetControl?.checksum,
   ]);
   const timelineLogIds = uniqueStrings([
     ...(agentQueue.timelineLogIds || []),
@@ -13119,12 +15901,16 @@ function buildAutonomousRunControl({
     ...(continuousLoop.rows || []).flatMap((row) => row.timelineLogIds || []),
     latestSchedulerRecord?.logId,
     latestProjectCycle?.logId,
+    latestMvpOperatorTargetRun?.timelineLogId,
+    ...(latestMvpOperatorTargetRun?.timelineLogIds || []),
   ]);
   const eventIds = uniqueStrings([
     ...(agentQueue.eventIds || []),
     ...(managerQueue.rows || []).flatMap((row) => row.eventIds || []),
     latestSchedulerRecord?.eventId,
     latestProjectCycle?.eventId,
+    latestMvpOperatorTargetRun?.eventId,
+    ...(latestMvpOperatorTargetRun?.eventIds || []),
   ]);
   const agentControlActions = agentActionRows.map((agentAction, index) => ({
       id: index === 0 ? 'run-next-agent-autonomous-action' : `run-agent-autonomous-action-${agentAction.agentId || agentAction.id}`,
@@ -13166,6 +15952,48 @@ function buildAutonomousRunControl({
       proofIds: nextManagerAction.proofIds || [],
       timelineLogIds: nextManagerAction.timelineLogIds || [],
       eventIds: nextManagerAction.eventIds || [],
+    } : null,
+    latestMvpOperatorTargetControl ? {
+      id: 'run-mvp-readiness-target',
+      lane: latestMvpOperatorTargetLane,
+      label: `Run MVP target: ${latestMvpOperatorTargetControl.targetStageId}`,
+      status: projectId ? 'ready' : 'blocked',
+      canRun: Boolean(projectId && latestMvpOperatorTargetControl.autonomousRunnable && latestMvpOperatorTargetControl.targetStageId),
+      apiPath: latestMvpOperatorTargetLane === 'agent-autonomy'
+        ? (projectId ? `/projects/${projectId}/agent-autonomous-action-queue/next/run` : null)
+        : '/workers/autonomous/tick',
+      runApiPath: projectId ? `/projects/${projectId}/autonomous-run-control/run-mvp-readiness-target/run` : null,
+      method: 'POST',
+      requestBodyTemplate: projectId ? {
+        ...buildAutopilotTargetExecutionOverrides({ targetControls: latestMvpOperatorTargetControl }),
+        source: 'mvp-readiness-operator-target',
+        trigger: 'mvp-readiness-operator-target',
+        schedulerReason: latestMvpOperatorTargetControl.targetReason || 'mvp-readiness-operator-target',
+        targetControl: latestMvpOperatorTargetControl,
+        autopilotTargetControl: latestMvpOperatorTargetControl,
+        includeReadModels: false,
+        submitAgentWorkArtifacts: true,
+        reviewPendingSubmissions: true,
+        respondToReviewObligations: true,
+      } : null,
+      operatorActionRunId: latestMvpOperatorTargetRun?.id || null,
+      operatorActionId: latestMvpOperatorTargetRun?.actionId || latestMvpOperatorTargetControl.operatorActionId || null,
+      targetStageId: latestMvpOperatorTargetControl.targetStageId || null,
+      targetGapId: latestMvpOperatorTargetControl.targetGapId || null,
+      targetControlChecksum: latestMvpOperatorTargetControl.checksum || null,
+      proofIds: uniqueStrings([
+        latestMvpOperatorTargetRun?.id,
+        latestMvpOperatorTargetRun?.checksum,
+        latestMvpOperatorTargetControl.checksum,
+      ]),
+      timelineLogIds: uniqueStrings([
+        latestMvpOperatorTargetRun?.timelineLogId,
+        ...(latestMvpOperatorTargetRun?.timelineLogIds || []),
+      ]),
+      eventIds: uniqueStrings([
+        latestMvpOperatorTargetRun?.eventId,
+        ...(latestMvpOperatorTargetRun?.eventIds || []),
+      ]),
     } : null,
     {
       id: 'run-backend-scheduler-tick',
@@ -13266,6 +16094,9 @@ function buildAutonomousRunControl({
     scheduledAgentCount: continuousLoop.scheduledAgentCount || operationsBoard.agentRunQueueCount || 0,
     nextActionId: nextActions.find((row) => row.canRun)?.id || nextActions[0]?.id || null,
     nextActionLane: nextActions.find((row) => row.canRun)?.lane || nextActions[0]?.lane || null,
+    mvpReadinessTargetReady: Boolean(latestMvpOperatorTargetControl?.autonomousRunnable && latestMvpOperatorTargetControl?.targetStageId),
+    mvpReadinessTargetStageId: latestMvpOperatorTargetControl?.targetStageId || null,
+    mvpReadinessOperatorActionRunId: latestMvpOperatorTargetRun?.id || null,
     proofIdCount: proofIds.length,
     timelineLogIdCount: timelineLogIds.length,
     eventIdCount: eventIds.length,
@@ -13338,6 +16169,250 @@ function buildAutonomousRunControl({
   };
 }
 
+function buildCustomerAgentHandoffExecutionSummary({
+  project = {},
+  projectId = null,
+  latestMissionRun = null,
+  customerAgentHandoff = null,
+} = {}) {
+  if (!customerAgentHandoff) return null;
+  const resolvedProjectId = projectId || project.id || latestMissionRun?.projectId || null;
+  const sessionId = customerAgentHandoff.autonomousSessionId || latestMissionRun?.autonomousSessionId || null;
+  const targetStageId = customerAgentHandoff.targetStageId || latestMissionRun?.targetNextMissingStageId || null;
+  const session = sessionId
+    ? (project.autonomousRunControlSessionLedger || []).find((row) => String(row.id || '') === String(sessionId)) || null
+    : null;
+  const explicitTickIds = uniqueStrings([
+    customerAgentHandoff.firstTickId,
+    latestMissionRun?.autonomousSessionTickId,
+  ]);
+  const tickRows = (project.autonomousRunControlSessionTickLedger || []).filter((tick) => (
+    (sessionId && String(tick.sessionId || '') === String(sessionId))
+    || explicitTickIds.includes(String(tick.id || ''))
+  )).slice(0, 12);
+  const tickIds = uniqueStrings([
+    ...explicitTickIds,
+    ...tickRows.map((tick) => tick.id),
+  ]);
+  const runIds = uniqueStrings([
+    ...(latestMissionRun?.runReceiptIds || []),
+    ...(session?.runReceiptIds || []),
+    ...tickRows.flatMap((tick) => tick.runReceiptIds || []),
+  ]);
+  const loopIds = uniqueStrings([
+    ...(latestMissionRun?.loopReceiptIds || []),
+    ...(session?.loopReceiptIds || []),
+    ...tickRows.flatMap((tick) => tick.loopReceiptIds || []),
+  ]);
+  const runRows = (project.autonomousRunControlRunLedger || []).filter((run) => (
+    runIds.includes(String(run.id || ''))
+    || (targetStageId && String(run.autopilotTargetStageId || '') === String(targetStageId))
+  )).slice(0, 16);
+  const loopRows = (project.autonomousRunControlLoopLedger || []).filter((loop) => (
+    loopIds.includes(String(loop.id || ''))
+    || (loop.runReceiptIds || []).some((id) => runIds.includes(String(id || '')))
+    || (targetStageId && (loop.targetStageIds || []).map(String).includes(String(targetStageId)))
+  )).slice(0, 12);
+  const agentActionRunIds = uniqueStrings(runRows.map((run) => run.agentAutonomousActionRunId).filter(Boolean));
+  const agentActionRows = (project.agentAutonomousActionRunLedger || []).filter((run) => (
+    agentActionRunIds.includes(String(run.id || ''))
+    || runRows.some((receipt) => String(receipt.agentAutonomousActionRunId || '') === String(run.id || ''))
+  )).slice(0, 16);
+  const submissionIds = uniqueStrings([
+    ...runRows.map((run) => run.workSubmissionId).filter(Boolean),
+    ...agentActionRows.flatMap((run) => [
+      run.workSubmissionId,
+      run.reviewResponseSubmissionId,
+    ].filter(Boolean)),
+  ]);
+  const resultMessageIds = uniqueStrings([
+    ...tickRows.flatMap((tick) => tick.resultMessageIds || []),
+    ...loopRows.flatMap((loop) => loop.resultMessageIds || []),
+    ...runRows.flatMap((run) => run.resultMessageIds || []),
+    ...agentActionRows.flatMap((run) => run.resultMessageIds || []),
+  ]);
+  const agentIds = uniqueStrings([
+    ...(customerAgentHandoff.agentIds || []),
+    ...(latestMissionRun?.agentIds || []),
+    ...(session?.agentIds || []),
+    ...tickRows.flatMap((tick) => tick.agentIds || []),
+    ...loopRows.flatMap((loop) => loop.agentIds || []),
+    ...runRows.flatMap((run) => [run.agentId, ...(run.agentIds || [])]),
+    ...agentActionRows.map((run) => run.agentId),
+  ]);
+  const taskIds = uniqueStrings([
+    ...(customerAgentHandoff.taskIds || []),
+    ...(latestMissionRun?.taskIds || []),
+    ...(session?.taskIds || []),
+    ...tickRows.flatMap((tick) => tick.taskIds || []),
+    ...loopRows.flatMap((loop) => loop.taskIds || []),
+    ...runRows.map((run) => run.taskId),
+    ...agentActionRows.map((run) => run.taskId),
+  ]);
+  const submissionRows = (project.agentSubmissions || []).filter((submission) => (
+    submissionIds.includes(String(submission.id || ''))
+    || resultMessageIds.includes(String(submission.messageId || ''))
+  )).slice(0, 12);
+  const artifactTypes = uniqueStrings([
+    ...submissionRows.map((submission) => submission.artifactType),
+    ...runRows.map((run) => run.agentInitiativeArtifactType),
+    ...loopRows.flatMap((loop) => loop.agentInitiativeArtifactTypes || []),
+    ...tickRows.flatMap((tick) => tick.agentInitiativeArtifactTypes || []),
+  ]);
+  const proofIds = uniqueStrings([
+    latestMissionRun?.id,
+    latestMissionRun?.checksum,
+    customerAgentHandoff.checksum,
+    ...(customerAgentHandoff.proofIds || []),
+    ...(session?.proofIds || []),
+    ...tickRows.flatMap((tick) => [tick.id, tick.checksum, ...(tick.proofIds || []), ...(tick.resultMessageIds || [])]),
+    ...loopRows.flatMap((loop) => [loop.id, loop.checksum, ...(loop.proofIds || []), ...(loop.resultMessageIds || [])]),
+    ...runRows.flatMap((run) => [run.id, run.checksum, ...(run.proofIds || []), ...(run.resultMessageIds || [])]),
+    ...agentActionRows.flatMap((run) => [run.id, run.checksum, ...(run.resultMessageIds || [])]),
+    ...submissionRows.flatMap((submission) => [
+      submission.id,
+      submission.messageId,
+      submission.artifactStorageProofChecksum,
+      ...(submission.evidenceIds || []),
+    ]),
+  ]);
+  const timelineLogIds = uniqueStrings([
+    ...(customerAgentHandoff.timelineLogIds || []),
+    ...(session?.timelineLogIds || []),
+    ...tickRows.flatMap((tick) => [tick.logId, ...(tick.timelineLogIds || [])]),
+    ...loopRows.flatMap((loop) => [loop.logId, ...(loop.timelineLogIds || [])]),
+    ...runRows.flatMap((run) => [run.logId, ...(run.timelineLogIds || [])]),
+    ...agentActionRows.flatMap((run) => [run.logId, ...(run.timelineLogIds || [])]),
+    ...submissionRows.map((submission) => submission.timelineLogId),
+  ]);
+  const eventIds = uniqueStrings([
+    ...(customerAgentHandoff.eventIds || []),
+    ...(session?.eventIds || []),
+    ...tickRows.flatMap((tick) => [tick.eventId, ...(tick.eventIds || [])]),
+    ...loopRows.flatMap((loop) => [loop.eventId, ...(loop.eventIds || [])]),
+    ...runRows.flatMap((run) => [run.eventId, ...(run.eventIds || [])]),
+    ...agentActionRows.flatMap((run) => [run.eventId, ...(run.eventIds || [])]),
+    ...submissionRows.map((submission) => submission.eventId),
+  ]);
+  const outputRows = submissionRows.map((submission) => ({
+    id: submission.id,
+    title: submission.title || submission.artifactType || 'Agent output',
+    agentId: submission.agentId || null,
+    agentName: submission.agentName || null,
+    artifactType: submission.artifactType || null,
+    status: submission.status || null,
+    messageId: submission.messageId || null,
+    route: resolvedProjectId ? `/projects/${resolvedProjectId}/submissions/${encodeURIComponent(submission.id)}` : null,
+    proofIds: uniqueStrings([submission.id, submission.messageId, ...(submission.evidenceIds || [])]).slice(0, 8),
+    timelineLogIds: uniqueStrings([submission.timelineLogId]).slice(0, 8),
+    eventIds: uniqueStrings([submission.eventId]).slice(0, 8),
+  }));
+  const hasExecutionEvidence = Boolean(
+    explicitTickIds.length
+    || tickRows.length
+    || runIds.length
+    || loopIds.length
+    || runRows.length
+    || loopRows.length
+    || outputRows.length
+    || resultMessageIds.length
+  );
+  const ready = Boolean(
+    sessionId
+    && (customerAgentHandoff.firstTickRecorded || tickRows.length || explicitTickIds.length)
+    && hasExecutionEvidence
+  );
+  const status = !sessionId
+    ? 'handoff-session-missing'
+    : outputRows.length
+      ? 'a-side-output-recorded'
+      : runRows.length || loopRows.length || resultMessageIds.length
+        ? 'a-side-run-receipts-recorded'
+        : tickRows.length || customerAgentHandoff.firstTickRecorded
+          ? 'a-side-tick-recorded'
+          : 'waiting-for-a-side-output';
+  const summary = {
+    ready,
+    status,
+    sessionId,
+    tickCount: tickRows.length || explicitTickIds.length,
+    runReceiptCount: runRows.length || runIds.length,
+    loopReceiptCount: loopRows.length || loopIds.length,
+    agentActionRunCount: agentActionRows.length,
+    submissionCount: outputRows.length,
+    resultMessageCount: resultMessageIds.length,
+    artifactTypes,
+    agentIds,
+    taskIds,
+    targetStageId,
+  };
+  return {
+    schemaVersion: 'product-team-customer-agent-handoff-execution/v1',
+    projectId: resolvedProjectId,
+    missionRunId: latestMissionRun?.id || null,
+    handoffChecksum: customerAgentHandoff.checksum || null,
+    status,
+    ready,
+    sessionId,
+    tickIds,
+    loopReceiptIds: uniqueStrings([
+      ...loopIds,
+      ...loopRows.map((loop) => loop.id),
+    ]),
+    runReceiptIds: uniqueStrings([
+      ...runIds,
+      ...runRows.map((run) => run.id),
+    ]),
+    agentActionRunIds: uniqueStrings([
+      ...agentActionRunIds,
+      ...agentActionRows.map((run) => run.id),
+    ]),
+    submissionIds: uniqueStrings([
+      ...submissionIds,
+      ...outputRows.map((row) => row.id),
+    ]),
+    resultMessageIds,
+    agentIds,
+    taskIds,
+    artifactTypes,
+    targetStageId,
+    outputRows,
+    latestOutput: outputRows[0] || null,
+    latestRun: runRows[0] ? {
+      id: runRows[0].id,
+      actionId: runRows[0].actionId || null,
+      actionLane: runRows[0].actionLane || null,
+      agentId: runRows[0].agentId || null,
+      delegatedRunKind: runRows[0].delegatedRunKind || null,
+      resultMessageCount: runRows[0].resultMessageCount || (runRows[0].resultMessageIds || []).length || 0,
+      workSubmissionId: runRows[0].workSubmissionId || null,
+      runApiPath: runRows[0].runApiPath || null,
+      checksum: runRows[0].checksum || null,
+    } : null,
+    runApiPath: customerAgentHandoff.readyForLocalAutonomy && resolvedProjectId
+      ? `/projects/${resolvedProjectId}/autonomous-run-control/run-backend-scheduler-tick/run`
+      : null,
+    route: resolvedProjectId ? `/projects/${resolvedProjectId}/product-team-operating-loop` : null,
+    proofIds,
+    timelineLogIds,
+    eventIds,
+    summary,
+    checksum: persistenceChecksum({
+      schemaVersion: 'product-team-customer-agent-handoff-execution/v1',
+      projectId: resolvedProjectId,
+      missionRunId: latestMissionRun?.id || null,
+      handoffChecksum: customerAgentHandoff.checksum || null,
+      sessionId,
+      tickIds,
+      runReceiptIds: runIds,
+      loopReceiptIds: loopIds,
+      submissionIds,
+      resultMessageIds,
+      status,
+    }),
+  };
+}
+
 function buildProductTeamOperatingLoop({
   project = {},
   managerDashboard = {},
@@ -13363,6 +16438,17 @@ function buildProductTeamOperatingLoop({
   const nextControlAction = (autonomousRunControl.nextActions || []).find((row) => row.canRun)
     || (autonomousRunControl.nextActions || [])[0]
     || null;
+  const latestMissionRun = (project.productTeamMissionRuns || [])[0] || null;
+  const customerAgentHandoff = latestMissionRun?.customerAgentHandoff || null;
+  const customerAgentHandoffExecution = buildCustomerAgentHandoffExecutionSummary({
+    project,
+    projectId,
+    latestMissionRun,
+    customerAgentHandoff,
+  });
+  const customerAgentHandoffRunApiPath = projectId && customerAgentHandoff?.readyForLocalAutonomy
+    ? `/projects/${projectId}/autonomous-run-control/run-backend-scheduler-tick/run`
+    : null;
   const artifactTypes = uniqueStrings(submissionRoutes.map((route) => route.artifactType).filter(Boolean));
   const selectedAgentActions = uniqueStrings((agentQueue.rows || []).map((row) => row.selectedAction).filter(Boolean));
   const agentInitiativeRows = (agentQueue.rows || []).map((row, index) => (
@@ -13377,17 +16463,25 @@ function buildProductTeamOperatingLoop({
   const proofIds = uniqueStrings([
     ...(productTeamDeliveryTrace.proofIds || []),
     ...(autonomousRunControl.proofIds || []),
+    customerAgentHandoff?.checksum,
+    ...(customerAgentHandoff?.proofIds || []),
+    customerAgentHandoffExecution?.checksum,
+    ...(customerAgentHandoffExecution?.proofIds || []),
     ...(readinessProofMap.productTeamDeliveryTraceSummary?.proofIds || []),
     ...(proofRoutes || []).flatMap((route) => route.proofIds || []),
   ]);
   const timelineLogIds = uniqueStrings([
     ...(productTeamDeliveryTrace.timelineLogIds || []),
     ...(autonomousRunControl.timelineLogIds || []),
+    ...(customerAgentHandoff?.timelineLogIds || []),
+    ...(customerAgentHandoffExecution?.timelineLogIds || []),
     ...(proofRoutes || []).flatMap((route) => route.timelineLogIds || []),
   ]);
   const eventIds = uniqueStrings([
     ...(productTeamDeliveryTrace.eventIds || []),
     ...(autonomousRunControl.eventIds || []),
+    ...(customerAgentHandoff?.eventIds || []),
+    ...(customerAgentHandoffExecution?.eventIds || []),
     ...(proofRoutes || []).flatMap((route) => route.eventIds || []),
   ]);
   const gates = [
@@ -13470,6 +16564,7 @@ function buildProductTeamOperatingLoop({
     agentAutonomousActionQueue: projectId ? `/projects/${projectId}/agent-autonomous-action-queue` : null,
     managerActionQueue: projectId ? `/projects/${projectId}/manager-action-queue` : null,
     workerQueue: projectId ? `/projects/${projectId}/worker-queue` : null,
+    productTeamMissions: projectId ? `/projects/${projectId}/product-team-missions` : null,
     managerFlowGraph: projectId ? `/projects/${projectId}/manager-flow-graph` : null,
     readinessProofMap: projectId ? `/projects/${projectId}/readiness-proof-map` : null,
     transcripts: projectId ? `/projects/${projectId}/transcripts` : null,
@@ -13501,6 +16596,16 @@ function buildProductTeamOperatingLoop({
     agentInitiativeCount: agentInitiativeRows.length,
     readyAgentInitiativeCount: readyAgentInitiativeRows.length,
     initiativeArtifactTypes,
+    customerAgentHandoffReady: Boolean(customerAgentHandoff?.readyForLocalAutonomy),
+    customerAgentHandoffFirstTickRecorded: Boolean(customerAgentHandoff?.firstTickRecorded),
+    customerAgentHandoffStatus: customerAgentHandoff?.status || null,
+    customerAgentHandoffTargetStageId: customerAgentHandoff?.targetStageId || null,
+    customerAgentHandoffExecutionReady: Boolean(customerAgentHandoffExecution?.ready),
+    customerAgentHandoffExecutionStatus: customerAgentHandoffExecution?.status || null,
+    customerAgentHandoffExecutionTickCount: customerAgentHandoffExecution?.summary?.tickCount || 0,
+    customerAgentHandoffExecutionRunReceiptCount: customerAgentHandoffExecution?.summary?.runReceiptCount || 0,
+    customerAgentHandoffExecutionSubmissionCount: customerAgentHandoffExecution?.summary?.submissionCount || 0,
+    customerAgentHandoffExecutionResultMessageCount: customerAgentHandoffExecution?.summary?.resultMessageCount || 0,
   };
   const base = {
     schemaVersion: 'product-team-operating-loop/v1',
@@ -13511,6 +16616,40 @@ function buildProductTeamOperatingLoop({
     readyForProduction: false,
     customerSide: {
       mode: 'manager-supervised-local-autonomy',
+      handoff: customerAgentHandoff ? {
+        schemaVersion: customerAgentHandoff.schemaVersion || 'product-team-customer-agent-handoff/v1',
+        status: customerAgentHandoff.status || null,
+        readyForLocalAutonomy: Boolean(customerAgentHandoff.readyForLocalAutonomy),
+        firstTickRecorded: Boolean(customerAgentHandoff.firstTickRecorded),
+        selectedLeaderId: customerAgentHandoff.selectedLeaderId || null,
+        reviewerId: customerAgentHandoff.reviewerId || null,
+        targetKind: customerAgentHandoff.targetKind || null,
+        targetStageId: customerAgentHandoff.targetStageId || null,
+        actionLanes: customerAgentHandoff.actionLanes || [],
+        runApiPath: customerAgentHandoffRunApiPath,
+        nextRoutes: customerAgentHandoff.nextRoutes || {},
+        checksum: customerAgentHandoff.checksum || null,
+      } : null,
+      handoffExecution: customerAgentHandoffExecution ? {
+        schemaVersion: customerAgentHandoffExecution.schemaVersion,
+        status: customerAgentHandoffExecution.status,
+        ready: Boolean(customerAgentHandoffExecution.ready),
+        sessionId: customerAgentHandoffExecution.sessionId || null,
+        tickIds: customerAgentHandoffExecution.tickIds || [],
+        runReceiptIds: customerAgentHandoffExecution.runReceiptIds || [],
+        loopReceiptIds: customerAgentHandoffExecution.loopReceiptIds || [],
+        submissionIds: customerAgentHandoffExecution.submissionIds || [],
+        resultMessageIds: customerAgentHandoffExecution.resultMessageIds || [],
+        artifactTypes: customerAgentHandoffExecution.artifactTypes || [],
+        latestOutput: customerAgentHandoffExecution.latestOutput || null,
+        latestRun: customerAgentHandoffExecution.latestRun || null,
+        outputRows: customerAgentHandoffExecution.outputRows || [],
+        runApiPath: customerAgentHandoffExecution.runApiPath || customerAgentHandoffRunApiPath,
+        proofIds: customerAgentHandoffExecution.proofIds || [],
+        timelineLogIds: customerAgentHandoffExecution.timelineLogIds || [],
+        eventIds: customerAgentHandoffExecution.eventIds || [],
+        checksum: customerAgentHandoffExecution.checksum || null,
+      } : null,
       nextAction: nextControlAction ? {
         id: nextControlAction.id || null,
         lane: nextControlAction.lane || null,
@@ -13588,6 +16727,8 @@ function buildProductTeamOperatingLoop({
       summary,
       gateState: gates.map((gate) => [gate.id, gate.passed]),
       backendRoutes,
+      customerAgentHandoffChecksum: customerAgentHandoff?.checksum || null,
+      customerAgentHandoffExecutionChecksum: customerAgentHandoffExecution?.checksum || null,
     }),
   });
 }
@@ -13871,6 +17012,573 @@ function buildTeamCollaborationDiagnostics({
       status: base.status,
       summary,
       diagnosticState: diagnosticRows.map((item) => [item.id, item.passed, item.productionBlocker]),
+      backendRoutes,
+    }),
+  });
+}
+
+function buildCollaborationIntentQueue({
+  project = {},
+  messages = [],
+  managerDashboard = {},
+  productTeamOperatingLoop = {},
+  teamCollaborationDiagnostics = {},
+  readinessProofMap = {},
+  now = nowIso(),
+} = {}) {
+  const projectId = project.id || managerDashboard.projectId || productTeamOperatingLoop.projectId || teamCollaborationDiagnostics.projectId || null;
+  const team = project.team || [];
+  const agentById = Object.fromEntries(team.map((agent) => [agent.id, agent]));
+  const leader = team.find((agent) => agent.isLeader)
+    || team.find((agent) => /lead|leader|architect|manager/i.test(`${agent.role || ''} ${agent.title || ''}`))
+    || null;
+  const reviewer = team.find((agent) => agent.isReviewer)
+    || team.find((agent) => /review|evidence|curie|quality/i.test(`${agent.id || ''} ${agent.name || ''} ${agent.role || ''} ${agent.title || ''}`))
+    || null;
+  const projectMessages = (messages || []).filter((message) => !projectId || !message.projectId || message.projectId === projectId);
+  const transcriptIndex = managerDashboard.transcriptIndex?.schemaVersion
+    ? managerDashboard.transcriptIndex
+    : buildTranscriptIndex({ project, messages: projectMessages });
+  const managerCommandCenter = managerDashboard.managerCommandCenter || {};
+  const managerQueue = managerDashboard.managerActionQueue || {};
+  const agentQueue = managerDashboard.agentAutonomousActionQueue || {};
+  const initiativeRows = (productTeamOperatingLoop.agentSide?.initiativeRows || (agentQueue.rows || []).map((queueRow, index) => (
+    queueRow.initiative?.schemaVersion === 'agent-autonomous-initiative/v1'
+      ? queueRow.initiative
+      : buildAgentAutonomousInitiativeRow({ projectId, queueRow, index })
+  ))).filter(Boolean);
+  const roleNegotiationRoutes = readinessProofMap.roleNegotiationRoutes || [];
+  const selfMarketingRoutes = readinessProofMap.selfMarketingRoutes || [];
+  const submissionRoutes = readinessProofMap.submissionRoutes || [];
+  const reviewRoutes = readinessProofMap.submissionReviewRoutes || [];
+  const revisionRoutes = readinessProofMap.revisionRoutes || [];
+  const finalDeliverableRoutes = submissionRoutes.filter((route) => route.artifactType === 'final-deliverable');
+  const diagnosticsRows = teamCollaborationDiagnostics.diagnosticRows || [];
+  const allDiagnosticProofIds = uniqueStrings(diagnosticsRows.flatMap((row) => row.proofIds || []));
+  const allDiagnosticTimelineLogIds = uniqueStrings(diagnosticsRows.flatMap((row) => row.timelineLogIds || []));
+  const allDiagnosticEventIds = uniqueStrings(diagnosticsRows.flatMap((row) => row.eventIds || []));
+  const mainTranscript = (transcriptIndex.channels || []).find((channel) => channel.channelId === 'main') || null;
+  const latestMainProofIds = uniqueStrings([
+    ...(mainTranscript?.proofIds || []),
+    ...projectMessages
+      .filter((message) => (message.channelId || 'main') === 'main')
+      .slice(-8)
+      .map((message) => message.id),
+  ]);
+  const managerNextAction = managerCommandCenter.nextBestAction || managerQueue.nextAction || null;
+  const collaborationBoard = managerCommandCenter.collaborationBoard || {};
+  const attentionRows = managerCommandCenter.attentionRows || [];
+  const mvpOperatorRuns = (project.mvpReadinessOperatorActionRuns || []).slice(0, 5);
+  const latestMissionRun = (project.productTeamMissionRuns || [])[0] || null;
+  const customerAgentHandoff = latestMissionRun?.customerAgentHandoff || productTeamOperatingLoop.customerSide?.handoff || null;
+  const customerAgentHandoffExecution = productTeamOperatingLoop.customerSide?.handoffExecution
+    || buildCustomerAgentHandoffExecutionSummary({
+      project,
+      projectId,
+      latestMissionRun,
+      customerAgentHandoff,
+    });
+  const customerAgentHandoffRunApiPath = projectId && customerAgentHandoff?.readyForLocalAutonomy
+    ? `/projects/${projectId}/autonomous-run-control/run-backend-scheduler-tick/run`
+    : null;
+  const collaborationIntentRuns = (project.collaborationIntentRunLedger || [])
+    .filter((run) => !projectId || !run.projectId || run.projectId === projectId)
+    .sort((a, b) => (Date.parse(b.executedAt || b.time || '') || 0) - (Date.parse(a.executedAt || a.time || '') || 0));
+  const latestIntentRunByIntentId = new Map();
+  collaborationIntentRuns.forEach((run) => {
+    if (run.intentId && !latestIntentRunByIntentId.has(run.intentId)) {
+      latestIntentRunByIntentId.set(run.intentId, run);
+    }
+  });
+
+  const normalizePriority = (value, fallback = 0) => {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric : fallback;
+  };
+
+  const makeRow = ({
+    id,
+    source,
+    stage,
+    lane,
+    actorType,
+    agentId = null,
+    intent,
+    rationale = [],
+    priority = 0,
+    canRun = false,
+    runApiPath = null,
+    apiPath = null,
+    status = null,
+    requiresManager = false,
+    proofIds = [],
+    timelineLogIds = [],
+    eventIds = [],
+    routeKeys = [],
+    relatedIds = [],
+    artifactType = null,
+    selectedAction = null,
+  }) => {
+    const safeProofIds = uniqueStrings(proofIds).slice(0, 20);
+    const safeTimelineLogIds = uniqueStrings(timelineLogIds).slice(0, 20);
+    const safeEventIds = uniqueStrings(eventIds).slice(0, 20);
+    const actor = agentId ? agentById[agentId] || {} : {};
+    const resolvedStatus = status
+      || (canRun ? 'ready'
+        : safeProofIds.length || safeTimelineLogIds.length || safeEventIds.length
+          ? 'proofed-waiting'
+          : 'needs-proof');
+    return {
+      id,
+      schemaVersion: 'collaboration-intent-queue-row/v1',
+      source,
+      stage,
+      lane,
+      actorType,
+      agentId,
+      agentName: agentId ? actor.name || agentId : null,
+      agentRole: agentId ? actor.role || actor.title || null : null,
+      intent,
+      rationale: uniqueStrings(rationale).slice(0, 6),
+      priority: normalizePriority(priority),
+      status: resolvedStatus,
+      canRun: Boolean(canRun),
+      runApiPath,
+      apiPath,
+      requiresManager: Boolean(requiresManager),
+      proofIds: safeProofIds,
+      timelineLogIds: safeTimelineLogIds,
+      eventIds: safeEventIds,
+      routeKeys: uniqueStrings(routeKeys),
+      relatedIds: uniqueStrings(relatedIds),
+      artifactType,
+      selectedAction,
+    };
+  };
+
+  const rows = [];
+  if (selfMarketingRoutes.length || roleNegotiationRoutes.length) {
+    rows.push(makeRow({
+      id: 'kickoff-role-self-marketing-intent',
+      source: 'kickoff-role-negotiation',
+      stage: 'kickoff-meeting',
+      lane: 'meeting-intent',
+      actorType: 'team',
+      intent: 'Make each Agent state the role they can own, the value they bring, and whether they support or challenge the Leader choice.',
+      rationale: [
+        `${selfMarketingRoutes.length} self-marketing proof route(s)`,
+        `${roleNegotiationRoutes.length} role-negotiation proof route(s)`,
+      ],
+      priority: 90,
+      canRun: false,
+      apiPath: projectId ? `/projects/${projectId}/transcripts/main` : null,
+      status: selfMarketingRoutes.length && roleNegotiationRoutes.length ? 'proofed-waiting' : 'needs-proof',
+      proofIds: uniqueStrings([
+        ...selfMarketingRoutes.flatMap((route) => route.proofIds || []),
+        ...roleNegotiationRoutes.flatMap((route) => route.proofIds || []),
+      ]),
+      eventIds: uniqueStrings([
+        ...selfMarketingRoutes.flatMap((route) => route.eventIds || []),
+        ...roleNegotiationRoutes.flatMap((route) => route.eventIds || []),
+      ]),
+      routeKeys: ['selfMarketingRoutes', 'roleNegotiationRoutes', 'transcripts'],
+    }));
+  }
+
+  if (mainTranscript || collaborationBoard.count || attentionRows.length) {
+    rows.push(makeRow({
+      id: 'group-chat-attention-intent',
+      source: 'manager-command-center',
+      stage: 'group-chat',
+      lane: 'chat-intent',
+      actorType: 'team',
+      intent: 'Use group chat as the visible coordination lane for assignments, blockers, review handoffs, and Manager attention.',
+      rationale: [
+        `${mainTranscript?.messageCount || latestMainProofIds.length} main-channel message proof(s)`,
+        `${collaborationBoard.readyCount || 0}/${collaborationBoard.count || 0} collaboration board row(s) ready`,
+        `${attentionRows.length} attention row(s)`,
+      ],
+      priority: 80,
+      canRun: Boolean(managerNextAction?.canRun && managerNextAction?.runApiPath),
+      runApiPath: managerNextAction?.runApiPath || null,
+      apiPath: projectId ? `/projects/${projectId}/transcripts/main` : null,
+      requiresManager: Boolean(managerNextAction?.canRun),
+      proofIds: latestMainProofIds,
+      timelineLogIds: uniqueStrings((collaborationBoard.rows || []).flatMap((row) => row.timelineLogIds || [])),
+      eventIds: allDiagnosticEventIds,
+      routeKeys: ['manager-command-center', 'transcripts', 'team-collaboration-diagnostics'],
+      relatedIds: uniqueStrings(attentionRows.map((row) => row.id).filter(Boolean)),
+    }));
+  }
+
+  if (managerNextAction) {
+    rows.push(makeRow({
+      id: 'manager-next-action-intent',
+      source: 'manager-action-queue',
+      stage: 'manager-orchestration',
+      lane: 'manager-intent',
+      actorType: 'manager',
+      intent: managerNextAction.label || managerCommandCenter.nextBestActionLabel || 'Run the next Manager orchestration action.',
+      rationale: [
+        managerNextAction.requirementId ? `Requirement ${managerNextAction.requirementId}` : null,
+        managerCommandCenter.currentStage ? `Current stage ${managerCommandCenter.currentStage}` : null,
+      ].filter(Boolean),
+      priority: 75,
+      canRun: Boolean(managerNextAction.canRun && managerNextAction.runApiPath),
+      runApiPath: managerNextAction.runApiPath || null,
+      apiPath: managerNextAction.apiPath || (projectId ? `/projects/${projectId}/manager-action-queue` : null),
+      requiresManager: true,
+      proofIds: managerNextAction.proofIds || [],
+      timelineLogIds: managerNextAction.timelineLogIds || [],
+      eventIds: managerNextAction.eventIds || [],
+      routeKeys: ['manager-action-queue', 'manager-command-center'],
+      relatedIds: [managerNextAction.id, managerNextAction.requirementId].filter(Boolean),
+    }));
+  }
+
+  if (customerAgentHandoff) {
+    rows.push(makeRow({
+      id: 'customer-agent-handoff-intent',
+      source: 'product-team-customer-agent-handoff',
+      stage: 'mission-handoff',
+      lane: 'agent-intent',
+      actorType: 'team',
+      intent: `Continue the Manager-approved mission handoff through A-side autonomy${customerAgentHandoff.targetStageId ? ` toward ${customerAgentHandoff.targetStageId}` : ''}.`,
+      rationale: [
+        customerAgentHandoff.status ? `Handoff status ${customerAgentHandoff.status}` : null,
+        customerAgentHandoff.firstTickRecorded ? 'First A-side tick is recorded' : 'First A-side tick is pending or deferred',
+        customerAgentHandoff.targetStageId ? `Target stage ${customerAgentHandoff.targetStageId}` : null,
+        customerAgentHandoff.selectedLeaderId ? `Leader ${customerAgentHandoff.selectedLeaderId}` : null,
+        customerAgentHandoff.reviewerId ? `Reviewer ${customerAgentHandoff.reviewerId}` : null,
+        customerAgentHandoffExecution?.summary?.runReceiptCount ? `${customerAgentHandoffExecution.summary.runReceiptCount} A-side run receipt(s)` : null,
+        customerAgentHandoffExecution?.summary?.submissionCount ? `${customerAgentHandoffExecution.summary.submissionCount} handoff output submission(s)` : null,
+      ].filter(Boolean),
+      priority: 88,
+      canRun: Boolean(customerAgentHandoffRunApiPath),
+      runApiPath: customerAgentHandoffRunApiPath,
+      apiPath: customerAgentHandoff.nextRoutes?.autonomousRunControl || (projectId ? `/projects/${projectId}/autonomous-run-control` : null),
+      status: customerAgentHandoffRunApiPath ? 'ready' : 'proofed-waiting',
+      proofIds: uniqueStrings([
+        latestMissionRun?.id,
+        latestMissionRun?.checksum,
+        customerAgentHandoff.checksum,
+        ...(customerAgentHandoff.proofIds || []),
+        customerAgentHandoffExecution?.checksum,
+        ...(customerAgentHandoffExecution?.proofIds || []),
+      ]),
+      timelineLogIds: uniqueStrings([
+        ...(customerAgentHandoff.timelineLogIds || latestMissionRun?.timelineLogIds || []),
+        ...(customerAgentHandoffExecution?.timelineLogIds || []),
+      ]),
+      eventIds: uniqueStrings([
+        ...(customerAgentHandoff.eventIds || latestMissionRun?.eventIds || []),
+        ...(customerAgentHandoffExecution?.eventIds || []),
+      ]),
+      routeKeys: ['product-team-missions', 'product-team-operating-loop', 'collaboration-intent-queue', 'autonomous-run-control'],
+      relatedIds: [
+        latestMissionRun?.id,
+        customerAgentHandoff.autonomousSessionId,
+        customerAgentHandoff.firstTickId,
+        customerAgentHandoff.targetStageId,
+        ...(customerAgentHandoffExecution?.runReceiptIds || []),
+        ...(customerAgentHandoffExecution?.submissionIds || []),
+      ].filter(Boolean),
+      selectedAction: 'continue-customer-agent-handoff',
+    }));
+  }
+
+  mvpOperatorRuns.forEach((run, index) => {
+    const targetControl = run.targetControl || null;
+    const canRunTarget = Boolean(
+      projectId
+      && targetControl?.autonomousRunnable
+      && targetControl?.targetStageId
+      && isMvpReadinessTargetGapStillOpen({ project, targetControl })
+    );
+    rows.push(makeRow({
+      id: `mvp-readiness-operator-intent-${run.id || index + 1}`,
+      source: 'mvp-readiness-operator-action-run',
+      stage: 'mvp-readiness',
+      lane: targetControl?.preferredLane === 'agent-autonomy' ? 'agent-intent' : 'manager-intent',
+      actorType: 'manager',
+      intent: targetControl?.targetIntent || `Recorded MVP readiness action: ${run.actionLabel || run.actionId || 'operator action'}.`,
+      rationale: [
+        run.detail || null,
+        targetControl?.targetReason || null,
+        targetControl?.targetStageId ? `Target stage ${targetControl.targetStageId}` : null,
+        run.productionBlocker ? 'Production blocker is preserved; this is proof, not public launch clearance.' : null,
+      ].filter(Boolean),
+      priority: 78 - index,
+      canRun: canRunTarget,
+      runApiPath: canRunTarget ? `/projects/${projectId}/autonomous-run-control/run-mvp-readiness-target/run` : null,
+      apiPath: run.apiPath || (projectId ? `/projects/${projectId}/mvp-readiness` : null),
+      status: canRunTarget ? 'ready' : 'proofed-waiting',
+      requiresManager: true,
+      proofIds: uniqueStrings([
+        run.id,
+        run.checksum,
+        targetControl?.checksum,
+      ]),
+      timelineLogIds: uniqueStrings([
+        run.timelineLogId,
+        ...(run.timelineLogIds || []),
+      ]),
+      eventIds: uniqueStrings([
+        run.eventId,
+        ...(run.eventIds || []),
+      ]),
+      routeKeys: ['mvp-readiness', 'autonomous-run-control', 'readiness-proof-map'],
+      relatedIds: [
+        run.id,
+        run.actionId,
+        targetControl?.targetGapId,
+        targetControl?.targetStageId,
+      ].filter(Boolean),
+      artifactType: targetControl?.workArtifactType || null,
+      selectedAction: run.actionId || null,
+    }));
+  });
+
+  initiativeRows.forEach((initiative, index) => {
+    rows.push(makeRow({
+      id: `agent-initiative-intent-${initiative.agentId || index + 1}`,
+      source: 'agent-autonomous-initiative',
+      stage: 'agent-autonomous-action',
+      lane: 'agent-intent',
+      actorType: 'agent',
+      agentId: initiative.agentId || null,
+      intent: initiative.intent || initiative.nextStep || 'Advance the next Agent-owned action.',
+      rationale: initiative.rationale || [],
+      priority: normalizePriority(initiative.priority, 60 - index),
+      canRun: Boolean(initiative.canRun && initiative.runApiPath),
+      runApiPath: initiative.runApiPath || null,
+      apiPath: projectId ? `/projects/${projectId}/agent-autonomous-action-queue` : null,
+      proofIds: initiative.proofIds || [],
+      timelineLogIds: initiative.timelineLogIds || [],
+      eventIds: initiative.eventIds || [],
+      routeKeys: ['agent-autonomous-action-queue', 'product-team-operating-loop'],
+      relatedIds: [initiative.id, initiative.strategyDecisionId, initiative.taskId].filter(Boolean),
+      artifactType: initiative.artifactType || null,
+      selectedAction: initiative.selectedAction || null,
+    }));
+  });
+
+  if (reviewRoutes.length || revisionRoutes.length || finalDeliverableRoutes.length) {
+    rows.push(makeRow({
+      id: 'review-revision-final-intent',
+      source: 'submission-review-workflow',
+      stage: 'review-revision-final',
+      lane: 'review-intent',
+      actorType: 'reviewer',
+      agentId: reviewer?.id || null,
+      intent: 'Close the artifact loop by reviewing draft work, requesting or checking revisions, and accepting the final deliverable.',
+      rationale: [
+        `${reviewRoutes.length} review proof route(s)`,
+        `${revisionRoutes.length} revision route(s)`,
+        `${finalDeliverableRoutes.length} final-deliverable route(s)`,
+      ],
+      priority: 65,
+      canRun: false,
+      apiPath: projectId ? `/projects/${projectId}/submission-review-workflow` : null,
+      proofIds: uniqueStrings([
+        ...reviewRoutes.flatMap((route) => route.proofIds || []),
+        ...revisionRoutes.flatMap((route) => route.proofIds || []),
+        ...finalDeliverableRoutes.flatMap((route) => route.proofIds || []),
+      ]),
+      timelineLogIds: uniqueStrings([
+        ...reviewRoutes.flatMap((route) => route.timelineLogIds || []),
+        ...revisionRoutes.flatMap((route) => route.timelineLogIds || []),
+        ...finalDeliverableRoutes.flatMap((route) => route.timelineLogIds || []),
+      ]),
+      eventIds: uniqueStrings([
+        ...reviewRoutes.flatMap((route) => route.eventIds || []),
+        ...revisionRoutes.flatMap((route) => route.eventIds || []),
+        ...finalDeliverableRoutes.flatMap((route) => route.eventIds || []),
+      ]),
+      routeKeys: ['submission-review-workflow', 'submissions', 'readiness-proof-map'],
+    }));
+  }
+
+  (teamCollaborationDiagnostics.handoffBreaks || []).forEach((handoff, index) => {
+    rows.push(makeRow({
+      id: `handoff-break-intent-${handoff.id || index + 1}`,
+      source: 'team-collaboration-diagnostics',
+      stage: 'handoff-break',
+      lane: 'diagnostic-intent',
+      actorType: 'manager',
+      intent: `Resolve collaboration handoff: ${handoff.label || handoff.id || 'missing proof'}.`,
+      rationale: [handoff.detail || 'Diagnostics reported a missing collaboration handoff.'],
+      priority: 95 - index,
+      canRun: false,
+      apiPath: handoff.apiPath || (projectId ? `/projects/${projectId}/team-collaboration-diagnostics` : null),
+      status: 'needs-manager',
+      routeKeys: ['team-collaboration-diagnostics'],
+      relatedIds: [handoff.id].filter(Boolean),
+    }));
+  });
+
+  const sortedRows = rows
+    .sort((a, b) => {
+      if (a.canRun !== b.canRun) return a.canRun ? -1 : 1;
+      return (b.priority || 0) - (a.priority || 0);
+    })
+    .map((row, index) => {
+      const latestRun = latestIntentRunByIntentId.get(row.id) || null;
+      return {
+        ...row,
+        queuePosition: index + 1,
+        runIntentApiPath: projectId ? `/projects/${projectId}/collaboration-intent-queue/${encodeURIComponent(row.id)}/run` : null,
+        latestRunId: latestRun?.id || null,
+        latestRunStatus: latestRun?.status || null,
+        latestRunAt: latestRun?.executedAt || null,
+        latestRunRoute: latestRun?.runApiPath || null,
+        latestDelegatedRunKind: latestRun?.delegatedRunKind || null,
+        latestDelegatedReceiptId: latestRun?.delegatedReceiptId || null,
+        latestRunProofIds: uniqueStrings([
+          latestRun?.id,
+          latestRun?.checksum,
+          latestRun?.delegatedReceiptId,
+          ...(latestRun?.proofIds || []),
+        ].filter(Boolean)).slice(0, 20),
+      };
+    });
+  const proofIds = uniqueStrings([
+    ...sortedRows.flatMap((row) => row.proofIds || []),
+    ...allDiagnosticProofIds,
+    ...(productTeamOperatingLoop.proofLoop?.proofIds || []),
+    ...collaborationIntentRuns.flatMap((run) => [
+      run.id,
+      run.checksum,
+      run.delegatedReceiptId,
+      ...(run.proofIds || []),
+      ...(run.resultMessageIds || []),
+    ]),
+  ]);
+  const timelineLogIds = uniqueStrings([
+    ...sortedRows.flatMap((row) => row.timelineLogIds || []),
+    ...allDiagnosticTimelineLogIds,
+    ...(productTeamOperatingLoop.proofLoop?.timelineLogIds || []),
+    ...collaborationIntentRuns.flatMap((run) => [run.logId, ...(run.timelineLogIds || [])]),
+  ]);
+  const eventIds = uniqueStrings([
+    ...sortedRows.flatMap((row) => row.eventIds || []),
+    ...allDiagnosticEventIds,
+    ...(productTeamOperatingLoop.proofLoop?.eventIds || []),
+    ...collaborationIntentRuns.flatMap((run) => run.eventIds || []),
+  ]);
+  const meetingIntentCount = sortedRows.filter((row) => row.lane === 'meeting-intent').length;
+  const chatIntentCount = sortedRows.filter((row) => row.lane === 'chat-intent').length;
+  const agentInitiativeIntentCount = sortedRows.filter((row) => row.source === 'agent-autonomous-initiative').length;
+  const mvpReadinessOperatorIntentCount = sortedRows.filter((row) => row.source === 'mvp-readiness-operator-action-run').length;
+  const customerAgentHandoffIntentCount = sortedRows.filter((row) => row.source === 'product-team-customer-agent-handoff').length;
+  const customerAgentHandoffExecutionReadyCount = sortedRows.filter((row) => (
+    row.source === 'product-team-customer-agent-handoff'
+    && row.relatedIds?.some((id) => String(id || '').includes('autonomous_run_control_run_') || String(id || '').includes('agent_submission_'))
+  )).length;
+  const runnableCount = sortedRows.filter((row) => row.canRun).length;
+  const blockedHandoffCount = sortedRows.filter((row) => row.status === 'needs-manager').length;
+  const readyForLocalPilotIntentQueue = Boolean(
+    projectId
+    && meetingIntentCount > 0
+    && chatIntentCount > 0
+    && agentInitiativeIntentCount >= Math.max(1, team.length)
+    && proofIds.length
+    && timelineLogIds.length
+    && eventIds.length
+    && teamCollaborationDiagnostics.readyForLocalPilotCollaboration
+  );
+  const backendRoutes = {
+    collaborationIntentQueue: projectId ? `/projects/${projectId}/collaboration-intent-queue` : null,
+    managerCommandCenter: projectId ? `/projects/${projectId}/manager-command-center` : null,
+    managerActionQueue: projectId ? `/projects/${projectId}/manager-action-queue` : null,
+    agentAutonomousActionQueue: projectId ? `/projects/${projectId}/agent-autonomous-action-queue` : null,
+    productTeamOperatingLoop: projectId ? `/projects/${projectId}/product-team-operating-loop` : null,
+    teamCollaborationDiagnostics: projectId ? `/projects/${projectId}/team-collaboration-diagnostics` : null,
+    submissionReviewWorkflow: projectId ? `/projects/${projectId}/submission-review-workflow` : null,
+    transcripts: projectId ? `/projects/${projectId}/transcripts` : null,
+    timeline: projectId ? `/projects/${projectId}/timeline` : null,
+    events: projectId ? `/projects/${projectId}/events` : null,
+    readinessProofMap: projectId ? `/projects/${projectId}/readiness-proof-map` : null,
+  };
+  const summary = {
+    rowCount: sortedRows.length,
+    runnableCount,
+    meetingIntentCount,
+    chatIntentCount,
+    agentInitiativeIntentCount,
+    mvpReadinessOperatorIntentCount,
+    customerAgentHandoffIntentCount,
+    customerAgentHandoffExecutionReadyCount,
+    collaborationIntentRunCount: collaborationIntentRuns.length,
+    latestCollaborationIntentRunId: collaborationIntentRuns[0]?.id || null,
+    reviewIntentCount: sortedRows.filter((row) => row.lane === 'review-intent').length,
+    managerIntentCount: sortedRows.filter((row) => row.actorType === 'manager').length,
+    blockedHandoffCount,
+    proofIdCount: proofIds.length,
+    timelineLogIdCount: timelineLogIds.length,
+    eventIdCount: eventIds.length,
+    leaderId: leader?.id || null,
+    reviewerId: reviewer?.id || null,
+    readyForLocalPilotIntentQueue,
+    readyForProduction: false,
+  };
+  const base = {
+    schemaVersion: 'collaboration-intent-queue/v1',
+    projectId,
+    generatedAt: now,
+    status: readyForLocalPilotIntentQueue
+      ? 'local-collaboration-intent-queue-ready'
+      : blockedHandoffCount
+        ? 'handoff-breaks-need-manager'
+        : sortedRows.length
+          ? 'intent-queue-active'
+          : 'intent-queue-missing',
+    readyForLocalPilotIntentQueue,
+    readyForProduction: false,
+    meetingProtocol: {
+      schemaVersion: 'collaboration-intent-protocol/v1',
+      queuePolicy: 'leader-reviewed-intent-priority',
+      turnSources: [
+        'kickoff-role-negotiation',
+        'group-chat-transcript',
+        'manager-attention-queue',
+        'product-team-customer-agent-handoff',
+        'agent-autonomous-initiative',
+        'submission-review-workflow',
+        'mvp-readiness-operator-action-run',
+      ],
+      leaderId: leader?.id || null,
+      reviewerId: reviewer?.id || null,
+      requiresProofSurface: true,
+      requiresRunRouteForExecutableRows: true,
+      ready: Boolean(meetingIntentCount && chatIntentCount && proofIds.length),
+    },
+    rows: sortedRows,
+    recentRuns: collaborationIntentRuns.slice(0, 10),
+    nextRunnableIntent: sortedRows.find((row) => row.canRun) || null,
+    proofIds,
+    timelineLogIds,
+    eventIds,
+    backendRoutes,
+    requiredProductionControls: [
+      'managed-queue-or-cron',
+      'durable-audit-storage',
+      'cost-and-volume-controls',
+      'customer-acceptance-thresholds',
+      'incident-ownership-and-recovery',
+      'provider-and-byok-policy',
+    ],
+    summary,
+  };
+  return redactSensitiveObject({
+    ...base,
+    checksum: persistenceChecksum({
+      schemaVersion: base.schemaVersion,
+      projectId,
+      status: base.status,
+      summary,
+      collaborationIntentRunIds: collaborationIntentRuns.map((run) => run.id).slice(0, 20),
+      rowState: sortedRows.map((row) => [row.id, row.status, row.canRun, row.queuePosition]),
       backendRoutes,
     }),
   });
@@ -14367,6 +18075,306 @@ function buildAutonomousCycleConsistency({
       referencedRunIds,
       missingRunReceiptIds,
       summary,
+      backendRoutes,
+    }),
+  });
+}
+
+function buildRuntimeAutonomyStatus({
+  project = {},
+  managerDashboard = {},
+  workerQueueSnapshot = {},
+  persistenceSnapshot = {},
+  workerQueueAdapterPlan = {},
+  workerQueueAdapterDryRun = {},
+  autonomousRunControl = {},
+  productTeamOperatingLoop = {},
+  now = nowIso(),
+} = {}) {
+  const projectId = project.id || managerDashboard.projectId || autonomousRunControl.projectId || productTeamOperatingLoop.projectId || null;
+  const missionRuns = project.productTeamMissionRuns || [];
+  const sessions = project.autonomousRunControlSessionLedger || [];
+  const sessionTicks = project.autonomousRunControlSessionTickLedger || [];
+  const actionRuns = project.autonomousRunControlRunLedger || [];
+  const loopRuns = project.autonomousRunControlLoopLedger || [];
+  const activeSessions = sessions.filter((session) => ['running', 'waiting'].includes(session.status));
+  const latestMission = missionRuns[0] || null;
+  const latestSession = sessions[0] || null;
+  const latestTick = sessionTicks[0] || null;
+  const workerSummary = workerQueueSnapshot.summary || {};
+  const autopilotQueue = workerQueueSnapshot.autopilotQueue || [];
+  const agentQueue = workerQueueSnapshot.agentQueue || [];
+  const adapterSummary = workerQueueAdapterDryRun.summary || {};
+  const adapterExecution = workerQueueAdapterDryRun.adapterExecution || {};
+  const persistenceSummary = persistenceSnapshot.summary || {};
+  const persistenceSnapshotReadable = Boolean(
+    ['persistence-snapshot/v1', 'production-persistence-snapshot/v1'].includes(persistenceSnapshot.schemaVersion)
+    || persistenceSnapshot.integrity?.eventLedgerContiguous
+    || (persistenceSummary.totalRecordCount || persistenceSnapshot.totalRecordCount || 0) > 0
+  );
+  const recoverableAutopilotQueueCount = autopilotQueue.filter((row) => (
+    row.idempotencyKey
+    && row.leaseKey
+    && row.runApiPath === '/workers/autopilot/due'
+    && row.directRunApiPath
+    && row.executionReceiptExpected
+  )).length;
+  const autopilotSessionRecoveryReady = activeSessions.length
+    ? recoverableAutopilotQueueCount >= activeSessions.length
+    : Boolean(sessions.length && sessionTicks.length);
+  const queuedWorkerCount = (workerSummary.projectQueuedCount || 0)
+    + (workerSummary.agentQueuedCount || 0)
+    + (workerSummary.autopilotSessionQueuedCount || 0);
+  const waitingWorkerCount = (workerSummary.projectWaitingCount || 0)
+    + (workerSummary.agentWaitingCount || 0)
+    + (workerSummary.autopilotSessionWaitingCount || 0);
+  const proofIds = uniqueStrings([
+    latestMission?.id,
+    latestMission?.checksum,
+    ...(latestMission?.proofIds || []),
+    latestSession?.id,
+    latestSession?.checksum,
+    ...(latestSession?.proofIds || []),
+    latestTick?.id,
+    latestTick?.checksum,
+    ...(latestTick?.proofIds || []),
+    ...actionRuns.flatMap((run) => [run.id, run.checksum, ...(run.resultMessageIds || []), ...(run.proofIds || [])]),
+    ...loopRuns.flatMap((run) => [run.id, run.checksum, ...(run.proofIds || [])]),
+  ].filter(Boolean));
+  const timelineLogIds = uniqueStrings([
+    ...(latestMission?.timelineLogIds || []),
+    latestSession?.logId,
+    ...(latestSession?.timelineLogIds || []),
+    latestTick?.logId,
+    ...(latestTick?.timelineLogIds || []),
+    ...actionRuns.flatMap((run) => [run.logId, ...(run.timelineLogIds || [])]),
+    ...loopRuns.flatMap((run) => [run.logId, ...(run.timelineLogIds || [])]),
+  ].filter(Boolean));
+  const eventIds = uniqueStrings([
+    latestMission?.eventId,
+    ...(latestMission?.eventIds || []),
+    latestSession?.eventId,
+    ...(latestSession?.eventIds || []),
+    latestTick?.eventId,
+    ...(latestTick?.eventIds || []),
+    ...actionRuns.flatMap((run) => run.eventIds || []),
+    ...loopRuns.flatMap((run) => [run.eventId, ...(run.eventIds || [])]),
+  ].filter(Boolean));
+  const backendRoutes = {
+    runtimeAutonomyStatus: projectId ? `/projects/${projectId}/runtime-autonomy-status` : null,
+    productTeamMissions: projectId ? `/projects/${projectId}/product-team-missions` : null,
+    autonomousRunControl: projectId ? `/projects/${projectId}/autonomous-run-control` : null,
+    autonomousRunControlSessions: projectId ? `/projects/${projectId}/autonomous-run-control/sessions` : null,
+    productTeamOperatingLoop: projectId ? `/projects/${projectId}/product-team-operating-loop` : null,
+    workerQueue: projectId ? `/projects/${projectId}/worker-queue` : null,
+    workerQueueAdapterPlan: projectId ? `/projects/${projectId}/worker-queue-adapter-plan` : null,
+    workerQueueAdapterDryRun: projectId ? `/projects/${projectId}/worker-queue-adapter-dry-run` : null,
+    persistenceSnapshot: projectId ? `/projects/${projectId}/persistence-snapshot` : null,
+    managerFlowGraph: projectId ? `/projects/${projectId}/manager-flow-graph` : null,
+    readinessProofMap: projectId ? `/projects/${projectId}/readiness-proof-map` : null,
+    schedulerStatus: '/workers/autonomous/status',
+    schedulerTick: '/workers/autonomous/tick',
+    autopilotDueWorker: '/workers/autopilot/due',
+  };
+  const gate = ({
+    id,
+    label,
+    ready,
+    detail,
+    apiPath = null,
+    productionBlocker = false,
+    blocker = null,
+  }) => ({
+    id,
+    label,
+    ready: Boolean(ready),
+    status: productionBlocker ? 'production-blocked' : ready ? 'ready' : 'needs-proof',
+    detail,
+    apiPath,
+    blocker: blocker || (ready ? null : id),
+    productionBlocker: Boolean(productionBlocker),
+    proofIds: proofIds.slice(0, 24),
+    timelineLogIds: timelineLogIds.slice(0, 24),
+    eventIds: eventIds.slice(0, 24),
+  });
+  const gates = [
+    gate({
+      id: 'mission-runner-started',
+      label: 'C-side mission runner started A-side autonomy',
+      ready: Boolean(latestMission?.schemaVersion === 'product-team-mission-run/v1' && latestMission.autonomousSessionId),
+      detail: latestMission
+        ? `Mission ${latestMission.id} ${latestMission.status || 'started'} with session ${latestMission.autonomousSessionId || 'missing'}.`
+        : 'No Product Team Mission Runner receipt yet.',
+      apiPath: latestMission && projectId ? `/projects/${projectId}/product-team-missions/${encodeURIComponent(latestMission.id)}` : backendRoutes.productTeamMissions,
+      blocker: 'product-team-mission-run-missing',
+    }),
+    gate({
+      id: 'autopilot-session-restorable',
+      label: 'Autopilot session is queue-recoverable',
+      ready: autopilotSessionRecoveryReady,
+      detail: `${sessions.length} session(s), ${activeSessions.length} active/waiting, ${recoverableAutopilotQueueCount}/${autopilotQueue.length || sessions.length} queue row(s) have idempotency, lease, due-worker, and direct tick routes.`,
+      apiPath: backendRoutes.workerQueue,
+      blocker: 'autopilot-queue-recovery-proof-missing',
+    }),
+    gate({
+      id: 'autonomous-work-receipts-present',
+      label: 'A-side autonomous work receipts exist',
+      ready: Boolean((sessionTicks.length || actionRuns.length || loopRuns.length) && proofIds.length && timelineLogIds.length && eventIds.length),
+      detail: `${sessionTicks.length} session tick(s), ${actionRuns.length} action run(s), ${loopRuns.length} loop run(s), ${proofIds.length} proof id(s).`,
+      apiPath: backendRoutes.autonomousRunControl,
+      blocker: 'autonomous-run-proof-missing',
+    }),
+    gate({
+      id: 'worker-queue-recovery-clean',
+      label: 'Worker queue recovery is clean',
+      ready: Boolean(workerQueueSnapshot.schemaVersion === 'worker-queue-snapshot/v1' && (workerSummary.workerDeadLetterCount || 0) === 0),
+      detail: `${queuedWorkerCount} queued, ${waitingWorkerCount} waiting, ${workerSummary.workerRunReceiptCount || 0} receipt(s), ${workerSummary.workerDeadLetterCount || 0} dead-letter row(s).`,
+      apiPath: backendRoutes.workerQueue,
+      blocker: 'worker-queue-dead-letter-or-missing-snapshot',
+    }),
+    gate({
+      id: 'queue-adapter-rehearsal-passed',
+      label: 'Queue adapter rehearsal is passed',
+      ready: Boolean(workerQueueAdapterDryRun.status === 'passed' && adapterExecution.finalReceipt?.schemaVersion === 'worker-queue-adapter-execution-receipt/v1'),
+      detail: `${workerQueueAdapterDryRun.status || 'missing'} dry-run; ${adapterSummary.adapterOperationCount || adapterExecution.finalReceipt?.operationCount || 0} adapter operation(s).`,
+      apiPath: backendRoutes.workerQueueAdapterDryRun,
+      blocker: 'worker-queue-adapter-dry-run-missing',
+    }),
+    gate({
+      id: 'persistence-snapshot-readable',
+      label: 'Persistence snapshot is readable',
+      ready: persistenceSnapshotReadable,
+      detail: `Persistence ${persistenceSnapshot.integrity?.status || persistenceSnapshot.status || 'unknown'} with ${persistenceSummary.totalRecordCount || persistenceSnapshot.totalRecordCount || 0} record(s).`,
+      apiPath: backendRoutes.persistenceSnapshot,
+      blocker: 'persistence-snapshot-missing',
+    }),
+    gate({
+      id: 'operating-loop-readable',
+      label: 'Product Team Operating Loop is readable',
+      ready: Boolean(productTeamOperatingLoop.schemaVersion === 'product-team-operating-loop/v1' && autonomousRunControl.schemaVersion === 'autonomous-run-control/v1'),
+      detail: `Operating loop ${productTeamOperatingLoop.status || 'unknown'}; Run Control has ${autonomousRunControl.summary?.runnableActionCount || 0} runnable action(s).`,
+      apiPath: backendRoutes.productTeamOperatingLoop,
+      blocker: 'operating-loop-or-run-control-missing',
+    }),
+    gate({
+      id: 'production-unattended-autonomy-blocked',
+      label: 'Unattended production autonomy remains blocked',
+      ready: false,
+      detail: 'Local/private MVP autonomy has receipts, but public 24/7 production still needs managed queue/cron, distributed leases, real BYOK/provider controls, centralized observability, cost controls, incident recovery, and durable audit.',
+      apiPath: projectId ? `/projects/${projectId}/production-launch-gap-register` : null,
+      productionBlocker: true,
+      blocker: 'managed-production-autonomy-controls-missing',
+    }),
+  ];
+  const localGates = gates.filter((item) => !item.productionBlocker);
+  const failedLocalGates = localGates.filter((item) => !item.ready);
+  const readyForLocalAutonomy = Boolean(projectId && localGates.length && failedLocalGates.length === 0);
+  const base = {
+    schemaVersion: 'runtime-autonomy-status/v1',
+    projectId,
+    generatedAt: now,
+    status: readyForLocalAutonomy ? 'local-autonomy-runtime-ready' : 'runtime-autonomy-proof-missing',
+    readyForLocalAutonomy,
+    readyForPrivatePilotAutonomy: readyForLocalAutonomy,
+    readyForUnattendedProduction: false,
+    gates,
+    failedLocalGates: failedLocalGates.map((item) => ({
+      id: item.id,
+      label: item.label,
+      detail: item.detail,
+      blocker: item.blocker,
+      apiPath: item.apiPath,
+    })),
+    cSide: {
+      missionRunId: latestMission?.id || null,
+      missionRoute: latestMission && projectId ? `/projects/${projectId}/product-team-missions/${encodeURIComponent(latestMission.id)}` : backendRoutes.productTeamMissions,
+      managerRunControlRoute: backendRoutes.autonomousRunControl,
+      schedulerStatusRoute: backendRoutes.schedulerStatus,
+      schedulerTickRoute: backendRoutes.schedulerTick,
+    },
+    aSide: {
+      activeSessionCount: activeSessions.length,
+      sessionCount: sessions.length,
+      sessionTickCount: sessionTicks.length,
+      actionRunCount: actionRuns.length,
+      loopRunCount: loopRuns.length,
+      queuedAgentInitiativeCount: workerSummary.queuedAgentInitiativeCount || 0,
+      agentQueueCount: agentQueue.length,
+      autopilotQueueCount: autopilotQueue.length,
+      recoverableAutopilotQueueCount,
+      autopilotSessionRecoveryReady,
+    },
+    bSide: {
+      proofIdCount: proofIds.length,
+      timelineLogIdCount: timelineLogIds.length,
+      eventIdCount: eventIds.length,
+      flowGraphRoute: backendRoutes.managerFlowGraph,
+      proofMapRoute: backendRoutes.readinessProofMap,
+    },
+    workerQueue: {
+      schemaVersion: workerQueueSnapshot.schemaVersion || null,
+      status: workerQueueSnapshot.status || null,
+      queuedWorkerCount,
+      waitingWorkerCount,
+      deadLetterCount: workerSummary.workerDeadLetterCount || 0,
+      retryableFailureCount: workerSummary.workerRetryableFailureCount || 0,
+      nextWakeAt: workerSummary.nextWakeAt || null,
+    },
+    adapter: {
+      planStatus: workerQueueAdapterPlan.status || workerQueueAdapterPlan.adapterStatus?.status || null,
+      dryRunStatus: workerQueueAdapterDryRun.status || null,
+      driver: workerQueueAdapterPlan.adapterStatus?.driver || workerQueueAdapterDryRun.adapterStatus?.driver || null,
+      productionCutoverReady: Boolean(workerQueueAdapterPlan.adapterStatus?.productionCutoverReady || workerQueueAdapterDryRun.summary?.adapterProductionCutoverReady),
+    },
+    persistence: {
+      schemaVersion: persistenceSnapshot.schemaVersion || null,
+      status: persistenceSnapshot.integrity?.status || persistenceSnapshot.status || null,
+      totalRecordCount: persistenceSummary.totalRecordCount || persistenceSnapshot.totalRecordCount || 0,
+      productionCutoverReady: Boolean(persistenceSnapshot.readyForProduction || persistenceSnapshot.summary?.productionCutoverReady),
+    },
+    proofIds,
+    timelineLogIds,
+    eventIds,
+    backendRoutes,
+    requiredProductionControls: [
+      'managed-durable-queue-or-cron',
+      'distributed-lease-and-replay-store',
+      'managed-database-cutover-with-restore-drill',
+      'real-byok-provider-policy-and-cost-controls',
+      'centralized-observability-and-alert-routing',
+      'incident-runbook-and-dead-letter-recovery-drills',
+      'immutable-audit-retention',
+    ],
+    summary: {
+      missionRunCount: missionRuns.length,
+      activeSessionCount: activeSessions.length,
+      sessionCount: sessions.length,
+      sessionTickCount: sessionTicks.length,
+      actionRunCount: actionRuns.length,
+      loopRunCount: loopRuns.length,
+      queuedWorkerCount,
+      waitingWorkerCount,
+      deadLetterCount: workerSummary.workerDeadLetterCount || 0,
+      recoverableAutopilotQueueCount,
+      autopilotSessionRecoveryReady,
+      localGateCount: localGates.length,
+      readyLocalGateCount: localGates.filter((item) => item.ready).length,
+      failedLocalGateCount: failedLocalGates.length,
+      proofIdCount: proofIds.length,
+      timelineLogIdCount: timelineLogIds.length,
+      eventIdCount: eventIds.length,
+      readyForLocalAutonomy,
+      readyForUnattendedProduction: false,
+    },
+  };
+  return redactSensitiveObject({
+    ...base,
+    checksum: persistenceChecksum({
+      schemaVersion: base.schemaVersion,
+      projectId,
+      status: base.status,
+      gateState: gates.map((item) => [item.id, item.ready, item.productionBlocker]),
+      summary: base.summary,
       backendRoutes,
     }),
   });
@@ -15682,6 +19690,9 @@ function buildAutopilotTargetExecutionOverrides({
     put('submitAgentWorkArtifacts', targetControls.submitAgentWorkArtifacts !== false);
     put('workArtifactType', normalizedArtifactType);
     put('agentWorkArtifactType', normalizedArtifactType);
+  } else {
+    put('submitWorkArtifact', targetControls.submitWorkArtifact === true ? true : false);
+    put('submitAgentWorkArtifacts', targetControls.submitAgentWorkArtifacts === true ? true : false);
   }
   put('submitWorkArtifactOn', targetControls.submitWorkArtifactOn);
   put('workArtifactReviewStatus', targetControls.workArtifactReviewStatus);
@@ -15709,6 +19720,286 @@ function buildAutopilotTargetExecutionOverrides({
   put('reviewResponseReviewerAgentId', targetControls.reviewResponseReviewerAgentId);
   put('includeReadModels', targetControls.includeReadModels);
   return redactSensitiveObject(output);
+}
+
+function buildMvpReadinessOperatorTargetControl({
+  projectId = null,
+  action = {},
+  nextCoreGap = null,
+  readinessContext = {},
+} = {}) {
+  if (!action || action.scope !== 'mvp-core' || action.productionBlocker) return null;
+  const targetGapId = nextCoreGap?.id || action.targetGapId || action.gapId || null;
+  const submissionRows = readinessContext.submissionRows || [];
+  const reviewRows = readinessContext.reviewRows || [];
+  const artifactTypes = new Set([
+    ...(readinessContext.artifactTypes || []),
+    ...submissionRows.map((submission) => submission.artifactType || submission.artifact?.artifactType).filter(Boolean),
+  ].map((type) => normalizeAgentSubmissionArtifactType(type)));
+  const productBrief = submissionRows.find((submission) => normalizeAgentSubmissionArtifactType(submission.artifactType || submission.artifact?.artifactType) === 'product-brief') || null;
+  const latestChangesRequestedReview = reviewRows.find((review) => (
+    (review.verdict === 'changes-requested' || review.status === 'changes-requested')
+    && (!productBrief?.id || String(review.submissionId || '') === String(productBrief.id))
+  )) || null;
+  const revisionSubmission = submissionRows.find((submission) => (
+    normalizeAgentSubmissionArtifactType(submission.artifactType || submission.artifact?.artifactType) === 'revision-note'
+    || submission.revisionOfSubmissionId
+    || (submission.supersedesSubmissionIds || []).length
+    || submission.respondsToReviewId
+  )) || null;
+  const finalDeliverable = submissionRows.find((submission) => normalizeAgentSubmissionArtifactType(submission.artifactType || submission.artifact?.artifactType) === 'final-deliverable') || null;
+  const finalAcceptedReview = reviewRows.find((review) => (
+    (review.verdict === 'accepted' || review.status === 'accepted')
+    && (!finalDeliverable?.id || String(review.submissionId || '') === String(finalDeliverable.id))
+  )) || null;
+  const draftReviewTarget = (() => {
+    if (!productBrief && !artifactTypes.has('product-brief')) {
+      return {
+        targetStageId: 'draft-artifact',
+        targetStepId: 'draft-product-brief',
+        preferredLane: 'agent-autonomy',
+        workArtifactType: 'product-brief',
+        workArtifactReviewStatus: 'pending-review',
+        targetIntent: 'Have the next Agent draft the product brief that can enter Reviewer feedback.',
+        targetReason: 'The local MVP still needs a product brief before review and revision can close.',
+      };
+    }
+    if (!latestChangesRequestedReview) {
+      return {
+        targetStageId: 'review-and-revision',
+        targetStepId: 'review-product-brief',
+        preferredLane: 'agent-autonomy',
+        reviewPendingSubmissions: true,
+        reviewSubmissionId: productBrief?.id || null,
+        agentReviewVerdict: 'changes-requested',
+        targetIntent: 'Have the Reviewer inspect the product brief and request concrete changes.',
+        targetReason: 'The local MVP has a draft but still needs a requested-changes review.',
+      };
+    }
+    if (!revisionSubmission) {
+      return {
+        targetStageId: 'review-and-revision',
+        targetStepId: 'submit-revision-note',
+        preferredLane: 'agent-autonomy',
+        respondToReviewObligations: true,
+        reviewResponseId: latestChangesRequestedReview?.id || null,
+        reviewResponseArtifactType: 'revision-note',
+        targetIntent: 'Have the submitter answer the requested changes with a linked revision note.',
+        targetReason: 'The local MVP has requested changes but still needs a linked revision response.',
+      };
+    }
+    return {
+      targetStageId: 'review-and-revision',
+      targetStepId: 'review-revision-closed',
+      preferredLane: 'agent-autonomy',
+      targetIntent: 'Review/revision proof exists; refresh the proof surfaces for this gap.',
+      targetReason: 'The local MVP review/revision loop appears closed but proof surfaces may still be refreshing.',
+    };
+  })();
+  const finalDeliverableTarget = (() => {
+    if (!finalDeliverable && !artifactTypes.has('final-deliverable')) {
+      return {
+        targetStageId: 'final-deliverable',
+        targetStepId: 'submit-final-deliverable',
+        preferredLane: 'agent-autonomy',
+        workArtifactType: 'final-deliverable',
+        workArtifactReviewStatus: 'pending-review',
+        targetIntent: 'Have the next Agent submit the final deliverable for acceptance.',
+        targetReason: 'The local MVP still needs a final deliverable artifact.',
+      };
+    }
+    if (!finalAcceptedReview) {
+      return {
+        targetStageId: 'final-deliverable',
+        targetStepId: 'accept-final-deliverable',
+        preferredLane: 'agent-autonomy',
+        reviewPendingSubmissions: true,
+        reviewSubmissionId: finalDeliverable?.id || null,
+        agentReviewVerdict: 'accepted',
+        targetIntent: 'Have the Reviewer accept the final deliverable.',
+        targetReason: 'The local MVP has a final deliverable but still needs an accepted review.',
+      };
+    }
+    return {
+      targetStageId: 'final-deliverable',
+      targetStepId: 'final-deliverable-closed',
+      preferredLane: 'agent-autonomy',
+      targetIntent: 'Final delivery proof exists; refresh the proof surfaces for this gap.',
+      targetReason: 'The final deliverable appears accepted but proof surfaces may still be refreshing.',
+    };
+  })();
+  const targetByGap = {
+    'kickoff-governance': {
+      targetStageId: 'kickoff-meeting',
+      preferredLane: 'worker-scheduler',
+      targetIntent: 'Re-enter the kickoff governance lane and generate durable role/Leader proof.',
+      targetReason: 'The local MVP still needs a proofed kickoff meeting and first execution actions.',
+    },
+    'self-marketing-role-negotiation': {
+      targetStageId: 'agent-self-marketing',
+      preferredLane: 'worker-scheduler',
+      targetIntent: 'Make Agents state role ownership, value, and Leader support or dissent.',
+      targetReason: 'The local MVP still needs subjective Agent role negotiation proof.',
+    },
+    'brainstorm-submission': {
+      targetStageId: 'brainstorm-layer',
+      preferredLane: 'agent-autonomy',
+      workArtifactType: 'brainstorm-board',
+      targetIntent: 'Have the next Agent produce a brainstorm node with alternatives and synthesis.',
+      targetReason: 'The local MVP still needs a typed brainstorm submission that can appear on the flow graph.',
+    },
+    'evidence-search-quality': {
+      targetStageId: 'evidence-quality',
+      preferredLane: 'agent-autonomy',
+      workArtifactType: 'evidence-packet',
+      recordEvidenceSearch: true,
+      evidenceSearchPurpose: 'Close the generic product-team evidence quality gate for the current project.',
+      evidenceSearchQuery: 'generic product team evidence quality acceptance path',
+      targetIntent: 'Have the next Agent collect, judge, and submit usable evidence.',
+      targetReason: 'The local MVP still needs evidence search with quality judgement.',
+    },
+    'draft-review-revision': {
+      ...draftReviewTarget,
+    },
+    'final-deliverable-accepted': {
+      ...finalDeliverableTarget,
+    },
+    'proof-surfaces-linked': {
+      targetStageId: 'proof-surfaces',
+      preferredLane: 'worker-scheduler',
+      targetIntent: 'Run the backend worker/proof lane so the flow graph, timeline, event ledger, and Proof Map converge.',
+      targetReason: 'The local MVP still needs linked proof surfaces instead of isolated artifacts.',
+    },
+    'backend-worker-loop': {
+      targetStageId: 'proof-surfaces',
+      preferredLane: 'worker-scheduler',
+      targetIntent: 'Run the backend worker lane to produce autonomous cycle proof.',
+      targetReason: 'The local MVP still needs runtime proof that work can continue beyond a manual click.',
+    },
+    'agent-dashboards-addressable': {
+      targetStageId: 'proof-surfaces',
+      preferredLane: 'worker-scheduler',
+      targetIntent: 'Refresh Agent state surfaces and proof routes through the worker lane.',
+      targetReason: 'The local MVP still needs addressable Agent dashboards for every participant.',
+    },
+  };
+  const target = targetByGap[targetGapId];
+  if (!target?.targetStageId) return null;
+  const base = {
+    schemaVersion: 'autopilot-delivery-target-control/v1',
+    source: 'mvp-readiness-operator-action',
+    projectId,
+    operatorActionId: action.id || null,
+    operatorActionScope: action.scope || null,
+    operatorActionStatus: action.status || null,
+    operatorActionLabel: action.label || null,
+    targetGapId,
+    targetStepId: target.targetStepId || target.targetStageId,
+    targetStageId: target.targetStageId,
+    targetIntent: target.targetIntent,
+    targetReason: action.detail || target.targetReason,
+    preferredLane: target.preferredLane || 'worker-scheduler',
+    workArtifactType: target.workArtifactType || null,
+    agentWorkArtifactType: target.workArtifactType || null,
+    submitWorkArtifact: Boolean(target.workArtifactType),
+    submitAgentWorkArtifacts: target.submitAgentWorkArtifacts ?? Boolean(target.workArtifactType),
+    submitWorkArtifactOn: target.submitWorkArtifactOn || (target.workArtifactType ? 'always' : null),
+    recordEvidenceSearch: Boolean(target.recordEvidenceSearch),
+    evidenceSearchPurpose: target.evidenceSearchPurpose || null,
+    evidenceSearchQuery: target.evidenceSearchQuery || null,
+    reviewPendingSubmission: Boolean(target.reviewPendingSubmissions),
+    reviewPendingSubmissions: Boolean(target.reviewPendingSubmissions),
+    reviewSubmissionId: target.reviewSubmissionId || null,
+    agentReviewVerdict: target.agentReviewVerdict || null,
+    respondToReviewObligation: Boolean(target.respondToReviewObligations),
+    respondToReviewObligations: Boolean(target.respondToReviewObligations),
+    reviewResponseId: target.reviewResponseId || null,
+    reviewResponseArtifactType: target.reviewResponseArtifactType || null,
+    useAgentAutonomousStrategy: true,
+    includeReadModels: false,
+    autonomousRunnable: true,
+    apiPath: action.apiPath || null,
+    runApiPath: projectId ? `/projects/${projectId}/autonomous-run-control/run-mvp-readiness-target/run` : null,
+    productionBlocker: false,
+  };
+  return redactSensitiveObject({
+    ...base,
+    checksum: persistenceChecksum(base),
+  });
+}
+
+function isMvpReadinessTargetGapStillOpen({
+  project = {},
+  targetControl = null,
+} = {}) {
+  if (!targetControl?.targetGapId) return false;
+  const submissions = project.agentSubmissions || [];
+  const artifactTypes = new Set(submissions.map((submission) => (
+    normalizeAgentSubmissionArtifactType(submission.artifactType)
+  )));
+  const evidenceSearches = project.evidenceSearches || [];
+  const reviews = project.submissionReviews || [];
+  switch (targetControl.targetGapId) {
+    case 'brainstorm-submission':
+      return !artifactTypes.has('brainstorm-board');
+    case 'evidence-search-quality':
+      return !evidenceSearches.some((record) => (
+        (record.usable !== false)
+        && ((record.qualityScore || record.averageQualityScore || 0) >= 60
+          || ['strong-evidence', 'usable-evidence'].includes(record.evidenceJudgement))
+      ));
+    case 'draft-review-revision':
+      if (targetControl.targetStepId === 'draft-product-brief') {
+        return !artifactTypes.has('product-brief');
+      }
+      if (targetControl.targetStepId === 'review-product-brief') {
+        return !reviews.some((review) => (
+          review.verdict === 'changes-requested'
+          && (!targetControl.reviewSubmissionId || String(review.submissionId || '') === String(targetControl.reviewSubmissionId))
+        ));
+      }
+      if (targetControl.targetStepId === 'submit-revision-note') {
+        return !submissions.some((submission) => (
+          normalizeAgentSubmissionArtifactType(submission.artifactType) === 'revision-note'
+          || submission.revisionOfSubmissionId
+          || (submission.supersedesSubmissionIds || []).length
+          || submission.respondsToReviewId
+        ));
+      }
+      return !(
+        artifactTypes.has('product-brief')
+        && reviews.some((review) => review.verdict === 'changes-requested')
+        && submissions.some((submission) => (
+          normalizeAgentSubmissionArtifactType(submission.artifactType) === 'revision-note'
+          || submission.revisionOfSubmissionId
+          || (submission.supersedesSubmissionIds || []).length
+        ))
+      );
+    case 'final-deliverable-accepted':
+      if (targetControl.targetStepId === 'submit-final-deliverable') {
+        return !artifactTypes.has('final-deliverable');
+      }
+      if (targetControl.targetStepId === 'accept-final-deliverable') {
+        return !reviews.some((review) => (
+          review.verdict === 'accepted'
+          && (!targetControl.reviewSubmissionId || String(review.submissionId || '') === String(targetControl.reviewSubmissionId))
+        ));
+      }
+      return !(
+        artifactTypes.has('final-deliverable')
+        && reviews.some((review) => review.verdict === 'accepted')
+      );
+    case 'backend-worker-loop':
+      return !((project.autonomousLedger || []).length || (project.autonomousSchedulerLedger || []).length);
+    case 'agent-dashboards-addressable':
+      return !(project.team || []).every((agent) => agent.id);
+    case 'kickoff-governance':
+    case 'self-marketing-role-negotiation':
+    case 'proof-surfaces-linked':
+      return true;
+    default:
+      return true;
+  }
 }
 
 function scoreAutonomousRunControlActionForTarget(action = {}, targetControls = {}) {
@@ -16424,6 +20715,918 @@ function buildEvidenceCustodyReadinessSnapshot({
   };
 }
 
+function buildEvidenceIndexReadinessSnapshot({
+  project = {},
+  evidenceQualityAudit = {},
+  artifactQualityAudit = {},
+  evidenceCustodyReadiness = {},
+  now = nowIso(),
+} = {}) {
+  const projectId = project.id || evidenceQualityAudit.projectId || artifactQualityAudit.projectId || null;
+  const evidenceRecords = project.evidenceSearches || [];
+  const submissionRecords = project.agentSubmissions || [];
+  const sourceSnapshotRecords = project.evidenceSourceSnapshots || evidenceRecords.flatMap((record) => record.sourceSnapshots || []);
+  const providerReceiptRecords = project.evidenceProviderReceipts || evidenceRecords.map((record) => record.providerReceipt).filter(Boolean);
+  const indexRoute = projectId ? `/projects/${projectId}/evidence-index-readiness` : null;
+  const evidenceRows = evidenceRecords.slice(0, 40).map((record) => redactSensitiveObject({
+    id: `index_${record.id}`,
+    recordType: 'evidence-search',
+    recordId: record.id || null,
+    agentId: record.agentId || null,
+    agentName: record.agentName || null,
+    label: redactSensitiveText(record.query || record.purpose || 'Evidence search'),
+    summary: compactPreview(record.evidenceJudgement?.summary || record.purpose || record.findings?.join(' ') || ''),
+    provider: record.provider || 'agent-recorded',
+    sourceCount: record.sources?.length || 0,
+    sourceSnapshotCount: record.sourceSnapshots?.length || record.sourceSnapshotIds?.length || 0,
+    providerReceiptId: record.providerReceiptId || record.providerReceipt?.id || null,
+    proofIds: uniqueStrings([record.messageId, ...(record.evidenceIds || [])].filter(Boolean)).slice(0, 12),
+    timelineLogIds: uniqueStrings([record.timelineLogId, ...(record.timelineLogIds || [])].filter(Boolean)).slice(0, 12),
+    eventIds: uniqueStrings([record.eventId, ...(record.eventIds || [])].filter(Boolean)).slice(0, 12),
+    route: projectId && record.id ? `/projects/${projectId}/evidence-searches/${encodeURIComponent(record.id)}` : null,
+    checksum: persistenceChecksum({
+      id: record.id || null,
+      query: record.query || null,
+      sourceSnapshotIds: record.sourceSnapshotIds || [],
+      providerReceiptId: record.providerReceiptId || record.providerReceipt?.id || null,
+    }),
+  }));
+  const submissionRows = submissionRecords.slice(0, 40).map((submission) => {
+    const artifactStorageProof = submission.artifactStorageProof
+      || submission.workspaceFileProof
+      || submission.artifact?.storageProof
+      || null;
+    return redactSensitiveObject({
+      id: `index_${submission.id}`,
+      recordType: 'agent-submission',
+      recordId: submission.id || null,
+      agentId: submission.agentId || null,
+      agentName: submission.agentName || null,
+      artifactType: submission.artifactType || submission.artifact?.artifactType || null,
+      label: redactSensitiveText(submission.title || submission.artifact?.title || 'Agent submission'),
+      summary: compactPreview(submission.summary || submission.body || submission.artifact?.content || ''),
+      storageProofReady: Boolean(
+        artifactStorageProof?.schemaVersion === 'agent-artifact-storage-proof/v1'
+        && artifactStorageProof.checksum
+        && artifactStorageProof.contentChecksum
+      ),
+      artifactStorageProofChecksum: artifactStorageProof?.checksum || submission.artifactStorageProofChecksum || null,
+      artifactChecksum: submission.artifactChecksum || submission.artifactStorageProofChecksum || artifactStorageProof?.checksum || null,
+      proofIds: uniqueStrings([submission.messageId, ...(submission.evidenceIds || [])].filter(Boolean)).slice(0, 12),
+      timelineLogIds: uniqueStrings([submission.timelineLogId, ...(submission.timelineLogIds || [])].filter(Boolean)).slice(0, 12),
+      eventIds: uniqueStrings([submission.eventId, ...(submission.eventIds || [])].filter(Boolean)).slice(0, 12),
+      route: projectId && submission.id ? `/projects/${projectId}/submissions/${encodeURIComponent(submission.id)}` : null,
+      checksum: persistenceChecksum({
+        id: submission.id || null,
+        artifactType: submission.artifactType || null,
+        artifactChecksum: submission.artifactChecksum || submission.artifactStorageProofChecksum || artifactStorageProof?.checksum || null,
+      }),
+    });
+  });
+  const sourceSnapshotRows = sourceSnapshotRecords.slice(0, 80).map((snapshot) => redactSensitiveObject({
+    id: snapshot.id || null,
+    recordType: 'evidence-source-snapshot',
+    evidenceSearchId: snapshot.evidenceSearchId || null,
+    sourceId: snapshot.sourceId || null,
+    providerReceiptId: snapshot.providerReceiptId || null,
+    title: redactSensitiveText(snapshot.title || snapshot.sourceTitle || 'Evidence source'),
+    url: snapshot.url ? redactUrl(snapshot.url) : null,
+    checksum: snapshot.checksum || null,
+    sourceChecksum: snapshot.sourceChecksum || null,
+    summaryChecksum: snapshot.summaryChecksum || null,
+    route: projectId && snapshot.evidenceSearchId
+      ? `/projects/${projectId}/evidence-searches/${encodeURIComponent(snapshot.evidenceSearchId)}#${encodeURIComponent(snapshot.id || snapshot.sourceId || 'source')}`
+      : null,
+  }));
+  const providerReceiptRows = providerReceiptRecords.slice(0, 40).map((receipt) => redactSensitiveObject({
+    id: receipt.id || null,
+    recordType: 'evidence-provider-receipt',
+    evidenceSearchId: receipt.evidenceSearchId || null,
+    provider: receipt.provider || null,
+    checksum: receipt.checksum || null,
+    requestChecksum: receipt.requestChecksum || null,
+    resultChecksum: receipt.resultChecksum || null,
+    route: projectId && receipt.evidenceSearchId
+      ? `/projects/${projectId}/evidence-searches/${encodeURIComponent(receipt.evidenceSearchId)}#${encodeURIComponent(receipt.id || 'provider-receipt')}`
+      : null,
+  }));
+  const rows = [...evidenceRows, ...submissionRows, ...sourceSnapshotRows, ...providerReceiptRows];
+  const expectedSourceCount = evidenceRecords.reduce((sum, record) => sum + (record.sources?.length || 0), 0);
+  const sourceSnapshotChecksumCount = sourceSnapshotRecords.filter((snapshot) => snapshot.checksum && snapshot.sourceChecksum && snapshot.summaryChecksum).length;
+  const artifactStorageProofCount = submissionRows.filter((row) => row.storageProofReady).length;
+  const proofRouteCount = rows.filter((row) => row.route).length;
+  const proofLinkedCount = rows.filter((row) => (
+    row.route
+    && ((row.proofIds || []).length || (row.timelineLogIds || []).length || (row.eventIds || []).length || row.checksum)
+  )).length;
+  const rawSecretScan = scanTextForRawSecretLeaks(stableJson(rows));
+  const gate = ({
+    id,
+    label,
+    passed,
+    detail,
+    apiPath = indexRoute,
+    severity = 'blocker',
+    localRequired = true,
+  }) => ({
+    id,
+    label,
+    passed: Boolean(passed),
+    status: passed ? 'passed' : severity === 'production-blocker' ? 'blocked' : 'missing',
+    severity,
+    localRequired,
+    detail,
+    apiPath,
+  });
+  const gates = [
+    gate({
+      id: 'indexable-evidence-or-artifact-present',
+      label: 'Evidence or artifact nodes are present',
+      passed: evidenceRecords.length > 0 || submissionRecords.length > 0,
+      detail: `${evidenceRecords.length} evidence search(es), ${submissionRecords.length} Agent submission(s).`,
+    }),
+    gate({
+      id: 'source-snapshots-indexable',
+      label: 'Evidence source snapshots are indexable',
+      passed: expectedSourceCount === 0
+        || (sourceSnapshotRecords.length >= expectedSourceCount && sourceSnapshotChecksumCount === sourceSnapshotRecords.length),
+      detail: `${sourceSnapshotRecords.length}/${expectedSourceCount} source snapshot(s), ${sourceSnapshotChecksumCount} fully checksummed.`,
+      apiPath: evidenceQualityAudit.backendRoutes?.evidenceQualityAudit || (projectId ? `/projects/${projectId}/evidence-quality-audit` : indexRoute),
+    }),
+    gate({
+      id: 'submission-storage-proofs-indexable',
+      label: 'Agent submission storage proofs are indexable',
+      passed: submissionRecords.length === 0 || artifactStorageProofCount === submissionRecords.length,
+      detail: `${artifactStorageProofCount}/${submissionRecords.length} submission artifact storage proof(s).`,
+      apiPath: artifactQualityAudit.backendRoutes?.artifactQualityAudit || (projectId ? `/projects/${projectId}/artifact-quality-audit` : indexRoute),
+    }),
+    gate({
+      id: 'proof-routes-linked',
+      label: 'Index rows have proof routes',
+      passed: rows.length > 0 && proofLinkedCount === rows.length,
+      detail: `${proofLinkedCount}/${rows.length} index row(s) include route plus proof/checksum context.`,
+    }),
+    gate({
+      id: 'redaction-scan-clean',
+      label: 'Index output is redaction-clean',
+      passed: rawSecretScan.count === 0,
+      detail: `${rawSecretScan.count} raw secret leak pattern(s) detected.`,
+    }),
+    gate({
+      id: 'managed-vector-adapter-production-blocked',
+      label: 'Production vector adapter remains blocked',
+      passed: false,
+      detail: 'Local index readiness is available for MVP proof; production retrieval memory still needs a managed vector adapter, retention policy, and source-custody audit.',
+      severity: 'production-blocker',
+      localRequired: false,
+    }),
+  ];
+  const failedLocalGates = gates.filter((row) => row.localRequired && !row.passed);
+  const readyForLocalMvp = rows.length > 0 && failedLocalGates.length === 0;
+  const checksum = persistenceChecksum({
+    projectId,
+    rows: rows.map((row) => [row.recordType, row.recordId || row.id, row.checksum, row.route]),
+    gates: gates.map((row) => [row.id, row.passed, row.status]),
+  });
+  return {
+    projectId,
+    generatedAt: now,
+    schemaVersion: 'evidence-index-readiness/v1',
+    status: readyForLocalMvp
+      ? 'local-evidence-index-ready-production-vector-store-blocked'
+      : 'local-evidence-index-incomplete',
+    indexMode: 'local-checksummed-evidence-and-artifact-index',
+    readyForLocalMvp,
+    readyForPrivatePilot: readyForLocalMvp,
+    readyForProduction: false,
+    rows,
+    evidenceRows,
+    submissionRows,
+    sourceSnapshotRows,
+    providerReceiptRows,
+    gates,
+    failedLocalGates,
+    productionBlockers: [
+      'managed vector adapter',
+      'retrieval-memory retention policy',
+      'managed source-custody audit',
+    ],
+    relatedReadiness: {
+      evidenceQualityStatus: evidenceQualityAudit.status || null,
+      artifactQualityStatus: artifactQualityAudit.status || null,
+      evidenceCustodyStatus: evidenceCustodyReadiness.status || null,
+      evidenceQualityChecksum: evidenceQualityAudit.checksum || null,
+      artifactQualityChecksum: artifactQualityAudit.checksum || null,
+      evidenceCustodyChecksum: evidenceCustodyReadiness.checksum || null,
+    },
+    backendRoutes: {
+      evidenceIndexReadiness: indexRoute,
+      evidenceSearches: projectId ? `/projects/${projectId}/evidence-searches` : null,
+      submissions: projectId ? `/projects/${projectId}/submissions` : null,
+      evidenceQualityAudit: evidenceQualityAudit.backendRoutes?.evidenceQualityAudit || (projectId ? `/projects/${projectId}/evidence-quality-audit` : null),
+      artifactQualityAudit: artifactQualityAudit.backendRoutes?.artifactQualityAudit || (projectId ? `/projects/${projectId}/artifact-quality-audit` : null),
+      evidenceCustodyReadiness: evidenceCustodyReadiness.backendRoutes?.evidenceCustodyReadiness || (projectId ? `/projects/${projectId}/evidence-custody-readiness` : null),
+      projectSettings: projectId ? `/projects/${projectId}/project-settings` : null,
+    },
+    summary: {
+      rowCount: rows.length,
+      evidenceSearchCount: evidenceRecords.length,
+      submissionCount: submissionRecords.length,
+      sourceSnapshotCount: sourceSnapshotRecords.length,
+      providerReceiptCount: providerReceiptRecords.length,
+      artifactStorageProofCount,
+      proofRouteCount,
+      proofLinkedCount,
+      gateCount: gates.length,
+      passedGateCount: gates.filter((row) => row.passed).length,
+      failedLocalGateCount: failedLocalGates.length,
+      rawLeakCount: rawSecretScan.count,
+      readyForLocalMvp,
+      readyForProduction: false,
+      checksum,
+    },
+    checksum,
+    nextRequiredProductionWork: 'Connect this local evidence/artifact index to managed vector storage with retention, source custody, and audit controls before public production.',
+  };
+}
+
+function buildProjectMemoryReadinessSnapshot({
+  project = {},
+  messages = [],
+  evidenceIndexReadiness = {},
+  persistenceAdapterPlan = {},
+  meetingSummaries = {},
+  now = nowIso(),
+} = {}) {
+  const projectId = project.id || evidenceIndexReadiness.projectId || persistenceAdapterPlan.projectId || meetingSummaries.projectId || null;
+  const memoryRoute = projectId ? `/projects/${projectId}/memory-readiness` : null;
+  const safeMessages = Array.isArray(messages) ? messages : [];
+  const evidenceSummary = evidenceIndexReadiness.summary || {};
+  const meetingSummaryRows = meetingSummaries.rows || [];
+  const projectMemoryFactCount = [
+    project.id,
+    project.projectSettings?.checksum,
+    project.agentStates?.length,
+    project.tasks?.length,
+  ].filter(Boolean).length;
+  const row = ({
+    id,
+    label,
+    status,
+    route,
+    detail,
+    recordCount = 0,
+    checksum = null,
+  }) => redactSensitiveObject({
+    id,
+    label,
+    status,
+    route,
+    detail: redactSensitiveText(detail || ''),
+    recordCount,
+    checksum,
+  });
+  const rows = [
+    row({
+      id: 'project-state-memory',
+      label: 'Project state memory',
+      status: projectId ? 'route-backed' : 'missing-project',
+      route: projectId ? `/projects/${projectId}` : null,
+      recordCount: projectMemoryFactCount,
+      detail: 'Project state, settings checksum, Agent state, and task rows are readable through the backend project route.',
+      checksum: project.projectSettings?.checksum || null,
+    }),
+    row({
+      id: 'transcript-memory',
+      label: 'Transcript and meeting memory',
+      status: safeMessages.length || meetingSummaryRows.length ? 'route-backed' : 'waiting-for-meeting-proof',
+      route: meetingSummaries.backendRoutes?.meetingSummaries || (projectId ? `/projects/${projectId}/meeting-summaries` : null),
+      recordCount: safeMessages.length + meetingSummaryRows.length,
+      detail: `${safeMessages.length} transcript message(s) and ${meetingSummaryRows.length} backend-derived meeting summary row(s) are available for recall.`,
+      checksum: meetingSummaries.checksum || null,
+    }),
+    row({
+      id: 'evidence-artifact-memory',
+      label: 'Evidence and artifact memory',
+      status: evidenceIndexReadiness.readyForLocalMvp ? 'local-index-ready' : 'waiting-for-evidence-or-artifact-proof',
+      route: evidenceIndexReadiness.backendRoutes?.evidenceIndexReadiness || (projectId ? `/projects/${projectId}/evidence-index-readiness` : null),
+      recordCount: evidenceSummary.rowCount || 0,
+      detail: `${evidenceSummary.evidenceSearchCount || 0} evidence search(es), ${evidenceSummary.submissionCount || 0} Agent submission(s), and ${evidenceSummary.sourceSnapshotCount || 0} source snapshot(s) are indexed for local MVP proof.`,
+      checksum: evidenceIndexReadiness.checksum || null,
+    }),
+    row({
+      id: 'managed-persistence-plan',
+      label: 'Managed persistence plan',
+      status: persistenceAdapterPlan.schemaVersion === 'managed-persistence-adapter-plan/v1' ? 'route-backed' : 'missing-plan',
+      route: projectId ? `/projects/${projectId}/persistence-adapter-plan` : null,
+      recordCount: persistenceAdapterPlan.summary?.tablePlanCount || 0,
+      detail: `Managed adapter plan status is ${persistenceAdapterPlan.status || 'unknown'}; production memory cutover remains blocked until adapter, backup, restore, and rollback controls pass.`,
+      checksum: persistenceAdapterPlan.checksum || null,
+    }),
+  ];
+  const rawSecretScan = scanTextForRawSecretLeaks(stableJson(rows));
+  const gate = ({ id, label, passed, detail, apiPath = memoryRoute, severity = 'blocker', localRequired = true }) => ({
+    id,
+    label,
+    passed: Boolean(passed),
+    status: passed ? 'passed' : severity === 'production-blocker' ? 'blocked' : 'missing',
+    severity,
+    localRequired,
+    detail,
+    apiPath,
+  });
+  const gates = [
+    gate({
+      id: 'project-memory-route-backed',
+      label: 'Project memory route is backend-backed',
+      passed: Boolean(projectId),
+      detail: projectId ? `Project ${projectId} has a memory readiness route.` : 'Project id is missing.',
+    }),
+    gate({
+      id: 'transcript-or-state-memory-present',
+      label: 'Transcript or state memory is present',
+      passed: Boolean(projectId && (projectMemoryFactCount > 0 || safeMessages.length > 0 || meetingSummaryRows.length > 0)),
+      detail: `${projectMemoryFactCount} project fact(s), ${safeMessages.length} message(s), ${meetingSummaryRows.length} meeting summary row(s).`,
+    }),
+    gate({
+      id: 'evidence-artifact-index-route-backed',
+      label: 'Evidence and artifact memory route exists',
+      passed: evidenceIndexReadiness.schemaVersion === 'evidence-index-readiness/v1',
+      detail: `Evidence index status ${evidenceIndexReadiness.status || 'unknown'}.`,
+      apiPath: projectId ? `/projects/${projectId}/evidence-index-readiness` : memoryRoute,
+    }),
+    gate({
+      id: 'persistence-plan-route-backed',
+      label: 'Persistence cutover plan route exists',
+      passed: persistenceAdapterPlan.schemaVersion === 'managed-persistence-adapter-plan/v1',
+      detail: `Persistence adapter plan status ${persistenceAdapterPlan.status || 'unknown'}.`,
+      apiPath: projectId ? `/projects/${projectId}/persistence-adapter-plan` : memoryRoute,
+    }),
+    gate({
+      id: 'memory-readiness-redaction-clean',
+      label: 'Memory readiness output is redaction-clean',
+      passed: rawSecretScan.count === 0,
+      detail: `${rawSecretScan.count} raw secret leak pattern(s) detected.`,
+    }),
+    gate({
+      id: 'managed-long-term-memory-production-blocked',
+      label: 'Managed long-term memory remains production-blocked',
+      passed: false,
+      detail: 'Local memory readiness is inspectable, but production long-term memory still needs managed database/vector adapters, retention policy, restore drills, and customer deletion controls.',
+      severity: 'production-blocker',
+      localRequired: false,
+    }),
+  ];
+  const failedLocalGates = gates.filter((item) => item.localRequired && !item.passed);
+  const readyForLocalMvp = failedLocalGates.length === 0;
+  const readyForPrivatePilot = Boolean(
+    readyForLocalMvp
+    && evidenceIndexReadiness.readyForLocalMvp
+    && meetingSummaries.readyForLocalMvp
+  );
+  const checksum = persistenceChecksum({
+    schemaVersion: 'project-memory-readiness/v1',
+    projectId,
+    rows: rows.map((item) => [item.id, item.status, item.route, item.recordCount, item.checksum]),
+    gates: gates.map((item) => [item.id, item.passed, item.status]),
+  });
+  return {
+    projectId,
+    generatedAt: now,
+    schemaVersion: 'project-memory-readiness/v1',
+    status: readyForLocalMvp
+      ? 'local-project-memory-ready-production-managed-memory-blocked'
+      : 'local-project-memory-proof-incomplete',
+    memoryMode: 'read-only-local-project-memory-read-model',
+    readyForLocalMvp,
+    readyForPrivatePilot,
+    readyForProduction: false,
+    rows,
+    gates,
+    failedLocalGates,
+    productionBlockers: [
+      'managed database adapter',
+      'managed vector adapter',
+      'memory retention and deletion policy',
+      'backup restore drill',
+      'customer data export controls',
+    ],
+    relatedReadiness: {
+      evidenceIndexStatus: evidenceIndexReadiness.status || null,
+      evidenceIndexChecksum: evidenceIndexReadiness.checksum || null,
+      persistenceAdapterPlanStatus: persistenceAdapterPlan.status || null,
+      persistenceAdapterPlanChecksum: persistenceAdapterPlan.checksum || null,
+      meetingSummariesStatus: meetingSummaries.status || null,
+      meetingSummariesChecksum: meetingSummaries.checksum || null,
+    },
+    backendRoutes: {
+      memoryReadiness: memoryRoute,
+      project: projectId ? `/projects/${projectId}` : null,
+      transcripts: projectId ? `/projects/${projectId}/transcripts` : null,
+      meetingSummaries: projectId ? `/projects/${projectId}/meeting-summaries` : null,
+      evidenceIndexReadiness: projectId ? `/projects/${projectId}/evidence-index-readiness` : null,
+      persistenceAdapterPlan: projectId ? `/projects/${projectId}/persistence-adapter-plan` : null,
+      persistenceSnapshot: projectId ? `/projects/${projectId}/persistence-snapshot` : null,
+      projectSettings: projectId ? `/projects/${projectId}/project-settings` : null,
+    },
+    summary: {
+      rowCount: rows.length,
+      projectMemoryFactCount,
+      transcriptMessageCount: safeMessages.length,
+      meetingSummaryCount: meetingSummaryRows.length,
+      evidenceIndexRowCount: evidenceSummary.rowCount || 0,
+      evidenceSearchCount: evidenceSummary.evidenceSearchCount || 0,
+      submissionCount: evidenceSummary.submissionCount || 0,
+      sourceSnapshotCount: evidenceSummary.sourceSnapshotCount || 0,
+      failedLocalGateCount: failedLocalGates.length,
+      productionBlockerCount: gates.filter((item) => item.severity === 'production-blocker').length,
+      readyForLocalMvp,
+      readyForPrivatePilot,
+      readyForProduction: false,
+      checksum,
+    },
+    checksum,
+    nextRequiredProductionWork: 'Implement managed memory storage with vector retrieval, retention/deletion policy, backup/restore drills, and customer export controls before public production.',
+  };
+}
+
+function buildBudgetAlertReadinessSnapshot({
+  project = {},
+  projectSettings = {},
+  providerControlPolicy = {},
+  now = nowIso(),
+} = {}) {
+  const projectId = project.id || projectSettings.projectId || null;
+  const budgetRoute = projectId ? `/projects/${projectId}/budget-alert-readiness` : null;
+  const projectBudgetPolicy = normalizeProjectProviderBudgetPolicy(undefined, project.projectSettings?.providerBudgetPolicy || projectSettings.providerBudgetPolicy);
+  const usageLedgerIsReadable = project.providerUsageLedger === undefined || Array.isArray(project.providerUsageLedger);
+  const usageRows = Array.isArray(project.providerUsageLedger) ? project.providerUsageLedger : [];
+  const usageSummary = summarizeProviderUsageLedger(usageRows, now);
+  const effectiveBudgetPolicy = {
+    schemaVersion: providerControlPolicy.schemaVersion || 'provider-control-policy/v1',
+    configured: Boolean(
+      providerControlPolicy.configured
+      || projectBudgetPolicy.dailyBudgetCents
+      || projectBudgetPolicy.maxRequestsPerProjectHour
+    ),
+    enabled: providerControlPolicy.enabled !== false,
+    mode: providerControlPolicy.mode || projectBudgetPolicy.enforcementMode || 'enforced',
+    enforcementEnabled: providerControlPolicy.enforcementEnabled !== false,
+    dailyBudgetCents: Math.max(0, Number(providerControlPolicy.dailyBudgetCents ?? projectBudgetPolicy.dailyBudgetCents) || 0),
+    maxRequestsPerProjectHour: Math.max(0, Number(providerControlPolicy.maxRequestsPerProjectHour ?? projectBudgetPolicy.maxRequestsPerProjectHour) || 0),
+    currency: providerControlPolicy.currency || projectBudgetPolicy.currency || 'USD',
+  };
+  const percentUsed = (used, limit) => (
+    limit > 0 ? Math.round((Number(used) / Number(limit)) * 1000) / 10 : null
+  );
+  const limitStatus = (used, limit) => {
+    if (!(limit > 0)) return 'unlimited';
+    if (used >= limit) return 'blocked';
+    if (used >= limit * 0.8) return 'warning';
+    return 'ok';
+  };
+  const alertRow = ({
+    id,
+    label,
+    used,
+    limit,
+    unit,
+    sourceRoute,
+  }) => {
+    const status = limitStatus(used, limit);
+    return {
+      id,
+      label,
+      status,
+      used,
+      limit,
+      remaining: limit > 0 ? Math.max(0, limit - used) : null,
+      percentUsed: percentUsed(used, limit),
+      unit,
+      route: budgetRoute,
+      sourceRoute,
+      localAction: status === 'blocked'
+        ? 'Provider-controlled run should deny additional provider work until the window resets or the policy changes.'
+        : status === 'warning'
+          ? 'Manager should review budget headroom before allowing more autonomous provider work.'
+          : status === 'unlimited'
+            ? 'No local limit is configured for this dimension.'
+            : 'Local budget headroom is available.',
+    };
+  };
+  const dailyBudgetRow = alertRow({
+    id: 'daily-provider-budget',
+    label: 'Daily provider budget',
+    used: usageSummary.dailyCostCents,
+    limit: effectiveBudgetPolicy.dailyBudgetCents,
+    unit: `cents-${effectiveBudgetPolicy.currency}`,
+    sourceRoute: projectId ? `/projects/${projectId}/provider-readiness` : null,
+  });
+  const hourlyRequestRow = alertRow({
+    id: 'hourly-provider-requests',
+    label: 'Hourly provider requests',
+    used: usageSummary.hourlyRequestCount,
+    limit: effectiveBudgetPolicy.maxRequestsPerProjectHour,
+    unit: 'requests',
+    sourceRoute: projectId ? `/projects/${projectId}/provider-controlled-run` : null,
+  });
+  const ledgerRow = {
+    id: 'provider-usage-ledger',
+    label: 'Provider usage ledger',
+    status: usageRows.length ? 'active' : 'waiting-for-provider-traffic',
+    count: usageSummary.count,
+    allowedCount: usageSummary.allowedCount,
+    deniedCount: usageSummary.deniedCount,
+    failedCount: usageSummary.failedCount,
+    latestRecordId: usageSummary.latestRecordId,
+    route: projectId ? `/projects/${projectId}/provider-readiness` : null,
+    localAction: usageRows.length
+      ? 'Usage rows are available for local headroom checks.'
+      : 'Headroom can be computed, but no provider calls have been recorded yet.',
+  };
+  const rows = [dailyBudgetRow, hourlyRequestRow, ledgerRow];
+  const redactionScan = scanTextForRawSecretLeaks(stableJson({
+    rows,
+    providerUsageRows: usageRows.slice(0, 20).map((row) => redactSensitiveObject(row)),
+  }));
+  const gate = ({
+    id,
+    label,
+    passed,
+    detail,
+    apiPath = budgetRoute,
+    severity = 'blocker',
+    localRequired = true,
+  }) => ({
+    id,
+    label,
+    passed: Boolean(passed),
+    status: passed ? 'passed' : severity === 'production-blocker' ? 'blocked' : 'missing',
+    severity,
+    localRequired,
+    detail,
+    apiPath,
+  });
+  const gates = [
+    gate({
+      id: 'project-provider-budget-policy-readable',
+      label: 'Project provider budget policy is readable',
+      passed: projectBudgetPolicy.schemaVersion === 'project-provider-budget-policy/v1',
+      detail: `${projectBudgetPolicy.dailyBudgetCents || 0} daily cent limit, ${projectBudgetPolicy.maxRequestsPerProjectHour || 0} hourly request limit.`,
+      apiPath: projectId ? `/projects/${projectId}/project-settings` : budgetRoute,
+    }),
+    gate({
+      id: 'provider-usage-ledger-readable',
+      label: 'Provider usage ledger is readable',
+      passed: usageLedgerIsReadable,
+      detail: `${usageSummary.count} provider usage row(s) available.`,
+      apiPath: projectId ? `/projects/${projectId}/provider-readiness` : budgetRoute,
+    }),
+    gate({
+      id: 'daily-budget-headroom-computable',
+      label: 'Daily budget headroom is computable',
+      passed: Number.isFinite(effectiveBudgetPolicy.dailyBudgetCents) && Number.isFinite(usageSummary.dailyCostCents),
+      detail: `${usageSummary.dailyCostCents}/${effectiveBudgetPolicy.dailyBudgetCents || 'unlimited'} cents used today.`,
+    }),
+    gate({
+      id: 'hourly-request-headroom-computable',
+      label: 'Hourly request headroom is computable',
+      passed: Number.isFinite(effectiveBudgetPolicy.maxRequestsPerProjectHour) && Number.isFinite(usageSummary.hourlyRequestCount),
+      detail: `${usageSummary.hourlyRequestCount}/${effectiveBudgetPolicy.maxRequestsPerProjectHour || 'unlimited'} requests used in the last hour.`,
+    }),
+    gate({
+      id: 'budget-alert-route-linked',
+      label: 'Budget alert readiness route is linked',
+      passed: Boolean(budgetRoute),
+      detail: budgetRoute || 'Project route missing.',
+    }),
+    gate({
+      id: 'redaction-scan-clean',
+      label: 'Budget alert output is redaction-clean',
+      passed: redactionScan.count === 0,
+      detail: `${redactionScan.count} raw secret leak pattern(s) detected.`,
+    }),
+    gate({
+      id: 'managed-alert-routing-production-blocked',
+      label: 'Production alert routing remains blocked',
+      passed: false,
+      detail: 'Local headroom can be computed; production still needs centralized metrics, notification routing, escalation ownership, and incident/on-call controls.',
+      severity: 'production-blocker',
+      localRequired: false,
+    }),
+  ];
+  const failedLocalGates = gates.filter((row) => row.localRequired && !row.passed);
+  const blockingAlertRows = rows.filter((row) => row.status === 'blocked');
+  const warningAlertRows = rows.filter((row) => row.status === 'warning');
+  const unlimitedAlertRows = rows.filter((row) => row.status === 'unlimited');
+  const alertState = blockingAlertRows.length
+    ? 'blocked'
+    : warningAlertRows.length
+      ? 'warning'
+      : unlimitedAlertRows.length === 2
+        ? 'unlimited-local-budget'
+        : 'ok';
+  const readyForLocalMvp = failedLocalGates.length === 0;
+  const checksum = persistenceChecksum({
+    projectId,
+    effectiveBudgetPolicy,
+    usageSummary,
+    rows: rows.map((row) => [row.id, row.status, row.used ?? row.count, row.limit ?? null]),
+    gates: gates.map((row) => [row.id, row.passed, row.status]),
+  });
+  return {
+    projectId,
+    generatedAt: now,
+    schemaVersion: 'budget-alert-readiness/v1',
+    status: readyForLocalMvp
+      ? `local-budget-alerts-${alertState}-production-routing-blocked`
+      : 'local-budget-alerts-incomplete',
+    alertState,
+    readyForLocalMvp,
+    readyForPrivatePilot: readyForLocalMvp,
+    readyForProduction: false,
+    projectBudgetPolicy,
+    effectiveBudgetPolicy,
+    usageSummary,
+    rows,
+    recentUsageRows: usageRows.slice(0, 20).map((row) => redactSensitiveObject(row)),
+    gates,
+    failedLocalGates,
+    productionBlockers: [
+      'centralized usage metrics',
+      'alert notification routing',
+      'escalation and on-call ownership',
+      'managed provider usage audit storage',
+    ],
+    redaction: {
+      status: redactionScan.count ? 'needs-attention' : 'ready',
+      rawLeakCount: redactionScan.count,
+      responseChecksum: checksum,
+    },
+    backendRoutes: {
+      budgetAlertReadiness: budgetRoute,
+      projectSettings: projectId ? `/projects/${projectId}/project-settings` : null,
+      providerReadiness: projectId ? `/projects/${projectId}/provider-readiness` : null,
+      providerControlledRun: projectId ? `/projects/${projectId}/provider-controlled-run` : null,
+      operationsReadiness: projectId ? `/projects/${projectId}/operations-readiness` : null,
+      events: projectId ? `/projects/${projectId}/events` : null,
+    },
+    summary: {
+      rowCount: rows.length,
+      alertState,
+      providerUsageCount: usageSummary.count,
+      providerUsageDeniedCount: usageSummary.deniedCount,
+      dailyBudgetCents: effectiveBudgetPolicy.dailyBudgetCents,
+      dailyCostCents: usageSummary.dailyCostCents,
+      dailyBudgetRemainingCents: effectiveBudgetPolicy.dailyBudgetCents > 0
+        ? Math.max(0, effectiveBudgetPolicy.dailyBudgetCents - usageSummary.dailyCostCents)
+        : null,
+      maxRequestsPerProjectHour: effectiveBudgetPolicy.maxRequestsPerProjectHour,
+      hourlyRequestCount: usageSummary.hourlyRequestCount,
+      hourlyRequestsRemaining: effectiveBudgetPolicy.maxRequestsPerProjectHour > 0
+        ? Math.max(0, effectiveBudgetPolicy.maxRequestsPerProjectHour - usageSummary.hourlyRequestCount)
+        : null,
+      warningCount: warningAlertRows.length,
+      blockedCount: blockingAlertRows.length,
+      gateCount: gates.length,
+      passedGateCount: gates.filter((row) => row.passed).length,
+      failedLocalGateCount: failedLocalGates.length,
+      readyForLocalMvp,
+      readyForProduction: false,
+      checksum,
+    },
+    checksum,
+    nextRequiredProductionWork: 'Connect provider usage metrics to centralized alert routing, escalation policy, and managed audit storage before public production.',
+  };
+}
+
+function buildErrorReportingReadinessSnapshot({
+  project = {},
+  operationsReadiness = {},
+  now = nowIso(),
+} = {}) {
+  const projectId = project.id || operationsReadiness.projectId || null;
+  const errorRoute = projectId ? `/projects/${projectId}/error-reporting-readiness` : null;
+  const operationsRoute = projectId ? `/projects/${projectId}/operations-readiness` : null;
+  const observability = operationsReadiness.observability || {};
+  const metrics = observability.metrics || {};
+  const logStreams = Array.isArray(observability.logStreams) ? observability.logStreams : [];
+  const alertRules = Array.isArray(observability.alertRules) ? observability.alertRules : [];
+  const recoverySteps = Array.isArray(operationsReadiness.recovery?.steps) ? operationsReadiness.recovery.steps : [];
+  const incidentDrill = operationsReadiness.incidentDrill || {};
+  const routedAlertRuleCount = alertRules.filter((rule) => rule.route).length;
+  const executableRecoveryStepCount = recoverySteps.filter((step) => step.evidenceRoute).length;
+  const logStreamRouteCount = logStreams.filter((stream) => stream.route).length;
+  const localErrorCount = [
+    metrics.workerDeadLetterCount,
+    metrics.workerRetryableFailureCount,
+    metrics.securityAuditStreamGapCount,
+    metrics.securityAuditStreamChainBreakCount,
+    metrics.securityAuditStreamHashMismatchCount,
+    metrics.incidentDrillFailedReceiptCount,
+  ].reduce((sum, value) => sum + (Number(value) || 0), 0);
+  const rows = [
+    {
+      id: 'local-log-streams',
+      label: 'Local log streams',
+      status: logStreams.length && logStreamRouteCount === logStreams.length ? 'route-linked' : 'incomplete',
+      count: logStreams.length,
+      routeLinkedCount: logStreamRouteCount,
+      streams: logStreams.map((stream) => ({
+        id: stream.id,
+        route: stream.route,
+        count: Number(stream.count) || 0,
+      })),
+      route: operationsRoute,
+    },
+    {
+      id: 'local-alert-rules',
+      label: 'Local alert rules',
+      status: alertRules.length && routedAlertRuleCount === alertRules.length ? 'route-linked' : 'incomplete',
+      count: alertRules.length,
+      criticalCount: alertRules.filter((rule) => rule.severity === 'critical').length,
+      routeLinkedCount: routedAlertRuleCount,
+      route: operationsRoute,
+    },
+    {
+      id: 'recovery-runbook',
+      label: 'Recovery runbook',
+      status: recoverySteps.length && executableRecoveryStepCount === recoverySteps.length ? 'route-linked' : 'incomplete',
+      count: recoverySteps.length,
+      routeLinkedCount: executableRecoveryStepCount,
+      route: operationsRoute,
+    },
+    {
+      id: 'incident-drill',
+      label: 'Incident drill rehearsal',
+      status: incidentDrill.drillReady ? 'passed' : 'needs-operator-rehearsal',
+      count: incidentDrill.summary?.receiptCount || 0,
+      failedCount: incidentDrill.summary?.failedReceiptCount || 0,
+      checksum: incidentDrill.checksum || null,
+      route: operationsRoute,
+    },
+    {
+      id: 'local-error-signals',
+      label: 'Local error signals',
+      status: localErrorCount > 0 ? 'attention-needed' : 'no-local-error-signal',
+      count: localErrorCount,
+      workerDeadLetterCount: metrics.workerDeadLetterCount || 0,
+      workerRetryableFailureCount: metrics.workerRetryableFailureCount || 0,
+      auditGapCount: metrics.securityAuditStreamGapCount || 0,
+      auditHashIssueCount: (metrics.securityAuditStreamChainBreakCount || 0) + (metrics.securityAuditStreamHashMismatchCount || 0),
+      incidentDrillFailedReceiptCount: metrics.incidentDrillFailedReceiptCount || 0,
+      route: operationsRoute,
+    },
+  ];
+  const redactionScan = scanTextForRawSecretLeaks(stableJson({
+    rows,
+    alertRules,
+    recoverySteps,
+    incidentDrill: {
+      schemaVersion: incidentDrill.schemaVersion || null,
+      status: incidentDrill.status || null,
+      summary: incidentDrill.summary || null,
+      checksum: incidentDrill.checksum || null,
+    },
+  }));
+  const gate = ({
+    id,
+    label,
+    passed,
+    detail,
+    apiPath = errorRoute,
+    severity = 'blocker',
+    localRequired = true,
+  }) => ({
+    id,
+    label,
+    passed: Boolean(passed),
+    status: passed ? 'passed' : severity === 'production-blocker' ? 'blocked' : 'missing',
+    severity,
+    localRequired,
+    detail,
+    apiPath,
+  });
+  const gates = [
+    gate({
+      id: 'operations-readiness-readable',
+      label: 'Operations readiness is readable',
+      passed: operationsReadiness.schemaVersion === 'operations-readiness/v1',
+      detail: operationsReadiness.status || 'operations readiness missing.',
+      apiPath: operationsRoute,
+    }),
+    gate({
+      id: 'local-log-streams-route-linked',
+      label: 'Local log streams have proof routes',
+      passed: logStreams.length > 0 && logStreamRouteCount === logStreams.length,
+      detail: `${logStreamRouteCount}/${logStreams.length} local log stream(s) expose backend routes.`,
+      apiPath: operationsRoute,
+    }),
+    gate({
+      id: 'local-alert-rules-route-linked',
+      label: 'Local alert rules have proof routes',
+      passed: alertRules.length > 0 && routedAlertRuleCount === alertRules.length,
+      detail: `${routedAlertRuleCount}/${alertRules.length} alert rule(s) route to backend proof surfaces.`,
+      apiPath: operationsRoute,
+    }),
+    gate({
+      id: 'recovery-runbook-route-linked',
+      label: 'Recovery runbook has proof routes',
+      passed: recoverySteps.length > 0 && executableRecoveryStepCount === recoverySteps.length,
+      detail: `${executableRecoveryStepCount}/${recoverySteps.length} recovery step(s) have evidence routes.`,
+      apiPath: operationsRoute,
+    }),
+    gate({
+      id: 'incident-drill-visible',
+      label: 'Incident drill status is visible',
+      passed: incidentDrill.schemaVersion === 'operations-incident-drill/v1',
+      detail: `${incidentDrill.summary?.receiptCount || 0} drill receipt(s), ${incidentDrill.summary?.failedReceiptCount || 0} failed.`,
+      apiPath: operationsRoute,
+    }),
+    gate({
+      id: 'redaction-scan-clean',
+      label: 'Error reporting output is redaction-clean',
+      passed: redactionScan.count === 0,
+      detail: `${redactionScan.count} raw secret leak pattern(s) detected.`,
+    }),
+    gate({
+      id: 'centralized-logs-traces-production-blocked',
+      label: 'Production logs and traces remain blocked',
+      passed: false,
+      detail: 'Local error reporting readiness is available for MVP proof; production still needs centralized logs, traces, managed incident routing, retention, and restore drills.',
+      severity: 'production-blocker',
+      localRequired: false,
+    }),
+  ];
+  const failedLocalGates = gates.filter((row) => row.localRequired && !row.passed);
+  const readyForLocalMvp = failedLocalGates.length === 0;
+  const checksum = persistenceChecksum({
+    projectId,
+    rows: rows.map((row) => [row.id, row.status, row.count, row.routeLinkedCount || 0]),
+    gates: gates.map((row) => [row.id, row.passed, row.status]),
+    operationsReadinessChecksum: operationsReadiness.checksum || null,
+    incidentDrillChecksum: incidentDrill.checksum || null,
+  });
+  return {
+    projectId,
+    generatedAt: now,
+    schemaVersion: 'error-reporting-readiness/v1',
+    status: readyForLocalMvp
+      ? 'local-error-reporting-ready-production-observability-blocked'
+      : 'local-error-reporting-incomplete',
+    readyForLocalMvp,
+    readyForPrivatePilot: readyForLocalMvp,
+    readyForProduction: false,
+    rows,
+    gates,
+    failedLocalGates,
+    operationsReadinessStatus: operationsReadiness.status || null,
+    localErrorCount,
+    redaction: {
+      status: redactionScan.count ? 'needs-attention' : 'ready',
+      rawLeakCount: redactionScan.count,
+      responseChecksum: checksum,
+    },
+    productionBlockers: [
+      'centralized logs',
+      'distributed traces',
+      'managed incident system',
+      'alert routing and on-call ownership',
+      'retention and restore drill evidence',
+    ],
+    backendRoutes: {
+      errorReportingReadiness: errorRoute,
+      operationsReadiness: operationsRoute,
+      timeline: projectId ? `/projects/${projectId}/timeline` : null,
+      events: projectId ? `/projects/${projectId}/events` : null,
+      securityAuditStream: projectId ? `/projects/${projectId}/security-audit-stream` : null,
+      workerQueue: projectId ? `/projects/${projectId}/worker-queue` : null,
+      providerReadiness: projectId ? `/projects/${projectId}/provider-readiness` : null,
+    },
+    summary: {
+      rowCount: rows.length,
+      logStreamCount: logStreams.length,
+      logStreamRouteCount,
+      alertRuleCount: alertRules.length,
+      routedAlertRuleCount,
+      recoveryStepCount: recoverySteps.length,
+      executableRecoveryStepCount,
+      incidentDrillReady: Boolean(incidentDrill.drillReady),
+      incidentDrillReceiptCount: incidentDrill.summary?.receiptCount || 0,
+      incidentDrillFailedReceiptCount: incidentDrill.summary?.failedReceiptCount || 0,
+      localErrorCount,
+      gateCount: gates.length,
+      passedGateCount: gates.filter((row) => row.passed).length,
+      failedLocalGateCount: failedLocalGates.length,
+      readyForLocalMvp,
+      readyForProduction: false,
+      checksum,
+    },
+    checksum,
+    nextRequiredProductionWork: 'Connect local error signals to centralized logs, traces, managed incident routing, on-call ownership, retention, and restore-drill evidence before public production.',
+  };
+}
+
 function idsFromRoutes(routes = [], field = 'proofIds') {
   return uniqueStrings((routes || []).flatMap((route) => route?.[field] || [])).slice(0, 12);
 }
@@ -16823,6 +22026,10 @@ function buildMvpReadiness({ managerDashboard = {}, managerFlowGraph = {} } = {}
 
   const passedCount = rows.filter((item) => item.passed).length;
   const blockerRows = rows.filter((item) => !item.passed);
+  const routeFor = (key, fallbackSlug) => (
+    managerDashboard.backendRoutes?.[key]
+    || (projectId && fallbackSlug ? `/projects/${projectId}/${fallbackSlug}` : null)
+  );
   const productionBlockers = [
     {
       id: 'production-secret-vault-rbac',
@@ -16887,6 +22094,87 @@ function buildMvpReadiness({ managerDashboard = {}, managerFlowGraph = {} } = {}
   ];
   const nextCoreGap = blockerRows[0] || null;
   const nextProductionGap = productionBlockers[0] || null;
+  let nextCoreAction = nextCoreGap ? {
+    id: 'close-mvp-core-gap',
+    scope: 'mvp-core',
+    label: nextCoreGap.label,
+    status: 'blocked',
+    method: 'GET',
+    apiPath: nextCoreGap.apiPath || routeFor('mvpReadiness', 'mvp-readiness'),
+    runApiPath: nextCoreGap.apiPath || routeFor('mvpReadiness', 'mvp-readiness'),
+    owner: nextCoreGap.owner || 'product-team-runtime',
+    detail: nextCoreGap.detail,
+    productionBlocker: false,
+  } : null;
+  if (nextCoreAction) {
+    const targetControl = buildMvpReadinessOperatorTargetControl({
+      projectId,
+      action: nextCoreAction,
+      nextCoreGap,
+      readinessContext: {
+        artifactTypes: Array.from(artifactTypes),
+        submissionRows: submissions.rows || [],
+        reviewRows: reviews.rows || [],
+      },
+    });
+    nextCoreAction = {
+      ...nextCoreAction,
+      targetGapId: nextCoreGap?.id || null,
+      targetControl,
+      autonomousRunnable: Boolean(targetControl?.autonomousRunnable && targetControl?.targetStageId),
+      autonomousRunControlRoute: projectId ? `/projects/${projectId}/autonomous-run-control` : null,
+    };
+  }
+  const privatePilotAction = {
+    id: 'prepare-private-pilot-handoff',
+    scope: 'private-pilot',
+    label: 'Prepare private-pilot handoff',
+    status: blockerRows.length ? 'waiting-for-core' : 'ready-to-inspect',
+    method: 'GET',
+    apiPath: routeFor('privatePilotGoLiveReadiness', 'private-pilot-go-live-readiness'),
+    runApiPath: routeFor('privatePilotGoLiveReadiness', 'private-pilot-go-live-readiness'),
+    owner: 'manager',
+    detail: blockerRows.length
+      ? 'Core MVP gates must close before customer private-pilot handoff.'
+      : 'Core MVP gates are closed; inspect private-pilot handoff readiness, launch approvals, and evidence export next.',
+    productionBlocker: false,
+    autonomousRunnable: false,
+    targetControl: null,
+  };
+  const productionHardeningAction = nextProductionGap ? {
+    id: 'harden-production-next-gap',
+    scope: 'production-hardening',
+    label: nextProductionGap.label,
+    status: 'production-blocked',
+    method: 'GET',
+    apiPath: nextProductionGap.apiPath || routeFor('productionLaunchGapRegister', 'production-launch-gap-register'),
+    runApiPath: nextProductionGap.apiPath || routeFor('productionLaunchGapRegister', 'production-launch-gap-register'),
+    owner: nextProductionGap.owner || 'operations',
+    detail: nextProductionGap.detail,
+    productionBlocker: true,
+    autonomousRunnable: false,
+    targetControl: null,
+  } : null;
+  const operatorActions = [
+    nextCoreAction,
+    privatePilotAction,
+    productionHardeningAction,
+    {
+      id: 'open-production-gap-register',
+      scope: 'production-hardening',
+      label: 'Open production launch gap register',
+      status: 'production-blocked',
+      method: 'GET',
+      apiPath: routeFor('productionLaunchGapRegister', 'production-launch-gap-register'),
+      runApiPath: routeFor('productionLaunchGapRegister', 'production-launch-gap-register'),
+      owner: 'manager',
+      detail: 'Use the gap register as the public-production work queue; local/private-pilot proof is not production certification.',
+      productionBlocker: true,
+      autonomousRunnable: false,
+      targetControl: null,
+    },
+  ].filter(Boolean);
+  const nextShortestPath = nextCoreAction || productionHardeningAction || privatePilotAction;
 
   return {
     projectId,
@@ -16910,23 +22198,18 @@ function buildMvpReadiness({ managerDashboard = {}, managerFlowGraph = {} } = {}
     },
     rows,
     blockerRows,
-    nextShortestPath: nextCoreGap ? {
-      scope: 'mvp-core',
-      id: nextCoreGap.id,
-      label: nextCoreGap.label,
-      detail: nextCoreGap.detail,
-      apiPath: nextCoreGap.apiPath || null,
-    } : {
-      scope: 'production-hardening',
-      id: nextProductionGap?.id || null,
-      label: nextProductionGap?.label || 'Production hardening',
-      detail: nextProductionGap?.detail || 'Core acceptance is covered; production hardening remains.',
-    },
+    nextShortestPath,
+    operatorActions,
     summary: {
       corePassedCount: passedCount,
       coreTotalCount: rows.length,
       coreBlockerCount: blockerRows.length,
       productionBlockerCount: productionBlockers.length,
+      operatorActionCount: operatorActions.length,
+      nextOperatorActionId: nextShortestPath?.id || null,
+      nextOperatorActionScope: nextShortestPath?.scope || null,
+      nextOperatorActionAutonomousRunnable: Boolean(nextShortestPath?.autonomousRunnable),
+      nextOperatorActionTargetStageId: nextShortestPath?.targetControl?.targetStageId || null,
       proofRouteCount: proofMap.routes?.length || 0,
       flowGraphProofedNodeCount: graphSummary.proofedNodeCount || 0,
       submissionCount: submissions.count || 0,
@@ -17692,6 +22975,96 @@ function buildProductionInfrastructureRehearsal({
   }));
   const failedRehearsalRows = domainRows.filter((row) => !row.rehearsalReady);
   const productionBlockedRows = domainRows.filter((row) => !row.productionReady);
+  const domainRowById = new Map(domainRows.map((row) => [row.id, row]));
+  const managedCutoverGates = [
+    {
+      id: 'private-adapter-gateway-cutover',
+      domainId: 'private-adapter-gateway',
+      label: 'Private adapter gateway cutover',
+      receiptReady: Boolean(adapterGatewayPreflight.productionCutoverReady),
+      productionEvidence: adapterGatewayPreflight.productionCutoverReady ? 'adapter-gateway-production-cutover' : null,
+      blocker: 'Attach production adapter gateway cutover evidence.',
+    },
+    {
+      id: 'managed-persistence-cutover',
+      domainId: 'managed-persistence',
+      label: 'Managed persistence cutover',
+      receiptReady: persistenceCutoverReceiptReady,
+      productionEvidence: persistenceCutoverReceiptReady ? 'production-operations-control-receipt' : null,
+      blocker: 'Attach managed database cutover evidence through production operations receipts.',
+    },
+    {
+      id: 'managed-worker-queue-cutover',
+      domainId: 'managed-worker-queue',
+      label: 'Managed queue or cron cutover',
+      receiptReady: queueCutoverReceiptReady,
+      productionEvidence: queueCutoverReceiptReady ? 'production-operations-control-receipt' : null,
+      blocker: 'Attach managed queue or cron cutover evidence through production operations receipts.',
+    },
+    {
+      id: 'deployment-cutover',
+      domainId: 'deployment-preflight',
+      label: 'Deployment cutover',
+      receiptReady: deploymentReceiptReady,
+      productionEvidence: deploymentReceiptReady ? 'production-deployment-control-receipt' : null,
+      blocker: 'Attach production deployment control receipts.',
+    },
+    {
+      id: 'operations-recovery-cutover',
+      domainId: 'operations-and-recovery',
+      label: 'Operations and recovery cutover',
+      receiptReady: Boolean(productionOperationsReadiness.readyForProductionOperations),
+      productionEvidence: productionOperationsReadiness.readyForProductionOperations ? 'production-operations-readiness' : null,
+      blocker: 'Close centralized observability, incident, restore, and on-call production controls.',
+    },
+    {
+      id: 'production-gap-closure',
+      domainId: 'production-gap-register',
+      label: 'Production launch gap closure',
+      receiptReady: Boolean(productionLaunchGapRegister.readyForProduction),
+      productionEvidence: productionLaunchGapRegister.readyForProduction ? 'production-launch-gap-register' : null,
+      blocker: 'Close the remaining production launch gaps with managed-production evidence.',
+    },
+  ].map((gate) => {
+    const domainRow = domainRowById.get(gate.domainId) || {};
+    const productionReady = Boolean(domainRow.productionReady);
+    const rehearsalReady = Boolean(domainRow.rehearsalReady);
+    const row = {
+      ...gate,
+      route: domainRow.route || null,
+      status: domainRow.status || 'unknown',
+      rehearsalReady,
+      productionReady,
+      evidenceTier: productionReady ? 'managed-production' : (rehearsalReady ? 'rehearsal-ready-production-blocked' : 'rehearsal-blocked'),
+      blocker: productionReady ? null : gate.blocker,
+    };
+    return {
+      ...row,
+      checksum: persistenceChecksum({
+        id: row.id,
+        domainId: row.domainId,
+        status: row.status,
+        rehearsalReady: row.rehearsalReady,
+        productionReady: row.productionReady,
+        receiptReady: row.receiptReady,
+        evidenceTier: row.evidenceTier,
+      }),
+    };
+  });
+  const managedCutoverBlockedGates = managedCutoverGates.filter((gate) => !gate.productionReady);
+  const nextManagedCutoverGate = managedCutoverBlockedGates[0] || null;
+  const managedCutoverSummary = {
+    gateCount: managedCutoverGates.length,
+    rehearsalReadyGateCount: managedCutoverGates.filter((gate) => gate.rehearsalReady).length,
+    failedRehearsalGateCount: managedCutoverGates.filter((gate) => !gate.rehearsalReady).length,
+    productionReadyGateCount: managedCutoverGates.filter((gate) => gate.productionReady).length,
+    productionBlockedGateCount: managedCutoverBlockedGates.length,
+    receiptReadyGateCount: managedCutoverGates.filter((gate) => gate.receiptReady).length,
+    productionCutoverReady: managedCutoverBlockedGates.length === 0,
+    nextGateId: nextManagedCutoverGate?.id || null,
+    nextGateRoute: nextManagedCutoverGate?.route || null,
+    blockedGateIds: managedCutoverBlockedGates.map((gate) => gate.id),
+  };
   const upstreamChecksums = {
     deploymentPreflight: deploymentPreflight.checksum || null,
     persistenceAdapterPlan: persistenceAdapterPlan.checksum || null,
@@ -17713,6 +23086,15 @@ function buildProductionInfrastructureRehearsal({
       productionReady: row.productionReady,
       checksum: row.checksum,
     })),
+    managedCutoverGates: managedCutoverGates.map((gate) => ({
+      id: gate.id,
+      status: gate.status,
+      rehearsalReady: gate.rehearsalReady,
+      productionReady: gate.productionReady,
+      receiptReady: gate.receiptReady,
+      checksum: gate.checksum,
+    })),
+    managedCutoverSummary,
     upstreamChecksums,
   });
   return {
@@ -17729,6 +23111,8 @@ function buildProductionInfrastructureRehearsal({
     domainRows,
     failedRehearsalRows,
     productionBlockedRows,
+    managedCutoverGates,
+    managedCutoverSummary,
     nextAction: failedRehearsalRows[0] || productionBlockedRows[0] || null,
     upstreamChecksums,
     backendRoutes: {
@@ -17750,13 +23134,21 @@ function buildProductionInfrastructureRehearsal({
       failedRehearsalCount: failedRehearsalRows.length,
       productionReadyCount: domainRows.filter((row) => row.productionReady).length,
       productionBlockedCount: productionBlockedRows.length,
+      gatewayStatus: domainRows.find((row) => row.id === 'private-adapter-gateway')?.status || 'unknown',
+      persistenceStatus: domainRows.find((row) => row.id === 'managed-persistence')?.status || 'unknown',
+      queueStatus: domainRows.find((row) => row.id === 'managed-worker-queue')?.status || 'unknown',
       adapterGatewayReady: domainRows.find((row) => row.id === 'private-adapter-gateway')?.rehearsalReady || false,
       persistenceRehearsalReady: domainRows.find((row) => row.id === 'managed-persistence')?.rehearsalReady || false,
       queueRehearsalReady: domainRows.find((row) => row.id === 'managed-worker-queue')?.rehearsalReady || false,
       deploymentPreflightReady: Boolean(deploymentPreflight.privatePilotDeploymentReady),
       deploymentReceiptReady,
       operationsRehearsalReady: domainRows.find((row) => row.id === 'operations-and-recovery')?.rehearsalReady || false,
-      productionCutoverReady: productionBlockedRows.length === 0,
+      managedCutoverGateCount: managedCutoverSummary.gateCount,
+      managedCutoverReadyCount: managedCutoverSummary.productionReadyGateCount,
+      managedCutoverBlockedCount: managedCutoverSummary.productionBlockedGateCount,
+      managedCutoverReceiptReadyCount: managedCutoverSummary.receiptReadyGateCount,
+      managedCutoverNextGateId: managedCutoverSummary.nextGateId,
+      productionCutoverReady: managedCutoverSummary.productionCutoverReady,
     },
     productionGaps: productionBlockedRows.map((row) => ({
       id: row.id,
@@ -23284,11 +28676,16 @@ function buildProjectEvidenceArchive({
   const evidenceSearchTranscriptProofIds = uniqueStrings(evidenceSearches.map((record) => record.messageId).filter(Boolean));
   const evidenceSourceReviewTranscriptProofIds = uniqueStrings(evidenceSourceReviews.map((review) => review.messageId).filter(Boolean));
   const submissionReviewTranscriptProofIds = uniqueStrings(submissionReviews.map((review) => review.messageId).filter(Boolean));
+  const autonomousProviderEvidenceTranscriptProofIds = uniqueStrings((project.autonomousRunControlSessionTickLedger || []).flatMap((tick) => [
+    tick.providerEvidenceMessageId,
+    ...(tick.providerEvidenceMessageIds || []),
+  ]).filter(Boolean));
   const criticalTranscriptProofIds = uniqueStrings([
     ...submissionTranscriptProofIds,
     ...evidenceSearchTranscriptProofIds,
     ...evidenceSourceReviewTranscriptProofIds,
     ...submissionReviewTranscriptProofIds,
+    ...autonomousProviderEvidenceTranscriptProofIds,
   ]);
   const archivedTranscriptProofIds = criticalTranscriptProofIds.filter((proofId) => transcriptProofMessageIds.has(String(proofId)));
   const missingTranscriptProofIds = criticalTranscriptProofIds.filter((proofId) => !transcriptProofMessageIds.has(String(proofId)));
@@ -23459,6 +28856,7 @@ function buildProjectEvidenceArchive({
           evidenceSearch: evidenceSearchTranscriptProofIds.length,
           evidenceSourceReview: evidenceSourceReviewTranscriptProofIds.length,
           submissionReview: submissionReviewTranscriptProofIds.length,
+          autonomousProviderEvidence: autonomousProviderEvidenceTranscriptProofIds.length,
         },
       },
     },
@@ -23856,6 +29254,7 @@ function buildProjectEvidenceArchive({
       evidenceSearchTranscriptProofCount: evidenceSearchTranscriptProofIds.length,
       evidenceSourceReviewTranscriptProofCount: evidenceSourceReviewTranscriptProofIds.length,
       submissionReviewTranscriptProofCount: submissionReviewTranscriptProofIds.length,
+      autonomousProviderEvidenceTranscriptProofCount: autonomousProviderEvidenceTranscriptProofIds.length,
       submissionCount: submissions.length,
       finalDeliverableCount: finalDeliverables.length,
       evidenceSearchCount: evidenceSearches.length,
@@ -24199,7 +29598,7 @@ function buildProductionPersistenceSnapshot({
     { name: 'agent_submissions', required: true, primaryKey: ['id'], foreignKeys: [{ field: 'projectId', table: 'projects' }, { field: 'agentId', table: 'agent_states' }], purpose: 'Typed Agent artifact submissions.' },
     { name: 'artifact_files', required: false, primaryKey: ['id'], foreignKeys: [{ field: 'projectId', table: 'projects' }, { field: 'submissionId', table: 'agent_submissions' }], purpose: 'Workspace artifact file metadata, paths, and content checksums.' },
     { name: 'evidence_searches', required: true, primaryKey: ['id'], foreignKeys: [{ field: 'projectId', table: 'projects' }, { field: 'agentId', table: 'agent_states' }], purpose: 'Agent evidence search records and aggregate quality judgement.' },
-    { name: 'evidence_sources', required: false, primaryKey: ['id'], foreignKeys: [{ field: 'projectId', table: 'projects' }, { field: 'evidenceSearchId', table: 'evidence_searches' }], purpose: 'Normalized evidence source packets with source-level quality and safety judgement.' },
+    { name: 'evidence_sources', required: false, primaryKey: ['projectId', 'evidenceSearchId', 'id'], foreignKeys: [{ field: 'projectId', table: 'projects' }, { field: 'evidenceSearchId', table: 'evidence_searches' }], purpose: 'Normalized evidence source packets with source-level quality and safety judgement.' },
     { name: 'evidence_source_snapshots', required: false, primaryKey: ['id'], foreignKeys: [{ field: 'projectId', table: 'projects' }, { field: 'evidenceSearchId', table: 'evidence_searches' }], purpose: 'Checksummed source snapshots used to prove what each Agent evidence source looked like when captured.' },
     { name: 'evidence_provider_receipts', required: false, primaryKey: ['id'], foreignKeys: [{ field: 'projectId', table: 'projects' }, { field: 'evidenceSearchId', table: 'evidence_searches' }, { field: 'agentId', table: 'agent_states' }], purpose: 'Provider call receipts with request/result/status checksums, retry metadata, and provider provenance.' },
     { name: 'evidence_source_reviews', required: false, primaryKey: ['id'], foreignKeys: [{ field: 'projectId', table: 'projects' }, { field: 'evidenceSearchId', table: 'evidence_searches' }, { field: 'reviewerAgentId', table: 'agent_states' }], purpose: 'Reviewer source decisions, requested corroboration, quarantine decisions, and source governance proof.' },
@@ -25176,7 +30575,15 @@ function buildProductionPersistenceSnapshot({
       ranAt: run.ranAt || run.time || run.startedAt || null,
       nextRunAt: run.nextRunAt || null,
       agentId: run.agentId || null,
+      sessionId: run.sessionId || null,
       queueReason: run.queueReason || null,
+      runApiPath: run.runApiPath || workerRunApiPath(run.workerKind),
+      directRunApiPath: run.directRunApiPath || workerDirectRunApiPath({
+        workerKind: run.workerKind,
+        projectId,
+        agentId: run.agentId || null,
+        sessionId: run.sessionId || null,
+      }),
       idempotencyKey: run.idempotencyKey || null,
       leaseKey: run.leaseKey || null,
       executionStatus: run.executionStatus || null,
@@ -26805,7 +32212,14 @@ function buildWorkerQueueSnapshot({
             forceDue: forcedProject,
             forceProjectIds: forcedProject ? [project.id] : [],
             sessionId: session.id,
+            maxSessionsPerProject: 1,
             loopCount: 1,
+            targetKind: session.targetKind || session.targetSnapshot?.targetKind || 'product-team-delivery-trace',
+            requestBodyOverrides: {
+              includeReadModels: false,
+              schedulerWorker: 'autopilot-due-worker',
+              autopilotSessionId: session.id,
+            },
           },
         });
       });
@@ -26863,6 +32277,7 @@ function buildWorkerQueueSnapshot({
       maxProjects,
       projectQueue: 'all-due-projects',
       agentQueue: 'management-priority-then-due-time',
+      autopilotQueue: 'oldest-active-session-per-project-then-due-time',
     },
     retryPolicy: {
       schemaVersion: 'worker-queue-retry-policy/v1',
@@ -27013,8 +32428,12 @@ function buildWorkerQueueAdapterPlan({
     },
     {
       id: 'concurrency-policy',
-      passed: Boolean(workerQueueSnapshot.concurrencyPolicy?.agentQueue && workerQueueSnapshot.concurrencyPolicy?.projectQueue),
-      detail: `${workerQueueSnapshot.concurrencyPolicy?.agentQueue || 'missing agent policy'} / ${workerQueueSnapshot.concurrencyPolicy?.projectQueue || 'missing project policy'}.`,
+      passed: Boolean(
+        workerQueueSnapshot.concurrencyPolicy?.agentQueue
+        && workerQueueSnapshot.concurrencyPolicy?.projectQueue
+        && workerQueueSnapshot.concurrencyPolicy?.autopilotQueue
+      ),
+      detail: `${workerQueueSnapshot.concurrencyPolicy?.agentQueue || 'missing agent policy'} / ${workerQueueSnapshot.concurrencyPolicy?.projectQueue || 'missing project policy'} / ${workerQueueSnapshot.concurrencyPolicy?.autopilotQueue || 'missing autopilot policy'}.`,
     },
   ];
   const failedGates = gates.filter((gate) => !gate.passed);
@@ -27042,6 +32461,8 @@ function buildWorkerQueueAdapterPlan({
       dueRowCount: dueRows.length,
       projectQueueRowCount: projectRows.length,
       agentQueueRowCount: agentRows.length,
+      autopilotQueueRowCount: autopilotRows.length,
+      autopilotDueRowCount: autopilotRows.filter((row) => row.due).length,
       executionReceiptCount: executionReceipts.length,
       deadLetterCount: deadLetterRows.length,
       adapterMethodCount: adapterContract.methods.length,
@@ -27056,7 +32477,7 @@ function buildWorkerQueueAdapterPlan({
       generatedAt: workerQueueSnapshot.generatedAt || null,
     },
     rolloutPlan: [
-      'Map project-autonomous and agent-work rows to managed queue topics.',
+      'Map project-autonomous, agent-work, and autopilot-session rows to managed queue topics.',
       'Use idempotencyKey as the enqueue/replay key and leaseKey as the durable lease token.',
       'Dispatch due-worker routes with signed runtime worker identity.',
       'Persist worker-execution-receipt/v1 records before acknowledging queue items.',
@@ -27254,9 +32675,13 @@ function buildWorkerQueueAdapterDryRunVerification({
     summary: {
       queueRowCount: rows.length,
       dueRowCount: dueRows.length,
+      autopilotQueueRowCount: rows.filter((row) => row.adapterQueue === 'autopilot-session').length,
+      autopilotDueRowCount: rows.filter((row) => row.adapterQueue === 'autopilot-session' && row.due).length,
       leaseAcquisitionCount: leaseAcquisitions.length,
       dispatchCount: dispatches.length,
+      autopilotDispatchCount: dispatches.filter((row) => row.queue === 'autopilot-session').length,
       executionReceiptCount: executionReceipts.length,
+      autopilotExecutionReceiptCount: executionReceipts.filter((receipt) => receipt.workerKind === 'autopilot-session').length,
       ackableReceiptCount: acknowledgements.filter((row) => row.acked).length,
       deadLetterCount: deadLetterRows.length,
       recoverableDeadLetterCount: deadLetterRecoveries.filter((row) => row.recoverable).length,
@@ -27361,6 +32786,8 @@ async function buildWorkerQueueAdapterGatewayDryRunVerification({
       summary: {
         queueRowCount: rows.length,
         dueRowCount: rows.filter((row) => row.due).length,
+        autopilotQueueRowCount: rows.filter((row) => row.adapterQueue === 'autopilot-session').length,
+        autopilotDueRowCount: rows.filter((row) => row.adapterQueue === 'autopilot-session' && row.due).length,
         executionReceiptCount: workerQueueSnapshot.executionReceipts?.length || 0,
         deadLetterCount: workerQueueSnapshot.deadLetterQueue?.length || 0,
       },
@@ -27447,6 +32874,8 @@ async function buildWorkerQueueAdapterGatewayDryRunVerification({
       summary: {
         queueRowCount: rows.length,
         dueRowCount: rows.filter((row) => row.due).length,
+        autopilotQueueRowCount: rows.filter((row) => row.adapterQueue === 'autopilot-session').length,
+        autopilotDueRowCount: rows.filter((row) => row.adapterQueue === 'autopilot-session' && row.due).length,
         failedGateCount: failedGates.length,
         gatewayOperationCount: receipt.operationCount || 0,
         adapterQueueRowCount: receipt.queueRowCount || 0,
@@ -27498,13 +32927,104 @@ function buildOperationsReadinessSnapshot({
   const persistenceAdapterSummary = persistenceAdapterDryRun.summary || {};
   const queueAdapterPlanSummary = workerQueueAdapterPlan.summary || {};
   const queueAdapterDryRunSummary = workerQueueAdapterDryRun.summary || {};
+  const workerQueueRows = [
+    ...(workerQueueSnapshot.projectQueue || []),
+    ...(workerQueueSnapshot.agentQueue || []),
+    ...(workerQueueSnapshot.autopilotQueue || []),
+  ];
   const workerExecutionReceipts = workerRuns
     .map((run) => run.executionReceipt)
     .filter((receipt) => receipt?.schemaVersion === 'worker-execution-receipt/v1');
+  const autopilotWorkerRuns = workerRuns.filter((run) => run.workerKind === 'autopilot-session');
+  const autopilotExecutionReceipts = workerExecutionReceipts.filter((receipt) => receipt.workerKind === 'autopilot-session');
   const workerDeadLetters = workerRuns
     .filter((run) => run.deadLetter?.schemaVersion === 'worker-dead-letter/v1')
     .map((run) => run.deadLetter);
   const workerRetryableFailures = workerRuns.filter((run) => run.retry?.retryable);
+  const autopilotResumeReady = Boolean(
+    workerQueueSnapshot.schemaVersion === 'worker-queue-snapshot/v1'
+    && (workerQueueSnapshot.autopilotQueue || []).every((row) => (
+      row.idempotencyKey
+      && row.leaseKey
+      && row.directRunApiPath
+      && row.runApiPath === '/workers/autopilot/due'
+      && row.retry?.schemaVersion === 'worker-retry-state/v1'
+    ))
+    && (queueAdapterDryRunSummary.autopilotQueueRowCount || 0) >= (workerQueueSnapshot.autopilotQueue || []).length
+    && (autopilotWorkerRuns.length === 0 || autopilotExecutionReceipts.length >= autopilotWorkerRuns.length)
+  );
+  const tableRecordCount = (tableName) => Number(
+    persistenceSnapshot.recordCounts?.[tableName]
+      ?? persistenceSnapshot.recordsByTable?.[tableName]?.length
+      ?? 0,
+  ) || 0;
+  const providerUsageRows = Array.isArray(project.providerUsageLedger) ? project.providerUsageLedger : [];
+  const providerEvalRows = Array.isArray(project.providerEvalRuns) ? project.providerEvalRuns : [];
+  const evidenceSourceSnapshotRows = Array.isArray(project.evidenceSourceSnapshots)
+    ? project.evidenceSourceSnapshots
+    : (project.evidenceSearches || []).flatMap((record) => record.sourceSnapshots || []);
+  const evidenceProviderReceiptRows = Array.isArray(project.evidenceProviderReceipts)
+    ? project.evidenceProviderReceipts
+    : (project.evidenceSearches || []).map((record) => record.providerReceipt).filter(Boolean);
+  const eventLedgerIds = new Set(eventLedger.map((event) => event.id).filter(Boolean));
+  const providerUsageEventProofCount = providerUsageRows.filter((row) => row.eventId && eventLedgerIds.has(row.eventId)).length;
+  const providerUsagePolicyProofCount = providerUsageRows.filter((row) => (
+    row.id
+    && row.kind
+    && row.operation
+    && row.provider
+    && typeof row.allowed === 'boolean'
+    && row.policy?.schemaVersion === 'provider-control-policy/v1'
+  )).length;
+  const providerEvalProofCount = providerEvalRows.filter((row) => (
+    row.schemaVersion === 'provider-eval-run/v1'
+    && row.eventId
+    && row.timelineLogId
+    && row.checksum
+    && Array.isArray(row.operationRows)
+  )).length;
+  const providerReceiptChecksumCount = evidenceProviderReceiptRows.filter((row) => (
+    row.schemaVersion === 'evidence-provider-receipt/v1'
+    && row.requestChecksum
+    && row.resultChecksum
+    && row.checksum
+  )).length;
+  const sourceSnapshotChecksumCount = evidenceSourceSnapshotRows.filter((row) => (
+    row.schemaVersion === 'evidence-source-snapshot/v1'
+    && row.sourceChecksum
+    && row.checksum
+  )).length;
+  const providerUsagePersistenceCount = tableRecordCount('provider_usage_ledger');
+  const providerEvalPersistenceCount = tableRecordCount('provider_eval_runs');
+  const providerReceiptPersistenceCount = tableRecordCount('evidence_provider_receipts');
+  const sourceSnapshotPersistenceCount = tableRecordCount('evidence_source_snapshots');
+  const providerUsageRecoveryReady = providerUsageRows.length === 0 || (
+    providerUsagePersistenceCount >= providerUsageRows.length
+    && providerUsageEventProofCount === providerUsageRows.length
+    && providerUsagePolicyProofCount === providerUsageRows.length
+  );
+  const providerEvalRecoveryReady = providerEvalRows.length === 0 || (
+    providerEvalPersistenceCount >= providerEvalRows.length
+    && providerEvalProofCount === providerEvalRows.length
+  );
+  const providerSourceAuditRecoveryReady = (evidenceSourceSnapshotRows.length === 0 && evidenceProviderReceiptRows.length === 0) || (
+    sourceSnapshotPersistenceCount >= evidenceSourceSnapshotRows.length
+    && providerReceiptPersistenceCount >= evidenceProviderReceiptRows.length
+    && sourceSnapshotChecksumCount === evidenceSourceSnapshotRows.length
+    && providerReceiptChecksumCount === evidenceProviderReceiptRows.length
+  );
+  const providerSecretBoundaryReady = providerUsageRows.length === 0 || Boolean(
+    securityBoundary.secretVault?.ready
+    && securityBoundary.secretVault?.rawSecretRecordCount === 0
+    && securityBoundary.secretVault?.latestRotation?.schemaVersion === 'secret-vault-rotation-receipt/v1'
+    && securityBoundary.providerBoundary?.exposedSecrets === false,
+  );
+  const providerAuditRecoveryReady = Boolean(
+    providerUsageRecoveryReady
+    && providerEvalRecoveryReady
+    && providerSourceAuditRecoveryReady
+    && providerSecretBoundaryReady
+  );
   const workerRecoveryContractReady = Boolean(
     workerQueueSnapshot.retryPolicy?.schemaVersion === 'worker-queue-retry-policy/v1'
     && workerQueueSnapshot.deadLetterPolicy?.schemaVersion === 'worker-dead-letter-policy/v1'
@@ -27535,11 +33055,8 @@ function buildOperationsReadinessSnapshot({
       passed: workerQueueSnapshot.schemaVersion === 'worker-queue-snapshot/v1'
         && Boolean(workerQueueSnapshot.retryPolicy?.idempotencyKey)
         && Boolean(workerQueueSnapshot.deadLetterPolicy?.deadLetterAfterAttempts)
-        && [
-          ...(workerQueueSnapshot.projectQueue || []),
-          ...(workerQueueSnapshot.agentQueue || []),
-        ].every((row) => row.idempotencyKey && row.leaseKey && row.retry?.schemaVersion === 'worker-retry-state/v1'),
-      detail: `${queueSummary.projectQueuedCount || 0} queued project row(s), ${queueSummary.agentQueuedCount || 0} queued Agent row(s).`,
+        && workerQueueRows.every((row) => row.idempotencyKey && row.leaseKey && row.retry?.schemaVersion === 'worker-retry-state/v1'),
+      detail: `${queueSummary.projectQueuedCount || 0} queued project row(s), ${queueSummary.agentQueuedCount || 0} queued Agent row(s), ${queueSummary.autopilotSessionQueuedCount || 0} queued Autopilot session row(s).`,
       apiPath: projectId ? `/projects/${projectId}/worker-queue` : '/workers/queue-snapshot',
     },
     {
@@ -27548,6 +33065,13 @@ function buildOperationsReadinessSnapshot({
       passed: workerRecoveryContractReady,
       detail: `${workerExecutionReceipts.length}/${workerRuns.length} receipt(s), ${workerRetryableFailures.length} retryable failure(s), ${workerDeadLetters.length} dead-letter row(s).`,
       apiPath: projectId ? `/projects/${projectId}/worker-queue` : '/workers/queue-snapshot',
+    },
+    {
+      id: 'provider-audit-recovery-contract',
+      label: 'Provider usage, eval, and source audit proof can recover',
+      passed: providerAuditRecoveryReady,
+      detail: `${providerUsageRows.length} provider usage row(s), ${providerEvalRows.length} provider eval row(s), ${evidenceProviderReceiptRows.length} provider receipt(s), ${evidenceSourceSnapshotRows.length} source snapshot(s).`,
+      apiPath: projectId ? `/projects/${projectId}/provider-readiness` : null,
     },
     {
       id: 'queue-adapter-dry-run',
@@ -27670,6 +33194,13 @@ function buildOperationsReadinessSnapshot({
       recovery: 'Inspect the dead-letter row, preserve the execution receipt, fix the failing worker input, then rerun the direct project or Agent worker route with the same idempotency key.',
     },
     {
+      id: 'provider-ledger-proof-regression',
+      severity: 'critical',
+      condition: 'providerUsageLedger.count > 0 && providerAuditRecoveryReady != true',
+      route: projectId ? `/projects/${projectId}/provider-readiness` : null,
+      recovery: 'Keep provider calls paused, compare provider usage ledger rows with provider_eval_runs, evidence_provider_receipts, evidence_source_snapshots, and event-ledger proof, then rerun provider eval shadow replay before allowing autonomous provider use.',
+    },
+    {
       id: 'proof-surface-regression',
       severity: 'warning',
       condition: 'mvpReadiness.readyForLocalPilot becomes false',
@@ -27704,18 +33235,24 @@ function buildOperationsReadinessSnapshot({
     },
     {
       step: 5,
+      id: 'verify-provider-ledger',
+      action: 'Verify provider usage, eval replay, source snapshots, provider receipts, and secret-vault boundary before resuming autonomous model/search calls.',
+      evidenceRoute: projectId ? `/projects/${projectId}/provider-readiness` : null,
+    },
+    {
+      step: 6,
       id: 'rebuild-read-models',
       action: 'Regenerate Manager Dashboard, Flow Graph, MVP Readiness, and Security Boundary from normalized records.',
       evidenceRoute: projectId ? `/projects/${projectId}/manager-ready-package` : null,
     },
     {
-      step: 6,
+      step: 7,
       id: 'verify-queue-adapter',
       action: 'Run the worker queue adapter plan and dry-run; only cut over after idempotency, lease, dispatch, receipt, and dead-letter gates pass.',
       evidenceRoute: projectId ? `/projects/${projectId}/worker-queue-adapter-dry-run` : null,
     },
     {
-      step: 7,
+      step: 8,
       id: 'resume-workers',
       action: 'Resume due workers using queue idempotency keys and lease checks, then compare proof routes and audit stream.',
       evidenceRoute: projectId ? `/projects/${projectId}/operations-readiness` : null,
@@ -27800,6 +33337,30 @@ function buildOperationsReadinessSnapshot({
       },
     },
     {
+      id: 'verify-provider-audit-recovery',
+      phase: 'verify',
+      label: 'Provider usage, eval replay, source custody, and secret boundary are recoverable',
+      passed: providerAuditRecoveryReady,
+      evidenceRoute: projectId ? `/projects/${projectId}/provider-readiness` : null,
+      observed: {
+        providerUsageCount: providerUsageRows.length,
+        providerUsagePersistenceCount,
+        providerUsageEventProofCount,
+        providerUsagePolicyProofCount,
+        providerEvalRunCount: providerEvalRows.length,
+        providerEvalPersistenceCount,
+        providerEvalProofCount,
+        providerReceiptCount: evidenceProviderReceiptRows.length,
+        providerReceiptPersistenceCount,
+        providerReceiptChecksumCount,
+        sourceSnapshotCount: evidenceSourceSnapshotRows.length,
+        sourceSnapshotPersistenceCount,
+        sourceSnapshotChecksumCount,
+        providerSecretBoundaryReady,
+        providerAuditRecoveryReady,
+      },
+    },
+    {
       id: 'recover-dead-letter-path',
       phase: 'recover',
       label: 'Dead-letter policy and local recovery route are visible',
@@ -27872,6 +33433,11 @@ function buildOperationsReadinessSnapshot({
     persistenceAdapterRollbackReady: Boolean(persistenceAdapterSummary.transactionRollbackReady),
     persistenceAdapterBackupRestoreReady: Boolean(persistenceAdapterSummary.backupRestoreReady),
     securityAuditStreamHashChainReady: auditStreamSummary.hashChainReady,
+    providerAuditRecoveryReady,
+    providerUsageRecoveryReady,
+    providerEvalRecoveryReady,
+    providerSourceAuditRecoveryReady,
+    providerSecretBoundaryReady,
   };
   const incidentDrillChecksum = persistenceChecksum({
     projectId,
@@ -27926,12 +33492,17 @@ function buildOperationsReadinessSnapshot({
         { id: 'event-ledger', route: projectId ? `/projects/${projectId}/events` : null, count: eventLedger.length },
         { id: 'security-audit-stream', route: projectId ? `/projects/${projectId}/security-audit-stream` : null, count: auditStreamSummary.count },
         { id: 'worker-runs', route: projectId ? `/projects/${projectId}/worker-queue` : null, count: workerRuns.length },
+        { id: 'provider-usage-ledger', route: projectId ? `/projects/${projectId}/provider-readiness` : null, count: providerUsageRows.length },
+        { id: 'provider-eval-runs', route: projectId ? `/projects/${projectId}/provider-eval-runs` : null, count: providerEvalRows.length },
       ],
       metrics: {
         workerRunCount: workerRuns.length,
         latestWorkerRunAt: latestWorkerRun?.ranAt || latestWorkerRun?.time || latestWorkerRun?.startedAt || null,
         projectQueuedCount: queueSummary.projectQueuedCount || 0,
         agentQueuedCount: queueSummary.agentQueuedCount || 0,
+        autopilotSessionCount: queueSummary.autopilotSessionCount || 0,
+        autopilotSessionQueuedCount: queueSummary.autopilotSessionQueuedCount || 0,
+        autopilotSessionDueCount: queueSummary.autopilotSessionDueCount || 0,
         queueAdapterPlanReady: workerQueueAdapterPlan.status === 'ready-for-queue-adapter-pilot',
         queueAdapterDryRunStatus: workerQueueAdapterDryRun.status || 'unknown',
         queueAdapterFailedGateCount: queueAdapterDryRunSummary.failedGateCount || 0,
@@ -27940,6 +33511,9 @@ function buildOperationsReadinessSnapshot({
         queueAdapterMethodCount: queueAdapterPlanSummary.adapterMethodCount || 0,
         queueAdapterOperationCount: queueAdapterDryRunSummary.adapterOperationCount || 0,
         queueAdapterQueueRowCount: queueAdapterDryRunSummary.adapterQueueRowCount || 0,
+        queueAdapterAutopilotQueueRowCount: queueAdapterDryRunSummary.autopilotQueueRowCount || 0,
+        queueAdapterAutopilotDispatchCount: queueAdapterDryRunSummary.autopilotDispatchCount || 0,
+        queueAdapterAutopilotExecutionReceiptCount: queueAdapterDryRunSummary.autopilotExecutionReceiptCount || 0,
         queueAdapterSnapshotParityReady: Boolean(queueAdapterDryRunSummary.snapshotParityReady),
         queueAdapterSnapshotQueueRowParityReady: Boolean(queueAdapterDryRunSummary.snapshotQueueRowParityReady),
         queueAdapterSnapshotLeaseParityReady: Boolean(queueAdapterDryRunSummary.snapshotLeaseParityReady),
@@ -27949,9 +33523,30 @@ function buildOperationsReadinessSnapshot({
         queueAdapterStatus: queueAdapterDryRunSummary.adapterStatus || 'unknown',
         queueAdapterProductionCutoverReady: Boolean(queueAdapterDryRunSummary.adapterProductionCutoverReady),
         workerExecutionReceiptCount: workerExecutionReceipts.length,
+        autopilotWorkerRunCount: autopilotWorkerRuns.length,
+        autopilotExecutionReceiptCount: autopilotExecutionReceipts.length,
+        autopilotResumeReady,
         workerDeadLetterCount: workerDeadLetters.length,
         workerRetryableFailureCount: workerRetryableFailures.length,
         workerRecoveryContractReady,
+        providerUsageCount: providerUsageRows.length,
+        providerUsagePersistenceCount,
+        providerUsageEventProofCount,
+        providerUsagePolicyProofCount,
+        providerUsageRecoveryReady,
+        providerEvalRunCount: providerEvalRows.length,
+        providerEvalPersistenceCount,
+        providerEvalProofCount,
+        providerEvalRecoveryReady,
+        providerReceiptCount: evidenceProviderReceiptRows.length,
+        providerReceiptPersistenceCount,
+        providerReceiptChecksumCount,
+        sourceSnapshotCount: evidenceSourceSnapshotRows.length,
+        sourceSnapshotPersistenceCount,
+        sourceSnapshotChecksumCount,
+        providerSourceAuditRecoveryReady,
+        providerSecretBoundaryReady,
+        providerAuditRecoveryReady,
         workerMaxAttempts: workerQueueSnapshot.retryPolicy?.maxAttempts || WORKER_QUEUE_MAX_ATTEMPTS,
         securityAuditStreamCount: auditStreamSummary.count,
         securityAuditStreamGapCount: auditStreamSummary.sequenceGapCount,
@@ -28009,6 +33604,9 @@ function buildOperationsReadinessSnapshot({
       persistenceAdapterDryRun: projectId ? `/projects/${projectId}/persistence-adapter-dry-run` : null,
       securityBoundary: projectId ? `/projects/${projectId}/security-boundary` : null,
       securityAuditStream: projectId ? `/projects/${projectId}/security-audit-stream` : null,
+      providerReadiness: projectId ? `/projects/${projectId}/provider-readiness` : null,
+      providerControlledRun: projectId ? `/projects/${projectId}/provider-controlled-run` : null,
+      providerEvalRuns: projectId ? `/projects/${projectId}/provider-eval-runs` : null,
       operationsReadiness: projectId ? `/projects/${projectId}/operations-readiness` : null,
     },
     summary: {
@@ -28025,6 +33623,9 @@ function buildOperationsReadinessSnapshot({
       queueAdapterLeaseAcquisitionCount: queueAdapterDryRunSummary.leaseAcquisitionCount || 0,
       queueAdapterOperationCount: queueAdapterDryRunSummary.adapterOperationCount || 0,
       queueAdapterQueueRowCount: queueAdapterDryRunSummary.adapterQueueRowCount || 0,
+      queueAdapterAutopilotQueueRowCount: queueAdapterDryRunSummary.autopilotQueueRowCount || 0,
+      queueAdapterAutopilotDispatchCount: queueAdapterDryRunSummary.autopilotDispatchCount || 0,
+      queueAdapterAutopilotExecutionReceiptCount: queueAdapterDryRunSummary.autopilotExecutionReceiptCount || 0,
       queueAdapterSnapshotParityReady: Boolean(queueAdapterDryRunSummary.snapshotParityReady),
       queueAdapterSnapshotQueueRowParityReady: Boolean(queueAdapterDryRunSummary.snapshotQueueRowParityReady),
       queueAdapterSnapshotLeaseParityReady: Boolean(queueAdapterDryRunSummary.snapshotLeaseParityReady),
@@ -28042,9 +33643,30 @@ function buildOperationsReadinessSnapshot({
       incidentDrillExecutableRecoveryStepCount: incidentDrill.summary.executableRecoveryStepCount,
       incidentDrillChecksum: incidentDrill.checksum,
       workerExecutionReceiptCount: workerExecutionReceipts.length,
+      autopilotWorkerRunCount: autopilotWorkerRuns.length,
+      autopilotExecutionReceiptCount: autopilotExecutionReceipts.length,
+      autopilotResumeReady,
       workerDeadLetterCount: workerDeadLetters.length,
       workerRetryableFailureCount: workerRetryableFailures.length,
       workerRecoveryContractReady,
+      providerUsageCount: providerUsageRows.length,
+      providerUsagePersistenceCount,
+      providerUsageEventProofCount,
+      providerUsagePolicyProofCount,
+      providerUsageRecoveryReady,
+      providerEvalRunCount: providerEvalRows.length,
+      providerEvalPersistenceCount,
+      providerEvalProofCount,
+      providerEvalRecoveryReady,
+      providerReceiptCount: evidenceProviderReceiptRows.length,
+      providerReceiptPersistenceCount,
+      providerReceiptChecksumCount,
+      sourceSnapshotCount: evidenceSourceSnapshotRows.length,
+      sourceSnapshotPersistenceCount,
+      sourceSnapshotChecksumCount,
+      providerSourceAuditRecoveryReady,
+      providerSecretBoundaryReady,
+      providerAuditRecoveryReady,
       securityAuditStreamCount: auditStreamSummary.count,
       securityAuditStreamHashChainReady: auditStreamSummary.hashChainReady,
       persistenceRecordCount: persistenceSnapshot.totalRecordCount || 0,
@@ -28166,6 +33788,15 @@ function buildSecurityBoundarySnapshot({
       sensitivity: 'project-metadata',
     }),
     securityRoutePolicy({
+      routeKey: 'project-settings',
+      pathTemplate: '/projects/:projectId/project-settings',
+      methods: ['GET', 'PUT', 'POST'],
+      capability: 'read and update project runtime settings',
+      sensitivity: 'project-language-runtime-preferences-and-audit-proof',
+      currentControl: 'project settings are persisted into project state with audit, timeline, and event-ledger proof before backend-online clients update local state',
+      productionControl: 'requires authenticated project membership, role-scoped settings permissions, immutable settings audit, and customer-specific runtime policy',
+    }),
+    securityRoutePolicy({
       routeKey: 'manager-ready-package',
       pathTemplate: '/projects/:projectId/manager-ready-package',
       capability: 'read aggregate manager package',
@@ -28216,6 +33847,14 @@ function buildSecurityBoundarySnapshot({
       productionControl: 'requires authenticated project membership, calibrated customer acceptance policy, immutable audit storage, managed queue/cron, provider/BYOK policy, cost controls, and incident recovery ownership before production autonomy',
     }),
     securityRoutePolicy({
+      routeKey: 'collaboration-intent-queue',
+      pathTemplate: '/projects/:projectId/collaboration-intent-queue',
+      capability: 'read the meeting, group-chat, Manager attention, and Agent initiative intent queue',
+      sensitivity: 'product-team-collaboration-intent-routing-and-proof-routes',
+      currentControl: 'read-only Manager route ranks kickoff self-marketing, group-chat attention, Manager next action, Agent autonomous initiatives, review closure, proof ids, timeline ids, event ids, and runnable backend routes into one redacted queue',
+      productionControl: 'requires authenticated project membership, role-based intent visibility, immutable audit storage, managed queue/cron, cost controls, customer acceptance thresholds, incident recovery, and provider/BYOK policy before production intent routing',
+    }),
+    securityRoutePolicy({
       routeKey: 'runtime-contracts',
       pathTemplate: '/projects/:projectId/runtime-contracts',
       capability: 'read frozen runtime contract manifest',
@@ -28224,12 +33863,28 @@ function buildSecurityBoundarySnapshot({
       productionControl: 'requires authenticated project membership, managed database/queue, provider/BYOK policy, immutable audit, cost controls, customer acceptance policy, and incident recovery before production runtime contract approval',
     }),
     securityRoutePolicy({
+      routeKey: 'memory-readiness',
+      pathTemplate: '/projects/:projectId/memory-readiness',
+      capability: 'read project memory readiness',
+      sensitivity: 'project-memory-proof-routes-and-production-boundaries',
+      currentControl: 'read-only Manager route aggregates project state, transcript memory, evidence/artifact index rows, meeting summaries, and persistence adapter planning without enabling editable managed memory',
+      productionControl: 'requires authenticated project membership, managed database/vector adapters, retention and deletion policy, backup/restore drills, and customer export controls before production long-term memory',
+    }),
+    securityRoutePolicy({
       routeKey: 'autonomous-cycle-consistency',
       pathTemplate: '/projects/:projectId/autonomous-cycle-consistency',
       capability: 'read N-step autonomous cycle consistency proof',
       sensitivity: 'autonomous-runtime-receipts-worker-proof-and-production-boundaries',
       currentControl: 'read-only Manager route checks bounded autonomous loop/action receipts, timeline/event proof, worker dead-letter state, Flow Graph projection, Proof Map route coverage, and local runtime contract continuity',
       productionControl: 'requires authenticated project membership, managed durable queue/cron, distributed leases, centralized audit, dead-letter recovery, cost controls, and incident restore drills before public 24/7 autonomy',
+    }),
+    securityRoutePolicy({
+      routeKey: 'runtime-autonomy-status',
+      pathTemplate: '/projects/:projectId/runtime-autonomy-status',
+      capability: 'read C-side/A-side runtime autonomy status and recovery boundary',
+      sensitivity: 'runtime-autonomy-control-proof-worker-recovery-and-production-boundaries',
+      currentControl: 'read-only Manager route aggregates Mission Runner startup, Autopilot sessions/ticks, worker queue recovery, adapter dry-run, persistence snapshot, Operating Loop, Flow Graph, Proof Map, scheduler routes, and production autonomy blockers into one redacted status',
+      productionControl: 'requires authenticated project membership, managed durable queue/cron, distributed leases, managed database restore proof, BYOK/provider cost controls, centralized observability, immutable audit, and incident recovery drills before unattended production autonomy',
     }),
     securityRoutePolicy({
       routeKey: 'project-evidence-archive',
@@ -28641,6 +34296,14 @@ function buildSecurityBoundarySnapshot({
       sensitivity: 'provider-configuration-and-rollout-metadata',
       currentControl: 'returns redacted provider status, proof routes, local gates, and production rollout blockers without raw keys',
       productionControl: 'requires provider allowlists, budget/rate limits, Agent-scoped grants, provider audit ledger, and encrypted secret vault',
+    }),
+    securityRoutePolicy({
+      routeKey: 'provider-vault-bindings',
+      pathTemplate: '/projects/:projectId/provider-vault-bindings',
+      capability: 'read provider to secret-vault binding status',
+      sensitivity: 'provider-vault-binding-metadata',
+      currentControl: 'returns redacted provider/vault binding rows, safe vault metadata, checksums, and proof routes without ciphertext or plaintext secrets',
+      productionControl: 'requires managed KMS or Secret Manager binding receipts, revocation, scoped provider credentials, and access audit before public production',
     }),
     securityRoutePolicy({
       routeKey: 'security-boundary',
@@ -32953,6 +38616,9 @@ function buildManagerFlowGraphSnapshot({ project = {}, messages = [] } = {}) {
         runApiPath: run.runApiPath || null,
         delegatedRunApiPath: run.delegatedRunApiPath || null,
         strategyDecisionId: run.strategyDecisionId || null,
+        autonomousActionDecision: run.autonomousActionDecision || null,
+        autonomousActionDecisionChecksum: run.autonomousActionDecisionChecksum || run.autonomousActionDecision?.checksum || null,
+        autonomousActionDecisionAction: run.autonomousActionDecisionAction || run.autonomousActionDecision?.action || null,
         checksum: run.checksum || null,
       }],
       route: run.runApiPath || null,
@@ -33088,6 +38754,17 @@ function buildManagerFlowGraphSnapshot({ project = {}, messages = [] } = {}) {
         label: 'Production autonomy remains explicitly blocked',
         detail: 'Public production still needs managed queue/cron, cost controls, customer acceptance policy, incident ownership, and durable audit storage.',
       };
+    const latestMissionHandoff = (project.productTeamMissionRuns || [])[0]?.customerAgentHandoff || null;
+    const latestMissionRun = (project.productTeamMissionRuns || [])[0] || null;
+    const latestMissionHandoffExecution = buildCustomerAgentHandoffExecutionSummary({
+      project,
+      projectId,
+      latestMissionRun,
+      customerAgentHandoff: latestMissionHandoff,
+    });
+    const latestMissionHandoffRunApiPath = latestMissionHandoff?.readyForLocalAutonomy
+      ? `/projects/${projectId}/autonomous-run-control/run-backend-scheduler-tick/run`
+      : null;
     const localLoopReady = Boolean(
       traceNode.status === 'confirmed'
       && ['published', 'confirmed', 'resolved'].includes(controlNode.status)
@@ -33141,6 +38818,32 @@ function buildManagerFlowGraphSnapshot({ project = {}, messages = [] } = {}) {
           timelineLogIds: controlNode.timelineLogIds || [],
           eventIds: controlNode.eventIds || [],
         },
+        latestMissionHandoff ? {
+          id: 'product-team-operating-loop_customer-agent-handoff',
+          type: 'operating-loop-customer-agent-handoff',
+          title: 'C/A mission handoff',
+          summary: `Handoff ${latestMissionHandoff.status || 'recorded'}${latestMissionHandoff.targetStageId ? ` toward ${latestMissionHandoff.targetStageId}` : ''}.`,
+          status: latestMissionHandoff.status || 'recorded',
+          ready: Boolean(latestMissionHandoff.readyForLocalAutonomy),
+          firstTickRecorded: Boolean(latestMissionHandoff.firstTickRecorded),
+          executionReady: Boolean(latestMissionHandoffExecution?.ready),
+          executionStatus: latestMissionHandoffExecution?.status || null,
+          tickCount: latestMissionHandoffExecution?.summary?.tickCount || 0,
+          runReceiptCount: latestMissionHandoffExecution?.summary?.runReceiptCount || 0,
+          submissionCount: latestMissionHandoffExecution?.summary?.submissionCount || 0,
+          resultMessageCount: latestMissionHandoffExecution?.summary?.resultMessageCount || 0,
+          targetStageId: latestMissionHandoff.targetStageId || null,
+          runApiPath: latestMissionHandoffRunApiPath,
+          route: latestMissionHandoff.nextRoutes?.autonomousRunControl || latestMissionHandoffRunApiPath || null,
+          outputRows: latestMissionHandoffExecution?.outputRows || [],
+          latestOutput: latestMissionHandoffExecution?.latestOutput || null,
+          latestRun: latestMissionHandoffExecution?.latestRun || null,
+          proofIds: latestMissionHandoffExecution?.proofIds || latestMissionHandoff.proofIds || [],
+          timelineLogIds: latestMissionHandoffExecution?.timelineLogIds || latestMissionHandoff.timelineLogIds || [],
+          eventIds: latestMissionHandoffExecution?.eventIds || latestMissionHandoff.eventIds || [],
+          checksum: latestMissionHandoff.checksum || null,
+          executionChecksum: latestMissionHandoffExecution?.checksum || null,
+        } : null,
         {
           id: 'product-team-operating-loop_a-side-autonomy',
           type: 'operating-loop-a-side',
@@ -33178,7 +38881,7 @@ function buildManagerFlowGraphSnapshot({ project = {}, messages = [] } = {}) {
           route: productionGate.apiPath || (projectId ? `/projects/${projectId}/production-launch-gap-register` : null),
           ready: false,
         },
-      ],
+      ].filter(Boolean),
       route: `/projects/${projectId}/product-team-operating-loop`,
       relatedNodeIds: operatingLoopSourceNodeIds,
     });
@@ -33306,6 +39009,97 @@ function buildManagerFlowGraphSnapshot({ project = {}, messages = [] } = {}) {
   }
 
   if (projectId && nodesById.has('team-collaboration-diagnostics')) {
+    const intentSummary = dashboard.readinessProofMap?.collaborationIntentQueueSummary || {};
+    const intentRoutes = dashboard.readinessProofMap?.collaborationIntentQueueRoutes || [];
+    const intentRoute = intentRoutes[0] || {};
+    const intentProofIds = uniqueStrings(intentSummary.proofIds || intentRoute.proofIds || []);
+    const intentTimelineLogIds = uniqueStrings(intentSummary.timelineLogIds || intentRoute.timelineLogIds || []);
+    const intentEventIds = uniqueStrings(intentSummary.eventIds || intentRoute.eventIds || []);
+    addNode({
+      id: 'collaboration-intent-queue',
+      category: 'communication',
+      subtype: 'collaboration-intent-queue',
+      title: 'Collaboration Intent Queue',
+      summary: intentSummary.readyForLocalPilotIntentQueue
+        ? `Meeting, chat, and Agent initiative intents are queued with ${intentSummary.selectedActionCount || 0} selected Agent action(s) and ${intentSummary.intentRunCount || 0} run receipt(s).`
+        : 'Collaboration intent queue is visible, but meeting/chat/Agent initiative proof is incomplete.',
+      status: intentSummary.readyForLocalPilotIntentQueue ? 'confirmed' : 'blocked',
+      importance: 'critical',
+      source: 'collaborationIntentQueue',
+      proofIds: intentProofIds,
+      timelineLogIds: intentTimelineLogIds,
+      eventIds: intentEventIds,
+      affectedAgentIds: intentRoute.agentIds || [],
+      participantIds: intentRoute.agentIds || [],
+      submissionIntent: 'Submit the meeting, group-chat, and Agent initiative queue for Manager inspection.',
+      attachmentType: 'collaboration-intent-queue',
+      attachmentTitle: 'Meeting and Agent intent queue',
+      attachmentSummary: `${intentSummary.agentInitiativeCount || 0} Agent initiative row(s), ${intentSummary.readyAgentInitiativeCount || 0} ready, ${intentSummary.transcriptChannelCount || 0} transcript channel(s).`,
+      attachments: [
+        {
+          id: 'collaboration-intent-queue_protocol',
+          type: 'collaboration-intent-protocol',
+          title: 'Meeting intent protocol',
+          summary: 'Queues kickoff self-marketing, group-chat attention, Manager next action, Agent initiatives, and review closure under one proofed backend contract.',
+          route: `/projects/${projectId}/collaboration-intent-queue`,
+          ready: Boolean(intentSummary.readyForLocalPilotIntentQueue),
+        },
+        {
+          id: 'collaboration-intent-queue_agent-actions',
+          type: 'agent-autonomous-initiative',
+          title: 'A-side initiative source',
+          summary: `${intentSummary.selectedActionCount || 0} selected action(s) from Agent autonomous strategy.`,
+          route: `/projects/${projectId}/agent-autonomous-action-queue`,
+          ready: Boolean(intentSummary.agentInitiativeCount),
+        },
+        {
+          id: 'collaboration-intent-queue_run-ledger',
+          type: 'collaboration-intent-run-ledger',
+          title: 'Intent execution receipts',
+          summary: `${intentSummary.intentRunCount || 0} collaboration intent run(s) recorded${intentSummary.latestIntentRunId ? `, latest ${intentSummary.latestIntentRunId}` : ''}.`,
+          route: `/projects/${projectId}/collaboration-intent-queue`,
+          proofIds: intentProofIds,
+          timelineLogIds: intentTimelineLogIds,
+          eventIds: intentEventIds,
+          runCount: intentSummary.intentRunCount || 0,
+          latestRunId: intentSummary.latestIntentRunId || null,
+          ready: Boolean(intentSummary.intentRunCount),
+        },
+        {
+          id: 'collaboration-intent-queue_production-boundary',
+          type: 'collaboration-intent-production-boundary',
+          title: 'Production queue boundary',
+          summary: 'Public production still needs managed queue/cron, durable audit, cost controls, customer acceptance thresholds, incident recovery, and provider/BYOK policy.',
+          route: `/projects/${projectId}/production-launch-gap-register`,
+          ready: false,
+          status: 'production-blocked',
+        },
+      ],
+      route: `/projects/${projectId}/collaboration-intent-queue`,
+      relatedNodeIds: uniqueStrings([
+        'team-collaboration-diagnostics',
+        nodesById.has('product-team-operating-loop') ? 'product-team-operating-loop' : null,
+        ...Array.from(nodesById.keys()).filter((nodeId) => nodeId.startsWith('agent-autonomous-action-')).slice(0, 6),
+      ].filter(Boolean)),
+    });
+    ['team-collaboration-diagnostics', 'product-team-operating-loop']
+      .filter((nodeId) => nodesById.has(nodeId))
+      .forEach((nodeId) => {
+        addEdge({
+          type: 'agent_collaboration',
+          fromNodeId: nodeId,
+          toNodeId: 'collaboration-intent-queue',
+          label: 'Feeds collaboration intent queue',
+          source: 'collaborationIntentQueue',
+          proofIds: nodesById.get(nodeId)?.proofIds || [],
+          timelineLogIds: nodesById.get(nodeId)?.timelineLogIds || [],
+          eventIds: nodesById.get(nodeId)?.eventIds || [],
+          importance: 'critical',
+        });
+      });
+  }
+
+  if (projectId && nodesById.has('team-collaboration-diagnostics')) {
     const contractSummary = dashboard.readinessProofMap?.runtimeContractFreezeSummary || {};
     const contractRoutes = dashboard.readinessProofMap?.runtimeContractFreezeRoutes || [];
     const contractRoute = contractRoutes[0] || {};
@@ -33365,11 +39159,12 @@ function buildManagerFlowGraphSnapshot({ project = {}, messages = [] } = {}) {
       route: `/projects/${projectId}/runtime-contracts`,
       relatedNodeIds: uniqueStrings([
         'team-collaboration-diagnostics',
+        nodesById.has('collaboration-intent-queue') ? 'collaboration-intent-queue' : null,
         nodesById.has('product-team-operating-loop') ? 'product-team-operating-loop' : null,
         nodesById.has('product-team-delivery-trace') ? 'product-team-delivery-trace' : null,
       ].filter(Boolean)),
     });
-    ['team-collaboration-diagnostics', 'product-team-operating-loop', 'product-team-delivery-trace']
+    ['team-collaboration-diagnostics', 'collaboration-intent-queue', 'product-team-operating-loop', 'product-team-delivery-trace']
       .filter((nodeId) => nodesById.has(nodeId))
       .forEach((nodeId) => {
         addEdge({
@@ -33624,12 +39419,18 @@ function buildManagerFlowGraphSnapshot({ project = {}, messages = [] } = {}) {
     const targetReadyCount = tick.targetReadyCount ?? tick.targetSnapshot?.readyCount ?? 0;
     const targetRowCount = tick.targetSnapshot?.rowCount ?? targetReadyCount + (tick.targetMissingCount ?? tick.targetSnapshot?.missingCount ?? 0);
     const targetNext = tick.targetNextMissingStageId || tick.targetSnapshot?.nextMissingStageId || 'complete';
+    const providerEvidence = tick.providerEvidenceSearch || null;
+    const tickEvidenceSearchId = tick.evidenceSearchId || providerEvidence?.evidenceSearchId || null;
+    const tickProviderUsageId = tick.providerUsageId || providerEvidence?.providerUsageId || null;
+    const tickProviderReceiptId = tick.providerReceiptId || providerEvidence?.providerReceiptId || null;
+    const tickProviderEvidenceMessageId = tick.providerEvidenceMessageId || tick.providerEvidenceMessageIds?.[0] || null;
+    const evidenceSearchNodeId = tickEvidenceSearchId ? `evidence-search-${tickEvidenceSearchId}` : null;
     addNode({
       id: nodeId,
       category: 'execution',
       subtype: 'autonomous-run-control-session-tick',
       title: `Autopilot tick: ${tick.stepCount || 0} step(s)`,
-      summary: `${tick.loopCount || 0} loop(s), ${tick.statusBefore || 'unknown'} -> ${tick.statusAfter || 'unknown'}. Target ${targetReadyCount}/${targetRowCount} stage(s), next ${targetNext}.`,
+      summary: `${tick.loopCount || 0} loop(s), ${tick.statusBefore || 'unknown'} -> ${tick.statusAfter || 'unknown'}. Target ${targetReadyCount}/${targetRowCount} stage(s), next ${targetNext}.${providerEvidence ? ` Provider evidence ${providerEvidence.status || 'recorded'} via ${providerEvidence.provider || 'provider'}.` : ''}`,
       status: tick.statusAfter === 'completed' ? 'resolved' : tick.stepCount > 0 ? 'confirmed' : 'blocked',
       importance: tick.stepCount > 0 ? 'critical' : 'major',
       source: 'autonomousRunControlSessionTicks',
@@ -33668,11 +39469,39 @@ function buildManagerFlowGraphSnapshot({ project = {}, messages = [] } = {}) {
         targetMissingCount: tick.targetMissingCount ?? tick.targetSnapshot?.missingCount ?? 0,
         targetMissingStageIds: uniqueStrings(tick.targetMissingStageIds || tick.targetSnapshot?.missingStageIds || []),
         targetNextMissingStageId: targetNext === 'complete' ? null : targetNext,
+        providerEvidenceSearch: providerEvidence,
+        evidenceSearchId: tickEvidenceSearchId,
+        evidenceSearchRoute: projectId && tickEvidenceSearchId ? `/projects/${projectId}/evidence-searches/${encodeURIComponent(tickEvidenceSearchId)}` : null,
+        providerReceiptId: tickProviderReceiptId,
+        providerUsageId: tickProviderUsageId,
+        providerUsageRoute: projectId && tickProviderUsageId ? `/projects/${projectId}/provider-readiness#${encodeURIComponent(tickProviderUsageId)}` : null,
+        providerEvidenceMessageId: tickProviderEvidenceMessageId,
+        providerEvidenceTranscriptRoute: projectId && tickProviderEvidenceMessageId ? `/projects/${projectId}/transcripts/main#${encodeURIComponent(tickProviderEvidenceMessageId)}` : null,
         checksum: tick.checksum || null,
-      }],
+      },
+      ...(providerEvidence ? [{
+        id: `${tick.id}-provider-evidence`,
+        type: 'autopilot-provider-evidence',
+        title: `${providerEvidence.provider || 'Provider'} evidence receipt`,
+        summary: `${providerEvidence.status || 'recorded'} / evidence ${tickEvidenceSearchId || 'pending'} / usage ${tickProviderUsageId || 'pending'} / receipt ${tickProviderReceiptId || 'pending'}`,
+        source: 'autonomousRunControlSessionTicks',
+        evidenceSearchId: tickEvidenceSearchId,
+        evidenceSearchRoute: projectId && tickEvidenceSearchId ? `/projects/${projectId}/evidence-searches/${encodeURIComponent(tickEvidenceSearchId)}` : null,
+        providerUsageId: tickProviderUsageId,
+        providerReceiptId: tickProviderReceiptId,
+        providerEvidenceMessageId: tickProviderEvidenceMessageId,
+        providerEvidenceTranscriptRoute: projectId && tickProviderEvidenceMessageId ? `/projects/${projectId}/transcripts/main#${encodeURIComponent(tickProviderEvidenceMessageId)}` : null,
+        provider: providerEvidence.provider || null,
+        searchMode: providerEvidence.searchMode || null,
+        sourceCount: providerEvidence.sourceCount || 0,
+        proofIds: uniqueStrings([tickEvidenceSearchId, tickProviderReceiptId, tickProviderUsageId, tickProviderEvidenceMessageId].filter(Boolean)),
+        timelineLogIds: tick.timelineLogIds || [],
+        eventIds: tick.eventIds || [],
+      }] : [])],
       route: tick.apiPath || null,
       relatedNodeIds: uniqueStrings([
         tick.sessionId ? `autonomous-run-control-session-${tick.sessionId}` : null,
+        evidenceSearchNodeId,
         ...(tick.loopReceiptIds || []).map((id) => `autonomous-run-control-loop-${id}`),
       ].filter((id) => id && nodesById.has(id))),
     });
@@ -33705,6 +39534,19 @@ function buildManagerFlowGraphSnapshot({ project = {}, messages = [] } = {}) {
         importance: 'major',
       });
     });
+    if (evidenceSearchNodeId && nodesById.has(evidenceSearchNodeId)) {
+      addEdge({
+        type: 'evidence',
+        fromNodeId: nodeId,
+        toNodeId: evidenceSearchNodeId,
+        label: 'Provider evidence recorded',
+        source: 'autonomousRunControlSessionTicks',
+        proofIds: uniqueStrings([tickEvidenceSearchId, tickProviderReceiptId, tickProviderUsageId, tickProviderEvidenceMessageId].filter(Boolean)),
+        timelineLogIds: tick.timelineLogIds || [],
+        eventIds: tick.eventIds || [],
+        importance: 'critical',
+      });
+    }
   });
 
   if (projectId && dashboard.readinessProofMap?.autonomousCycleConsistencySummary) {
@@ -33804,6 +39646,96 @@ function buildManagerFlowGraphSnapshot({ project = {}, messages = [] } = {}) {
         timelineLogIds: nodesById.get(nodeId)?.timelineLogIds || [],
         eventIds: nodesById.get(nodeId)?.eventIds || [],
         importance: ['runtime-contract-freeze', 'autonomous-run-control', 'product-team-operating-loop'].includes(nodeId) ? 'critical' : 'major',
+      });
+    });
+  }
+
+  if (projectId && dashboard.readinessProofMap?.runtimeAutonomyStatusSummary) {
+    const runtimeSummary = dashboard.readinessProofMap.runtimeAutonomyStatusSummary || {};
+    const runtimeRoute = (dashboard.readinessProofMap.runtimeAutonomyStatusRoutes || [])[0] || {};
+    const runtimeProofIds = uniqueStrings(runtimeSummary.proofIds || runtimeRoute.proofIds || []);
+    const runtimeTimelineLogIds = uniqueStrings(runtimeSummary.timelineLogIds || runtimeRoute.timelineLogIds || []);
+    const runtimeEventIds = uniqueStrings(runtimeSummary.eventIds || runtimeRoute.eventIds || []);
+    const sourceNodeIds = uniqueStrings([
+      (project.productTeamMissionRuns || [])[0]?.id ? `product-team-mission-run-${project.productTeamMissionRuns[0].id}` : null,
+      nodesById.has('autonomous-run-control') ? 'autonomous-run-control' : null,
+      nodesById.has('product-team-operating-loop') ? 'product-team-operating-loop' : null,
+      nodesById.has('autonomous-cycle-consistency') ? 'autonomous-cycle-consistency' : null,
+      ...(dashboard.autonomousRunControlSessions?.rows || [])
+        .map((session) => `autonomous-run-control-session-${session.id}`)
+        .filter((nodeId) => nodesById.has(nodeId))
+        .slice(0, 3),
+      ...(dashboard.autonomousRunControlSessions?.tickRows || [])
+        .map((tick) => `autonomous-run-control-session-tick-${tick.id}`)
+        .filter((nodeId) => nodesById.has(nodeId))
+        .slice(0, 3),
+    ].filter(Boolean));
+    addNode({
+      id: 'runtime-autonomy-status',
+      category: 'monitoring',
+      subtype: 'runtime-autonomy-status',
+      title: 'Runtime Autonomy Status',
+      summary: runtimeSummary.readyForLocalAutonomy
+        ? `${runtimeSummary.sessionCount || 0} session(s), ${runtimeSummary.sessionTickCount || 0} tick(s), and ${runtimeSummary.queuedWorkerCount || 0} queued worker row(s) are locally recoverable.`
+        : 'Runtime autonomy needs more backend proof before it can be trusted as a local/private MVP operating loop.',
+      status: runtimeSummary.readyForLocalAutonomy ? 'confirmed' : 'blocked',
+      importance: 'critical',
+      source: 'runtimeAutonomyStatus',
+      proofIds: runtimeProofIds,
+      timelineLogIds: runtimeTimelineLogIds,
+      eventIds: runtimeEventIds,
+      affectedAgentIds: runtimeRoute.agentIds || [],
+      affectedTaskIds: runtimeRoute.taskIds || [],
+      participantIds: runtimeRoute.agentIds || [],
+      relationshipRoles: Object.fromEntries((runtimeRoute.agentIds || []).map((agentId) => [agentId, 'runtime-autonomy-participant'])),
+      submissionIntent: 'Inspect whether C-side startup, A-side autonomy, worker queue recovery, persistence, and proof surfaces are connected.',
+      attachmentType: 'runtime-autonomy-status',
+      attachmentTitle: 'Runtime autonomy status packet',
+      attachmentSummary: 'Aggregates Mission Runner, Autopilot session/tick receipts, worker queue recovery, adapter dry-run, persistence snapshot, and production autonomy boundary.',
+      attachments: [
+        {
+          id: 'runtime-autonomy-status_c-a-handoff',
+          type: 'runtime-autonomy-c-a-handoff',
+          title: 'C/A autonomy handoff',
+          summary: `${runtimeSummary.missionRunCount || 0} mission run(s), ${runtimeSummary.sessionCount || 0} session(s), ${runtimeSummary.sessionTickCount || 0} tick(s).`,
+          route: `/projects/${projectId}/runtime-autonomy-status`,
+          proofIds: runtimeProofIds,
+          timelineLogIds: runtimeTimelineLogIds,
+          eventIds: runtimeEventIds,
+          ready: Boolean(runtimeSummary.readyForLocalAutonomy),
+        },
+        {
+          id: 'runtime-autonomy-status_worker-recovery',
+          type: 'runtime-autonomy-worker-recovery',
+          title: 'Worker queue recovery',
+          summary: `${runtimeSummary.queuedWorkerCount || 0} queued row(s), ${runtimeSummary.recoverableAutopilotQueueCount || 0} recoverable Autopilot row(s), ${runtimeSummary.deadLetterCount || 0} dead-letter row(s).`,
+          route: `/projects/${projectId}/worker-queue`,
+          ready: (runtimeSummary.deadLetterCount || 0) === 0,
+        },
+        {
+          id: 'runtime-autonomy-status_production-boundary',
+          type: 'runtime-autonomy-production-boundary',
+          title: 'Unattended production autonomy boundary',
+          summary: 'Local/private MVP autonomy is not public 24/7 production autonomy until managed queue/cron, distributed leases, BYOK/provider policy, centralized observability, and recovery controls are proven.',
+          route: `/projects/${projectId}/production-launch-gap-register`,
+          ready: false,
+          status: 'production-blocked',
+        },
+      ],
+      route: `/projects/${projectId}/runtime-autonomy-status`,
+      relatedNodeIds: sourceNodeIds,
+    });
+    sourceNodeIds.forEach((nodeId) => {
+      addEdge({
+        type: 'monitoring',
+        fromNodeId: nodeId,
+        toNodeId: 'runtime-autonomy-status',
+        label: 'Feeds runtime autonomy status',
+        source: 'runtimeAutonomyStatus',
+        proofIds: nodesById.get(nodeId)?.proofIds || runtimeProofIds,
+        timelineLogIds: nodesById.get(nodeId)?.timelineLogIds || runtimeTimelineLogIds,
+        eventIds: nodesById.get(nodeId)?.eventIds || runtimeEventIds,
+        importance: 'critical',
       });
     });
   }
@@ -33919,6 +39851,133 @@ function buildManagerFlowGraphSnapshot({ project = {}, messages = [] } = {}) {
     }
   });
 
+  (project.productTeamMissionRuns || []).forEach((run) => {
+    const nodeId = `product-team-mission-run-${run.id}`;
+    const missionProofIds = uniqueStrings([
+      run.id,
+      run.checksum,
+      run.customerAgentHandoff?.checksum,
+      ...(run.proofIds || []),
+    ].filter(Boolean));
+    const missionLogIds = uniqueStrings(run.timelineLogIds || []);
+    const missionEventIds = uniqueStrings([run.eventId, ...(run.eventIds || [])].filter(Boolean));
+    const relatedNodeIds = uniqueStrings([
+      'kickoff-next-actions-confirmed',
+      'product-team-delivery-trace',
+      'product-team-operating-loop',
+      'collaboration-intent-queue',
+      run.autonomousSessionId ? `autonomous-run-control-session-${run.autonomousSessionId}` : null,
+      run.autonomousSessionTickId ? `autonomous-run-control-session-tick-${run.autonomousSessionTickId}` : null,
+      ...((run.runReceiptIds || []).map((id) => `autonomous-run-control-run-${id}`)),
+      ...((run.loopReceiptIds || []).map((id) => `autonomous-run-control-loop-${id}`)),
+    ].filter(Boolean));
+    addNode({
+      id: nodeId,
+      category: 'decision',
+      subtype: 'product-team-mission-run',
+      title: run.missionName || 'Product Team Mission',
+      summary: `${run.missionType || 'generic-product-team'} mission ${run.status || 'started'}; Leader ${run.selectedLeaderId || 'pending'}, Reviewer ${run.reviewerId || 'pending'}, target ${run.targetNextMissingStageId || run.targetStatus || 'delivery trace'}.`,
+      status: run.status === 'autopilot-started' || run.status === 'kickoff-approved' ? 'confirmed' : 'published',
+      importance: 'critical',
+      source: 'productTeamMissionRuns',
+      time: run.createdAt,
+      proofIds: missionProofIds,
+      timelineLogIds: missionLogIds,
+      eventIds: missionEventIds,
+      affectedAgentIds: uniqueStrings(run.agentIds || []),
+      affectedTaskIds: uniqueStrings(run.taskIds || []),
+      participantIds: uniqueStrings(run.agentIds || []),
+      relationshipRoles: Object.fromEntries((run.agentIds || []).map((agentId) => [agentId, 'mission-participant'])),
+      submissionIntent: 'Submit the customer mission start receipt that connects kickoff approval to A-side autonomous product-team execution.',
+      attachmentType: 'product-team-mission-run',
+      attachmentTitle: 'Product team mission run receipt',
+      attachmentSummary: `${run.taskIds?.length || 0} task(s), ${run.agentIds?.length || 0} Agent(s), ${run.runReceiptIds?.length || 0} autonomous run receipt(s).`,
+      attachments: [
+        {
+          id: `${run.id}-receipt`,
+          type: 'product-team-mission-run',
+          title: run.missionName || 'Product team mission run',
+          schemaVersion: run.schemaVersion || 'product-team-mission-run/v1',
+          missionType: run.missionType || 'generic-product-team',
+          researchOnly: Boolean(run.researchOnly),
+          reusedKickoffMeeting: Boolean(run.reusedKickoffMeeting),
+          kickoffMeetingId: run.kickoffMeetingId || null,
+          kickoffMeetingRoute: run.kickoffMeetingRoute || null,
+          selectedLeaderId: run.selectedLeaderId || null,
+          reviewerId: run.reviewerId || null,
+          autonomousSessionId: run.autonomousSessionId || null,
+          autonomousSessionTickId: run.autonomousSessionTickId || null,
+          loopReceiptIds: run.loopReceiptIds || [],
+          runReceiptIds: run.runReceiptIds || [],
+          targetKind: run.targetKind || null,
+          targetStatus: run.targetStatus || null,
+          targetReady: Boolean(run.targetReady),
+          targetMissingStageIds: run.targetMissingStageIds || [],
+          targetNextMissingStageId: run.targetNextMissingStageId || null,
+          customerAgentHandoff: run.customerAgentHandoff || null,
+          readyForProduction: false,
+          productionBlockerReason: run.productionBlockerReason || null,
+          readRoutes: run.readRoutes || {},
+          checksum: run.checksum || null,
+        },
+        run.customerAgentHandoff ? {
+          id: `${run.id}-customer-agent-handoff`,
+          type: 'product-team-customer-agent-handoff',
+          title: 'C/A handoff receipt',
+          schemaVersion: run.customerAgentHandoff.schemaVersion,
+          status: run.customerAgentHandoff.status,
+          selectedLeaderId: run.customerAgentHandoff.selectedLeaderId || null,
+          reviewerId: run.customerAgentHandoff.reviewerId || null,
+          firstTickRecorded: Boolean(run.customerAgentHandoff.firstTickRecorded),
+          targetKind: run.customerAgentHandoff.targetKind || null,
+          targetStageId: run.customerAgentHandoff.targetStageId || null,
+          actionLanes: run.customerAgentHandoff.actionLanes || [],
+          route: run.customerAgentHandoff.nextRoutes?.autonomousRunControl || null,
+          checksum: run.customerAgentHandoff.checksum || null,
+        } : null,
+        {
+          id: `${run.id}-production-boundary`,
+          type: 'product-team-mission-production-boundary',
+          title: 'Mission autonomy production boundary',
+          summary: 'This mission starts bounded local/private MVP autonomy; production still needs managed queue, persistence, BYOK/provider, audit, cost, and recovery controls.',
+          route: projectId ? `/projects/${projectId}/production-launch-gap-register` : null,
+          ready: false,
+          status: 'production-blocked',
+        },
+      ].filter(Boolean),
+      route: projectId ? `/projects/${projectId}/product-team-missions/${encodeURIComponent(run.id)}` : null,
+      relatedNodeIds,
+    });
+    ['kickoff-next-actions-confirmed', 'product-team-delivery-trace', 'product-team-operating-loop', 'collaboration-intent-queue']
+      .filter((targetNodeId) => nodesById.has(targetNodeId))
+      .forEach((targetNodeId) => {
+        addEdge({
+          type: targetNodeId === 'kickoff-next-actions-confirmed' ? 'decision' : 'task_dependency',
+          fromNodeId: nodeId,
+          toNodeId: targetNodeId,
+          label: targetNodeId === 'kickoff-next-actions-confirmed' ? 'Approves kickoff' : 'Mission proof surface',
+          source: 'productTeamMissionRuns',
+          proofIds: missionProofIds,
+          timelineLogIds: missionLogIds,
+          eventIds: missionEventIds,
+          importance: 'critical',
+        });
+      });
+    if (run.autonomousSessionId) {
+      addEdge({
+        type: 'control',
+        fromNodeId: nodeId,
+        toNodeId: `autonomous-run-control-session-${run.autonomousSessionId}`,
+        label: 'Starts bounded Autopilot session',
+        source: 'productTeamMissionRuns',
+        proofIds: missionProofIds,
+        timelineLogIds: missionLogIds,
+        eventIds: missionEventIds,
+        importance: 'critical',
+      });
+    }
+  });
+
   addNode({
     id: 'project-evidence-ledger',
     category: 'evidence',
@@ -33934,6 +39993,117 @@ function buildManagerFlowGraphSnapshot({ project = {}, messages = [] } = {}) {
     attachmentType: 'evidence-ledger',
     attachmentTitle: 'Project evidence ledger packet',
     route: projectId ? `/projects/${projectId}/events` : null,
+  });
+
+  (project.mvpReadinessOperatorActionRuns || []).forEach((run) => {
+    const nodeId = `mvp-readiness-operator-action-run-${run.id}`;
+    const timelineLogIds = uniqueStrings([
+      run.timelineLogId,
+      ...(run.timelineLogIds || []),
+    ].filter(Boolean));
+    const eventIds = uniqueStrings([
+      run.eventId,
+      ...(run.eventIds || []),
+    ].filter(Boolean));
+    const targetNodeId = run.actionId === 'prepare-private-pilot-handoff'
+      ? 'private-pilot-go-live-readiness'
+      : run.actionId === 'open-production-gap-register'
+        ? 'production-launch-gap-register'
+        : run.targetStageId
+          ? run.targetStageId
+          : String(run.apiPath || '').includes('/security-boundary')
+          ? 'security-boundary'
+          : String(run.apiPath || '').includes('/production-launch-gap-register')
+            ? 'production-launch-gap-register'
+            : null;
+    addNode({
+      id: nodeId,
+      category: 'decision',
+      subtype: 'mvp-readiness-operator-action-run',
+      title: run.actionLabel || run.actionId || 'MVP readiness operator action',
+      summary: `${run.actionScope || 'mvp'} / ${run.status || 'recorded'}; target ${run.apiPath || 'not routed'}.`,
+      status: 'confirmed',
+      importance: run.productionBlocker ? 'critical' : 'major',
+      source: 'mvpReadinessOperatorActionRuns',
+      time: run.createdAt || run.ranAt,
+      proofIds: [run.id, run.checksum, run.targetControlChecksum || run.targetControl?.checksum].filter(Boolean),
+      timelineLogIds,
+      eventIds,
+      submissionIntent: 'Submit the Manager readiness action receipt as an auditable product-team control event.',
+      attachmentType: 'mvp-readiness-operator-action-run',
+      attachmentTitle: 'MVP readiness operator action receipt',
+      attachmentSummary: run.targetStageId
+        ? `${run.detail || run.apiPath || ''} Target stage: ${run.targetStageId}.`
+        : run.detail || run.apiPath || '',
+      attachments: [{
+        id: `${run.id}-receipt`,
+        type: 'mvp-readiness-operator-action-run',
+        title: run.actionLabel || run.actionId || 'MVP readiness action receipt',
+        schemaVersion: run.schemaVersion || 'mvp-readiness-operator-action-run/v1',
+        actionId: run.actionId || null,
+        actionScope: run.actionScope || null,
+        owner: run.owner || null,
+        status: run.status || 'recorded',
+        method: run.method || 'GET',
+        apiPath: run.apiPath || null,
+        runApiPath: run.runApiPath || null,
+        productionBlocker: Boolean(run.productionBlocker),
+        autonomousRunnable: Boolean(run.autonomousRunnable),
+        targetStageId: run.targetStageId || run.targetControl?.targetStageId || null,
+        targetGapId: run.targetGapId || run.targetControl?.targetGapId || null,
+        targetStepId: run.targetStepId || run.targetControl?.targetStepId || null,
+        targetControlChecksum: run.targetControlChecksum || run.targetControl?.checksum || null,
+        autonomousRunControlRunApiPath: run.autonomousRunControlRunApiPath || null,
+        localPilotReadyAtRun: Boolean(run.localPilotReadyAtRun),
+        readyForProductionAtRun: Boolean(run.readyForProductionAtRun),
+        checksum: run.checksum || null,
+      }],
+      route: run.runApiPath || (projectId && run.actionId ? `/projects/${projectId}/mvp-readiness/operator-actions/${encodeURIComponent(run.actionId)}/run` : null),
+      relatedNodeIds: uniqueStrings([
+        'project-evidence-ledger',
+        'runtime-contract-freeze',
+        'autonomous-cycle-consistency',
+        run.autonomousRunnable ? 'autonomous-run-control' : null,
+        targetNodeId,
+      ].filter(Boolean)),
+    });
+    addEdge({
+      type: 'decision',
+      fromNodeId: 'project-evidence-ledger',
+      toNodeId: nodeId,
+      label: 'Readiness action receipt',
+      source: 'mvpReadinessOperatorActionRuns',
+      proofIds: [run.id, run.checksum, run.targetControlChecksum || run.targetControl?.checksum].filter(Boolean),
+      timelineLogIds,
+      eventIds,
+      importance: run.productionBlocker ? 'critical' : 'major',
+    });
+    if (run.autonomousRunnable) {
+      addEdge({
+        type: 'control',
+        fromNodeId: nodeId,
+        toNodeId: 'autonomous-run-control',
+        label: 'Hands target to Run Control',
+        source: 'mvpReadinessOperatorActionRuns',
+        proofIds: [run.id, run.checksum, run.targetControlChecksum || run.targetControl?.checksum].filter(Boolean),
+        timelineLogIds,
+        eventIds,
+        importance: 'major',
+      });
+    }
+    if (targetNodeId) {
+      addEdge({
+        type: 'task_dependency',
+        fromNodeId: nodeId,
+        toNodeId: targetNodeId,
+        label: 'Opens target work surface',
+        source: 'mvpReadinessOperatorActionRuns',
+        proofIds: [run.id, run.checksum, run.targetControlChecksum || run.targetControl?.checksum].filter(Boolean),
+        timelineLogIds,
+        eventIds,
+        importance: run.productionBlocker ? 'critical' : 'major',
+      });
+    }
   });
 
   (project.launchApprovals || []).forEach((approval) => {
@@ -35441,6 +41611,8 @@ export function createAgentProjectService({
         status: project.status,
         progress: project.progress,
         language: project.language || null,
+        projectSettingsChecksum: project.projectSettings?.checksum || null,
+        providerBudgetPolicy: project.projectSettings?.providerBudgetPolicy || null,
         team: (project.team || []).map((agent) => [agent.id, agent.isLeader, agent.title]),
         tasks: tasks.map((task) => [task.id, task.status, task.ownerId, task.assignee, task.workPulseCount || 0]),
         logCount: logs.length,
@@ -35457,6 +41629,8 @@ export function createAgentProjectService({
         latestEvidenceSearch: project.evidenceSearches?.[0] ? [project.evidenceSearches[0].id, project.evidenceSearches[0].status] : null,
         reviewCount: project.submissionReviews?.length || 0,
         latestReview: project.submissionReviews?.[0] ? [project.submissionReviews[0].id, project.submissionReviews[0].verdict] : null,
+        productTeamMissionRunCount: project.productTeamMissionRuns?.length || 0,
+        latestProductTeamMissionRun: project.productTeamMissionRuns?.[0] ? [project.productTeamMissionRuns[0].id, project.productTeamMissionRuns[0].status, project.productTeamMissionRuns[0].autonomousSessionId, project.productTeamMissionRuns[0].checksum] : null,
         identitySessionCount: project.identitySessions?.length || 0,
         latestIdentitySession: project.identitySessions?.[0] ? [project.identitySessions[0].id, project.identitySessions[0].status, project.identitySessions[0].expiresAt] : null,
         workerRunCount: project.workerRuns?.length || 0,
@@ -35467,6 +41641,8 @@ export function createAgentProjectService({
         latestManagerActionRun: project.managerActionRunLedger?.[0] ? [project.managerActionRunLedger[0].id, project.managerActionRunLedger[0].requirementId] : null,
         autonomousRunControlRunCount: project.autonomousRunControlRunLedger?.length || 0,
         latestAutonomousRunControlRun: project.autonomousRunControlRunLedger?.[0] ? [project.autonomousRunControlRunLedger[0].id, project.autonomousRunControlRunLedger[0].actionId, project.autonomousRunControlRunLedger[0].checksum] : null,
+        mvpReadinessOperatorActionRunCount: project.mvpReadinessOperatorActionRuns?.length || 0,
+        latestMvpReadinessOperatorActionRun: project.mvpReadinessOperatorActionRuns?.[0] ? [project.mvpReadinessOperatorActionRuns[0].id, project.mvpReadinessOperatorActionRuns[0].actionId, project.mvpReadinessOperatorActionRuns[0].targetStageId, project.mvpReadinessOperatorActionRuns[0].targetStepId, project.mvpReadinessOperatorActionRuns[0].targetControlChecksum, project.mvpReadinessOperatorActionRuns[0].checksum] : null,
         autonomousRunControlLoopCount: project.autonomousRunControlLoopLedger?.length || 0,
         latestAutonomousRunControlLoop: project.autonomousRunControlLoopLedger?.[0] ? [project.autonomousRunControlLoopLedger[0].id, project.autonomousRunControlLoopLedger[0].stepCount, project.autonomousRunControlLoopLedger[0].checksum] : null,
         autonomousRunControlSessionCount: project.autonomousRunControlSessionLedger?.length || 0,
@@ -35501,7 +41677,7 @@ export function createAgentProjectService({
         model: modelProviderStatus(),
         search: searchProviderStatus(),
         vault: secretVaultStatus(),
-        policy: providerControlPolicyStatus(),
+        policy: providerControlPolicyStatus(project),
         persistence: managedPersistenceAdapterStatus(),
         queue: workerQueueAdapterStatus(),
       },
@@ -35592,7 +41768,1157 @@ export function createAgentProjectService({
       ? resolvedSecretVault.status()
       : resolvedSecretVault || {},
   );
-  const providerControlPolicyStatus = () => normalizeProviderControlPolicy(providerPolicy);
+  const providerControlPolicyStatus = (projectOrId = null) => {
+    const project = typeof projectOrId === 'string'
+      ? store.getProject(projectOrId)
+      : projectOrId;
+    const providerBudgetPolicy = project?.projectSettings?.providerBudgetPolicy;
+    const toolGrantPolicy = project?.projectSettings?.toolGrantPolicy;
+    const settingsPolicy = {};
+    if (providerBudgetPolicy?.schemaVersion === 'project-provider-budget-policy/v1') {
+      const dailyBudgetCents = Number(providerBudgetPolicy.dailyBudgetCents);
+      const maxRequestsPerProjectHour = Number(providerBudgetPolicy.maxRequestsPerProjectHour);
+      if (Number.isFinite(dailyBudgetCents) && dailyBudgetCents > 0) {
+        settingsPolicy.dailyBudgetCents = dailyBudgetCents;
+      }
+      if (Number.isFinite(maxRequestsPerProjectHour) && maxRequestsPerProjectHour > 0) {
+        settingsPolicy.maxRequestsPerProjectHour = maxRequestsPerProjectHour;
+      }
+      if (providerBudgetPolicy.currency) settingsPolicy.currency = providerBudgetPolicy.currency;
+      settingsPolicy.enabled = true;
+      settingsPolicy.mode = providerBudgetPolicy.enforcementMode || 'enforced';
+    }
+    if (toolGrantPolicy?.schemaVersion === 'project-tool-grant-policy/v1') {
+      settingsPolicy.defaultToolGrants = normalizeProjectToolGrantList(toolGrantPolicy.defaultToolGrants, []);
+      settingsPolicy.agentToolGrants = normalizeProjectAgentToolGrantMap(toolGrantPolicy.agentToolGrants);
+      settingsPolicy.enabled = true;
+      settingsPolicy.mode = toolGrantPolicy.enforcementMode || settingsPolicy.mode || 'enforced';
+    }
+    return normalizeProviderControlPolicy({
+      ...providerPolicy,
+      ...settingsPolicy,
+    });
+  };
+  const secretVaultBackendRoutes = (projectId = '') => ({
+    secretVaultStatus: '/secret-vault/status',
+    secretVaultRecords: '/secret-vault/records',
+    secretVaultSeal: '/secret-vault/seal',
+    secretVaultRotate: '/secret-vault/rotate',
+    securityBoundary: projectId ? `/projects/${projectId}/security-boundary` : null,
+    providerReadiness: projectId ? `/projects/${projectId}/provider-readiness` : null,
+  });
+  const providerVaultBindingBackendRoutes = (projectId = '') => ({
+    providerVaultBindings: projectId ? `/projects/${projectId}/provider-vault-bindings` : '/provider-vault-bindings',
+    modelStatus: '/llm/status',
+    modelTest: '/llm/test',
+    searchStatus: '/search/status',
+    searchTest: '/search/test',
+    secretVaultStatus: '/secret-vault/status',
+    secretVaultRecords: '/secret-vault/records',
+    secretVaultSeal: '/secret-vault/seal',
+    secretVaultRotate: '/secret-vault/rotate',
+    providerReadiness: projectId ? `/projects/${projectId}/provider-readiness` : null,
+    securityBoundary: projectId ? `/projects/${projectId}/security-boundary` : null,
+  });
+  const safeSecretVaultRecordRows = () => (
+    typeof resolvedSecretVault?.records === 'function'
+      ? resolvedSecretVault.records().map((record) => redactSensitiveObject({
+        id: record.id || null,
+        name: record.name || null,
+        keyId: record.keyId || null,
+        algorithm: record.algorithm || null,
+        kdf: record.kdf || null,
+        encrypted: Boolean(record.encrypted),
+        createdAt: record.createdAt || null,
+        updatedAt: record.updatedAt || null,
+        metadata: record.metadata || {},
+      }))
+      : []
+  );
+  const buildSecretVaultRecordList = () => {
+    const status = secretVaultStatus();
+    const records = safeSecretVaultRecordRows();
+    const response = {
+      schemaVersion: 'secret-vault-record-list/v1',
+      status,
+      records,
+      summary: {
+        recordCount: records.length,
+        encryptedRecordCount: records.filter((record) => record.encrypted).length,
+        rawSecretRecordCount: Number(status.rawSecretRecordCount || 0),
+        plaintextExposed: false,
+      },
+      backendRoutes: secretVaultBackendRoutes(),
+    };
+    response.checksum = persistenceChecksum(response);
+    return response;
+  };
+  const providerApiKeyNames = {
+    model: ['model.apikey', 'model.api_key', 'model.api-key', 'llm.apikey', 'llm.api_key', 'openai.apikey', 'openai.api_key'],
+    search: ['search.apikey', 'search.api_key', 'search.api-key', 'web-search.apikey', 'web_search.api_key'],
+  };
+  const providerEndpointNames = {
+    search: ['search.endpoint', 'search.url', 'search.base_url', 'search-provider.endpoint', 'search_provider.endpoint', 'web-search.endpoint', 'web_search.endpoint'],
+  };
+  const normalizeProviderSecretTarget = (value = '') => {
+    const normalized = String(value || '').toLowerCase().replace(/_/g, '-');
+    if (['api-key', 'apikey', 'key', 'token', 'credential'].includes(normalized)) return 'api-key';
+    if (['endpoint', 'url', 'base-url', 'baseurl', 'provider-endpoint'].includes(normalized)) return 'endpoint';
+    return '';
+  };
+  const providerSecretBindingForRecord = (record = {}) => {
+    const name = String(record.name || record.id || '').toLowerCase();
+    const scope = String(record.metadata?.scope || '').toLowerCase();
+    const target = normalizeProviderSecretTarget(
+      record.metadata?.secretKind
+      || record.metadata?.target
+      || record.metadata?.providerSecretKind
+      || '',
+    );
+    if (
+      providerEndpointNames.search.includes(name)
+      || (scope === 'search-provider' && target === 'endpoint')
+    ) {
+      return { kind: 'search', target: 'endpoint' };
+    }
+    if (
+      providerApiKeyNames.model.includes(name)
+      || (scope === 'model-provider' && (!target || target === 'api-key'))
+    ) {
+      return { kind: 'model', target: 'api-key' };
+    }
+    if (
+      providerApiKeyNames.search.includes(name)
+      || (scope === 'search-provider' && (!target || target === 'api-key'))
+    ) {
+      return { kind: 'search', target: 'api-key' };
+    }
+    return { kind: '', target: '' };
+  };
+  const providerKindForSecretRecord = (record = {}) => {
+    const binding = providerSecretBindingForRecord(record);
+    return binding.kind;
+  };
+  const bindProviderApiKeyFromVaultRecord = async (record = {}) => {
+    const { kind, target } = providerSecretBindingForRecord(record);
+    if (!kind || typeof resolvedSecretVault?.open !== 'function') {
+      return { kind, bound: false, reason: kind ? 'secret-vault-open-unavailable' : 'not-provider-secret' };
+    }
+    const secretValue = await resolvedSecretVault.open(record);
+    if (kind === 'model' && target === 'api-key' && typeof llmProvider?.setApiKey === 'function') {
+      const status = llmProvider.setApiKey(secretValue, 'local-secret-vault');
+      return { kind, target, bound: Boolean(status?.hasApiKey), status };
+    }
+    if (kind === 'search' && target === 'api-key' && typeof searchProvider?.setApiKey === 'function') {
+      const status = searchProvider.setApiKey(secretValue, 'local-secret-vault');
+      return { kind, target, bound: Boolean(status?.hasApiKey || status?.apiKeySource === 'not-required'), status };
+    }
+    if (kind === 'search' && target === 'endpoint' && typeof searchProvider?.setEndpoint === 'function') {
+      const provider = record.metadata?.provider || record.metadata?.searchProvider || 'http-json';
+      const status = searchProvider.setEndpoint(secretValue, 'local-secret-vault', provider);
+      return { kind, target, bound: Boolean(status?.hasEndpoint && status?.endpointSource === 'local-secret-vault'), status };
+    }
+    return { kind, target, bound: false, reason: 'provider-runtime-binding-unavailable' };
+  };
+  const buildSecretVaultSealReceipt = ({ record = {}, status = {}, now = nowIso(), metadata = {} } = {}) => {
+    const receipt = {
+      schemaVersion: 'secret-vault-seal-receipt/v1',
+      id: `secret_vault_seal_${Date.parse(now) || Date.now()}_${String(record.id || record.name || 'record').replace(/[^a-zA-Z0-9_-]/g, '_')}`,
+      recordId: record.id || null,
+      name: record.name || null,
+      keyId: record.keyId || status.keyId || null,
+      encrypted: Boolean(record.encrypted),
+      plaintextExposed: false,
+      metadata: redactSensitiveObject(metadata || {}),
+      statusChecksum: persistenceChecksum(status),
+      recordChecksum: persistenceChecksum(record),
+      sealedAt: now,
+      backendRoutes: secretVaultBackendRoutes(),
+    };
+    receipt.checksum = persistenceChecksum(receipt);
+    return receipt;
+  };
+  const findProviderVaultRecord = ({ kind = '', target = 'api-key', records = [] } = {}) => {
+    const normalizedKind = String(kind || '').toLowerCase();
+    const expectedScope = `${normalizedKind}-provider`;
+    const expectedTarget = normalizeProviderSecretTarget(target) || 'api-key';
+    const expectedNames = expectedTarget === 'endpoint'
+      ? (providerEndpointNames[normalizedKind] || [])
+      : (providerApiKeyNames[normalizedKind] || []);
+    return records.find((record) => expectedNames.includes(String(record.name || record.id || '').toLowerCase()))
+      || records.find((record) => {
+        const binding = providerSecretBindingForRecord(record);
+        return binding.kind === normalizedKind
+          && binding.target === expectedTarget
+          && String(record.metadata?.scope || '').toLowerCase() === expectedScope;
+      })
+      || null;
+  };
+  const buildProviderVaultBindingRow = ({ kind = '', providerStatus = {}, vaultStatus = {}, records = [] } = {}) => {
+    const rawStatus = providerStatus && typeof providerStatus === 'object' ? providerStatus : {};
+    const safeStatus = redactSensitiveObject(rawStatus);
+    const record = findProviderVaultRecord({ kind, target: 'api-key', records });
+    const endpointRecord = kind === 'search'
+      ? findProviderVaultRecord({ kind, target: 'endpoint', records })
+      : null;
+    const providerUsesLocalVault = rawStatus.apiKeySource === 'local-secret-vault'
+      || rawStatus.secretVault?.ready === true
+      || rawStatus.secretVault?.keyId === vaultStatus.keyId;
+    const providerEndpointUsesLocalVault = kind === 'search' && rawStatus.endpointSource === 'local-secret-vault';
+    const providerHasKey = Boolean(rawStatus.hasApiKey);
+    const providerHasEndpoint = Boolean(rawStatus.hasEndpoint || rawStatus.endpoint);
+    const providerKeyNotRequired = kind === 'search'
+      && rawStatus.provider === 'deterministic'
+      && rawStatus.apiKeySource === 'not-required';
+    const recordReady = Boolean(record?.encrypted);
+    const endpointRecordReady = Boolean(endpointRecord?.encrypted);
+    const bound = Boolean(providerHasKey && providerUsesLocalVault && recordReady && vaultStatus.ready);
+    const endpointBound = Boolean(providerHasEndpoint && providerEndpointUsesLocalVault && endpointRecordReady && vaultStatus.ready);
+    const bindingStatus = bound
+      ? (kind === 'search' && rawStatus.configured && !endpointBound && rawStatus.provider !== 'deterministic'
+          ? 'api-key-bound-endpoint-not-vault-backed'
+          : 'bound')
+      : providerKeyNotRequired
+        ? 'not-required-local-validation'
+        : kind === 'search' && endpointBound && !recordReady
+          ? 'endpoint-bound-api-key-missing'
+        : kind === 'search' && endpointRecordReady && !providerHasEndpoint
+          ? 'vault-endpoint-ready-provider-not-configured'
+          : kind === 'search' && providerHasEndpoint && !endpointRecordReady
+            ? 'provider-has-endpoint-without-vault-record'
+        : recordReady && !providerHasKey
+          ? 'vault-record-ready-provider-not-configured'
+          : providerHasKey && !recordReady
+            ? 'provider-has-key-without-vault-record'
+            : 'missing';
+    return {
+      id: `${kind || 'provider'}-vault-binding`,
+      kind,
+      provider: safeStatus.provider || 'none',
+      configured: Boolean(safeStatus.configured),
+      enabled: Boolean(safeStatus.enabled),
+      hasApiKey: providerHasKey,
+      apiKeySource: rawStatus.apiKeySource || 'unknown',
+      providerUsesLocalVault,
+      providerKeyNotRequired,
+      hasEndpoint: providerHasEndpoint,
+      endpointSource: rawStatus.endpointSource || 'unknown',
+      providerEndpointUsesLocalVault,
+      vaultReady: Boolean(vaultStatus.ready),
+      vaultKeyId: vaultStatus.keyId || null,
+      recordId: record?.id || null,
+      recordName: record?.name || null,
+      recordKeyId: record?.keyId || null,
+      recordEncrypted: recordReady,
+      recordScope: record?.metadata?.scope || null,
+      endpointRecordId: endpointRecord?.id || null,
+      endpointRecordName: endpointRecord?.name || null,
+      endpointRecordKeyId: endpointRecord?.keyId || null,
+      endpointRecordEncrypted: endpointRecordReady,
+      endpointRecordScope: endpointRecord?.metadata?.scope || null,
+      endpointBound,
+      bindingStatus,
+      bound,
+      plaintextExposed: false,
+    };
+  };
+  const buildProviderVaultBindings = ({ projectId = '' } = {}) => {
+    const status = secretVaultStatus();
+    const records = safeSecretVaultRecordRows();
+    const rawModelStatus = modelProviderStatus();
+    const rawSearchStatus = searchProviderStatus();
+    const modelStatus = redactSensitiveObject(rawModelStatus);
+    const searchStatus = redactSensitiveObject(rawSearchStatus);
+    const bindings = [
+      buildProviderVaultBindingRow({ kind: 'model', providerStatus: rawModelStatus, vaultStatus: status, records }),
+      buildProviderVaultBindingRow({ kind: 'search', providerStatus: rawSearchStatus, vaultStatus: status, records }),
+    ];
+    const serialized = stableJson({ status, records, bindings, modelStatus, searchStatus });
+    const leakScan = scanTextForRawSecretLeaks(serialized);
+    const localVaultBackedBindings = bindings.filter((row) => row.bound);
+    const response = {
+      schemaVersion: 'provider-vault-bindings/v1',
+      projectId: projectId || null,
+      generatedAt: nowIso(),
+      status: leakScan.count === 0 && status.ready ? 'local-provider-vault-boundary-ready' : 'needs-provider-vault-work',
+      readyForLocalPilot: Boolean(status.ready && leakScan.count === 0 && bindings.every((row) => row.bound || row.providerKeyNotRequired || row.configured === false)),
+      readyForProduction: false,
+      secretVaultStatus: {
+        ...status,
+        backendRoutes: secretVaultBackendRoutes(projectId),
+      },
+      records: records.map((record) => ({
+        id: record.id,
+        name: record.name,
+        keyId: record.keyId,
+        encrypted: Boolean(record.encrypted),
+        metadata: redactSensitiveObject({
+          scope: record.metadata?.scope || null,
+          source: record.metadata?.source || null,
+          provider: record.metadata?.provider || null,
+          secretKind: record.metadata?.secretKind || null,
+          target: record.metadata?.target || null,
+        }),
+      })),
+      bindings,
+      gates: [
+        {
+          id: 'secret-vault-redacted-status',
+          label: 'Secret vault status is redacted and ready',
+          passed: Boolean(status.ready && status.rawSecretRecordCount === 0),
+          detail: `${status.encryptedRecordCount || 0} encrypted record(s), ${status.rawSecretRecordCount || 0} raw record(s).`,
+          apiPath: '/secret-vault/status',
+        },
+        {
+          id: 'model-provider-vault-binding',
+          label: 'Model provider can be traced to the local vault',
+          passed: Boolean(bindings.find((row) => row.kind === 'model')?.bound || !modelStatus.configured),
+          detail: bindings.find((row) => row.kind === 'model')?.bindingStatus || 'missing',
+          apiPath: '/llm/status',
+        },
+        {
+          id: 'search-provider-vault-binding',
+          label: 'Search provider can be traced to the local vault or deterministic no-key mode',
+          passed: Boolean(
+            bindings.find((row) => row.kind === 'search')?.bound
+            || bindings.find((row) => row.kind === 'search')?.endpointBound
+            || bindings.find((row) => row.kind === 'search')?.providerKeyNotRequired
+            || !searchStatus.configured
+          ),
+          detail: bindings.find((row) => row.kind === 'search')?.bindingStatus || 'missing',
+          apiPath: '/search/status',
+        },
+        {
+          id: 'provider-vault-no-secret-leakage',
+          label: 'Provider-vault binding response exposes no raw secrets',
+          passed: leakScan.count === 0,
+          detail: `${leakScan.count} raw leak marker(s).`,
+          apiPath: projectId ? `/projects/${projectId}/provider-vault-bindings` : '/provider-vault-bindings',
+        },
+      ],
+      redaction: {
+        status: leakScan.count === 0 ? 'ready' : 'needs-attention',
+        rawLeakCount: leakScan.count,
+        scanChecksum: persistenceChecksum(leakScan),
+      },
+      backendRoutes: providerVaultBindingBackendRoutes(projectId),
+      summary: {
+        bindingCount: bindings.length,
+        boundProviderCount: bindings.filter((row) => row.bound).length,
+        localSecretVaultBackedProviderCount: localVaultBackedBindings.length,
+        endpointVaultBoundProviderCount: bindings.filter((row) => row.endpointBound).length,
+        providerKeyNotRequiredCount: bindings.filter((row) => row.providerKeyNotRequired).length,
+        providerHasNonVaultSecretCount: bindings.filter((row) => row.hasApiKey && !row.providerUsesLocalVault).length,
+        vaultRecordCount: records.length,
+        encryptedVaultRecordCount: records.filter((row) => row.encrypted).length,
+        plaintextExposed: false,
+        productionBlocker: 'managed KMS/Secret Manager, revocation, access audit, and provider-specific request isolation are still required before public production',
+      },
+    };
+    response.checksum = persistenceChecksum(response);
+    return response;
+  };
+  const buildProviderVaultBindingProof = ({ projectId = '', kind = '' } = {}) => {
+    const snapshot = buildProviderVaultBindings({ projectId });
+    const binding = (snapshot.bindings || []).find((row) => row.kind === kind) || null;
+    const proof = {
+      schemaVersion: 'provider-vault-binding-proof/v1',
+      kind,
+      provider: binding?.provider || 'none',
+      bindingStatus: binding?.bindingStatus || 'missing',
+      bound: Boolean(binding?.bound),
+      apiKeySource: binding?.apiKeySource || 'unknown',
+      providerUsesLocalVault: Boolean(binding?.providerUsesLocalVault),
+      providerKeyNotRequired: Boolean(binding?.providerKeyNotRequired),
+      recordId: binding?.recordId || null,
+      recordName: binding?.recordName || null,
+      recordKeyId: binding?.recordKeyId || null,
+      vaultKeyId: binding?.vaultKeyId || snapshot.secretVaultStatus?.keyId || null,
+      snapshotStatus: snapshot.status,
+      snapshotChecksum: snapshot.checksum || null,
+      route: snapshot.backendRoutes?.providerVaultBindings || (projectId ? `/projects/${projectId}/provider-vault-bindings` : '/provider-vault-bindings'),
+      redactionReady: snapshot.redaction?.rawLeakCount === 0,
+      plaintextExposed: false,
+    };
+    proof.checksum = persistenceChecksum(proof);
+    return proof;
+  };
+  const buildSettingsProviderReadiness = ({ projectId = '' } = {}) => {
+    const vaultStatus = secretVaultStatus();
+    const modelStatus = redactSensitiveObject(modelProviderStatus());
+    const searchStatus = redactSensitiveObject(searchProviderStatus());
+    const providerVaultBindings = buildProviderVaultBindings({ projectId });
+    const canSealSecrets = Boolean(vaultStatus.ready && Number(vaultStatus.rawSecretRecordCount || 0) === 0);
+    const modelRuntimeReady = Boolean(modelStatus.enabled && modelStatus.configured);
+    const searchRuntimeReady = Boolean(searchStatus.enabled && searchStatus.configured);
+    const actionRequired = !canSealSecrets
+      ? {
+        id: 'start-secret-vault-backend',
+        label: 'Start the backend Secret Vault',
+        detail: 'API fields can be typed in the UI, but saving requires agents:server with SECRET_VAULT_ENABLED=true and SECRET_VAULT_KEY.',
+        route: '/secret-vault/status',
+      }
+      : !modelRuntimeReady
+        ? {
+          id: 'seal-model-api-key',
+          label: 'Seal the model API key',
+          detail: 'Paste the model provider key in Settings and seal it through /secret-vault/seal.',
+          route: '/secret-vault/seal',
+        }
+        : !searchRuntimeReady
+          ? {
+            id: 'seal-search-provider',
+            label: 'Seal the evidence search provider',
+            detail: 'Paste the evidence search endpoint/key in Settings and seal it through /secret-vault/seal.',
+            route: '/secret-vault/seal',
+          }
+          : {
+            id: 'run-provider-test',
+            label: 'Run provider tests',
+            detail: 'Run /llm/test and /search/test from Settings before starting autonomous provider-backed work.',
+            route: '/settings/provider-readiness',
+          };
+    const steps = [
+      {
+        id: 'backend-api-reachable',
+        label: 'Backend API is reachable',
+        status: 'ready',
+        detail: 'Settings is reading this readiness contract from the backend.',
+        route: '/settings/provider-readiness',
+      },
+      {
+        id: 'secret-vault-ready',
+        label: 'Secret Vault can accept sealed provider values',
+        status: canSealSecrets ? 'ready' : 'blocked',
+        detail: canSealSecrets
+          ? `Vault ${vaultStatus.provider || 'unknown'} is ready with key ${vaultStatus.keyId || 'unknown'}.`
+          : 'Vault is not ready. Start the backend with SECRET_VAULT_ENABLED=true and SECRET_VAULT_KEY.',
+        route: '/secret-vault/status',
+      },
+      {
+        id: 'model-provider-runtime',
+        label: 'Model provider runtime',
+        status: modelRuntimeReady ? 'ready' : canSealSecrets ? 'action-required' : 'blocked',
+        detail: modelRuntimeReady
+          ? `Model provider ${modelStatus.provider || 'unknown'} is configured.`
+          : canSealSecrets
+            ? 'Seal a model API key to enable model-backed kickoff, intent parsing, and artifact drafts.'
+            : 'Model key sealing is blocked until the Secret Vault is ready.',
+        route: '/llm/status',
+      },
+      {
+        id: 'search-provider-runtime',
+        label: 'Evidence search provider runtime',
+        status: searchRuntimeReady ? 'ready' : canSealSecrets ? 'action-required' : 'blocked',
+        detail: searchRuntimeReady
+          ? `Search provider ${searchStatus.provider || 'unknown'} is configured.`
+          : canSealSecrets
+            ? 'Seal an evidence search endpoint and key to enable provider-backed Agent evidence nodes.'
+            : 'Search provider sealing is blocked until the Secret Vault is ready.',
+        route: '/search/status',
+      },
+      {
+        id: 'provider-vault-bindings',
+        label: 'Provider-vault bindings are redacted',
+        status: providerVaultBindings.redaction?.rawLeakCount === 0 ? 'ready' : 'blocked',
+        detail: `${providerVaultBindings.summary?.boundProviderCount || 0} provider(s) bound; ${providerVaultBindings.redaction?.rawLeakCount || 0} raw leak marker(s).`,
+        route: providerVaultBindings.backendRoutes?.providerVaultBindings || (projectId ? `/projects/${projectId}/provider-vault-bindings` : '/provider-vault-bindings'),
+      },
+    ];
+    const snapshot = {
+      schemaVersion: 'settings-provider-readiness/v1',
+      projectId: projectId || null,
+      generatedAt: nowIso(),
+      status: canSealSecrets
+        ? (modelRuntimeReady && searchRuntimeReady ? 'provider-runtime-ready' : 'ready-to-seal-provider-secrets')
+        : 'backend-vault-required',
+      canTypeApiFields: true,
+      canSealSecrets,
+      browserPersistsSecrets: false,
+      readyForLocalPilot: Boolean(canSealSecrets && (modelRuntimeReady || searchRuntimeReady)),
+      readyForProduction: false,
+      actionRequired,
+      uiGuidance: {
+        apiFieldsEditable: true,
+        sealDisabledReason: canSealSecrets ? null : 'secret-vault-backend-not-ready',
+        message: canSealSecrets
+          ? 'API fields are editable and can be sealed through the backend Vault. Plaintext is cleared after the receipt returns.'
+          : 'API fields are editable now, but Seal stays disabled until the backend Secret Vault is ready. The browser will not persist provider secrets.',
+      },
+      steps,
+      providerStatus: {
+        model: modelStatus,
+        search: searchStatus,
+      },
+      secretVaultStatus: {
+        ...vaultStatus,
+        backendRoutes: secretVaultBackendRoutes(projectId),
+      },
+      providerVaultBindings: {
+        schemaVersion: providerVaultBindings.schemaVersion,
+        status: providerVaultBindings.status,
+        checksum: providerVaultBindings.checksum || null,
+        summary: providerVaultBindings.summary || {},
+        redaction: providerVaultBindings.redaction || {},
+      },
+      backendRoutes: {
+        settingsProviderReadiness: projectId ? `/projects/${projectId}/settings-provider-readiness` : '/settings/provider-readiness',
+        modelStatus: '/llm/status',
+        modelTest: '/llm/test',
+        searchStatus: '/search/status',
+        searchTest: '/search/test',
+        secretVaultStatus: '/secret-vault/status',
+        secretVaultRecords: '/secret-vault/records',
+        secretVaultSeal: '/secret-vault/seal',
+        providerVaultBindings: projectId ? `/projects/${projectId}/provider-vault-bindings` : '/provider-vault-bindings',
+        providerReadiness: projectId ? `/projects/${projectId}/provider-readiness` : null,
+      },
+      productionBlockers: [
+        'managed KMS or Secret Manager',
+        'centralized provider usage audit',
+        'cost alerts and incident controls',
+        'provider-specific request isolation',
+      ],
+    };
+    snapshot.checksum = persistenceChecksum(snapshot);
+    return snapshot;
+  };
+  const buildLocalMvpStartupReadiness = () => {
+    const modelStatus = redactSensitiveObject(modelProviderStatus());
+    const searchStatus = redactSensitiveObject(searchProviderStatus());
+    const vaultStatus = secretVaultStatus();
+    const providerVaultBindings = buildProviderVaultBindings();
+    const settingsProviderReadiness = buildSettingsProviderReadiness();
+    const projectCatalog = store.listProjects ? store.listProjects() : [];
+    const modelRuntimeReady = Boolean(modelStatus.enabled && modelStatus.configured);
+    const searchRuntimeReady = Boolean(searchStatus.enabled && searchStatus.configured);
+    const canSealSecrets = Boolean(settingsProviderReadiness.canSealSecrets);
+    const providerRedactionReady = providerVaultBindings.redaction?.rawLeakCount === 0;
+    const readyForSettingsEntry = true;
+    const readyForProviderSetup = Boolean(canSealSecrets && providerRedactionReady);
+    const readyForFirstProjectRun = Boolean(readyForProviderSetup && modelRuntimeReady && searchRuntimeReady);
+    const nextAction = !canSealSecrets
+      ? {
+        id: 'start-agents-server-with-secret-vault',
+        label: 'Start agents:server with Secret Vault env',
+        detail: 'Set SECRET_VAULT_ENABLED=true and SECRET_VAULT_KEY, then run npm run agents:server before sealing provider keys.',
+        route: '/secret-vault/status',
+      }
+      : !modelRuntimeReady
+        ? {
+          id: 'seal-model-provider',
+          label: 'Seal model provider key',
+          detail: 'Open Settings Keys and seal model.apiKey through /secret-vault/seal.',
+          route: '/secret-vault/seal',
+        }
+        : !searchRuntimeReady
+          ? {
+            id: 'seal-search-provider',
+            label: 'Seal evidence search endpoint and key',
+            detail: 'Open Settings Keys and seal search.endpoint plus search.apiKey, then verify /search/test.',
+            route: '/secret-vault/seal',
+          }
+          : {
+            id: 'start-product-team-mission',
+            label: 'Start a product-team mission',
+            detail: 'The backend startup boundary is ready for the local MVP path. Start from /product-team-missions or the Workspace Hub initiation flow.',
+            route: '/product-team-missions',
+          };
+    const gates = [
+      {
+        id: 'backend-api-reachable',
+        label: 'Backend API is reachable',
+        passed: true,
+        detail: 'This response was generated by the backend API.',
+        apiPath: '/local-mvp-startup-readiness',
+      },
+      {
+        id: 'secret-vault-ready',
+        label: 'Secret Vault can seal provider credentials',
+        passed: canSealSecrets,
+        detail: canSealSecrets
+          ? `Vault ${vaultStatus.provider || 'unknown'} is ready with key ${vaultStatus.keyId || 'unknown'}.`
+          : 'Vault is not ready. Start the backend with SECRET_VAULT_ENABLED=true and SECRET_VAULT_KEY.',
+        apiPath: '/secret-vault/status',
+      },
+      {
+        id: 'model-provider-runtime-ready',
+        label: 'Model provider runtime is callable',
+        passed: modelRuntimeReady,
+        detail: modelRuntimeReady
+          ? `${modelStatus.provider || 'model'} is configured and enabled.`
+          : 'Seal a model provider key or configure a model provider before kickoff/model-backed artifact drafting.',
+        apiPath: '/llm/status',
+      },
+      {
+        id: 'search-provider-runtime-ready',
+        label: 'Evidence search provider runtime is callable',
+        passed: searchRuntimeReady,
+        detail: searchRuntimeReady
+          ? `${searchStatus.provider || 'search'} is configured and enabled.`
+          : 'Seal a search endpoint/key or configure deterministic search before provider-backed evidence work.',
+        apiPath: '/search/status',
+      },
+      {
+        id: 'provider-vault-redaction-ready',
+        label: 'Provider/Vault metadata is redacted',
+        passed: providerRedactionReady,
+        detail: `${providerVaultBindings.redaction?.rawLeakCount || 0} raw leak marker(s).`,
+        apiPath: '/provider-vault-bindings',
+      },
+      {
+        id: 'project-catalog-readable',
+        label: 'Project catalog is readable',
+        passed: Array.isArray(projectCatalog),
+        detail: `${Array.isArray(projectCatalog) ? projectCatalog.length : 0} project(s) visible.`,
+        apiPath: '/projects',
+      },
+    ];
+    const failedGateCount = gates.filter((gate) => !gate.passed).length;
+    const snapshot = {
+      schemaVersion: 'local-mvp-startup-readiness/v1',
+      generatedAt: nowIso(),
+      status: readyForFirstProjectRun
+        ? 'ready-for-local-mvp-session'
+        : readyForProviderSetup
+          ? 'provider-setup-required'
+          : 'backend-vault-required',
+      readyForSettingsEntry,
+      readyForProviderSetup,
+      readyForFirstProjectRun,
+      readyForProduction: false,
+      nextAction,
+      gates,
+      summary: {
+        passedGateCount: gates.length - failedGateCount,
+        failedGateCount,
+        projectCount: Array.isArray(projectCatalog) ? projectCatalog.length : 0,
+        modelRuntimeReady,
+        searchRuntimeReady,
+        canSealSecrets,
+        providerRedactionReady,
+      },
+      providerStatus: {
+        model: modelStatus,
+        search: searchStatus,
+      },
+      secretVaultStatus: {
+        ...vaultStatus,
+        backendRoutes: secretVaultBackendRoutes(),
+      },
+      providerVaultBindings: {
+        schemaVersion: providerVaultBindings.schemaVersion,
+        status: providerVaultBindings.status,
+        checksum: providerVaultBindings.checksum || null,
+        summary: providerVaultBindings.summary || {},
+        redaction: providerVaultBindings.redaction || {},
+      },
+      backendRoutes: {
+        localMvpStartupReadiness: '/local-mvp-startup-readiness',
+        projects: '/projects',
+        productTeamMissions: '/product-team-missions',
+        settingsProviderReadiness: '/settings/provider-readiness',
+        modelStatus: '/llm/status',
+        modelTest: '/llm/test',
+        searchStatus: '/search/status',
+        searchTest: '/search/test',
+        secretVaultStatus: '/secret-vault/status',
+        secretVaultRecords: '/secret-vault/records',
+        secretVaultSeal: '/secret-vault/seal',
+        providerVaultBindings: '/provider-vault-bindings',
+        workerStatus: '/workers/autonomous/status',
+      },
+      validationCommands: [
+        'npm run agents:server:validate',
+        'npm run agents:settings-provider-readiness',
+        'npm run agents:search-provider:vault-endpoint',
+        'npm run ui:settings-agents-server',
+      ],
+      productionBlockers: [
+        'managed Secret Manager or KMS',
+        'managed persistence and queue infrastructure',
+        'centralized provider usage audit and alerting',
+        'production incident and recovery controls',
+      ],
+    };
+    snapshot.checksum = persistenceChecksum(snapshot);
+    return snapshot;
+  };
+  const buildSettingsHealthReadiness = () => {
+    const modelStatus = redactSensitiveObject(modelProviderStatus());
+    const searchStatus = redactSensitiveObject(searchProviderStatus());
+    const vaultStatus = secretVaultStatus();
+    const startupReadiness = buildLocalMvpStartupReadiness();
+    const settingsProviderReadiness = buildSettingsProviderReadiness();
+    const projectCatalog = store.listProjects ? store.listProjects() : [];
+    const modelRuntimeReady = Boolean(modelStatus.enabled && modelStatus.configured);
+    const searchRuntimeReady = Boolean(searchStatus.enabled && searchStatus.configured);
+    const canSealSecrets = Boolean(settingsProviderReadiness.canSealSecrets);
+    const rows = [
+      {
+        id: 'backend-api',
+        label: 'Backend API',
+        status: 'pass',
+        detail: 'Settings health is being read from the backend contract.',
+        route: '/settings/health-readiness',
+      },
+      {
+        id: 'local-mvp-startup',
+        label: 'Local MVP startup',
+        status: startupReadiness.readyForFirstProjectRun ? 'pass' : startupReadiness.readyForProviderSetup ? 'pending' : 'fail',
+        detail: startupReadiness.nextAction?.label || startupReadiness.status,
+        route: startupReadiness.backendRoutes?.localMvpStartupReadiness || '/local-mvp-startup-readiness',
+      },
+      {
+        id: 'secret-vault',
+        label: 'Secret Vault',
+        status: canSealSecrets ? 'pass' : 'fail',
+        detail: canSealSecrets
+          ? `Vault ${vaultStatus.provider || 'unknown'} is ready with key ${vaultStatus.keyId || 'unknown'}.`
+          : 'Start agents:server with SECRET_VAULT_ENABLED=true and SECRET_VAULT_KEY before sealing provider keys.',
+        route: '/secret-vault/status',
+      },
+      {
+        id: 'model-provider',
+        label: 'Model provider',
+        status: modelRuntimeReady ? 'pass' : canSealSecrets ? 'pending' : 'fail',
+        detail: modelRuntimeReady
+          ? `${modelStatus.provider || 'model'} is configured and enabled.`
+          : canSealSecrets
+            ? 'Seal a model provider key, then run /llm/test.'
+            : 'Model setup is blocked until Secret Vault is ready.',
+        route: '/llm/status',
+      },
+      {
+        id: 'model-request-loop',
+        label: 'Model request loop',
+        status: modelRuntimeReady ? 'pending' : 'fail',
+        detail: modelRuntimeReady
+          ? 'Ready for an explicit /llm/test request from Settings. This read-only health contract does not spend model tokens.'
+          : 'Model provider must be configured before request testing.',
+        route: '/llm/test',
+      },
+      {
+        id: 'search-provider',
+        label: 'Evidence provider',
+        status: searchRuntimeReady ? 'pass' : canSealSecrets ? 'pending' : 'fail',
+        detail: searchRuntimeReady
+          ? `${searchStatus.provider || 'search'} is configured and enabled.`
+          : canSealSecrets
+            ? 'Seal a search endpoint/key, then run /search/test.'
+            : 'Evidence provider setup is blocked until Secret Vault is ready.',
+        route: '/search/status',
+      },
+      {
+        id: 'search-request-loop',
+        label: 'Evidence request loop',
+        status: searchRuntimeReady ? 'pending' : 'fail',
+        detail: searchRuntimeReady
+          ? 'Ready for an explicit /search/test request from Settings. This read-only health contract does not call external search.'
+          : 'Evidence provider must be configured before request testing.',
+        route: '/search/test',
+      },
+      {
+        id: 'worker-status-route',
+        label: 'Worker status route',
+        status: 'pending',
+        detail: 'Use /workers/autonomous/status for live scheduler state; this contract keeps the route visible without starting work.',
+        route: '/workers/autonomous/status',
+      },
+      {
+        id: 'project-catalog',
+        label: 'Project catalog',
+        status: Array.isArray(projectCatalog) ? 'pass' : 'fail',
+        detail: `${Array.isArray(projectCatalog) ? projectCatalog.length : 0} project(s) readable from the backend catalog.`,
+        route: '/projects',
+      },
+    ];
+    const failedCount = rows.filter((row) => row.status === 'fail').length;
+    const pendingCount = rows.filter((row) => row.status === 'pending').length;
+    const snapshot = {
+      schemaVersion: 'settings-health-readiness/v1',
+      generatedAt: nowIso(),
+      status: failedCount > 0
+        ? 'action-required'
+        : pendingCount > 0
+          ? 'ready-for-explicit-tests'
+          : 'ready',
+      rows,
+      summary: {
+        rowCount: rows.length,
+        passedCount: rows.filter((row) => row.status === 'pass').length,
+        pendingCount,
+        failedCount,
+        readyForProviderTests: Boolean(modelRuntimeReady && searchRuntimeReady),
+        readyForWorkflowSmoke: Boolean(startupReadiness.readyForFirstProjectRun),
+        readyForProduction: false,
+      },
+      providerStatus: {
+        model: modelStatus,
+        search: searchStatus,
+      },
+      startupReadiness: {
+        schemaVersion: startupReadiness.schemaVersion,
+        status: startupReadiness.status,
+        readyForSettingsEntry: startupReadiness.readyForSettingsEntry,
+        readyForProviderSetup: startupReadiness.readyForProviderSetup,
+        readyForFirstProjectRun: startupReadiness.readyForFirstProjectRun,
+        nextAction: startupReadiness.nextAction || null,
+        backendRoutes: startupReadiness.backendRoutes || {},
+        checksum: startupReadiness.checksum || null,
+      },
+      secretVaultStatus: {
+        ...vaultStatus,
+        backendRoutes: secretVaultBackendRoutes(),
+      },
+      backendRoutes: {
+        settingsHealthReadiness: '/settings/health-readiness',
+        localMvpStartupReadiness: '/local-mvp-startup-readiness',
+        settingsProviderReadiness: '/settings/provider-readiness',
+        modelStatus: '/llm/status',
+        modelTest: '/llm/test',
+        searchStatus: '/search/status',
+        searchTest: '/search/test',
+        secretVaultStatus: '/secret-vault/status',
+        workerStatus: '/workers/autonomous/status',
+        projects: '/projects',
+      },
+      validationCommands: [
+        'npm run agents:settings-health-readiness',
+        'npm run agents:local-mvp-startup-readiness',
+        'npm run ui:settings-agents-server',
+      ],
+      productionBlockers: [
+        'managed Secret Manager or KMS',
+        'managed queue/cron and scheduler leases',
+        'centralized observability and alert routing',
+        'provider incident and cost controls',
+      ],
+    };
+    snapshot.checksum = persistenceChecksum(snapshot);
+    return snapshot;
+  };
+  const buildSettingsRuntimeReadiness = ({ projectId = '' } = {}) => {
+    const modelStatus = redactSensitiveObject(modelProviderStatus());
+    const searchStatus = redactSensitiveObject(searchProviderStatus());
+    const vaultStatus = secretVaultStatus();
+    const providerVaultBindings = buildProviderVaultBindings({ projectId });
+    const persistenceStatus = redactSensitiveObject(managedPersistenceAdapterStatus());
+    const queueStatus = redactSensitiveObject(workerQueueAdapterStatus());
+    const modelRuntimeReady = Boolean(modelStatus.enabled && modelStatus.configured);
+    const searchRuntimeReady = Boolean(searchStatus.enabled && searchStatus.configured);
+    const providerVaultRedacted = providerVaultBindings.redaction?.rawLeakCount === 0;
+    const localPersistenceReady = Boolean(persistenceStatus.configured && !persistenceStatus.unsupportedDriver);
+    const localQueueReady = Boolean(queueStatus.configured && !queueStatus.unsupportedDriver);
+    const runtimeReadyForLocalMvp = Boolean(
+      modelRuntimeReady
+      && searchRuntimeReady
+      && providerVaultRedacted
+      && localPersistenceReady
+      && localQueueReady
+    );
+    const rows = [
+      {
+        id: 'backend-api',
+        label: 'Backend API',
+        status: 'pass',
+        detail: 'Settings runtime readiness is generated by the backend API.',
+        route: projectId ? `/projects/${projectId}/settings-runtime-readiness` : '/settings/runtime-readiness',
+      },
+      {
+        id: 'model-runtime',
+        label: 'Model runtime',
+        status: modelRuntimeReady ? 'pass' : vaultStatus.ready ? 'pending' : 'fail',
+        detail: modelRuntimeReady
+          ? `${modelStatus.provider || 'model'} is configured and enabled.`
+          : vaultStatus.ready
+            ? 'Seal a model API key or configure the backend model provider before model-backed work.'
+            : 'Start the Secret Vault before model keys can be sealed.',
+        route: '/llm/status',
+      },
+      {
+        id: 'search-runtime',
+        label: 'Evidence search runtime',
+        status: searchRuntimeReady ? 'pass' : vaultStatus.ready ? 'pending' : 'fail',
+        detail: searchRuntimeReady
+          ? `${searchStatus.provider || 'search'} is configured and enabled.`
+          : vaultStatus.ready
+            ? 'Seal a search endpoint/key or configure deterministic search before provider-backed evidence work.'
+            : 'Start the Secret Vault before search credentials can be sealed.',
+        route: '/search/status',
+      },
+      {
+        id: 'provider-vault-bindings',
+        label: 'Provider/Vault binding proof',
+        status: providerVaultRedacted ? 'pass' : 'fail',
+        detail: `${providerVaultBindings.summary?.boundProviderCount || 0} bound provider(s); ${providerVaultBindings.redaction?.rawLeakCount || 0} raw leak marker(s).`,
+        route: providerVaultBindings.backendRoutes?.providerVaultBindings || (projectId ? `/projects/${projectId}/provider-vault-bindings` : '/provider-vault-bindings'),
+      },
+      {
+        id: 'worker-status-route',
+        label: 'Worker status route',
+        status: 'pending',
+        detail: 'Live scheduler status remains an explicit read from /workers/autonomous/status.',
+        route: '/workers/autonomous/status',
+      },
+      {
+        id: 'persistence-adapter',
+        label: 'Persistence adapter',
+        status: localPersistenceReady ? 'pass' : 'fail',
+        detail: persistenceStatus.status || 'persistence adapter status unavailable',
+        route: projectId ? `/projects/${projectId}/persistence-adapter-dry-run` : '/projects/:id/persistence-adapter-dry-run',
+      },
+      {
+        id: 'worker-queue-adapter',
+        label: 'Worker queue adapter',
+        status: localQueueReady ? 'pass' : 'fail',
+        detail: queueStatus.status || 'worker queue adapter status unavailable',
+        route: projectId ? `/projects/${projectId}/worker-queue-adapter-dry-run` : '/projects/:id/worker-queue-adapter-dry-run',
+      },
+      {
+        id: 'deployment-preflight',
+        label: 'Deployment preflight',
+        status: 'pending',
+        detail: projectId
+          ? 'Read the project deployment preflight route before private-pilot deployment claims.'
+          : 'Open a backend project before project-scoped deployment preflight can run.',
+        route: projectId ? `/projects/${projectId}/deployment-preflight` : '/projects/:id/deployment-preflight',
+      },
+    ];
+    const failedCount = rows.filter((row) => row.status === 'fail').length;
+    const pendingCount = rows.filter((row) => row.status === 'pending').length;
+    const snapshot = {
+      schemaVersion: 'settings-runtime-readiness/v1',
+      projectId: projectId || null,
+      generatedAt: nowIso(),
+      status: runtimeReadyForLocalMvp
+        ? 'runtime-ready-for-local-mvp'
+        : failedCount > 0
+          ? 'runtime-setup-required'
+          : 'runtime-ready-for-explicit-tests',
+      rows,
+      readyForDeploymentTab: true,
+      readyForModelTab: true,
+      readyForExplicitProviderTests: Boolean(modelRuntimeReady && searchRuntimeReady),
+      readyForLocalMvpRuntime: runtimeReadyForLocalMvp,
+      readyForProduction: false,
+      deploymentRuntime: {
+        persistenceAdapter: persistenceStatus,
+        workerQueueAdapter: queueStatus,
+        schedulerStatusRoute: '/workers/autonomous/status',
+        deploymentPreflightRoute: projectId ? `/projects/${projectId}/deployment-preflight` : '/projects/:id/deployment-preflight',
+        adapterGatewayPreflightRoute: projectId ? `/projects/${projectId}/adapter-gateway-preflight` : '/projects/:id/adapter-gateway-preflight',
+      },
+      modelRuntime: {
+        modelProvider: modelStatus,
+        searchProvider: searchStatus,
+        providerVaultBindings: {
+          schemaVersion: providerVaultBindings.schemaVersion,
+          status: providerVaultBindings.status,
+          checksum: providerVaultBindings.checksum || null,
+          summary: providerVaultBindings.summary || {},
+          redaction: providerVaultBindings.redaction || {},
+        },
+      },
+      secretVaultStatus: {
+        ...vaultStatus,
+        backendRoutes: secretVaultBackendRoutes(projectId),
+      },
+      backendRoutes: {
+        settingsRuntimeReadiness: projectId ? `/projects/${projectId}/settings-runtime-readiness` : '/settings/runtime-readiness',
+        modelStatus: '/llm/status',
+        modelTest: '/llm/test',
+        searchStatus: '/search/status',
+        searchTest: '/search/test',
+        secretVaultStatus: '/secret-vault/status',
+        providerVaultBindings: projectId ? `/projects/${projectId}/provider-vault-bindings` : '/provider-vault-bindings',
+        workerStatus: '/workers/autonomous/status',
+        deploymentPreflight: projectId ? `/projects/${projectId}/deployment-preflight` : '/projects/:id/deployment-preflight',
+        adapterGatewayPreflight: projectId ? `/projects/${projectId}/adapter-gateway-preflight` : '/projects/:id/adapter-gateway-preflight',
+        persistenceAdapterDryRun: projectId ? `/projects/${projectId}/persistence-adapter-dry-run` : '/projects/:id/persistence-adapter-dry-run',
+        workerQueueAdapterDryRun: projectId ? `/projects/${projectId}/worker-queue-adapter-dry-run` : '/projects/:id/worker-queue-adapter-dry-run',
+      },
+      summary: {
+        rowCount: rows.length,
+        passedCount: rows.filter((row) => row.status === 'pass').length,
+        pendingCount,
+        failedCount,
+        modelRuntimeReady,
+        searchRuntimeReady,
+        providerVaultRedacted,
+        localPersistenceReady,
+        localQueueReady,
+        readyForProduction: false,
+      },
+      validationCommands: [
+        'npm run agents:settings-runtime-readiness',
+        'npm run agents:settings-provider-readiness',
+        'npm run agents:local-mvp-startup-readiness',
+        'npm run ui:settings-agents-server',
+      ],
+      productionBlockers: [
+        'managed Secret Manager or KMS',
+        'managed persistence cutover',
+        'managed worker queue and scheduler leases',
+        'provider cost/incident controls',
+        'production deployment control receipts',
+      ],
+    };
+    snapshot.checksum = persistenceChecksum(snapshot);
+    return snapshot;
+  };
+  const buildAutonomousProviderPreflight = ({
+    projectId = '',
+    kind = 'search',
+    operation = 'search:evidence',
+    agentId = '',
+    requested = true,
+    requireProvider = false,
+    queueReady = true,
+    targetStageId = '',
+    estimatedCostCents = null,
+    now = nowIso(),
+  } = {}) => {
+    const project = projectId ? (store.getProject(projectId) || {}) : {};
+    const providerStatus = kind === 'model' ? modelProviderStatus() : searchProviderStatus();
+    const providerVaultBinding = buildProviderVaultBindingProof({ projectId, kind });
+    const policy = providerControlPolicyStatus(project);
+    const policyDecision = evaluateProviderPolicy({
+      project,
+      policy,
+      kind,
+      operation,
+      providerStatus,
+      agentId,
+      model: providerStatus.model,
+      estimatedCostCents,
+      now,
+    });
+    const circuitDecision = evaluateProviderCircuitBreaker({
+      project,
+      policy,
+      kind,
+      providerStatus,
+      now,
+    });
+    const providerReady = Boolean(providerStatus.enabled && (providerStatus.configured || providerStatus.provider === 'deterministic'));
+    const vaultReady = Boolean(
+      providerVaultBinding.bound
+      || providerVaultBinding.providerKeyNotRequired
+      || providerVaultBinding.apiKeySource === 'not-required'
+    );
+    const policyReady = Boolean(policyDecision.allowed);
+    const circuitReady = Boolean(circuitDecision.allowed);
+    const canCallProvider = Boolean(requested && queueReady && providerReady && vaultReady && policyReady && circuitReady);
+    const reasons = uniqueStrings([
+      !requested ? 'provider-not-requested' : null,
+      requested && !queueReady ? 'no-provider-planned-agent-queue-row' : null,
+      requested && !providerReady ? (providerStatus.configured ? `${kind}-provider-disabled` : `${kind}-provider-not-configured`) : null,
+      requested && !vaultReady ? 'provider-vault-binding-not-ready' : null,
+      requested && !policyReady ? (policyDecision.reason || 'provider-policy-denied') : null,
+      requested && !circuitReady ? (circuitDecision.reason || 'provider-circuit-open') : null,
+    ]);
+    const action = canCallProvider
+      ? 'call-provider'
+      : !requested
+        ? 'skip-provider'
+        : !queueReady
+          ? 'queue-waiting'
+          : requireProvider
+            ? 'pause-provider-required'
+            : 'degrade-local-worker-proof';
+    const preflight = redactSensitiveObject({
+      schemaVersion: 'autonomous-provider-preflight/v1',
+      projectId: projectId || null,
+      generatedAt: now,
+      kind,
+      operation,
+      agentId: agentId || null,
+      targetStageId: targetStageId || null,
+      requested: Boolean(requested),
+      requireProvider: Boolean(requireProvider),
+      queueReady: Boolean(queueReady),
+      action,
+      canCallProvider,
+      shouldCallProvider: canCallProvider,
+      shouldDegrade: action === 'degrade-local-worker-proof',
+      shouldPause: action === 'pause-provider-required',
+      shouldQueue: action === 'queue-waiting',
+      reason: reasons[0] || 'provider-ready',
+      reasons,
+      providerReady,
+      vaultReady,
+      policyReady,
+      circuitReady,
+      provider: providerStatus.provider || 'none',
+      providerStatus: redactSensitiveObject(providerStatus),
+      providerVaultBinding,
+      providerVaultBindingChecksum: providerVaultBinding.checksum || providerVaultBinding.snapshotChecksum || null,
+      providerVaultBindingRoute: providerVaultBinding.route || null,
+      policyDecision: redactSensitiveObject(policyDecision),
+      circuitBreaker: redactSensitiveObject(circuitDecision.row || null),
+      gates: [
+        {
+          id: 'provider-requested',
+          passed: Boolean(requested),
+          detail: requested ? 'Provider-backed evidence was requested for this autonomous action.' : 'Autonomous action did not request a provider call.',
+        },
+        {
+          id: 'provider-queue-ready',
+          passed: Boolean(queueReady),
+          detail: queueReady ? 'An Agent queue row can own the provider-backed action.' : 'No Agent queue row is ready to own this provider-backed action.',
+        },
+        {
+          id: 'provider-runtime-ready',
+          passed: providerReady,
+          detail: providerReady ? `${kind} provider is enabled.` : `${kind} provider is not enabled or configured.`,
+        },
+        {
+          id: 'provider-vault-binding-ready',
+          passed: vaultReady,
+          detail: vaultReady ? 'Provider credential boundary is bound to the vault or no key is required.' : 'Provider credential boundary is not vault-bound.',
+          apiPath: providerVaultBinding.route || (projectId ? `/projects/${projectId}/provider-vault-bindings` : '/provider-vault-bindings'),
+        },
+        {
+          id: 'provider-policy-ready',
+          passed: policyReady,
+          detail: policyDecision.reason || 'allowed',
+        },
+        {
+          id: 'provider-circuit-ready',
+          passed: circuitReady,
+          detail: circuitDecision.reason || 'provider-circuit-allowed',
+        },
+      ],
+      backendRoutes: {
+        providerVaultBindings: providerVaultBinding.route || (projectId ? `/projects/${projectId}/provider-vault-bindings` : '/provider-vault-bindings'),
+        providerReadiness: projectId ? `/projects/${projectId}/provider-readiness` : null,
+        autonomousRunControl: projectId ? `/projects/${projectId}/autonomous-run-control` : null,
+        agentAutonomousActionQueue: projectId ? `/projects/${projectId}/agent-autonomous-action-queue` : null,
+      },
+      readyForProduction: false,
+    });
+    preflight.checksum = persistenceChecksum({
+      projectId,
+      kind,
+      operation,
+      agentId,
+      requested: Boolean(requested),
+      requireProvider: Boolean(requireProvider),
+      queueReady: Boolean(queueReady),
+      action,
+      canCallProvider,
+      reason: preflight.reason,
+      reasons,
+      providerReady,
+      vaultReady,
+      policyReady,
+      circuitReady,
+      providerVaultBindingChecksum: preflight.providerVaultBindingChecksum,
+      providerUsageLatestRecordId: policyDecision.usage?.latestRecordId || null,
+    });
+    return preflight;
+  };
   const appendProviderUsageRecord = ({
     project,
     kind = 'search',
@@ -35609,12 +42935,14 @@ export function createAgentProjectService({
     request = {},
     retry = null,
     circuitBreaker = null,
+    providerVaultBinding = null,
+    autonomousProviderPreflight = null,
     estimatedCostCents = null,
     startedAt = nowIso(),
     completedAt = nowIso(),
   } = {}) => {
     if (!project?.id) return { project, record: null };
-    const policy = providerControlPolicyStatus();
+    const policy = providerControlPolicyStatus(project);
     const timestamp = Date.parse(completedAt) || Date.now();
     const costCents = estimateProviderCostCents({ kind, result, policy, estimatedCostCents });
     const recordId = `provider_usage_${project.id}_${String(kind).replace(/[^a-z0-9_-]/gi, '_')}_${timestamp}`;
@@ -35639,6 +42967,12 @@ export function createAgentProjectService({
       usage: result.usage || null,
       retry: retry || result.retry || null,
       circuitBreaker: circuitBreaker || null,
+      providerVaultBinding: providerVaultBinding ? redactSensitiveObject(providerVaultBinding) : null,
+      providerVaultBindingChecksum: providerVaultBinding?.checksum || providerVaultBinding?.snapshotChecksum || null,
+      providerVaultBindingRoute: providerVaultBinding?.route || null,
+      autonomousProviderPreflight: autonomousProviderPreflight ? redactSensitiveObject(autonomousProviderPreflight) : null,
+      autonomousProviderPreflightChecksum: autonomousProviderPreflight?.checksum || null,
+      autonomousProviderPreflightAction: autonomousProviderPreflight?.action || null,
       responseId: result.id || result.responseId || null,
       providerReceiptId,
       sourceCount: result.sources?.length || 0,
@@ -35698,6 +43032,10 @@ export function createAgentProjectService({
           policy: record.policy,
           retry: record.retry,
           circuitBreaker: record.circuitBreaker,
+          providerVaultBindingChecksum: record.providerVaultBindingChecksum || null,
+          providerVaultBindingRoute: record.providerVaultBindingRoute || null,
+          autonomousProviderPreflightChecksum: record.autonomousProviderPreflightChecksum || null,
+          autonomousProviderPreflightAction: record.autonomousProviderPreflightAction || null,
         }),
       }),
     ]);
@@ -35715,10 +43053,12 @@ export function createAgentProjectService({
       return result;
     }
     const status = modelProviderStatus();
+    const providerVaultBinding = buildProviderVaultBindingProof({ projectId, kind: 'model' });
     if (!status.enabled) {
       return {
         ...result,
         modelIntentStatus: status,
+        providerVaultBinding,
       };
     }
 
@@ -35734,7 +43074,7 @@ export function createAgentProjectService({
       };
     }
 
-    const providerPolicyStatus = providerControlPolicyStatus();
+    const providerPolicyStatus = providerControlPolicyStatus(project);
     const providerPolicyDecision = evaluateProviderPolicy({
       project,
       policy: providerPolicyStatus,
@@ -35755,6 +43095,7 @@ export function createAgentProjectService({
         status: 'denied',
         reason: providerPolicyDecision.reason,
         request: { command },
+        providerVaultBinding,
         startedAt: now,
         completedAt: now,
       });
@@ -35763,6 +43104,7 @@ export function createAgentProjectService({
         project: usage.project,
         modelIntentStatus: status,
         providerUsage: usage.record,
+        providerVaultBinding,
       };
     }
 
@@ -35791,6 +43133,7 @@ export function createAgentProjectService({
         reason: providerCircuitDecision.reason,
         request: { command },
         circuitBreaker: providerCircuitDecision.row,
+        providerVaultBinding,
         startedAt: now,
         completedAt: now,
       });
@@ -35799,6 +43142,7 @@ export function createAgentProjectService({
         project: usage.project,
         modelIntentStatus: status,
         providerUsage: usage.record,
+        providerVaultBinding,
       };
     }
 
@@ -35834,6 +43178,7 @@ export function createAgentProjectService({
       usage: modelResult.usage || null,
       error: modelResult.error || null,
       responseId: modelResult.id || null,
+      providerVaultBinding,
     };
     const log = {
       id: `log_${modelIntent.id}`,
@@ -35894,6 +43239,7 @@ export function createAgentProjectService({
       request: { command },
       retry: modelAttempt.retry,
       circuitBreaker: providerCircuitDecision.row,
+      providerVaultBinding,
       evidenceIds: [modelIntent.id, log.id],
       startedAt: now,
       completedAt: now,
@@ -35906,6 +43252,7 @@ export function createAgentProjectService({
       modelIntentLog: log,
       modelIntentStatus: status,
       providerUsage: usage.record,
+      providerVaultBinding,
     };
   };
 
@@ -35915,6 +43262,114 @@ export function createAgentProjectService({
     },
     getSearchProviderStatus() {
       return searchProviderStatus();
+    },
+    getSecretVaultStatus() {
+      return {
+        ...secretVaultStatus(),
+        backendRoutes: secretVaultBackendRoutes(),
+      };
+    },
+    listSecretVaultRecords() {
+      return buildSecretVaultRecordList();
+    },
+    getProviderVaultBindings(projectId = '') {
+      return buildProviderVaultBindings({ projectId });
+    },
+    getSettingsProviderReadiness(projectId = '') {
+      return buildSettingsProviderReadiness({ projectId });
+    },
+    getSettingsRuntimeReadiness(projectId = '') {
+      return buildSettingsRuntimeReadiness({ projectId });
+    },
+    getSettingsIntegrationReadiness(projectId, options = {}) {
+      return cachedReadModel('settings-integration-readiness', projectId, options, () => {
+        const project = store.getProject(projectId);
+        return buildSettingsIntegrationReadinessSnapshot({
+          project,
+          projectSettings: buildProjectSettingsReadModel(project),
+          providerReadiness: this.getProviderReadiness(projectId, options),
+          adapterGatewayPreflight: this.getAdapterGatewayPreflight(projectId, options),
+          evidenceIndexReadiness: this.getEvidenceIndexReadiness(projectId, options),
+          budgetAlertReadiness: this.getBudgetAlertReadiness(projectId, options),
+          errorReportingReadiness: this.getErrorReportingReadiness(projectId, options),
+        });
+      });
+    },
+    getLocalMvpStartupReadiness() {
+      return buildLocalMvpStartupReadiness();
+    },
+    getSettingsHealthReadiness() {
+      return buildSettingsHealthReadiness();
+    },
+    async sealSecretVaultRecord(input = {}) {
+      if (typeof resolvedSecretVault?.seal !== 'function') {
+        throw new Error('secret-vault-not-configured');
+      }
+      const name = String(input.name || input.id || '').trim();
+      const value = String(input.value || input.secret || input.apiKey || '').trim();
+      if (!name) throw new Error('secret-vault-record-name-required');
+      if (!value) throw new Error('secret-vault-secret-value-required');
+      const now = input.now || nowIso();
+      const metadata = redactSensitiveObject({
+        ...(input.metadata || {}),
+        scope: input.scope || input.metadata?.scope || null,
+        source: input.source || 'secret-vault-api',
+      });
+      const sealedRecord = await resolvedSecretVault.seal(name, value, metadata);
+      const providerRuntimeBinding = await bindProviderApiKeyFromVaultRecord(sealedRecord);
+      clearReadModelCache();
+      const status = secretVaultStatus();
+      const record = safeSecretVaultRecordRows().find((row) => row.id === sealedRecord.id || row.name === sealedRecord.name) || {
+        id: sealedRecord.id,
+        name: sealedRecord.name,
+        keyId: sealedRecord.keyId,
+        encrypted: true,
+        metadata,
+      };
+      const receipt = buildSecretVaultSealReceipt({ record, status, now, metadata });
+      return {
+        route: 'secret-vault-seal',
+        secretVaultSealReceipt: receipt,
+        providerRuntimeBinding: redactSensitiveObject(providerRuntimeBinding),
+        secretVaultStatus: {
+          ...status,
+          backendRoutes: secretVaultBackendRoutes(),
+        },
+        secretVaultRecords: buildSecretVaultRecordList(),
+      };
+    },
+    async rotateSecretVaultRecords(input = {}) {
+      if (typeof resolvedSecretVault?.rotate !== 'function') {
+        throw new Error('secret-vault-not-configured');
+      }
+      const nextMasterKey = String(input.nextMasterKey || input.masterKey || '').trim();
+      const nextKeyId = String(input.nextKeyId || '').trim();
+      if (!nextMasterKey) throw new Error('secret-vault-next-key-missing');
+      if (!nextKeyId) throw new Error('secret-vault-next-key-id-missing');
+      const now = input.now || nowIso();
+      const rotation = await resolvedSecretVault.rotate({
+        nextMasterKey,
+        nextKeyId,
+        metadata: redactSensitiveObject({
+          ...(input.metadata || {}),
+          reason: input.reason || input.metadata?.reason || 'secret-vault-api-rotation',
+          keySource: input.keySource || input.metadata?.keySource || 'secret-vault-api',
+        }),
+        now,
+      });
+      clearReadModelCache();
+      const status = secretVaultStatus();
+      return {
+        route: 'secret-vault-rotate',
+        secretVaultRotationReceipt: rotation.receipt || null,
+        secretVaultRotationStatusChecksum: persistenceChecksum(status),
+        backendRoutes: secretVaultBackendRoutes(),
+        secretVaultStatus: {
+          ...status,
+          backendRoutes: secretVaultBackendRoutes(),
+        },
+        secretVaultRecords: buildSecretVaultRecordList(),
+      };
     },
     async testModelProvider(input = {}) {
       if (typeof llmProvider?.test !== 'function') {
@@ -36060,6 +43515,328 @@ export function createAgentProjectService({
         ...input,
       }));
     },
+    startProductTeamMission(input = {}) {
+      const config = buildProductTeamMissionConfig(input);
+      const now = config.now;
+      const missionActor = input.actor || input.actorUserId || 'Product Director';
+      const missionId = input.missionId || `product_team_mission_${config.projectId}_${Date.parse(now) || Date.now()}`;
+      const existingKickoffMeetingId = input.kickoffMeetingId
+        || input.existingKickoffMeetingId
+        || (input.reuseExistingKickoffMeeting ? config.meetingId : null);
+      const existingKickoffMeeting = existingKickoffMeetingId ? requireKickoffMeeting(existingKickoffMeetingId) : null;
+      if (existingKickoffMeetingId && !existingKickoffMeeting?.id) {
+        throw new Error(`Product team mission kickoff meeting not found: ${existingKickoffMeetingId}`);
+      }
+      const meetingResult = existingKickoffMeeting
+        ? {
+            route: 'kickoff-meeting-reused',
+            meeting: existingKickoffMeeting,
+            messages: [],
+          }
+        : this.createKickoffMeeting({
+            ...config,
+            source: input.source || 'product-team-mission-runner',
+            generationMode: input.generationMode,
+            modelProviderStatus: modelProviderStatus(),
+          });
+      let meeting = meetingResult.meeting;
+      if (input.confirmLeader !== false) {
+        meeting = this.confirmKickoffMeetingLeader({
+          meetingId: config.meetingId,
+          selectedLeaderId: config.selectedLeaderId,
+          now: offsetIso(now, 250),
+        }).meeting;
+      }
+      if (input.confirmNextActions !== false) {
+        meeting = this.confirmKickoffMeetingNextActions({
+          meetingId: config.meetingId,
+          tasks: config.tasks,
+          now: offsetIso(now, 500),
+        }).meeting;
+      }
+      const approvalResult = this.approveKickoffMeeting({
+        meetingId: config.meetingId,
+        selectedTeamIds: config.selectedTeamIds,
+        selectedLeaderId: config.selectedLeaderId,
+        reviewerId: config.reviewerId,
+        tasks: config.tasks,
+        now: offsetIso(now, 750),
+        language: config.language,
+      });
+      meeting = approvalResult.meeting || meeting;
+      const projectId = approvalResult.project?.id || config.projectId;
+      let sessionResult = null;
+      if (input.startAutopilot !== false) {
+        sessionResult = this.startAutonomousRunControlSession({
+          projectId,
+          now: offsetIso(now, 1000),
+          actor: missionActor,
+          reason: input.reason || 'product-team-mission-start',
+          maxLoops: input.maxLoops || 6,
+          maxStepsPerLoop: input.maxStepsPerLoop || 3,
+          maxTotalSteps: input.maxTotalSteps,
+          targetKind: input.targetKind || 'product-team-delivery-trace',
+          runImmediately: input.runInitialTick !== false,
+          requestBodyOverrides: {
+            useAgentAutonomousStrategy: true,
+            submitAgentWorkArtifacts: true,
+            submitWorkArtifactOn: input.submitWorkArtifactOn || 'completed-task',
+            reviewPendingSubmissions: true,
+            agentReviewVerdict: input.agentReviewVerdict || 'auto',
+            respondToReviewObligations: true,
+            language: config.language,
+            ...(input.requestBodyOverrides || {}),
+          },
+          language: config.language,
+        });
+      }
+      const projectAfterStartup = store.getProject(projectId) || sessionResult?.project || approvalResult.project;
+      const session = sessionResult?.autonomousRunControlSession || null;
+      const tick = sessionResult?.autonomousRunControlSessionTick || null;
+      const timestamp = Date.parse(now) || Date.now();
+      const proofIds = uniqueStrings([
+        missionId,
+        meeting.id,
+        ...(meeting.transcript || []).map((turn) => turn.id),
+        ...(meeting.evidence?.briefIds || []),
+        ...(meeting.evidence?.roleTranscriptIds || []),
+        ...(meeting.evidence?.leaderCampaignIds || []),
+        ...(meeting.evidence?.nextActionIds || []),
+        ...(meeting.evidence?.charterProofIds || []),
+        approvalResult.kickoffCharter?.id,
+        session?.id,
+        tick?.id,
+        ...(tick?.proofIds || []),
+      ].filter(Boolean));
+      const timelineLogIds = uniqueStrings([
+        ...(approvalResult.project?.logs || [])
+          .filter((log) => ['kickoff-approved', 'kickoff-leader-assignment', 'autonomous-cycle', 'peer-management-check-in'].includes(log.eventType))
+          .slice(0, 12)
+          .map((log) => log.id),
+        session?.logId,
+        tick?.logId,
+        ...(tick?.timelineLogIds || []),
+      ].filter(Boolean));
+      const eventIds = uniqueStrings([
+        ...(approvalResult.project?.eventLedger || [])
+          .filter((event) => ['kickoff-charter-created', 'kickoff-next-action-resolution', 'autonomous-run-control-session-started'].includes(event.type))
+          .map((event) => event.id),
+        session?.eventId,
+        tick?.eventId,
+        ...(tick?.eventIds || []),
+      ].filter(Boolean));
+      const runReceiptIds = uniqueStrings([
+        ...(session?.runReceiptIds || []),
+        ...(tick?.runReceiptIds || []),
+      ]);
+      const loopReceiptIds = uniqueStrings([
+        ...(session?.loopReceiptIds || []),
+        ...(tick?.loopReceiptIds || []),
+      ]);
+      const handoffStageId = tick?.targetControl?.targetStageId
+        || tick?.targetNextMissingStageId
+        || session?.targetControl?.targetStageId
+        || session?.targetNextMissingStageId
+        || null;
+      const handoffActionLanes = uniqueStrings([
+        ...(tick?.actionLanes || []),
+        ...(session?.actionLanes || []),
+      ]);
+      const customerAgentHandoff = {
+        schemaVersion: 'product-team-customer-agent-handoff/v1',
+        status: tick
+          ? 'a-side-first-tick-recorded'
+          : session
+            ? 'a-side-session-started'
+            : 'kickoff-approved-awaiting-autopilot',
+        managerApproved: Boolean(meeting.status === 'approved' || meeting.approvedProjectId),
+        kickoffMeetingId: meeting.id,
+        selectedLeaderId: config.selectedLeaderId,
+        reviewerId: config.reviewerId,
+        selectedTeamIds: config.selectedTeamIds,
+        taskIds: config.tasks.map((task) => task.id).filter(Boolean),
+        agentIds: config.team.map((agent) => agent.id).filter(Boolean),
+        autonomousSessionId: session?.id || null,
+        autonomousSessionStatus: session?.status || null,
+        firstTickId: tick?.id || null,
+        firstTickStatus: tick?.statusAfter || null,
+        firstTickRecorded: Boolean(tick),
+        actionLanes: handoffActionLanes,
+        targetKind: session?.targetKind || input.targetKind || 'product-team-delivery-trace',
+        targetStageId: handoffStageId,
+        targetMissingStageIds: uniqueStrings(session?.targetMissingStageIds || session?.targetSnapshot?.missingStageIds || []),
+        readyForLocalAutonomy: Boolean(session),
+        readyForProduction: false,
+        nextRoutes: {
+          productTeamDeliveryTrace: `/projects/${projectId}/product-team-delivery-trace`,
+          productTeamOperatingLoop: `/projects/${projectId}/product-team-operating-loop`,
+          collaborationIntentQueue: `/projects/${projectId}/collaboration-intent-queue`,
+          autonomousRunControl: `/projects/${projectId}/autonomous-run-control`,
+          autonomousRunControlSessions: `/projects/${projectId}/autonomous-run-control/sessions`,
+          firstTick: session?.id ? `/projects/${projectId}/autonomous-run-control/sessions/${encodeURIComponent(session.id)}/tick` : null,
+          schedulerDue: '/workers/autopilot/due',
+        },
+        proofIds,
+        timelineLogIds,
+        eventIds,
+        checksum: persistenceChecksum({
+          missionId,
+          projectId,
+          meetingId: meeting.id,
+          sessionId: session?.id || null,
+          tickId: tick?.id || null,
+          selectedLeaderId: config.selectedLeaderId,
+          reviewerId: config.reviewerId,
+          selectedTeamIds: config.selectedTeamIds,
+          targetKind: session?.targetKind || input.targetKind || 'product-team-delivery-trace',
+          targetStageId: handoffStageId,
+          runReceiptIds,
+          loopReceiptIds,
+        }),
+      };
+      const missionLog = {
+        id: `log_${missionId}`,
+        time: offsetIso(now, 1500),
+        agent: 'Product Team Mission Runner',
+        actor: missionActor,
+        eventType: 'product-team-mission-started',
+        source: 'product-team-mission-runner',
+        channelId: 'manager-dashboard',
+        missionId,
+        kickoffMeetingId: meeting.id,
+        autonomousSessionId: session?.id || null,
+        autonomousSessionTickId: tick?.id || null,
+        log: `Product Team Mission Runner launched "${config.name}" as a generic AI product-team mission and handed it to ${session ? 'Autonomous Run Control' : 'the kickoff project'} for execution.`,
+      };
+      const missionEventId = `evt_${missionId}`;
+      const missionRun = {
+        schemaVersion: 'product-team-mission-run/v1',
+        id: missionId,
+        projectId,
+        missionName: config.name,
+        missionBrief: config.brief,
+        missionType: input.missionType || 'generic-product-team',
+        validationSample: input.validationSample || null,
+        researchOnly: false,
+        status: session ? 'autopilot-started' : 'kickoff-approved',
+        createdAt: now,
+        actor: missionActor,
+        reusedKickoffMeeting: Boolean(existingKickoffMeeting),
+        kickoffMeetingId: meeting.id,
+        kickoffMeetingRoute: `/kickoff-meetings/${encodeURIComponent(meeting.id)}`,
+        kickoffApprovalRoute: `/kickoff-meetings/${encodeURIComponent(meeting.id)}/approve`,
+        selectedLeaderId: config.selectedLeaderId,
+        reviewerId: config.reviewerId,
+        taskIds: config.tasks.map((task) => task.id).filter(Boolean),
+        agentIds: config.team.map((agent) => agent.id).filter(Boolean),
+        autonomousSessionId: session?.id || null,
+        autonomousSessionStatus: session?.status || null,
+        autonomousSessionTickId: tick?.id || null,
+        autonomousSessionTickStatus: tick?.statusAfter || null,
+        loopReceiptIds,
+        runReceiptIds,
+        customerAgentHandoff,
+        targetKind: session?.targetKind || input.targetKind || 'product-team-delivery-trace',
+        targetStatus: session?.targetStatus || session?.targetSnapshot?.status || null,
+        targetReady: Boolean(session?.targetReady ?? session?.targetSnapshot?.readyForPrivatePilotDelivery),
+        targetMissingStageIds: uniqueStrings(session?.targetMissingStageIds || session?.targetSnapshot?.missingStageIds || []),
+        targetNextMissingStageId: session?.targetNextMissingStageId || session?.targetSnapshot?.nextMissingStageId || null,
+        proofIds,
+        timelineLogIds: uniqueStrings([missionLog.id, ...timelineLogIds]),
+        eventId: missionEventId,
+        eventIds: uniqueStrings([missionEventId, ...eventIds]),
+        readRoutes: {
+          project: `/projects/${projectId}`,
+          transcripts: `/projects/${projectId}/transcripts`,
+          managerDashboard: `/projects/${projectId}/manager-dashboard`,
+          managerFlowGraph: `/projects/${projectId}/manager-flow-graph`,
+          readinessProofMap: `/projects/${projectId}/readiness-proof-map`,
+          productTeamDeliveryTrace: `/projects/${projectId}/product-team-delivery-trace`,
+          productTeamOperatingLoop: `/projects/${projectId}/product-team-operating-loop`,
+          collaborationIntentQueue: `/projects/${projectId}/collaboration-intent-queue`,
+          runtimeAutonomyStatus: `/projects/${projectId}/runtime-autonomy-status`,
+          autonomousRunControl: `/projects/${projectId}/autonomous-run-control`,
+          autonomousRunControlSessions: `/projects/${projectId}/autonomous-run-control/sessions`,
+          autonomousRunControlSessionTick: session?.id ? `/projects/${projectId}/autonomous-run-control/sessions/${encodeURIComponent(session.id)}/tick` : null,
+        },
+        readyForProduction: false,
+        productionBlockerReason: 'Mission Runner starts local/private MVP autonomy only; production still requires managed identity, queue/cron, persistence, provider/BYOK, cost controls, audit, and recovery.',
+        checksum: persistenceChecksum({
+          missionId,
+          projectId,
+          meetingId: meeting.id,
+          sessionId: session?.id || null,
+          tickId: tick?.id || null,
+          taskIds: config.tasks.map((task) => task.id),
+          agentIds: config.team.map((agent) => agent.id),
+          runReceiptIds,
+          loopReceiptIds,
+          customerAgentHandoffChecksum: customerAgentHandoff.checksum,
+        }),
+      };
+      const projectWithMission = appendProjectEvents({
+        ...projectAfterStartup,
+        logs: [missionLog, ...(projectAfterStartup.logs || [])],
+        productTeamMissionRuns: [
+          missionRun,
+          ...(projectAfterStartup.productTeamMissionRuns || []),
+        ].slice(0, 50),
+      }, [
+        createProjectLedgerEvent({
+          id: missionEventId,
+          type: 'product-team-mission-started',
+          time: missionLog.time,
+          actor: missionActor,
+          summary: missionLog.log,
+          source: 'product-team-mission-runner',
+          channelId: 'manager-dashboard',
+          evidenceIds: uniqueStrings([missionLog.id, missionId, meeting.id, session?.id, tick?.id].filter(Boolean)),
+          entityIds: {
+            projectId,
+            missionId,
+            kickoffMeetingId: meeting.id,
+            sessionId: session?.id || null,
+            tickId: tick?.id || null,
+            logId: missionLog.id,
+          },
+          payload: {
+            schemaVersion: missionRun.schemaVersion,
+            missionType: missionRun.missionType,
+            researchOnly: false,
+            selectedLeaderId: config.selectedLeaderId,
+            reviewerId: config.reviewerId,
+            autonomousSessionId: session?.id || null,
+            runInitialTick: Boolean(tick),
+            targetKind: missionRun.targetKind,
+            readyForProduction: false,
+          },
+        }),
+      ]);
+      const savedProject = saveProject(projectWithMission);
+      return {
+        route: 'product-team-mission-started',
+        project: savedProject,
+        meeting,
+        messages: [
+          ...(approvalResult.messages || []),
+          ...(sessionResult?.messages || []),
+        ],
+        productTeamMissionRun: missionRun,
+        kickoffApproval: {
+          route: approvalResult.route,
+          kickoffCharter: approvalResult.kickoffCharter,
+          assignmentPackage: approvalResult.assignmentPackage,
+          firstPulse: approvalResult.meeting?.firstPulse || null,
+        },
+        autonomousRunControlSession: session,
+        autonomousRunControlSessionTick: tick,
+        autonomousRunControlSessions: sessionResult?.autonomousRunControlSessions || this.getAutonomousRunControlSessions(projectId, { now: missionLog.time, language: config.language }),
+        autonomousRunControl: this.getAutonomousRunControl(projectId, { now: missionLog.time, language: config.language, skipCache: true }),
+        productTeamDeliveryTrace: this.getProductTeamDeliveryTrace(projectId, { language: config.language, fresh: true }),
+        productTeamOperatingLoop: this.getProductTeamOperatingLoop(projectId, { language: config.language, fresh: true }),
+        collaborationIntentQueue: this.getCollaborationIntentQueue(projectId, { language: config.language, fresh: true }),
+      };
+    },
     getProject(projectId) {
       return store.getProject(projectId);
     },
@@ -36079,11 +43856,33 @@ export function createAgentProjectService({
         channelId,
       });
     },
+    getMeetingSummaries(projectId, options = {}) {
+      return cachedReadModel('meeting-summaries', projectId, options, () => {
+        const language = options.language || store.getProject(projectId)?.language || 'en';
+        return localizeReadModel(buildMeetingSummaries({
+          project: store.getProject(projectId),
+          messages: store.getMessages(projectId),
+        }), language);
+      });
+    },
     getReadinessProofMap(projectId) {
       return cachedReadModel('readiness-proof-map', projectId, {}, () => buildReadinessProofMap({
         project: store.getProject(projectId),
         messages: store.getMessages(projectId),
       }));
+    },
+    listProductTeamMissionRuns(projectId) {
+      return (store.getProject(projectId).productTeamMissionRuns || []).map((run) => ({
+        ...run,
+      }));
+    },
+    getProductTeamMissionRun(projectId, missionId) {
+      const run = (store.getProject(projectId).productTeamMissionRuns || [])
+        .find((item) => String(item.id) === String(missionId));
+      if (!run) throw new Error(`Product team mission run not found: ${missionId}`);
+      return {
+        ...run,
+      };
     },
     getManagerDashboard(projectId, options = {}) {
       return cachedReadModel('manager-dashboard', projectId, options, () => localizeReadModel(buildManagerDashboardSnapshot({
@@ -36471,6 +44270,41 @@ export function createAgentProjectService({
         }), language);
       });
     },
+    getRuntimeAutonomyStatus(projectId, options = {}) {
+      return cachedReadModel('runtime-autonomy-status', projectId, options, () => {
+        const language = options.language || store.getProject(projectId)?.language || 'en';
+        const project = store.getProject(projectId);
+        const managerDashboard = this.getManagerDashboard(projectId, { language });
+        const workerQueueSnapshot = this.getProjectWorkerQueue(projectId, {
+          forceDue: options.forceDue !== false,
+          forceProjectIds: [projectId],
+          forceAgentProjectIds: [projectId],
+          forceAutopilotProjectIds: [projectId],
+          maxAgentsPerProject: project?.team?.length || Infinity,
+          maxProjects: 1,
+          language,
+        });
+        const autonomousRunControl = this.getAutonomousRunControl(projectId, {
+          language,
+          forceDue: options.forceDue !== false,
+        });
+        const productTeamOperatingLoop = this.getProductTeamOperatingLoop(projectId, { language });
+        const persistenceSnapshot = this.getPersistenceSnapshot(projectId, { language });
+        const workerQueueAdapterPlan = this.getWorkerQueueAdapterPlan(projectId, { language });
+        const workerQueueAdapterDryRun = this.getWorkerQueueAdapterDryRun(projectId, { language });
+        return localizeReadModel(buildRuntimeAutonomyStatus({
+          project,
+          managerDashboard,
+          workerQueueSnapshot,
+          persistenceSnapshot,
+          workerQueueAdapterPlan,
+          workerQueueAdapterDryRun,
+          autonomousRunControl,
+          productTeamOperatingLoop,
+          now: options.now || nowIso(),
+        }), language);
+      });
+    },
     runAutonomousRunControlAction({
       projectId,
       actionId = 'next',
@@ -36570,6 +44404,8 @@ export function createAgentProjectService({
         const agentAutonomousActionQueues = uniqueStrings((agentSweep.processed || []).map((item) => item.projectId))
           .map((id) => this.getAgentAutonomousActionQueue(id, { language }))
           .filter(Boolean);
+        const agentSweepResults = (agentSweep.processed || []).map((item) => item.result).filter(Boolean);
+        const firstAgentSweepResultWith = (key) => agentSweepResults.find((item) => item?.[key])?.[key] || null;
         result = {
           ...projectRun,
           project: projectAfterSweep || projectRun.project,
@@ -36582,6 +44418,17 @@ export function createAgentProjectService({
           agentSkipped: agentSweep.skipped || [],
           agentAutonomousActionQueues,
           agentAutonomousActionQueue: agentAutonomousActionQueues.find((queue) => queue.projectId === projectAfterProjectRunId) || agentAutonomousActionQueues[0] || null,
+          workSubmission: firstAgentSweepResultWith('workSubmission') || firstAgentSweepResultWith('submission'),
+          submission: firstAgentSweepResultWith('submission') || firstAgentSweepResultWith('workSubmission'),
+          workSubmissionLog: firstAgentSweepResultWith('workSubmissionLog'),
+          artifact: firstAgentSweepResultWith('artifact'),
+          evidenceSearch: firstAgentSweepResultWith('evidenceSearch'),
+          evidenceSearchLog: firstAgentSweepResultWith('evidenceSearchLog'),
+          evidenceSearchSourceSnapshots: firstAgentSweepResultWith('evidenceSearchSourceSnapshots') || [],
+          review: firstAgentSweepResultWith('review'),
+          reviewedSubmission: firstAgentSweepResultWith('reviewedSubmission'),
+          reviewResponseSubmission: firstAgentSweepResultWith('reviewResponseSubmission'),
+          reviewResponseArtifact: firstAgentSweepResultWith('reviewResponseArtifact'),
         };
       } else {
         throw new Error(`Unsupported autonomous run control lane: ${action.lane || 'unknown'}`);
@@ -36613,6 +44460,10 @@ export function createAgentProjectService({
         result.agentAutonomousActionRun?.agentId,
         ...(result.agentProcessed || []).map((row) => row.agentId),
       ].filter(Boolean));
+      const autonomousActionDecision = result.autonomousActionDecision
+        || result.agentAutonomousActionRun?.autonomousActionDecision
+        || (result.agentProcessed || []).map((row) => row.result?.autonomousActionDecision || row.result?.agentAutonomousActionRun?.autonomousActionDecision).filter(Boolean)[0]
+        || null;
       const runLog = {
         id: `log_${runId}`,
         time: now,
@@ -36629,6 +44480,8 @@ export function createAgentProjectService({
         taskId: action.taskId || null,
         requirementId: action.requirementId || null,
         delegatedRunKind,
+        autonomousActionDecisionChecksum: autonomousActionDecision?.checksum || null,
+        autonomousActionDecisionAction: autonomousActionDecision?.action || null,
         apiPath: action.apiPath || null,
         runApiPath: `/projects/${projectId}/autonomous-run-control/${encodeURIComponent(action.id)}/run`,
         log: `Autonomous Run Control ran "${action.label || action.id}" through ${delegatedRunKind}.`,
@@ -36664,6 +44517,9 @@ export function createAgentProjectService({
         autopilotTargetStageId,
         autopilotTargetControl,
         autopilotTargetSelection,
+        autonomousActionDecision,
+        autonomousActionDecisionChecksum: autonomousActionDecision?.checksum || null,
+        autonomousActionDecisionAction: autonomousActionDecision?.action || null,
         agentInitiative: action.initiative || null,
         agentInitiativeId: action.initiativeId || action.initiative?.id || null,
         agentInitiativeArtifactType: action.initiativeArtifactType || action.initiative?.artifactType || null,
@@ -36677,6 +44533,7 @@ export function createAgentProjectService({
           resultAgentIds,
           autopilotTargetStageId,
           autopilotTargetSelectionChecksum: autopilotTargetSelection?.checksum || null,
+          autonomousActionDecisionChecksum: autonomousActionDecision?.checksum || null,
           agentInitiativeId: action.initiativeId || action.initiative?.id || null,
           agentInitiativeChecksum: action.initiative?.checksum || null,
         }),
@@ -36718,6 +44575,8 @@ export function createAgentProjectService({
             agentIds: resultAgentIds,
             autopilotTargetStageId,
             autopilotTargetSelection,
+            autonomousActionDecisionChecksum: autonomousActionDecision?.checksum || null,
+            autonomousActionDecisionAction: autonomousActionDecision?.action || null,
           },
         }),
       ]);
@@ -36728,6 +44587,294 @@ export function createAgentProjectService({
         route: 'autonomous-run-control-action-run',
         autonomousRunControlAction: action,
         autonomousRunControlRun: runReceipt,
+        autonomousActionDecision,
+        autonomousRunControl: this.getAutonomousRunControl(resultProjectId, { now, language, skipCache: true }),
+        managerActionQueue: this.getManagerActionQueue(resultProjectId, { language }),
+        agentAutonomousActionQueue: this.getAgentAutonomousActionQueue(resultProjectId, { language }),
+      };
+    },
+    runCollaborationIntentQueueItem({
+      projectId,
+      intentId = 'next',
+      requestBodyOverrides = {},
+      now = nowIso(),
+      force = false,
+    } = {}) {
+      const language = requestBodyOverrides.language || store.getProject(projectId)?.language || 'en';
+      const queueBeforeRun = this.getCollaborationIntentQueue(projectId, { now, language, fresh: true });
+      const row = intentId === 'next'
+        ? queueBeforeRun.nextRunnableIntent || (queueBeforeRun.rows || []).find((item) => item.canRun)
+        : (queueBeforeRun.rows || []).find((item) => (
+          item.id === intentId
+          || item.source === intentId
+          || item.selectedAction === intentId
+        ));
+      if (!row) throw new Error(`Collaboration intent not found: ${intentId}`);
+      if (!row.canRun && !force) {
+        throw new Error(`Collaboration intent is not runnable: ${row.id}`);
+      }
+      if (!row.runApiPath) {
+        throw new Error(`Collaboration intent has no run route: ${row.id}`);
+      }
+
+      const runPathname = (() => {
+        try {
+          return new URL(row.runApiPath, 'http://127.0.0.1').pathname;
+        } catch {
+          return String(row.runApiPath || '').split('?')[0];
+        }
+      })();
+      const pathParts = runPathname.split('/').filter(Boolean).map((part) => {
+        try {
+          return decodeURIComponent(part);
+        } catch {
+          return part;
+        }
+      });
+      const readPartAfter = (segment) => {
+        const index = pathParts.indexOf(segment);
+        return index >= 0 ? pathParts[index + 1] || null : null;
+      };
+      const requestBody = {
+        ...requestBodyOverrides,
+        now,
+        collaborationIntentId: row.id,
+        collaborationIntentSource: row.source || null,
+        collaborationIntentStage: row.stage || null,
+        collaborationIntentLane: row.lane || null,
+      };
+      let result;
+      let delegatedRunKind = 'unknown';
+      let delegatedActionId = null;
+      let delegatedAgentId = row.agentId || null;
+
+      if (pathParts.includes('autonomous-run-control')) {
+        delegatedRunKind = 'autonomous-run-control';
+        delegatedActionId = readPartAfter('autonomous-run-control') || row.selectedAction || 'next';
+        result = this.runAutonomousRunControlAction({
+          projectId,
+          actionId: delegatedActionId,
+          requestBodyOverrides: requestBody,
+          now,
+          force,
+        });
+      } else if (pathParts.includes('agent-autonomous-action-queue')) {
+        delegatedRunKind = 'agent-autonomous-action-queue';
+        delegatedAgentId = readPartAfter('agent-autonomous-action-queue') || row.agentId || 'next';
+        result = this.runAgentAutonomousActionQueueItem({
+          projectId,
+          agentId: delegatedAgentId,
+          requestBodyOverrides: requestBody,
+          now,
+          force,
+        });
+      } else if (pathParts.includes('manager-action-queue')) {
+        delegatedRunKind = 'manager-action-queue';
+        delegatedActionId = readPartAfter('manager-action-queue') || row.selectedAction || row.id || 'next';
+        result = this.runManagerActionQueueItem({
+          projectId,
+          actionId: delegatedActionId,
+          requestBodyOverrides: requestBody,
+          now,
+          force,
+        });
+      } else {
+        throw new Error(`Unsupported collaboration intent run route: ${row.runApiPath}`);
+      }
+
+      const resultProjectId = result.project?.id || projectId;
+      const resultProject = store.getProject(resultProjectId) || result.project;
+      if (!resultProject?.id) throw new Error(`Project not found after collaboration intent run: ${projectId}`);
+      const delegatedReceipt = result.autonomousRunControlRun
+        || result.agentAutonomousActionRun
+        || result.managerActionRun
+        || null;
+      const autonomousActionDecision = result.autonomousActionDecision
+        || result.agentAutonomousActionRun?.autonomousActionDecision
+        || result.autonomousRunControlRun?.autonomousActionDecision
+        || null;
+      const resultAgentIds = uniqueStrings([
+        row.agentId,
+        delegatedAgentId,
+        result.agentAutonomousAction?.agentId,
+        result.agentAutonomousActionRun?.agentId,
+        result.autonomousRunControlAction?.agentId,
+        ...(result.autonomousRunControlRun?.agentIds || []),
+        ...(result.agentProcessed || []).map((item) => item.agentId),
+      ].filter(Boolean));
+      const resultMessageIds = uniqueStrings([
+        ...(result.messages || []).map((message) => message.id),
+        ...(delegatedReceipt?.resultMessageIds || []),
+        ...(result.managerActionRun?.resultMessageIds || []),
+        ...(result.agentAutonomousActionRun?.resultMessageIds || []),
+        ...(result.autonomousRunControlRun?.resultMessageIds || []),
+      ]);
+      const delegatedTimelineLogIds = uniqueStrings([
+        ...(delegatedReceipt?.timelineLogIds || []),
+        ...(result.managerActionRun?.timelineLogIds || []),
+        ...(result.agentAutonomousActionRun?.timelineLogIds || []),
+        ...(result.autonomousRunControlRun?.timelineLogIds || []),
+      ]);
+      const delegatedEventIds = uniqueStrings([
+        ...(delegatedReceipt?.eventIds || []),
+        ...(result.managerActionRun?.eventIds || []),
+        ...(result.agentAutonomousActionRun?.eventIds || []),
+        ...(result.autonomousRunControlRun?.eventIds || []),
+      ]);
+      const timestamp = Date.parse(now) || Date.now();
+      const runId = `collaboration_intent_run_${projectId}_${slugPart(row.id)}_${timestamp}`;
+      const runApiPath = `/projects/${projectId}/collaboration-intent-queue/${encodeURIComponent(row.id)}/run`;
+      const runLog = {
+        id: `log_${runId}`,
+        time: now,
+        agent: 'Collaboration Intent Queue',
+        actor: 'Collaboration Intent Queue',
+        eventType: 'collaboration-intent-run',
+        source: 'collaboration-intent-queue',
+        channelId: 'manager-dashboard',
+        intentId: row.id,
+        intentSource: row.source || null,
+        stage: row.stage || null,
+        lane: row.lane || null,
+        actorType: row.actorType || null,
+        agentId: row.agentId || null,
+        agentIds: resultAgentIds,
+        delegatedRunKind,
+        delegatedActionId,
+        delegatedAgentId,
+        autonomousActionDecisionChecksum: autonomousActionDecision?.checksum || null,
+        autonomousActionDecisionAction: autonomousActionDecision?.action || null,
+        delegatedRunApiPath: row.runApiPath,
+        runApiPath,
+        log: `Collaboration Intent Queue ran "${row.intent || row.id}" through ${delegatedRunKind}.`,
+      };
+      const runEventId = `evt_${runId}`;
+      const proofIds = uniqueStrings([
+        row.id,
+        delegatedReceipt?.id,
+        delegatedReceipt?.checksum,
+        ...(row.proofIds || []),
+        ...resultMessageIds,
+      ].filter(Boolean));
+      const timelineLogIds = uniqueStrings([
+        runLog.id,
+        ...(row.timelineLogIds || []),
+        ...delegatedTimelineLogIds,
+      ]);
+      const eventIds = uniqueStrings([
+        runEventId,
+        ...(row.eventIds || []),
+        ...delegatedEventIds,
+      ]);
+      const runReceipt = {
+        schemaVersion: 'collaboration-intent-run/v1',
+        id: runId,
+        projectId,
+        intentId: row.id,
+        source: row.source || null,
+        stage: row.stage || null,
+        lane: row.lane || null,
+        actorType: row.actorType || null,
+        agentId: row.agentId || delegatedAgentId || null,
+        agentIds: resultAgentIds,
+        intent: row.intent || row.id,
+        status: 'executed',
+        statusBeforeRun: row.status || null,
+        executedAt: now,
+        method: 'POST',
+        apiPath: queueBeforeRun.backendRoutes?.collaborationIntentQueue || `/projects/${projectId}/collaboration-intent-queue`,
+        runApiPath,
+        delegatedRunKind,
+        delegatedActionId,
+        delegatedAgentId,
+        delegatedRunApiPath: row.runApiPath,
+        delegatedReceiptId: delegatedReceipt?.id || null,
+        delegatedReceiptSchemaVersion: delegatedReceipt?.schemaVersion || null,
+        autonomousActionDecision,
+        autonomousActionDecisionChecksum: autonomousActionDecision?.checksum || null,
+        autonomousActionDecisionAction: autonomousActionDecision?.action || null,
+        resultRoute: result.route || null,
+        resultMessageIds,
+        resultMessageCount: resultMessageIds.length,
+        proofIds,
+        logId: runLog.id,
+        timelineLogIds,
+        eventIds,
+        relatedIds: uniqueStrings([
+          ...(row.relatedIds || []),
+          delegatedReceipt?.id,
+          result.agentAutonomousActionRun?.workSubmissionId,
+          result.submission?.id,
+          result.workSubmission?.id,
+        ].filter(Boolean)),
+        requestBody,
+        checksum: persistenceChecksum({
+          projectId,
+          intentId: row.id,
+          source: row.source || null,
+          lane: row.lane || null,
+          delegatedRunKind,
+          delegatedActionId,
+          delegatedAgentId,
+          delegatedReceiptId: delegatedReceipt?.id || null,
+          autonomousActionDecisionChecksum: autonomousActionDecision?.checksum || null,
+          resultMessageIds,
+          timelineLogIds,
+          eventIds,
+        }),
+      };
+      const projectWithReceipt = appendProjectEvents({
+        ...resultProject,
+        logs: [runLog, ...(resultProject.logs || [])],
+        collaborationIntentRunLedger: [
+          runReceipt,
+          ...(resultProject.collaborationIntentRunLedger || []),
+        ].slice(0, 100),
+      }, [
+        createProjectLedgerEvent({
+          id: runEventId,
+          type: 'collaboration-intent-run',
+          time: now,
+          actor: 'Collaboration Intent Queue',
+          summary: runLog.log,
+          source: 'collaboration-intent-queue',
+          channelId: 'manager-dashboard',
+          evidenceIds: uniqueStrings([
+            runLog.id,
+            ...proofIds,
+            ...delegatedTimelineLogIds,
+          ]),
+          entityIds: {
+            projectId,
+            intentId: row.id,
+            agentId: row.agentId || delegatedAgentId || null,
+            agentIds: resultAgentIds,
+            delegatedActionId,
+            delegatedReceiptId: delegatedReceipt?.id || null,
+            logId: runLog.id,
+          },
+          payload: {
+            source: row.source || null,
+            stage: row.stage || null,
+            lane: row.lane || null,
+            delegatedRunKind,
+            delegatedRunApiPath: row.runApiPath,
+            autonomousActionDecisionChecksum: autonomousActionDecision?.checksum || null,
+            autonomousActionDecisionAction: autonomousActionDecision?.action || null,
+            runApiPath,
+          },
+        }),
+      ]);
+      const savedProject = saveProject(projectWithReceipt);
+      return {
+        ...result,
+        project: savedProject,
+        route: 'collaboration-intent-queue-item-run',
+        collaborationIntent: row,
+        collaborationIntentRun: runReceipt,
+        autonomousActionDecision,
+        collaborationIntentQueue: this.getCollaborationIntentQueue(resultProjectId, { now, language, fresh: true }),
+        productTeamOperatingLoop: this.getProductTeamOperatingLoop(resultProjectId, { now, language, fresh: true }),
         autonomousRunControl: this.getAutonomousRunControl(resultProjectId, { now, language, skipCache: true }),
         managerActionQueue: this.getManagerActionQueue(resultProjectId, { language }),
         agentAutonomousActionQueue: this.getAgentAutonomousActionQueue(resultProjectId, { language }),
@@ -37397,7 +45544,23 @@ export function createAgentProjectService({
         timelineLogIds: uniqueStrings([tickLog.id, ...loopTimelineLogIds]),
         eventId: tickEventId,
         eventIds: uniqueStrings([tickEventId, ...loopEventIds]),
+        workerKind: 'autopilot-session',
+        runApiPath: '/workers/autopilot/due',
         apiPath: `/projects/${projectId}/autonomous-run-control/sessions/${encodeURIComponent(session.id)}/tick`,
+        directRunApiPath: `/projects/${projectId}/autonomous-run-control/sessions/${encodeURIComponent(session.id)}/tick`,
+        ...buildWorkerRunControlFields({
+          id: tickId,
+          projectId,
+          sessionId: session.id,
+          workerKind: 'autopilot-session',
+          reason,
+          status: failedLoop ? 'failed' : 'succeeded',
+          ranAt: now,
+          dueAt: now,
+          completedAt: tickLog.time,
+          messageIds: resultMessageIds,
+          timelineLogIds: uniqueStrings([tickLog.id, ...loopTimelineLogIds]),
+        }, { projectId, workerKind: 'autopilot-session', now }),
         readyForProduction: false,
         checksum: persistenceChecksum({
           projectId,
@@ -37555,6 +45718,703 @@ export function createAgentProjectService({
         autonomousRunControl: this.getAutonomousRunControl(projectId, { now: tickLog.time, language: bodyOverrides.language || latestProject.language || 'en', skipCache: true }),
       };
     },
+    async tickAutonomousRunControlSessionWithProviderEvidence(input = {}) {
+      const {
+        projectId,
+        sessionId = 'active',
+        now = nowIso(),
+        actor = 'Autonomous Run Control',
+        reason = 'autopilot-provider-evidence-tick',
+        force = true,
+        targetKind: requestedTargetKind,
+        requestBodyOverrides = {},
+        ...bodyOverrides
+      } = input;
+      const project = store.getProject(projectId);
+      if (!project?.id) throw new Error(`Project not found: ${projectId}`);
+      const sessions = project.autonomousRunControlSessionLedger || [];
+      const session = sessionId === 'active'
+        ? sessions.find((item) => ['running', 'waiting'].includes(item.status))
+        : sessions.find((item) => item.id === sessionId);
+      if (!session) throw new Error(`Autonomous run control session not found: ${sessionId}`);
+      if (!['running', 'waiting'].includes(session.status)) {
+        throw new Error(`Autonomous run control session is not active: ${session.id}`);
+      }
+      const activeTargetKind = requestedTargetKind || session.targetKind || session.targetSnapshot?.targetKind || 'product-team-delivery-trace';
+      const targetLanguage = bodyOverrides.language
+        || requestBodyOverrides.language
+        || session.requestBodyOverrides?.language
+        || project.language
+        || 'en';
+      const targetBeforeSnapshot = buildAutopilotDeliveryTargetSnapshot({
+        projectId,
+        targetKind: activeTargetKind,
+        trace: this.getProductTeamDeliveryTrace(projectId, { language: targetLanguage, fresh: true }),
+      });
+      const targetControls = requestBodyOverrides.autopilotTargetControl
+        || requestBodyOverrides.targetControl
+        || buildAutopilotDeliveryTargetControls({
+          targetSnapshot: targetBeforeSnapshot,
+          now,
+        });
+      const targetExecutionOverrides = buildAutopilotTargetExecutionOverrides({ targetControls });
+      const providerQueue = this.getAgentAutonomousActionQueue(projectId, {
+        now,
+        language: targetLanguage,
+        providerEvidenceSearchEnabled: true,
+        skipCache: true,
+      });
+      const targetRequestsProviderEvidence = Boolean(
+        requestBodyOverrides.useProviderEvidenceSearch
+        || requestBodyOverrides.requireProviderEvidenceSearch
+        || targetControls.recordEvidenceSearch
+        || targetControls.targetStageId === 'evidence-quality'
+        || normalizeAgentSubmissionArtifactType(targetControls.workArtifactType || targetControls.agentWorkArtifactType) === 'evidence-packet'
+      );
+      const providerRows = providerQueue.rows || [];
+      const appendProviderCandidates = (acc, rows = []) => {
+        for (const row of rows) {
+          if (row && !acc.some((item) => item.agentId === row.agentId && item.id === row.id)) acc.push(row);
+        }
+        return acc;
+      };
+      const providerRowCandidates = appendProviderCandidates(
+        appendProviderCandidates(
+          appendProviderCandidates(
+            appendProviderCandidates(
+              [],
+              providerRows.filter((row) => row.canRun && row.providerEvidenceSearchPlanned),
+            ),
+            providerRows.filter((row) => row.providerEvidenceSearchPlanned),
+          ),
+          targetRequestsProviderEvidence
+            ? providerRows.filter((row) => row.canRun && row.selectedAction !== 'monitor-project')
+            : [],
+        ),
+        targetRequestsProviderEvidence
+          ? [
+              ...providerRows.filter((row) => row.canRun),
+              ...providerRows,
+            ]
+          : [],
+      );
+      const buildProviderPreflightForRow = (row) => buildAutonomousProviderPreflight({
+        projectId,
+        kind: 'search',
+        operation: requestBodyOverrides.operation || 'search:evidence',
+        agentId: row?.agentId || '',
+        requested: Boolean(targetRequestsProviderEvidence || row?.providerEvidenceSearchPlanned),
+        requireProvider: Boolean(requestBodyOverrides.requireProviderEvidenceSearch),
+        queueReady: Boolean(row && (row.canRun || force)),
+        targetStageId: targetControls.targetStageId || null,
+        estimatedCostCents: requestBodyOverrides.estimatedCostCents,
+        now,
+      });
+      const providerPreflightCandidates = providerRowCandidates.map((row) => ({
+        row,
+        preflight: buildProviderPreflightForRow(row),
+      }));
+      const selectedProviderCandidate = providerPreflightCandidates.find((candidate) => candidate.preflight.canCallProvider)
+        || providerPreflightCandidates.find((candidate) => candidate.row.canRun && candidate.row.providerEvidenceSearchPlanned)
+        || providerPreflightCandidates[0]
+        || null;
+      const providerRow = selectedProviderCandidate?.row || null;
+      const tickProviderPreflight = selectedProviderCandidate?.preflight || buildProviderPreflightForRow(null);
+      if (!providerRow) {
+        const fallbackResult = this.tickAutonomousRunControlSession(input);
+        return {
+          ...fallbackResult,
+          autonomousProviderPreflight: tickProviderPreflight,
+          providerEvidenceSearchSkippedReason: 'no-provider-planned-agent-queue-row',
+        };
+      }
+
+      const targetSelection = {
+        schemaVersion: 'autonomous-run-control-target-selection/v1',
+        targetStageId: targetControls.targetStageId || null,
+        targetIntent: targetControls.targetIntent || null,
+        preferredLane: targetControls.preferredLane || 'agent-autonomy',
+        selectedActionId: `agent-autonomous-action-${providerRow.agentId}`,
+        selectedAgentId: providerRow.agentId,
+        selectedLane: 'agent-autonomy',
+        selectedArtifactType: providerRow.initiativeArtifactType || providerRow.requestBodyTemplate?.workArtifactType || null,
+        reason: 'provider-evidence-agent-queue-row',
+        generatedAt: now,
+      };
+      targetSelection.checksum = persistenceChecksum(targetSelection);
+      const queueResult = await this.runAgentAutonomousActionQueueItemWithProviderEvidence({
+        projectId,
+        agentId: providerRow.agentId,
+        now,
+        force,
+        requestBodyOverrides: {
+          ...(session.requestBodyOverrides || {}),
+          ...targetExecutionOverrides,
+          ...bodyOverrides,
+          ...requestBodyOverrides,
+          includeReadModels: false,
+          autopilotSessionId: session.id,
+          autopilotTargetControl: targetControls,
+          autopilotTargetStageId: targetControls.targetStageId || null,
+          autopilotTargetIntent: targetControls.targetIntent || null,
+          autopilotTargetReason: targetControls.targetReason || null,
+          autopilotTargetSelection: targetSelection,
+          useProviderEvidenceSearch: true,
+          requireProviderEvidenceSearch: Boolean(requestBodyOverrides.requireProviderEvidenceSearch),
+          autonomousProviderPreflight: tickProviderPreflight,
+        },
+      });
+
+      const latestProject = store.getProject(projectId) || queueResult.project || project;
+      const targetSnapshot = buildAutopilotDeliveryTargetSnapshot({
+        projectId,
+        targetKind: activeTargetKind,
+        trace: this.getProductTeamDeliveryTrace(projectId, { language: targetLanguage, fresh: true }),
+      });
+      const timestamp = Date.parse(now) || Date.now();
+      const actionId = `agent-autonomous-action-${providerRow.agentId}`;
+      const runId = `autonomous_run_control_run_${projectId}_${actionId}_provider_evidence_${timestamp}`;
+      const tickId = `autonomous_run_control_session_tick_${projectId}_${session.id}_provider_evidence_${timestamp}`;
+      const autonomousProviderPreflight = queueResult.autonomousProviderPreflight
+        || queueResult.providerEvidenceSearch?.autonomousProviderPreflight
+        || tickProviderPreflight;
+      const autonomousActionDecision = queueResult.autonomousActionDecision
+        || queueResult.agentAutonomousActionRun?.autonomousActionDecision
+        || null;
+      const providerTeam = latestProject.team || project.team || [];
+      const providerAgent = providerTeam.find((member) => member.id === providerRow.agentId || member.name === providerRow.agentId)
+        || providerTeam.find((member) => member.name === providerRow.name)
+        || null;
+      const providerEvidenceMessage = attachMessageReceipts({
+        id: `msg_${tickId}_provider_evidence`,
+        projectId,
+        channelId: 'main',
+        type: 'autopilot-provider-evidence',
+        source: 'autonomous-run-control-provider-evidence-chat',
+        author: providerAgent?.name || providerRow.name || providerRow.agentId || 'Autonomous Run Control',
+        authorId: providerAgent?.id || providerRow.agentId || null,
+        role: providerAgent?.role || providerRow.role || 'Agent',
+        time: now,
+        createdAt: now,
+        text: `@all ${(providerAgent?.name || providerRow.name || providerRow.agentId || 'Agent')} accepted the Autopilot evidence slot for ${targetControls.targetStageId || 'delivery'} and recorded provider-backed evidence ${queueResult.evidenceSearch?.id || 'pending'} with ${queueResult.evidenceSearch?.sources?.length || 0} source(s). Provider usage ${queueResult.providerUsage?.id || 'pending'}.`,
+        targets: ['all'],
+        targetIds: ['all'],
+        weight: 'Autopilot Provider Evidence',
+        sessionId: session.id,
+        tickId,
+        actionId,
+        agentAutonomousActionRunId: queueResult.agentAutonomousActionRun?.id || null,
+        evidenceSearchId: queueResult.evidenceSearch?.id || null,
+        providerReceiptId: queueResult.evidenceSearch?.providerReceiptId || null,
+        providerUsageId: queueResult.providerUsage?.id || null,
+        providerEvidenceSearch: queueResult.providerEvidenceSearch || null,
+        autonomousProviderPreflight,
+        autonomousProviderPreflightChecksum: autonomousProviderPreflight.checksum || null,
+        autonomousProviderPreflightAction: autonomousProviderPreflight.action || null,
+        autonomousActionDecision,
+        autonomousActionDecisionChecksum: autonomousActionDecision?.checksum || null,
+        autonomousActionDecisionAction: autonomousActionDecision?.action || null,
+      }, providerTeam, { seenAt: now });
+      const resultMessageIds = uniqueStrings([
+        ...(queueResult.messages || []).map((message) => message.id),
+        providerEvidenceMessage.id,
+        ...(queueResult.agentAutonomousActionRun?.resultMessageIds || []),
+      ].filter(Boolean));
+      const runTimelineLogIds = uniqueStrings([
+        ...(queueResult.agentAutonomousActionRun?.timelineLogIds || []),
+        queueResult.evidenceSearchLog?.id,
+        queueResult.workSubmissionLog?.id,
+      ].filter(Boolean));
+      const runEventIds = uniqueStrings([
+        ...(queueResult.agentAutonomousActionRun?.eventIds || []),
+        queueResult.evidenceSearch?.eventId,
+        queueResult.workSubmission?.eventId,
+      ].filter(Boolean));
+      const runLog = {
+        id: `log_${runId}`,
+        time: now,
+        agent: 'Autonomous Run Control',
+        actor: 'Autonomous Run Control',
+        eventType: 'autonomous-run-control-action-run',
+        source: 'autonomous-run-control',
+        channelId: 'manager-dashboard',
+        actionId,
+        actionLane: 'agent-autonomy',
+        actionLabel: providerRow.actionLabel || providerRow.selectedAction,
+        agentId: providerRow.agentId,
+        agentIds: [providerRow.agentId],
+        taskId: queueResult.task?.id || providerRow.taskId || null,
+        delegatedRunKind: 'agent-autonomous-action-queue-provider-evidence',
+        providerEvidenceSearchId: queueResult.evidenceSearch?.id || null,
+        providerUsageId: queueResult.providerUsage?.id || null,
+        providerEvidenceMessageId: providerEvidenceMessage.id,
+        autonomousProviderPreflightChecksum: autonomousProviderPreflight.checksum || null,
+        autonomousProviderPreflightAction: autonomousProviderPreflight.action || null,
+        autonomousActionDecisionChecksum: autonomousActionDecision?.checksum || null,
+        autonomousActionDecisionAction: autonomousActionDecision?.action || null,
+        runApiPath: `/projects/${projectId}/autonomous-run-control/${encodeURIComponent(actionId)}/run`,
+        log: `Autonomous Run Control ran provider-backed evidence action for ${providerRow.name || providerRow.agentId}.`,
+      };
+      const runEventId = `evt_${runId}`;
+      const runReceipt = {
+        schemaVersion: 'autonomous-run-control-action-run/v1',
+        id: runId,
+        projectId,
+        actionId,
+        actionLane: 'agent-autonomy',
+        actionLabel: providerRow.actionLabel || providerRow.selectedAction,
+        agentId: providerRow.agentId,
+        agentIds: [providerRow.agentId],
+        taskId: queueResult.task?.id || providerRow.taskId || null,
+        statusBeforeRun: providerRow.status || null,
+        executedAt: now,
+        method: 'POST',
+        runApiPath: runLog.runApiPath,
+        delegatedRunKind: 'agent-autonomous-action-queue-provider-evidence',
+        delegatedRunApiPath: queueResult.agentAutonomousActionRun?.runApiPath || providerRow.runApiPath || null,
+        requestBody: queueResult.agentAutonomousActionRun?.requestBody || {},
+        resultRoute: queueResult.route || null,
+        resultMessageIds,
+        resultMessageCount: resultMessageIds.length,
+        providerEvidenceSearch: queueResult.providerEvidenceSearch || null,
+        evidenceSearchId: queueResult.evidenceSearch?.id || null,
+        providerReceiptId: queueResult.evidenceSearch?.providerReceiptId || null,
+        providerUsageId: queueResult.providerUsage?.id || null,
+        providerEvidenceMessageId: providerEvidenceMessage.id,
+        providerEvidenceMessageIds: [providerEvidenceMessage.id],
+        autonomousProviderPreflight,
+        autonomousProviderPreflightChecksum: autonomousProviderPreflight.checksum || null,
+        autonomousProviderPreflightAction: autonomousProviderPreflight.action || null,
+        autonomousActionDecision,
+        autonomousActionDecisionChecksum: autonomousActionDecision?.checksum || null,
+        autonomousActionDecisionAction: autonomousActionDecision?.action || null,
+        agentAutonomousActionRunId: queueResult.agentAutonomousActionRun?.id || null,
+        workSubmissionId: queueResult.workSubmission?.id || null,
+        strategyDecisionId: queueResult.strategyDecision?.id || providerRow.strategyDecision?.id || null,
+        logId: runLog.id,
+        timelineLogIds: uniqueStrings([runLog.id, ...runTimelineLogIds]),
+        eventIds: uniqueStrings([runEventId, ...runEventIds]),
+        autopilotTargetStageId: targetControls.targetStageId || null,
+        autopilotTargetControl: targetControls,
+        autopilotTargetSelection: targetSelection,
+        agentInitiative: providerRow.initiative || null,
+        agentInitiativeId: providerRow.initiativeId || providerRow.initiative?.id || null,
+        agentInitiativeArtifactType: providerRow.initiativeArtifactType || providerRow.initiative?.artifactType || null,
+        checksum: persistenceChecksum({
+          projectId,
+          actionId,
+          agentId: providerRow.agentId,
+          resultMessageIds,
+          runTimelineLogIds,
+          runEventIds,
+          evidenceSearchId: queueResult.evidenceSearch?.id || null,
+          providerUsageId: queueResult.providerUsage?.id || null,
+          providerEvidenceMessageId: providerEvidenceMessage.id,
+          autonomousProviderPreflightChecksum: autonomousProviderPreflight.checksum || null,
+          autonomousActionDecisionChecksum: autonomousActionDecision?.checksum || null,
+          targetSelectionChecksum: targetSelection.checksum,
+        }),
+      };
+      const loopId = `autonomous_run_control_loop_${projectId}_provider_evidence_${timestamp}`;
+      const loopLog = {
+        id: `log_${loopId}`,
+        time: offsetIso(now, 1000),
+        agent: 'Autonomous Run Control',
+        actor: 'Autonomous Run Control',
+        eventType: 'autonomous-run-control-loop-run',
+        source: 'autonomous-run-control',
+        channelId: 'manager-dashboard',
+        stepCount: 1,
+        maxSteps: 1,
+        stoppedReason: 'provider-evidence-step-complete',
+        runReceiptIds: [runId],
+        actionIds: [actionId],
+        actionLanes: ['agent-autonomy'],
+        agentIds: [providerRow.agentId],
+        taskIds: [runReceipt.taskId].filter(Boolean),
+        targetStageIds: [targetControls.targetStageId].filter(Boolean),
+        runApiPath: `/projects/${projectId}/autonomous-run-control/run-loop`,
+        log: 'Autonomous Run Control ran an async provider-evidence loop step.',
+      };
+      const loopEventId = `evt_${loopId}`;
+      const loopReceipt = {
+        schemaVersion: 'autonomous-run-control-loop-run/v1',
+        id: loopId,
+        projectId,
+        startedAt: now,
+        completedAt: loopLog.time,
+        maxSteps: 1,
+        stepCount: 1,
+        stoppedReason: 'provider-evidence-step-complete',
+        method: 'POST',
+        runApiPath: loopLog.runApiPath,
+        logId: loopLog.id,
+        timelineLogIds: uniqueStrings([loopLog.id, ...runReceipt.timelineLogIds]),
+        eventId: loopEventId,
+        eventIds: uniqueStrings([loopEventId, ...runReceipt.eventIds]),
+        resultMessageIds,
+        runReceiptIds: [runId],
+        actionIds: [actionId],
+        actionLanes: ['agent-autonomy'],
+        agentIds: [providerRow.agentId],
+        taskIds: [runReceipt.taskId].filter(Boolean),
+        targetControl: targetControls,
+        targetStageIds: [targetControls.targetStageId].filter(Boolean),
+        targetSelections: [targetSelection],
+        agentInitiativeIds: [runReceipt.agentInitiativeId].filter(Boolean),
+        agentInitiativeArtifactTypes: [runReceipt.agentInitiativeArtifactType].filter(Boolean),
+        agentInitiatives: [providerRow.initiative].filter((initiative) => initiative?.schemaVersion === 'agent-autonomous-initiative/v1'),
+        providerEvidenceSearch: queueResult.providerEvidenceSearch || null,
+        providerEvidenceMessageId: providerEvidenceMessage.id,
+        providerEvidenceMessageIds: [providerEvidenceMessage.id],
+        autonomousProviderPreflight,
+        autonomousProviderPreflightChecksum: autonomousProviderPreflight.checksum || null,
+        autonomousProviderPreflightAction: autonomousProviderPreflight.action || null,
+        autonomousActionDecision,
+        autonomousActionDecisionChecksum: autonomousActionDecision?.checksum || null,
+        autonomousActionDecisionAction: autonomousActionDecision?.action || null,
+        readyForProduction: false,
+        checksum: persistenceChecksum({
+          projectId,
+          runId,
+          actionId,
+          agentId: providerRow.agentId,
+          targetSelectionChecksum: targetSelection.checksum,
+          evidenceSearchId: queueResult.evidenceSearch?.id || null,
+          providerUsageId: queueResult.providerUsage?.id || null,
+          providerEvidenceMessageId: providerEvidenceMessage.id,
+          autonomousProviderPreflightChecksum: autonomousProviderPreflight.checksum || null,
+          autonomousActionDecisionChecksum: autonomousActionDecision?.checksum || null,
+        }),
+      };
+      const nextCompletedLoops = (Number(session.completedLoops) || 0) + 1;
+      const nextCompletedSteps = (Number(session.completedSteps) || 0) + 1;
+      const statusAfter = nextCompletedLoops >= (Number(session.maxLoops) || 0) || nextCompletedSteps >= (Number(session.maxTotalSteps) || 0)
+        ? 'completed'
+        : 'running';
+      const tickLog = {
+        id: `log_${tickId}`,
+        time: offsetIso(now, 2000),
+        agent: 'Autonomous Run Control',
+        actor,
+        eventType: 'autonomous-run-control-session-tick',
+        source: 'autonomous-run-control',
+        channelId: 'manager-dashboard',
+        sessionId: session.id,
+        loopReceiptIds: [loopId],
+        runReceiptIds: [runId],
+        log: `Autonomous Run Control session ${session.id} ran provider-backed evidence tick, status ${statusAfter}.`,
+      };
+      const tickEventId = `evt_${tickId}`;
+      const tickReceipt = {
+        schemaVersion: 'autonomous-run-control-session-tick/v1',
+        id: tickId,
+        projectId,
+        sessionId: session.id,
+        tickedAt: now,
+        completedAt: tickLog.time,
+        actor,
+        reason,
+        statusBefore: session.status,
+        statusAfter,
+        stoppedReason: 'provider-evidence-step-complete',
+        loopCount: 1,
+        stepCount: 1,
+        loopReceiptIds: [loopId],
+        runReceiptIds: [runId],
+        agentIds: [providerRow.agentId],
+        taskIds: [runReceipt.taskId].filter(Boolean),
+        actionIds: [actionId],
+        actionLanes: ['agent-autonomy'],
+        agentInitiativeIds: [runReceipt.agentInitiativeId].filter(Boolean),
+        agentInitiativeArtifactTypes: [runReceipt.agentInitiativeArtifactType].filter(Boolean),
+        agentInitiatives: loopReceipt.agentInitiatives,
+        candidateAgentInitiativeIds: uniqueStrings((providerQueue.rows || []).map((row) => row.initiativeId).filter(Boolean)),
+        candidateAgentInitiativeArtifactTypes: uniqueStrings((providerQueue.rows || []).map((row) => row.initiativeArtifactType).filter(Boolean)),
+        candidateAgentInitiatives: (providerQueue.rows || []).map((row) => row.initiative).filter((initiative) => initiative?.schemaVersion === 'agent-autonomous-initiative/v1'),
+        targetKind: activeTargetKind,
+        targetRoute: targetSnapshot.targetRoute,
+        targetControl: targetControls,
+        targetBeforeSnapshot,
+        targetSnapshot,
+        targetStatus: targetSnapshot.status,
+        targetReady: targetSnapshot.readyForPrivatePilotDelivery,
+        targetReadyCount: targetSnapshot.readyCount,
+        targetMissingCount: targetSnapshot.missingCount,
+        targetMissingStageIds: targetSnapshot.missingStageIds,
+        targetNextMissingStageId: targetSnapshot.nextMissingStageId,
+        providerEvidenceSearch: queueResult.providerEvidenceSearch || null,
+        providerUsageId: queueResult.providerUsage?.id || null,
+        evidenceSearchId: queueResult.evidenceSearch?.id || null,
+        providerEvidenceMessageId: providerEvidenceMessage.id,
+        providerEvidenceMessageIds: [providerEvidenceMessage.id],
+        autonomousProviderPreflight,
+        autonomousProviderPreflightChecksum: autonomousProviderPreflight.checksum || null,
+        autonomousProviderPreflightAction: autonomousProviderPreflight.action || null,
+        autonomousActionDecision,
+        autonomousActionDecisionChecksum: autonomousActionDecision?.checksum || null,
+        autonomousActionDecisionAction: autonomousActionDecision?.action || null,
+        proofIds: uniqueStrings([loopId, runId, ...resultMessageIds, queueResult.evidenceSearch?.id, queueResult.evidenceSearch?.providerReceiptId, queueResult.providerUsage?.id].filter(Boolean)),
+        resultMessageIds,
+        logId: tickLog.id,
+        timelineLogIds: uniqueStrings([tickLog.id, ...loopReceipt.timelineLogIds]),
+        eventId: tickEventId,
+        eventIds: uniqueStrings([tickEventId, ...loopReceipt.eventIds]),
+        workerKind: 'autopilot-session',
+        runApiPath: '/workers/autopilot/due',
+        apiPath: `/projects/${projectId}/autonomous-run-control/sessions/${encodeURIComponent(session.id)}/tick`,
+        directRunApiPath: `/projects/${projectId}/autonomous-run-control/sessions/${encodeURIComponent(session.id)}/tick`,
+        ...buildWorkerRunControlFields({
+          id: tickId,
+          projectId,
+          sessionId: session.id,
+          workerKind: 'autopilot-session',
+          reason,
+          status: 'succeeded',
+          ranAt: now,
+          dueAt: now,
+          completedAt: tickLog.time,
+          messageIds: resultMessageIds,
+          timelineLogIds: uniqueStrings([tickLog.id, ...loopReceipt.timelineLogIds]),
+        }, { projectId, workerKind: 'autopilot-session', now }),
+        readyForProduction: false,
+        checksum: persistenceChecksum({
+          projectId,
+          sessionId: session.id,
+          loopId,
+          runId,
+          providerUsageId: queueResult.providerUsage?.id || null,
+          evidenceSearchId: queueResult.evidenceSearch?.id || null,
+          providerEvidenceMessageId: providerEvidenceMessage.id,
+          autonomousProviderPreflightChecksum: autonomousProviderPreflight.checksum || null,
+          autonomousActionDecisionChecksum: autonomousActionDecision?.checksum || null,
+          targetChecksum: targetSnapshot.checksum,
+          targetBeforeChecksum: targetBeforeSnapshot.checksum,
+          targetControlChecksum: targetControls.checksum,
+          statusBefore: session.status,
+          statusAfter,
+        }),
+      };
+      const updatedSession = {
+        ...session,
+        status: statusAfter,
+        statusReason: 'provider-evidence-step-complete',
+        updatedAt: tickLog.time,
+        lastTickAt: now,
+        completedAt: statusAfter === 'completed' ? tickLog.time : session.completedAt || null,
+        tickCount: (Number(session.tickCount) || 0) + 1,
+        completedLoops: nextCompletedLoops,
+        completedSteps: nextCompletedSteps,
+        loopReceiptIds: uniqueStrings([loopId, ...(session.loopReceiptIds || [])]),
+        runReceiptIds: uniqueStrings([runId, ...(session.runReceiptIds || [])]),
+        agentIds: uniqueStrings([providerRow.agentId, ...(session.agentIds || [])]),
+        taskIds: uniqueStrings([runReceipt.taskId, ...(session.taskIds || [])].filter(Boolean)),
+        actionIds: uniqueStrings([actionId, ...(session.actionIds || [])]),
+        actionLanes: uniqueStrings(['agent-autonomy', ...(session.actionLanes || [])]),
+        agentInitiativeIds: uniqueStrings([runReceipt.agentInitiativeId, ...(session.agentInitiativeIds || [])].filter(Boolean)),
+        agentInitiativeArtifactTypes: uniqueStrings([runReceipt.agentInitiativeArtifactType, ...(session.agentInitiativeArtifactTypes || [])].filter(Boolean)),
+        candidateAgentInitiativeIds: tickReceipt.candidateAgentInitiativeIds,
+        candidateAgentInitiativeArtifactTypes: tickReceipt.candidateAgentInitiativeArtifactTypes,
+        targetKind: activeTargetKind,
+        targetRoute: targetSnapshot.targetRoute,
+        targetControl: targetControls,
+        targetBeforeSnapshot,
+        targetSnapshot,
+        targetStatus: targetSnapshot.status,
+        targetReady: targetSnapshot.readyForPrivatePilotDelivery,
+        targetReadyCount: targetSnapshot.readyCount,
+        targetMissingCount: targetSnapshot.missingCount,
+        targetMissingStageIds: targetSnapshot.missingStageIds,
+        targetNextMissingStageId: targetSnapshot.nextMissingStageId,
+        providerEvidenceSearch: queueResult.providerEvidenceSearch || null,
+        providerUsageId: queueResult.providerUsage?.id || null,
+        evidenceSearchId: queueResult.evidenceSearch?.id || null,
+        providerEvidenceMessageId: providerEvidenceMessage.id,
+        providerEvidenceMessageIds: [providerEvidenceMessage.id],
+        autonomousProviderPreflight,
+        autonomousProviderPreflightChecksum: autonomousProviderPreflight.checksum || null,
+        autonomousProviderPreflightAction: autonomousProviderPreflight.action || null,
+        autonomousActionDecision,
+        autonomousActionDecisionChecksum: autonomousActionDecision?.checksum || null,
+        autonomousActionDecisionAction: autonomousActionDecision?.action || null,
+        proofIds: uniqueStrings([...(tickReceipt.proofIds || []), ...(session.proofIds || [])]),
+        timelineLogIds: uniqueStrings([tickLog.id, ...(session.timelineLogIds || []), ...loopReceipt.timelineLogIds]),
+        eventIds: uniqueStrings([tickEventId, ...(session.eventIds || []), ...loopReceipt.eventIds]),
+        checksum: persistenceChecksum({
+          projectId,
+          sessionId: session.id,
+          status: statusAfter,
+          completedLoops: nextCompletedLoops,
+          completedSteps: nextCompletedSteps,
+          loopId,
+          runId,
+          providerUsageId: queueResult.providerUsage?.id || null,
+          evidenceSearchId: queueResult.evidenceSearch?.id || null,
+          providerEvidenceMessageId: providerEvidenceMessage.id,
+          autonomousProviderPreflightChecksum: autonomousProviderPreflight.checksum || null,
+          autonomousActionDecisionChecksum: autonomousActionDecision?.checksum || null,
+          targetChecksum: targetSnapshot.checksum,
+          targetBeforeChecksum: targetBeforeSnapshot.checksum,
+          targetControlChecksum: targetControls.checksum,
+        }),
+      };
+      const projectWithProviderTick = appendProjectEvents({
+        ...latestProject,
+        logs: [tickLog, loopLog, runLog, ...(latestProject.logs || [])],
+        autonomousRunControlRunLedger: [
+          runReceipt,
+          ...(latestProject.autonomousRunControlRunLedger || []),
+        ].slice(0, 100),
+        autonomousRunControlLoopLedger: [
+          loopReceipt,
+          ...(latestProject.autonomousRunControlLoopLedger || []),
+        ].slice(0, 50),
+        autonomousRunControlSessionLedger: [
+          updatedSession,
+          ...(latestProject.autonomousRunControlSessionLedger || []).filter((item) => item.id !== session.id),
+        ].slice(0, 50),
+        autonomousRunControlSessionTickLedger: [
+          tickReceipt,
+          ...(latestProject.autonomousRunControlSessionTickLedger || []),
+        ].slice(0, 100),
+      }, [
+        createProjectLedgerEvent({
+          id: runEventId,
+          type: 'autonomous-run-control-action-run',
+          time: runLog.time,
+          actor: 'Autonomous Run Control',
+          summary: runLog.log,
+          source: 'autonomous-run-control',
+          channelId: 'manager-dashboard',
+          evidenceIds: uniqueStrings([runLog.id, runId, queueResult.evidenceSearch?.id, queueResult.evidenceSearch?.providerReceiptId, queueResult.providerUsage?.id, ...resultMessageIds].filter(Boolean)),
+          entityIds: {
+            projectId,
+            agentId: providerRow.agentId,
+            taskId: runReceipt.taskId || null,
+            runId,
+            evidenceSearchId: queueResult.evidenceSearch?.id || null,
+            providerUsageId: queueResult.providerUsage?.id || null,
+            providerEvidenceMessageId: providerEvidenceMessage.id,
+            logId: runLog.id,
+          },
+          payload: {
+            actionLane: 'agent-autonomy',
+            delegatedRunKind: runReceipt.delegatedRunKind,
+            providerEvidenceSearch: queueResult.providerEvidenceSearch || null,
+            providerUsageId: queueResult.providerUsage?.id || null,
+            providerEvidenceMessageId: providerEvidenceMessage.id,
+            autonomousProviderPreflightChecksum: autonomousProviderPreflight.checksum || null,
+            autonomousProviderPreflightAction: autonomousProviderPreflight.action || null,
+            autonomousActionDecisionChecksum: autonomousActionDecision?.checksum || null,
+            autonomousActionDecisionAction: autonomousActionDecision?.action || null,
+            autopilotTargetStageId: targetControls.targetStageId || null,
+            autopilotTargetSelection: targetSelection,
+          },
+        }),
+        createProjectLedgerEvent({
+          id: loopEventId,
+          type: 'autonomous-run-control-loop-run',
+          time: loopLog.time,
+          actor: 'Autonomous Run Control',
+          summary: loopLog.log,
+          source: 'autonomous-run-control',
+          channelId: 'manager-dashboard',
+          evidenceIds: uniqueStrings([loopLog.id, loopId, runId, ...resultMessageIds]),
+          entityIds: {
+            projectId,
+            logId: loopLog.id,
+            runReceiptIds: [runId],
+            agentIds: [providerRow.agentId],
+            taskIds: [runReceipt.taskId].filter(Boolean),
+            providerEvidenceMessageId: providerEvidenceMessage.id,
+          },
+          payload: {
+            schemaVersion: loopReceipt.schemaVersion,
+            stepCount: 1,
+            actionLanes: ['agent-autonomy'],
+            targetSelections: [targetSelection],
+            providerEvidenceSearch: queueResult.providerEvidenceSearch || null,
+            providerEvidenceMessageId: providerEvidenceMessage.id,
+            autonomousProviderPreflightChecksum: autonomousProviderPreflight.checksum || null,
+            autonomousProviderPreflightAction: autonomousProviderPreflight.action || null,
+            autonomousActionDecisionChecksum: autonomousActionDecision?.checksum || null,
+            autonomousActionDecisionAction: autonomousActionDecision?.action || null,
+          },
+        }),
+        createProjectLedgerEvent({
+          id: tickEventId,
+          type: 'autonomous-run-control-session-tick',
+          time: tickLog.time,
+          actor,
+          summary: tickLog.log,
+          source: 'autonomous-run-control',
+          channelId: 'manager-dashboard',
+          evidenceIds: uniqueStrings([tickLog.id, tickId, loopId, runId, ...tickReceipt.proofIds]),
+          entityIds: {
+            projectId,
+            sessionId: session.id,
+            tickId,
+            loopReceiptIds: [loopId],
+            runReceiptIds: [runId],
+            agentIds: [providerRow.agentId],
+            taskIds: [runReceipt.taskId].filter(Boolean),
+            actionIds: [actionId],
+            actionLanes: ['agent-autonomy'],
+            providerEvidenceMessageId: providerEvidenceMessage.id,
+            logId: tickLog.id,
+          },
+          payload: {
+            schemaVersion: tickReceipt.schemaVersion,
+            statusBefore: session.status,
+            statusAfter,
+            loopCount: 1,
+            stepCount: 1,
+            stoppedReason: 'provider-evidence-step-complete',
+            providerEvidenceSearch: queueResult.providerEvidenceSearch || null,
+            providerUsageId: queueResult.providerUsage?.id || null,
+            providerEvidenceMessageId: providerEvidenceMessage.id,
+            autonomousProviderPreflightChecksum: autonomousProviderPreflight.checksum || null,
+            autonomousProviderPreflightAction: autonomousProviderPreflight.action || null,
+            autonomousActionDecisionChecksum: autonomousActionDecision?.checksum || null,
+            autonomousActionDecisionAction: autonomousActionDecision?.action || null,
+            targetKind: activeTargetKind,
+            targetReady: targetSnapshot.readyForPrivatePilotDelivery,
+            targetMissingStageIds: targetSnapshot.missingStageIds,
+            targetChecksum: targetSnapshot.checksum,
+            targetBeforeChecksum: targetBeforeSnapshot.checksum,
+            targetControl: targetControls,
+          },
+        }),
+      ]);
+      const projectWithProviderTickChat = applyChatMessagesToAgentStates({
+        project: projectWithProviderTick,
+        team: providerTeam,
+        messages: [providerEvidenceMessage],
+        now,
+        source: 'autonomous-run-control-provider-evidence-chat',
+        language: targetLanguage,
+      });
+      const savedProject = saveProject(projectWithProviderTickChat);
+      appendMessages([{ ...providerEvidenceMessage, projectId }]);
+      return {
+        route: 'autonomous-run-control-session-tick',
+        project: savedProject,
+        messages: [...(queueResult.messages || []), providerEvidenceMessage],
+        autonomousRunControlSession: updatedSession,
+        autonomousRunControlSessionTick: tickReceipt,
+        autonomousRunControlLoops: [loopReceipt],
+        autonomousRunControlRuns: [runReceipt],
+        providerEvidenceSearch: queueResult.providerEvidenceSearch || null,
+        providerUsage: queueResult.providerUsage || null,
+        autonomousProviderPreflight,
+        autonomousActionDecision,
+        evidenceSearch: queueResult.evidenceSearch || null,
+        agentAutonomousAction: queueResult.agentAutonomousAction || null,
+        agentAutonomousActionRun: queueResult.agentAutonomousActionRun || null,
+        autonomousRunControlSessions: this.getAutonomousRunControlSessions(projectId, { now: tickLog.time, language: targetLanguage }),
+        autonomousRunControl: this.getAutonomousRunControl(projectId, { now: tickLog.time, language: targetLanguage, skipCache: true }),
+      };
+    },
     pauseAutonomousRunControlSession(input = {}) {
       const {
         projectId,
@@ -37647,6 +46507,7 @@ export function createAgentProjectService({
         project,
         now: options.now || nowIso(),
         intervalMs: options.intervalMs,
+        providerEvidenceSearchEnabled: options.providerEvidenceSearchEnabled ?? Boolean(searchProviderStatus().enabled),
       }), options.language);
     },
     runAgentAutonomousActionQueueItem({
@@ -37669,6 +46530,17 @@ export function createAgentProjectService({
         ...requestBodyOverrides,
         now,
       };
+      const autonomousActionDecision = buildAutonomousActionDecision({
+        projectId,
+        queueRow: row,
+        requestBody,
+        now,
+        force,
+      });
+      if (requestBody.useProviderEvidenceSearch) {
+        delete requestBody.useProviderEvidenceSearch;
+        requestBody.providerEvidenceSearchSkippedReason = 'sync-agent-autonomous-action-queue-run';
+      }
       const result = this.runAgentWorkCycle({
         projectId,
         agentId: row.agentId,
@@ -37702,6 +46574,9 @@ export function createAgentProjectService({
         taskId: row.taskId || null,
         selectedAction: row.selectedAction,
         actionLabel: row.actionLabel,
+        autonomousActionDecisionId: autonomousActionDecision.id,
+        autonomousActionDecisionChecksum: autonomousActionDecision.checksum,
+        autonomousActionDecisionAction: autonomousActionDecision.action,
         runApiPath: row.runApiPath,
         delegatedRunApiPath: row.agentWorkCycleApiPath,
         log: `Agent Autonomous Queue ran "${row.actionLabel || row.selectedAction}" for ${row.name || row.agentId}.`,
@@ -37732,6 +46607,10 @@ export function createAgentProjectService({
         reviewId: result.review?.id || null,
         reviewResponseSubmissionId: result.reviewResponseSubmission?.id || null,
         strategyDecisionId: result.strategyDecision?.id || row.strategyDecision?.id || null,
+        autonomousActionDecision,
+        autonomousActionDecisionId: autonomousActionDecision.id,
+        autonomousActionDecisionChecksum: autonomousActionDecision.checksum,
+        autonomousActionDecisionAction: autonomousActionDecision.action,
         logId: runLog.id,
         timelineLogIds: uniqueStrings([runLog.id, ...timelineLogIds]),
         eventIds: uniqueStrings([runEventId, ...eventIds]),
@@ -37740,6 +46619,8 @@ export function createAgentProjectService({
           agentId: row.agentId,
           selectedAction: row.selectedAction,
           strategyDecisionId: result.strategyDecision?.id || row.strategyDecision?.id || null,
+          autonomousActionDecisionChecksum: autonomousActionDecision.checksum,
+          autonomousActionDecisionAction: autonomousActionDecision.action,
           resultMessageIds,
           timelineLogIds,
           eventIds,
@@ -37778,6 +46659,8 @@ export function createAgentProjectService({
             runApiPath: row.runApiPath,
             delegatedRunApiPath: row.agentWorkCycleApiPath,
             strategyDecisionId: runReceipt.strategyDecisionId,
+            autonomousActionDecisionChecksum: autonomousActionDecision.checksum,
+            autonomousActionDecisionAction: autonomousActionDecision.action,
           },
         }),
       ]);
@@ -37788,6 +46671,219 @@ export function createAgentProjectService({
         route: 'agent-autonomous-action-queue-item-run',
         agentAutonomousAction: row,
         agentAutonomousActionRun: runReceipt,
+        autonomousActionDecision,
+        agentAutonomousActionQueue: this.getAgentAutonomousActionQueue(resultProjectId, { language: requestBodyOverrides.language }),
+      };
+    },
+    async runAgentAutonomousActionQueueItemWithProviderEvidence({
+      projectId,
+      agentId = 'next',
+      requestBodyOverrides = {},
+      now = nowIso(),
+      force = false,
+    } = {}) {
+      const actionQueue = this.getAgentAutonomousActionQueue(projectId, { now, language: requestBodyOverrides.language });
+      const row = agentId === 'next'
+        ? actionQueue.nextAction
+        : (actionQueue.rows || []).find((item) => item.agentId === agentId || item.id === agentId || item.id === `agent-autonomous-action-${agentId}`);
+      if (!row) throw new Error(`Agent autonomous action not found: ${agentId}`);
+      if (!row.canRun && !force) {
+        throw new Error(`Agent autonomous action is not runnable: ${row.agentId || agentId}`);
+      }
+      const requestBody = {
+        ...materializeActionTemplate(row.requestBodyTemplate || {}, now),
+        ...requestBodyOverrides,
+        now,
+      };
+      const autonomousProviderPreflight = buildAutonomousProviderPreflight({
+        projectId,
+        kind: 'search',
+        operation: requestBody.operation || 'search:evidence',
+        agentId: row.agentId,
+        requested: true,
+        requireProvider: Boolean(requestBody.requireProviderEvidenceSearch),
+        queueReady: Boolean(row.canRun || force),
+        targetStageId: requestBody.autopilotTargetStageId || requestBody.autopilotTargetControl?.targetStageId || requestBody.targetControl?.targetStageId || '',
+        estimatedCostCents: requestBody.estimatedCostCents,
+        now,
+      });
+      const autonomousActionDecision = buildAutonomousActionDecision({
+        projectId,
+        queueRow: row,
+        requestBody,
+        now,
+        force,
+        providerPreflight: autonomousProviderPreflight,
+      });
+      if (!requestBody.useProviderEvidenceSearch) {
+        return this.runAgentAutonomousActionQueueItem({
+          projectId,
+          agentId,
+          requestBodyOverrides,
+          now,
+          force,
+        });
+      }
+
+      const result = await this.runAgentWorkCycleWithProviderEvidence({
+        projectId,
+        agentId: row.agentId,
+        ...requestBody,
+        autonomousProviderPreflight,
+      });
+      const resultProjectId = result.project?.id || projectId;
+      const resultProject = store.getProject(resultProjectId) || result.project;
+      const timestamp = Date.parse(now) || Date.now();
+      const runId = `agent_autonomous_action_run_${projectId}_${row.agentId}_${timestamp}`;
+      const resultMessageIds = uniqueStrings((result.messages || []).map((message) => message.id).filter(Boolean));
+      const timelineLogIds = uniqueStrings([
+        result.log?.id,
+        result.evidenceSearchLog?.id,
+        result.workSubmissionLog?.id,
+        result.reviewLog?.id,
+        result.reviewResponseLog?.id,
+      ].filter(Boolean));
+      const eventIds = uniqueStrings([
+        result.evidenceSearch?.eventId,
+        result.review?.eventId,
+        result.reviewResponseSubmission?.eventId,
+        result.workSubmission?.eventId,
+      ].filter(Boolean));
+      const runLog = {
+        id: `log_${runId}`,
+        time: now,
+        agent: 'Agent Autonomous Queue',
+        actor: 'Agent Autonomous Queue',
+        eventType: 'agent-autonomous-action-run',
+        source: 'agent-autonomous-action-queue',
+        channelId: 'manager-dashboard',
+        agentId: row.agentId,
+        taskId: row.taskId || null,
+        selectedAction: row.selectedAction,
+        actionLabel: row.actionLabel,
+        runApiPath: row.runApiPath,
+        delegatedRunApiPath: row.agentWorkCycleApiPath,
+        providerEvidenceSearchId: result.providerEvidenceSearch?.evidenceSearchId || result.evidenceSearch?.id || null,
+        providerUsageId: result.providerUsage?.id || null,
+        autonomousProviderPreflightChecksum: result.autonomousProviderPreflight?.checksum || autonomousProviderPreflight.checksum || null,
+        autonomousProviderPreflightAction: result.autonomousProviderPreflight?.action || autonomousProviderPreflight.action || null,
+        autonomousActionDecisionId: autonomousActionDecision.id,
+        autonomousActionDecisionChecksum: autonomousActionDecision.checksum,
+        autonomousActionDecisionAction: autonomousActionDecision.action,
+        log: `Agent Autonomous Queue ran "${row.actionLabel || row.selectedAction}" for ${row.name || row.agentId} with provider-backed evidence controls.`,
+      };
+      const runEventId = `evt_${runId}`;
+      const runReceipt = {
+        schemaVersion: 'agent-autonomous-action-run/v1',
+        id: runId,
+        projectId,
+        agentId: row.agentId,
+        name: row.name || null,
+        role: row.role || null,
+        selectedAction: row.selectedAction,
+        actionLabel: row.actionLabel,
+        statusBeforeRun: row.status || null,
+        executedAt: now,
+        method: 'POST',
+        runApiPath: row.runApiPath,
+        delegatedRunApiPath: row.agentWorkCycleApiPath,
+        requestBody,
+        resultRoute: result.route || null,
+        resultCycleId: result.cycle?.id || null,
+        resultMessageIds,
+        resultMessageCount: resultMessageIds.length,
+        taskId: row.taskId || result.task?.id || null,
+        resultTaskId: result.task?.id || null,
+        evidenceSearchId: result.evidenceSearch?.id || null,
+        providerReceiptId: result.evidenceSearch?.providerReceiptId || null,
+        providerUsageId: result.providerUsage?.id || null,
+        providerEvidenceSearch: result.providerEvidenceSearch || null,
+        autonomousProviderPreflight: result.autonomousProviderPreflight || autonomousProviderPreflight,
+        autonomousProviderPreflightChecksum: result.autonomousProviderPreflight?.checksum || autonomousProviderPreflight.checksum || null,
+        autonomousProviderPreflightAction: result.autonomousProviderPreflight?.action || autonomousProviderPreflight.action || null,
+        autonomousActionDecision,
+        autonomousActionDecisionId: autonomousActionDecision.id,
+        autonomousActionDecisionChecksum: autonomousActionDecision.checksum,
+        autonomousActionDecisionAction: autonomousActionDecision.action,
+        workSubmissionId: result.workSubmission?.id || null,
+        reviewId: result.review?.id || null,
+        reviewResponseSubmissionId: result.reviewResponseSubmission?.id || null,
+        strategyDecisionId: result.strategyDecision?.id || row.strategyDecision?.id || null,
+        logId: runLog.id,
+        timelineLogIds: uniqueStrings([runLog.id, ...timelineLogIds]),
+        eventIds: uniqueStrings([runEventId, ...eventIds]),
+        checksum: persistenceChecksum({
+          projectId,
+          agentId: row.agentId,
+          selectedAction: row.selectedAction,
+          strategyDecisionId: result.strategyDecision?.id || row.strategyDecision?.id || null,
+          resultMessageIds,
+          timelineLogIds,
+          eventIds,
+          evidenceSearchId: result.evidenceSearch?.id || null,
+          providerUsageId: result.providerUsage?.id || null,
+          autonomousProviderPreflightChecksum: result.autonomousProviderPreflight?.checksum || autonomousProviderPreflight.checksum || null,
+          autonomousProviderPreflightAction: result.autonomousProviderPreflight?.action || autonomousProviderPreflight.action || null,
+          autonomousActionDecisionChecksum: autonomousActionDecision.checksum,
+          autonomousActionDecisionAction: autonomousActionDecision.action,
+        }),
+      };
+      const projectWithReceipt = appendProjectEvents({
+        ...resultProject,
+        logs: [runLog, ...(resultProject.logs || [])],
+        agentAutonomousActionRunLedger: [
+          runReceipt,
+          ...(resultProject.agentAutonomousActionRunLedger || []),
+        ].slice(0, 100),
+      }, [
+        createProjectLedgerEvent({
+          id: runEventId,
+          type: 'agent-autonomous-action-run',
+          time: now,
+          actor: 'Agent Autonomous Queue',
+          summary: runLog.log,
+          source: 'agent-autonomous-action-queue',
+          channelId: 'manager-dashboard',
+          evidenceIds: uniqueStrings([
+            runLog.id,
+            result.evidenceSearch?.id,
+            result.evidenceSearch?.providerReceiptId,
+            result.providerUsage?.id,
+            ...resultMessageIds,
+            ...timelineLogIds,
+          ]),
+          entityIds: {
+            projectId,
+            agentId: row.agentId,
+            taskId: runReceipt.taskId || null,
+            logId: runLog.id,
+            runId,
+            evidenceSearchId: result.evidenceSearch?.id || null,
+            providerUsageId: result.providerUsage?.id || null,
+          },
+          payload: {
+            selectedAction: row.selectedAction,
+            runApiPath: row.runApiPath,
+            delegatedRunApiPath: row.agentWorkCycleApiPath,
+            strategyDecisionId: runReceipt.strategyDecisionId,
+            providerEvidenceSearch: result.providerEvidenceSearch || null,
+            providerUsageId: result.providerUsage?.id || null,
+            autonomousProviderPreflightChecksum: runReceipt.autonomousProviderPreflightChecksum || null,
+            autonomousProviderPreflightAction: runReceipt.autonomousProviderPreflightAction || null,
+            autonomousActionDecisionChecksum: autonomousActionDecision.checksum,
+            autonomousActionDecisionAction: autonomousActionDecision.action,
+          },
+        }),
+      ]);
+      const savedProject = saveProject(projectWithReceipt);
+      return {
+        ...result,
+        project: savedProject,
+        route: 'agent-autonomous-action-queue-item-run',
+        agentAutonomousAction: row,
+        agentAutonomousActionRun: runReceipt,
+        autonomousActionDecision,
+        autonomousProviderPreflight: result.autonomousProviderPreflight || autonomousProviderPreflight,
         agentAutonomousActionQueue: this.getAgentAutonomousActionQueue(resultProjectId, { language: requestBodyOverrides.language }),
       };
     },
@@ -37883,6 +46979,8 @@ export function createAgentProjectService({
         });
         const processedProject = projectSweep.processed.find((item) => String(item.projectId) === String(projectId));
         const latestProject = store.getProject(projectId);
+        const agentSweepResults = (agentSweep.processed || []).map((item) => item.result).filter(Boolean);
+        const firstAgentSweepResultWith = (key) => agentSweepResults.find((item) => item?.[key])?.[key] || null;
         result = {
           route: 'manager-action-scheduler-tick',
           project: latestProject,
@@ -37893,6 +46991,17 @@ export function createAgentProjectService({
           agentSkipped: agentSweep.skipped || [],
           allMessages: agentSweep.allMessages || projectSweep.allMessages || store.getMessages(),
           cycle: processedProject?.result?.cycle || latestProject?.autonomousLedger?.[0] || null,
+          workSubmission: firstAgentSweepResultWith('workSubmission') || firstAgentSweepResultWith('submission'),
+          submission: firstAgentSweepResultWith('submission') || firstAgentSweepResultWith('workSubmission'),
+          workSubmissionLog: firstAgentSweepResultWith('workSubmissionLog'),
+          artifact: firstAgentSweepResultWith('artifact'),
+          evidenceSearch: firstAgentSweepResultWith('evidenceSearch'),
+          evidenceSearchLog: firstAgentSweepResultWith('evidenceSearchLog'),
+          evidenceSearchSourceSnapshots: firstAgentSweepResultWith('evidenceSearchSourceSnapshots') || [],
+          review: firstAgentSweepResultWith('review'),
+          reviewedSubmission: firstAgentSweepResultWith('reviewedSubmission'),
+          reviewResponseSubmission: firstAgentSweepResultWith('reviewResponseSubmission'),
+          reviewResponseArtifact: firstAgentSweepResultWith('reviewResponseArtifact'),
           schedulerTick: {
             schemaVersion: 'manager-action-scheduler-tick/v1',
             projectId,
@@ -38034,6 +47143,10 @@ export function createAgentProjectService({
     getManagerReadyPackage(projectId, options = {}) {
       return cachedReadModel('manager-ready-package', projectId, options, () => {
       const language = options.language || store.getProject(projectId)?.language || 'en';
+      const localMvpStartupReadiness = buildLocalMvpStartupReadiness();
+      const settingsHealthReadiness = buildSettingsHealthReadiness();
+      const settingsProviderReadiness = buildSettingsProviderReadiness({ projectId });
+      const settingsRuntimeReadiness = buildSettingsRuntimeReadiness({ projectId });
       const managerDashboard = this.getManagerDashboard(projectId, { language });
       const managerFlowGraph = this.getManagerFlowGraph(projectId, { language });
       const mvpReadiness = buildMvpReadiness({ managerDashboard, managerFlowGraph });
@@ -38059,7 +47172,7 @@ export function createAgentProjectService({
           summary: null,
         },
       });
-      const providerReadiness = buildProviderReadinessSnapshot({
+      const providerReadinessBase = buildProviderReadinessSnapshot({
         project: store.getProject(projectId),
         managerDashboard,
         mvpReadiness,
@@ -38067,7 +47180,26 @@ export function createAgentProjectService({
         modelProviderStatus: modelProviderStatus(),
         searchProviderStatus: searchProviderStatus(),
         secretVaultStatus: secretVaultStatus(),
-        providerControlPolicy: providerControlPolicyStatus(),
+        providerControlPolicy: providerControlPolicyStatus(store.getProject(projectId)),
+      });
+      const providerVaultBindings = buildProviderVaultBindings({ projectId });
+      const providerReadiness = {
+        ...providerReadinessBase,
+        providerVaultBindings,
+        backendRoutes: {
+          ...(providerReadinessBase.backendRoutes || {}),
+          providerVaultBindings: providerVaultBindings.backendRoutes?.providerVaultBindings || `/projects/${projectId}/provider-vault-bindings`,
+        },
+        summary: {
+          ...(providerReadinessBase.summary || {}),
+          providerVaultBoundProviderCount: providerVaultBindings.summary?.boundProviderCount || 0,
+          providerVaultBindingChecksum: providerVaultBindings.checksum || null,
+        },
+      };
+      const budgetAlertReadiness = buildBudgetAlertReadinessSnapshot({
+        project: store.getProject(projectId),
+        projectSettings: buildProjectSettingsReadModel(store.getProject(projectId)),
+        providerControlPolicy: providerControlPolicyStatus(store.getProject(projectId)),
       });
       const evidenceQualityAudit = buildEvidenceQualityAudit({
         project: store.getProject(projectId),
@@ -38109,7 +47241,21 @@ export function createAgentProjectService({
         providerReadiness,
         persistenceSnapshot,
       });
+      const evidenceIndexReadiness = buildEvidenceIndexReadinessSnapshot({
+        project: store.getProject(projectId),
+        evidenceQualityAudit,
+        artifactQualityAudit,
+        evidenceCustodyReadiness,
+      });
       const persistenceAdapterPlan = this.getPersistenceAdapterPlan(projectId, { language });
+      const meetingSummaries = this.getMeetingSummaries(projectId, { language });
+      const projectMemoryReadiness = buildProjectMemoryReadinessSnapshot({
+        project: store.getProject(projectId),
+        messages: store.getMessages(projectId),
+        evidenceIndexReadiness,
+        persistenceAdapterPlan,
+        meetingSummaries,
+      });
       const persistenceAdapterDryRun = this.getPersistenceAdapterDryRun(projectId, { language });
       const workerQueueAdapterPlan = this.getWorkerQueueAdapterPlan(projectId, { language });
       const workerQueueAdapterDryRun = this.getWorkerQueueAdapterDryRun(projectId, { language });
@@ -38142,6 +47288,14 @@ export function createAgentProjectService({
         productTeamOperatingLoop,
         readinessProofMap: managerDashboard.readinessProofMap,
       });
+      const collaborationIntentQueue = buildCollaborationIntentQueue({
+        project: store.getProject(projectId),
+        messages: store.getMessages(projectId),
+        managerDashboard,
+        productTeamOperatingLoop,
+        teamCollaborationDiagnostics,
+        readinessProofMap: managerDashboard.readinessProofMap,
+      });
       const runtimeContracts = buildRuntimeContractFreeze({
         project: store.getProject(projectId),
         managerDashboard,
@@ -38162,7 +47316,21 @@ export function createAgentProjectService({
         runtimeContracts,
         workerQueueSnapshot,
       });
+      const runtimeAutonomyStatus = buildRuntimeAutonomyStatus({
+        project: store.getProject(projectId),
+        managerDashboard,
+        workerQueueSnapshot,
+        persistenceSnapshot,
+        workerQueueAdapterPlan,
+        workerQueueAdapterDryRun,
+        autonomousRunControl,
+        productTeamOperatingLoop,
+      });
       const operationsReadiness = this.getOperationsReadiness(projectId, { language });
+      const errorReportingReadiness = buildErrorReportingReadinessSnapshot({
+        project: store.getProject(projectId),
+        operationsReadiness,
+      });
       const pilotLaunchReadiness = buildPilotLaunchReadinessSnapshot({
         project: store.getProject(projectId),
         managerDashboard,
@@ -38187,6 +47355,15 @@ export function createAgentProjectService({
         managedPersistenceStatus: managedPersistenceAdapterStatus(),
         workerQueueStatus: workerQueueAdapterStatus(),
       });
+      const settingsIntegrationReadiness = buildSettingsIntegrationReadinessSnapshot({
+        project: store.getProject(projectId),
+        projectSettings: buildProjectSettingsReadModel(store.getProject(projectId)),
+        providerReadiness,
+        adapterGatewayPreflight,
+        evidenceIndexReadiness,
+        budgetAlertReadiness,
+        errorReportingReadiness,
+      });
       const deploymentPreflight = buildDeploymentPreflightSnapshot({
         project: store.getProject(projectId),
         managerDashboard,
@@ -38202,7 +47379,7 @@ export function createAgentProjectService({
         modelProviderStatus: modelProviderStatus(),
         searchProviderStatus: searchProviderStatus(),
         secretVaultStatus: secretVaultStatus(),
-        providerControlPolicy: providerControlPolicyStatus(),
+        providerControlPolicy: providerControlPolicyStatus(store.getProject(projectId)),
         managedPersistenceStatus: managedPersistenceAdapterStatus(),
         workerQueueStatus: workerQueueAdapterStatus(),
         store,
@@ -38228,7 +47405,7 @@ export function createAgentProjectService({
         deploymentPreflight,
         modelProviderStatus: modelProviderStatus(),
         searchProviderStatus: searchProviderStatus(),
-        providerControlPolicy: providerControlPolicyStatus(),
+        providerControlPolicy: providerControlPolicyStatus(store.getProject(projectId)),
       });
       const providerEvalRunWorkflow = buildProviderEvalRunWorkflow({
         project: store.getProject(projectId),
@@ -38313,6 +47490,7 @@ export function createAgentProjectService({
         securityBoundary,
         productionSecurityControlReceiptWorkflow,
         providerReadiness,
+        budgetAlertReadiness,
         providerControlledRun,
         providerEvalRunWorkflow,
         productionProviderControlReceiptWorkflow,
@@ -38322,7 +47500,9 @@ export function createAgentProjectService({
         evidenceQualityAudit,
         evidenceSourceReviewWorkflow,
         evidenceCustodyReadiness,
+        projectMemoryReadiness,
         operationsReadiness,
+        errorReportingReadiness,
         persistenceAdapterPlan,
         persistenceAdapterDryRun,
         workerQueueAdapterPlan,
@@ -38519,8 +47699,10 @@ export function createAgentProjectService({
         autonomousRunControl,
         productTeamOperatingLoop,
         teamCollaborationDiagnostics,
+        collaborationIntentQueue,
         runtimeContracts,
         autonomousCycleConsistency,
+        runtimeAutonomyStatus,
         managerCommandCenter: managerDashboard.managerCommandCenter,
         managerScenarioTrail: managerDashboard.managerScenarioTrail,
         managerScenarioWalkthrough: managerDashboard.managerScenarioWalkthrough,
@@ -38537,8 +47719,15 @@ export function createAgentProjectService({
         transcriptIndex: managerDashboard.transcriptIndex,
         operationsBoard: managerDashboard.operationsBoard,
         backendRoutes: managerDashboard.backendRoutes,
+        localMvpStartupReadiness,
+        settingsHealthReadiness,
+        settingsProviderReadiness,
+        settingsRuntimeReadiness,
+        settingsIntegrationReadiness,
         securityBoundary,
         providerReadiness,
+        budgetAlertReadiness,
+        errorReportingReadiness,
         providerControlledRun,
         providerEvalRunWorkflow,
         productionProviderControlReceiptWorkflow,
@@ -38548,6 +47737,7 @@ export function createAgentProjectService({
         evidenceQualityAudit,
         evidenceSourceReviewWorkflow,
         evidenceCustodyReadiness,
+        projectMemoryReadiness,
         operationsReadiness,
         persistenceAdapterPlan,
         persistenceAdapterDryRun,
@@ -38604,6 +47794,42 @@ export function createAgentProjectService({
           flowGraphNodeCount: managerFlowGraph.summary?.nodeCount || 0,
           flowGraphEdgeCount: managerFlowGraph.summary?.edgeCount || 0,
           flowGraphProofedNodeCount: managerFlowGraph.summary?.proofedNodeCount || 0,
+          localMvpStartupStatus: localMvpStartupReadiness.status || 'unknown',
+          localMvpReadyForSettingsEntry: Boolean(localMvpStartupReadiness.readyForSettingsEntry),
+          localMvpReadyForProviderSetup: Boolean(localMvpStartupReadiness.readyForProviderSetup),
+          localMvpReadyForFirstProjectRun: Boolean(localMvpStartupReadiness.readyForFirstProjectRun),
+          localMvpStartupFailedGateCount: localMvpStartupReadiness.summary?.failedGateCount || 0,
+          localMvpStartupChecksum: localMvpStartupReadiness.checksum || null,
+          settingsHealthStatus: settingsHealthReadiness.status || 'unknown',
+          settingsHealthReadyForProviderTests: Boolean(settingsHealthReadiness.summary?.readyForProviderTests),
+          settingsHealthReadyForWorkflowSmoke: Boolean(settingsHealthReadiness.summary?.readyForWorkflowSmoke),
+          settingsHealthFailedCount: settingsHealthReadiness.summary?.failedCount || 0,
+          settingsHealthPendingCount: settingsHealthReadiness.summary?.pendingCount || 0,
+          settingsHealthChecksum: settingsHealthReadiness.checksum || null,
+          settingsProviderReadinessStatus: settingsProviderReadiness.status || 'unknown',
+          settingsProviderCanTypeApiFields: Boolean(settingsProviderReadiness.canTypeApiFields),
+          settingsProviderCanSealSecrets: Boolean(settingsProviderReadiness.canSealSecrets),
+          settingsProviderReadyForLocalPilot: Boolean(settingsProviderReadiness.readyForLocalPilot),
+          settingsProviderProductionReady: Boolean(settingsProviderReadiness.readyForProduction),
+          settingsProviderStepCount: Array.isArray(settingsProviderReadiness.steps) ? settingsProviderReadiness.steps.length : 0,
+          settingsProviderActionRequiredId: settingsProviderReadiness.actionRequired?.id || null,
+          settingsProviderChecksum: settingsProviderReadiness.checksum || null,
+          settingsRuntimeReadinessStatus: settingsRuntimeReadiness.status || 'unknown',
+          settingsRuntimeReadyForLocalMvp: Boolean(settingsRuntimeReadiness.readyForLocalMvpRuntime),
+          settingsRuntimeProductionReady: Boolean(settingsRuntimeReadiness.readyForProduction),
+          settingsRuntimeRowCount: settingsRuntimeReadiness.summary?.rowCount || settingsRuntimeReadiness.rows?.length || 0,
+          settingsRuntimeFailedCount: settingsRuntimeReadiness.summary?.failedCount || 0,
+          settingsRuntimePendingCount: settingsRuntimeReadiness.summary?.pendingCount || 0,
+          settingsRuntimeChecksum: settingsRuntimeReadiness.checksum || null,
+          settingsIntegrationReadinessStatus: settingsIntegrationReadiness.status || 'unknown',
+          settingsIntegrationPanelReady: Boolean(settingsIntegrationReadiness.readyForSettingsIntegrationsPanel),
+          settingsIntegrationLocalMvpReady: Boolean(settingsIntegrationReadiness.readyForLocalMvp),
+          settingsIntegrationProductionReady: Boolean(settingsIntegrationReadiness.readyForProduction),
+          settingsIntegrationRowCount: settingsIntegrationReadiness.summary?.rowCount || settingsIntegrationReadiness.rows?.length || 0,
+          settingsIntegrationRouteReadyCount: settingsIntegrationReadiness.summary?.routeReadyCount || 0,
+          settingsIntegrationActionRequiredCount: settingsIntegrationReadiness.summary?.actionRequiredCount || 0,
+          settingsIntegrationMissingRouteCount: settingsIntegrationReadiness.summary?.missingRouteCount || 0,
+          settingsIntegrationChecksum: settingsIntegrationReadiness.checksum || null,
           mvpCorePassedCount: mvpReadiness.summary?.corePassedCount || 0,
           mvpCoreTotalCount: mvpReadiness.summary?.coreTotalCount || 0,
           mvpCoreBlockerCount: mvpReadiness.summary?.coreBlockerCount || 0,
@@ -38624,6 +47850,17 @@ export function createAgentProjectService({
           providerReadinessFailedGateCount: providerReadiness.summary?.failedGateCount || 0,
           providerProductionControlCount: providerReadiness.summary?.productionControlCount || 0,
           providerBackedSearchCount: providerReadiness.summary?.providerBackedSearchCount || 0,
+          budgetAlertReadinessStatus: budgetAlertReadiness.status || 'unknown',
+          budgetAlertReadinessReady: Boolean(budgetAlertReadiness.readyForLocalMvp),
+          budgetAlertReadinessPrivatePilotReady: Boolean(budgetAlertReadiness.readyForPrivatePilot),
+          budgetAlertReadinessProductionReady: Boolean(budgetAlertReadiness.readyForProduction),
+          budgetAlertReadinessAlertState: budgetAlertReadiness.alertState || 'unknown',
+          budgetAlertReadinessRowCount: budgetAlertReadiness.summary?.rowCount || 0,
+          budgetAlertReadinessProviderUsageCount: budgetAlertReadiness.summary?.providerUsageCount || 0,
+          budgetAlertReadinessWarningCount: budgetAlertReadiness.summary?.warningCount || 0,
+          budgetAlertReadinessBlockedCount: budgetAlertReadiness.summary?.blockedCount || 0,
+          budgetAlertReadinessFailedLocalGateCount: budgetAlertReadiness.summary?.failedLocalGateCount || 0,
+          budgetAlertReadinessChecksum: budgetAlertReadiness.checksum || null,
           providerControlledRunStatus: providerControlledRun.status || 'unknown',
           providerControlledRunReady: Boolean(providerControlledRun.readyForPrivatePilotRun),
           providerControlledRunOperationCount: providerControlledRun.summary?.operationCount || 0,
@@ -38682,6 +47919,16 @@ export function createAgentProjectService({
           teamCollaborationDiagnosticsReady: Boolean(teamCollaborationDiagnostics.readyForLocalPilotCollaboration),
           teamCollaborationDiagnosticsFailedLocalRowCount: teamCollaborationDiagnostics.summary?.failedLocalRowCount || 0,
           teamCollaborationDiagnosticsChecksum: teamCollaborationDiagnostics.checksum || null,
+          collaborationIntentQueueStatus: collaborationIntentQueue.status || 'unknown',
+          collaborationIntentQueueReady: Boolean(collaborationIntentQueue.readyForLocalPilotIntentQueue),
+          collaborationIntentQueueRowCount: collaborationIntentQueue.summary?.rowCount || 0,
+          collaborationIntentQueueRunnableCount: collaborationIntentQueue.summary?.runnableCount || 0,
+          collaborationIntentQueueAgentInitiativeCount: collaborationIntentQueue.summary?.agentInitiativeIntentCount || 0,
+          collaborationIntentQueueCustomerAgentHandoffCount: collaborationIntentQueue.summary?.customerAgentHandoffIntentCount || 0,
+          collaborationIntentQueueCustomerAgentHandoffExecutionReadyCount: collaborationIntentQueue.summary?.customerAgentHandoffExecutionReadyCount || 0,
+          collaborationIntentQueueRunCount: collaborationIntentQueue.summary?.collaborationIntentRunCount || 0,
+          latestCollaborationIntentRunId: collaborationIntentQueue.summary?.latestCollaborationIntentRunId || null,
+          collaborationIntentQueueChecksum: collaborationIntentQueue.checksum || null,
           runtimeContractsStatus: runtimeContracts.status || 'unknown',
           runtimeContractsReady: Boolean(runtimeContracts.readyForLocalPilotContractFreeze),
           runtimeContractsFrozenLocalCount: runtimeContracts.summary?.frozenLocalContractCount || 0,
@@ -38698,6 +47945,17 @@ export function createAgentProjectService({
           autonomousCycleConsistencyFailedLocalRowCount: autonomousCycleConsistency.summary?.failedLocalRowCount || 0,
           autonomousCycleConsistencyWorkerDeadLetterCount: autonomousCycleConsistency.summary?.workerDeadLetterCount || 0,
           autonomousCycleConsistencyChecksum: autonomousCycleConsistency.checksum || null,
+          runtimeAutonomyStatus: runtimeAutonomyStatus.status || 'unknown',
+          runtimeAutonomyReady: Boolean(runtimeAutonomyStatus.readyForLocalAutonomy),
+          runtimeAutonomyPrivatePilotReady: Boolean(runtimeAutonomyStatus.readyForPrivatePilotAutonomy),
+          runtimeAutonomyProductionReady: Boolean(runtimeAutonomyStatus.readyForUnattendedProduction),
+          runtimeAutonomyLocalGateCount: runtimeAutonomyStatus.summary?.localGateCount || 0,
+          runtimeAutonomyReadyLocalGateCount: runtimeAutonomyStatus.summary?.readyLocalGateCount || 0,
+          runtimeAutonomyFailedLocalGateCount: runtimeAutonomyStatus.summary?.failedLocalGateCount || 0,
+          runtimeAutonomyQueuedWorkerCount: runtimeAutonomyStatus.summary?.queuedWorkerCount || 0,
+          runtimeAutonomyDeadLetterCount: runtimeAutonomyStatus.summary?.deadLetterCount || 0,
+          runtimeAutonomyRecoverableAutopilotQueueCount: runtimeAutonomyStatus.summary?.recoverableAutopilotQueueCount || 0,
+          runtimeAutonomyChecksum: runtimeAutonomyStatus.checksum || null,
           evidenceQualityAuditStatus: evidenceQualityAudit.status || 'unknown',
           evidenceQualityDecisionReady: Boolean(evidenceQualityAudit.readyForDecision),
           evidenceQualityGateCount: evidenceQualityAudit.summary?.gateCount || 0,
@@ -38724,6 +47982,14 @@ export function createAgentProjectService({
           evidenceCustodyFailedGateCount: evidenceCustodyReadiness.summary?.failedGateCount || 0,
           evidenceCustodyProductionControlCount: evidenceCustodyReadiness.summary?.productionControlCount || 0,
           evidenceCustodyChecksum: evidenceCustodyReadiness.checksum || null,
+          projectMemoryReadinessStatus: projectMemoryReadiness.status || 'unknown',
+          projectMemoryReadinessReady: Boolean(projectMemoryReadiness.readyForLocalMvp),
+          projectMemoryReadinessPrivatePilotReady: Boolean(projectMemoryReadiness.readyForPrivatePilot),
+          projectMemoryReadinessProductionReady: Boolean(projectMemoryReadiness.readyForProduction),
+          projectMemoryReadinessRowCount: projectMemoryReadiness.summary?.rowCount || 0,
+          projectMemoryReadinessFailedLocalGateCount: projectMemoryReadiness.summary?.failedLocalGateCount || 0,
+          projectMemoryReadinessProductionBlockerCount: projectMemoryReadiness.summary?.productionBlockerCount || 0,
+          projectMemoryReadinessChecksum: projectMemoryReadiness.checksum || null,
           operationsReadinessStatus: operationsReadiness.status || 'unknown',
           operationsReadinessGateCount: operationsReadiness.summary?.gateCount || 0,
           operationsReadinessFailedGateCount: operationsReadiness.summary?.failedGateCount || 0,
@@ -38732,6 +47998,16 @@ export function createAgentProjectService({
           operationsIncidentDrillReceiptCount: operationsReadiness.summary?.incidentDrillReceiptCount || 0,
           operationsIncidentDrillFailedReceiptCount: operationsReadiness.summary?.incidentDrillFailedReceiptCount || 0,
           operationsIncidentDrillRoutedAlertRuleCount: operationsReadiness.summary?.incidentDrillRoutedAlertRuleCount || 0,
+          errorReportingReadinessStatus: errorReportingReadiness.status || 'unknown',
+          errorReportingReadinessReady: Boolean(errorReportingReadiness.readyForLocalMvp),
+          errorReportingReadinessPrivatePilotReady: Boolean(errorReportingReadiness.readyForPrivatePilot),
+          errorReportingReadinessProductionReady: Boolean(errorReportingReadiness.readyForProduction),
+          errorReportingReadinessRowCount: errorReportingReadiness.summary?.rowCount || 0,
+          errorReportingReadinessLogStreamCount: errorReportingReadiness.summary?.logStreamCount || 0,
+          errorReportingReadinessAlertRuleCount: errorReportingReadiness.summary?.alertRuleCount || 0,
+          errorReportingReadinessLocalErrorCount: errorReportingReadiness.summary?.localErrorCount || 0,
+          errorReportingReadinessFailedLocalGateCount: errorReportingReadiness.summary?.failedLocalGateCount || 0,
+          errorReportingReadinessChecksum: errorReportingReadiness.checksum || null,
           pilotLaunchStatus: pilotLaunchReadiness.status,
           pilotLaunchDecision: pilotLaunchReadiness.privatePilotDecision,
           pilotLaunchGateCount: pilotLaunchReadiness.summary?.gateCount || 0,
@@ -38837,6 +48113,11 @@ export function createAgentProjectService({
           productionInfrastructureRehearsalStatus: productionInfrastructureRehearsal.status,
           productionInfrastructureRehearsalReady: Boolean(productionInfrastructureRehearsal.readyForInfrastructureRehearsal),
           productionInfrastructureRehearsalProductionBlockedCount: productionInfrastructureRehearsal.summary?.productionBlockedCount || 0,
+          productionInfrastructureManagedCutoverGateCount: productionInfrastructureRehearsal.managedCutoverSummary?.gateCount || 0,
+          productionInfrastructureManagedCutoverReadyCount: productionInfrastructureRehearsal.managedCutoverSummary?.productionReadyGateCount || 0,
+          productionInfrastructureManagedCutoverBlockedCount: productionInfrastructureRehearsal.managedCutoverSummary?.productionBlockedGateCount || 0,
+          productionInfrastructureManagedCutoverReceiptReadyCount: productionInfrastructureRehearsal.managedCutoverSummary?.receiptReadyGateCount || 0,
+          productionInfrastructureManagedCutoverNextGateId: productionInfrastructureRehearsal.managedCutoverSummary?.nextGateId || null,
           productionInfrastructureRehearsalChecksum: productionInfrastructureRehearsal.checksum,
           productionLaunchControlStatus: productionLaunchControlCenter.status,
           productionLaunchControlBlockedCount: productionLaunchControlCenter.summary?.blockedControlCount || 0,
@@ -39721,6 +49002,178 @@ export function createAgentProjectService({
       return localizeReadModel(buildMvpReadiness({ managerDashboard, managerFlowGraph }), language);
       });
     },
+    runMvpReadinessOperatorAction(input = {}) {
+      const {
+        projectId,
+        actionId = 'next',
+        actor = 'Manager',
+        source = 'mvp-readiness-operator-action',
+        now = nowIso(),
+        requestBodyOverrides = {},
+        ...bodyOverrides
+      } = input;
+      const project = store.getProject(projectId);
+      if (!project) throw new Error(`Project not found: ${projectId}`);
+      const language = bodyOverrides.language || requestBodyOverrides.language || project.language || 'en';
+      const managerDashboard = this.getManagerDashboard(projectId, { language, skipCache: true });
+      const managerFlowGraph = this.getManagerFlowGraph(projectId, { language, skipCache: true });
+      const mvpReadiness = buildMvpReadiness({ managerDashboard, managerFlowGraph });
+      const normalizedActionId = String(actionId || 'next');
+      const action = normalizedActionId === 'next'
+        ? mvpReadiness.nextShortestPath
+        : (mvpReadiness.operatorActions || []).find((row) => String(row.id) === normalizedActionId);
+      if (!action) throw new Error(`MVP readiness operator action not found: ${normalizedActionId}`);
+
+      const timestamp = Date.parse(now) || Date.now();
+      const actionSlug = slugPart(action.id || normalizedActionId);
+      const receiptId = `mvp_readiness_operator_action_run_${projectId}_${actionSlug}_${timestamp}`;
+      const timelineLogId = `log_${receiptId}`;
+      const eventId = `evt_${receiptId}`;
+      const runApiPath = `/projects/${projectId}/mvp-readiness/operator-actions/${encodeURIComponent(action.id || normalizedActionId)}/run`;
+      const targetControl = action.targetControl || null;
+      const autonomousRunnable = Boolean(targetControl?.autonomousRunnable && targetControl?.targetStageId && !action.productionBlocker);
+      const requestBody = redactSensitiveObject({
+        ...bodyOverrides,
+        ...requestBodyOverrides,
+        actionId: action.id || normalizedActionId,
+      });
+      const receiptBase = {
+        schemaVersion: 'mvp-readiness-operator-action-run/v1',
+        id: receiptId,
+        projectId,
+        actionId: action.id || normalizedActionId,
+        actionScope: action.scope || 'mvp',
+        actionLabel: action.label || action.id || normalizedActionId,
+        status: 'recorded',
+        actor,
+        source,
+        method: action.method || 'GET',
+        apiPath: action.apiPath || null,
+        runApiPath,
+        owner: action.owner || 'manager',
+        detail: action.detail || '',
+        productionBlocker: Boolean(action.productionBlocker),
+        autonomousRunnable,
+        targetControl,
+        targetStageId: targetControl?.targetStageId || null,
+        targetGapId: targetControl?.targetGapId || action.targetGapId || null,
+        targetStepId: targetControl?.targetStepId || null,
+        targetControlChecksum: targetControl?.checksum || null,
+        autonomousRunControlRoute: projectId ? `/projects/${projectId}/autonomous-run-control` : null,
+        autonomousRunControlRunApiPath: autonomousRunnable ? `/projects/${projectId}/autonomous-run-control/run-mvp-readiness-target/run` : null,
+        localPilotReadyAtRun: Boolean(mvpReadiness.readyForLocalPilot),
+        readyForProductionAtRun: Boolean(mvpReadiness.readyForProduction),
+        nextShortestPathId: mvpReadiness.nextShortestPath?.id || null,
+        mvpReadinessChecksum: readModelChecksum(mvpReadiness),
+        requestBody,
+        createdAt: now,
+        timelineLogId,
+        timelineLogIds: [timelineLogId],
+        eventId,
+        eventIds: [eventId],
+      };
+      const receipt = {
+        ...receiptBase,
+        checksum: persistenceChecksum(receiptBase),
+      };
+      const log = {
+        id: timelineLogId,
+        time: now,
+        agent: 'MVP Readiness',
+        actor,
+        eventType: 'mvp-readiness-operator-action-run',
+        source,
+        channelId: 'manager-dashboard',
+        actionId: receipt.actionId,
+        actionScope: receipt.actionScope,
+        actionLabel: receipt.actionLabel,
+        route: runApiPath,
+        apiPath: receipt.apiPath,
+        runApiPath,
+        mvpReadinessOperatorActionRunId: receipt.id,
+        productionBlocker: receipt.productionBlocker,
+        autonomousRunnable: receipt.autonomousRunnable,
+        targetStageId: receipt.targetStageId,
+        targetStepId: receipt.targetStepId,
+        targetControlChecksum: receipt.targetControlChecksum,
+        autonomousRunControlRoute: receipt.autonomousRunControlRoute,
+        log: `${actor} recorded MVP readiness operator action "${receipt.actionLabel}".`,
+        evidence: [
+          `Receipt checksum ${receipt.checksum}`,
+          receipt.apiPath ? `Target route ${receipt.apiPath}` : 'Target route unavailable',
+          receipt.targetStageId ? `Autonomous target ${receipt.targetStageId}` : 'Autonomous target unavailable',
+        ],
+      };
+      const updatedProject = appendProjectEvents({
+        ...project,
+        mvpReadinessOperatorActionRuns: [
+          receipt,
+          ...(project.mvpReadinessOperatorActionRuns || []),
+        ].slice(0, MVP_READINESS_OPERATOR_ACTION_RUN_LIMIT),
+        logs: [
+          log,
+          ...(project.logs || []),
+        ],
+      }, [
+        createProjectLedgerEvent({
+          id: eventId,
+          type: 'mvp-readiness-operator-action-run',
+          time: now,
+          actor,
+          summary: log.log,
+          source,
+          channelId: 'manager-dashboard',
+          evidenceIds: [
+            receipt.id,
+            receipt.checksum,
+            timelineLogId,
+          ].filter(Boolean),
+          entityIds: {
+            projectId,
+            actionId: receipt.actionId,
+            mvpReadinessOperatorActionRunId: receipt.id,
+            logId: timelineLogId,
+            targetStageId: receipt.targetStageId,
+            targetGapId: receipt.targetGapId,
+            targetStepId: receipt.targetStepId,
+          },
+          payload: {
+            schemaVersion: receipt.schemaVersion,
+            actionScope: receipt.actionScope,
+            method: receipt.method,
+            apiPath: receipt.apiPath,
+            runApiPath,
+            owner: receipt.owner,
+            productionBlocker: receipt.productionBlocker,
+            autonomousRunnable: receipt.autonomousRunnable,
+            targetStageId: receipt.targetStageId,
+            targetGapId: receipt.targetGapId,
+            targetStepId: receipt.targetStepId,
+            targetControlChecksum: receipt.targetControlChecksum,
+            autonomousRunControlRoute: receipt.autonomousRunControlRoute,
+            autonomousRunControlRunApiPath: receipt.autonomousRunControlRunApiPath,
+            localPilotReadyAtRun: receipt.localPilotReadyAtRun,
+            readyForProductionAtRun: receipt.readyForProductionAtRun,
+            mvpReadinessChecksum: receipt.mvpReadinessChecksum,
+            requestBody,
+          },
+        }),
+      ]);
+      const savedProject = saveProject(updatedProject);
+      const nextManagerDashboard = this.getManagerDashboard(projectId, { language, skipCache: true });
+      const nextManagerFlowGraph = this.getManagerFlowGraph(projectId, { language, skipCache: true });
+      return {
+        project: savedProject,
+        route: 'mvp-readiness-operator-action-run',
+        mvpReadinessOperatorAction: action,
+        mvpReadinessOperatorActionRun: receipt,
+        mvpReadiness: localizeReadModel(buildMvpReadiness({
+          managerDashboard: nextManagerDashboard,
+          managerFlowGraph: nextManagerFlowGraph,
+        }), language),
+        log,
+      };
+    },
     getPersistenceSnapshot(projectId, options = {}) {
       return cachedReadModel('persistence-snapshot', projectId, options, () => {
       const language = options.language || store.getProject(projectId)?.language || 'en';
@@ -39883,7 +49336,7 @@ export function createAgentProjectService({
         secretVaultStatus: secretVaultStatus(),
         securityAuditStreamRecords: listSecurityAuditStreamRecords(projectId),
       });
-      return buildProviderReadinessSnapshot({
+      const providerReadiness = buildProviderReadinessSnapshot({
         project,
         managerDashboard,
         mvpReadiness,
@@ -39891,8 +49344,22 @@ export function createAgentProjectService({
         modelProviderStatus: modelProviderStatus(),
         searchProviderStatus: searchProviderStatus(),
         secretVaultStatus: secretVaultStatus(),
-        providerControlPolicy: providerControlPolicyStatus(),
+        providerControlPolicy: providerControlPolicyStatus(project),
       });
+      const providerVaultBindings = buildProviderVaultBindings({ projectId });
+      return {
+        ...providerReadiness,
+        providerVaultBindings,
+        backendRoutes: {
+          ...(providerReadiness.backendRoutes || {}),
+          providerVaultBindings: providerVaultBindings.backendRoutes?.providerVaultBindings || `/projects/${projectId}/provider-vault-bindings`,
+        },
+        summary: {
+          ...(providerReadiness.summary || {}),
+          providerVaultBoundProviderCount: providerVaultBindings.summary?.boundProviderCount || 0,
+          providerVaultBindingChecksum: providerVaultBindings.checksum || null,
+        },
+      };
       });
     },
     getProviderControlledRun(projectId, options = {}) {
@@ -40221,6 +49688,25 @@ export function createAgentProjectService({
         }), language);
       });
     },
+    getCollaborationIntentQueue(projectId, options = {}) {
+      return cachedReadModel('collaboration-intent-queue', projectId, options, () => {
+        const language = options.language || store.getProject(projectId)?.language || 'en';
+        const project = store.getProject(projectId);
+        const managerDashboard = this.getManagerDashboard(projectId, { language });
+        const productTeamOperatingLoop = this.getProductTeamOperatingLoop(projectId, { language });
+        const teamCollaborationDiagnostics = this.getTeamCollaborationDiagnostics(projectId, { language });
+        const readinessProofMap = this.getReadinessProofMap(projectId);
+        return localizeReadModel(buildCollaborationIntentQueue({
+          project,
+          messages: store.getMessages(projectId),
+          managerDashboard,
+          productTeamOperatingLoop,
+          teamCollaborationDiagnostics,
+          readinessProofMap,
+          now: options.now || nowIso(),
+        }), language);
+      });
+    },
     getRuntimeContracts(projectId, options = {}) {
       return cachedReadModel('runtime-contracts', projectId, options, () => {
         const language = options.language || store.getProject(projectId)?.language || 'en';
@@ -40320,6 +49806,57 @@ export function createAgentProjectService({
           evidenceSourceReviewWorkflow,
           providerReadiness,
           persistenceSnapshot,
+        }), language);
+      });
+    },
+    getEvidenceIndexReadiness(projectId, options = {}) {
+      return cachedReadModel('evidence-index-readiness', projectId, options, () => {
+        const language = options.language || store.getProject(projectId)?.language || 'en';
+        const project = store.getProject(projectId);
+        const evidenceQualityAudit = this.getEvidenceQualityAudit(projectId, { language });
+        const artifactQualityAudit = this.getArtifactQualityAudit(projectId, { language });
+        const evidenceCustodyReadiness = this.getEvidenceCustodyReadiness(projectId, { language });
+        return localizeReadModel(buildEvidenceIndexReadinessSnapshot({
+          project,
+          evidenceQualityAudit,
+          artifactQualityAudit,
+          evidenceCustodyReadiness,
+        }), language);
+      });
+    },
+    getProjectMemoryReadiness(projectId, options = {}) {
+      return cachedReadModel('memory-readiness', projectId, options, () => {
+        const language = options.language || store.getProject(projectId)?.language || 'en';
+        const project = store.getProject(projectId);
+        return localizeReadModel(buildProjectMemoryReadinessSnapshot({
+          project,
+          messages: store.getMessages(projectId),
+          evidenceIndexReadiness: this.getEvidenceIndexReadiness(projectId, { language }),
+          persistenceAdapterPlan: this.getPersistenceAdapterPlan(projectId, { language }),
+          meetingSummaries: this.getMeetingSummaries(projectId, { language }),
+        }), language);
+      });
+    },
+    getBudgetAlertReadiness(projectId, options = {}) {
+      return cachedReadModel('budget-alert-readiness', projectId, options, () => {
+        const language = options.language || store.getProject(projectId)?.language || 'en';
+        const project = store.getProject(projectId);
+        const projectSettings = buildProjectSettingsReadModel(project);
+        return localizeReadModel(buildBudgetAlertReadinessSnapshot({
+          project,
+          projectSettings,
+          providerControlPolicy: providerControlPolicyStatus(project),
+        }), language);
+      });
+    },
+    getErrorReportingReadiness(projectId, options = {}) {
+      return cachedReadModel('error-reporting-readiness', projectId, options, () => {
+        const language = options.language || store.getProject(projectId)?.language || 'en';
+        const project = store.getProject(projectId);
+        const operationsReadiness = this.getOperationsReadiness(projectId, { language });
+        return localizeReadModel(buildErrorReportingReadinessSnapshot({
+          project,
+          operationsReadiness,
         }), language);
       });
     },
@@ -40949,13 +50486,14 @@ export function createAgentProjectService({
         ))
         .slice(0, 6);
       const modelStatus = modelProviderStatus();
+      const providerVaultBinding = buildProviderVaultBindingProof({ projectId, kind: 'model' });
       let modelResult = null;
       let modelPayload = {};
       let providerUsage = null;
       let draftSource = 'local-artifact-draft-generator';
 
       if (useModel && modelStatus.enabled && typeof llmProvider?.createChatCompletion === 'function') {
-        const providerPolicyStatus = providerControlPolicyStatus();
+        const providerPolicyStatus = providerControlPolicyStatus(project);
         const policyDecision = evaluateProviderPolicy({
           project,
           policy: providerPolicyStatus,
@@ -40978,6 +50516,7 @@ export function createAgentProjectService({
             status: 'denied',
             reason: policyDecision.reason,
             request: { command: 'artifact-draft', purpose: instruction },
+            providerVaultBinding,
             startedAt: now,
             completedAt: now,
           });
@@ -41011,6 +50550,7 @@ export function createAgentProjectService({
               reason: circuitDecision.reason,
               request: { command: 'artifact-draft', purpose: instruction },
               circuitBreaker: circuitDecision.row,
+              providerVaultBinding,
               startedAt: now,
               completedAt: now,
             });
@@ -41055,6 +50595,7 @@ export function createAgentProjectService({
               request: { command: 'artifact-draft', purpose: instruction },
               retry: modelAttempt.retry,
               circuitBreaker: circuitDecision.row,
+              providerVaultBinding,
               evidenceIds: [...evidenceSearches.map((record) => record.id), ...priorSubmissions.map((submission) => submission.id)].filter(Boolean),
               startedAt: now,
               completedAt: now,
@@ -41089,31 +50630,36 @@ export function createAgentProjectService({
         modelStatus,
         source: draftSource,
       });
+      const artifactDraft = {
+        ...draft,
+        providerVaultBinding,
+      };
 
       if (!submit) {
         return {
           route: 'agent-artifact-draft',
           project,
-          artifactDraft: draft,
+          artifactDraft,
           providerUsage,
           modelProviderStatus: modelStatus,
+          providerVaultBinding,
         };
       }
 
       const result = persistResult(submitAgentArtifact({
         project,
         agentId,
-        artifactType: draft.artifactType,
-        title: draft.title,
-        summary: draft.summary,
-        body: draft.body,
-        taskId: draft.taskId,
+        artifactType: artifactDraft.artifactType,
+        title: artifactDraft.title,
+        summary: artifactDraft.summary,
+        body: artifactDraft.body,
+        taskId: artifactDraft.taskId,
         status,
         reviewStatus,
         reviewerAgentId,
-        sourceRefs: draft.sourceRefs,
-        tags: draft.tags,
-        originDraft: draft,
+        sourceRefs: artifactDraft.sourceRefs,
+        tags: artifactDraft.tags,
+        originDraft: artifactDraft,
         channelId,
         now,
         artifactWriter: artifactWriter || (projectRuntime?.writeArtifact ? projectRuntime.writeArtifact.bind(projectRuntime) : null),
@@ -41121,9 +50667,10 @@ export function createAgentProjectService({
       return {
         ...result,
         route: 'agent-artifact-draft-submitted',
-        artifactDraft: draft,
+        artifactDraft,
         providerUsage,
         modelProviderStatus: modelStatus,
+        providerVaultBinding,
       };
     },
     submitAgentArtifact({ projectId, agentId, ...input } = {}) {
@@ -41148,7 +50695,8 @@ export function createAgentProjectService({
       const project = store.getProject(projectId);
       const now = input.now || nowIso();
       const status = searchProviderStatus();
-      const providerPolicyStatus = providerControlPolicyStatus();
+      const providerVaultBinding = buildProviderVaultBindingProof({ projectId, kind: 'search' });
+      const providerPolicyStatus = providerControlPolicyStatus(project);
       const policyDecision = evaluateProviderPolicy({
         project,
         policy: providerPolicyStatus,
@@ -41171,6 +50719,7 @@ export function createAgentProjectService({
           status: 'denied',
           reason: policyDecision.reason,
           request: input,
+          providerVaultBinding,
           estimatedCostCents: input.estimatedCostCents,
           startedAt: now,
           completedAt: now,
@@ -41204,6 +50753,7 @@ export function createAgentProjectService({
           reason: circuitDecision.reason,
           request: input,
           circuitBreaker: circuitDecision.row,
+          providerVaultBinding,
           estimatedCostCents: input.estimatedCostCents,
           startedAt: now,
           completedAt: now,
@@ -41242,6 +50792,7 @@ export function createAgentProjectService({
           request: input,
           retry: providerAttempt.retry,
           circuitBreaker: circuitDecision.row,
+          providerVaultBinding,
           estimatedCostCents: input.estimatedCostCents,
           startedAt: now,
           completedAt: nowIso(),
@@ -41260,6 +50811,7 @@ export function createAgentProjectService({
           policyDecision,
           retry: providerAttempt.retry,
           circuitBreaker: circuitDecision.row,
+          providerVaultBinding,
           request: input,
           startedAt: now,
           completedAt: nowIso(),
@@ -41284,6 +50836,7 @@ export function createAgentProjectService({
         request: input,
         retry: providerAttempt.retry,
         circuitBreaker: circuitDecision.row,
+        providerVaultBinding,
         estimatedCostCents: input.estimatedCostCents,
         providerReceiptId: result.providerReceipt?.id || null,
         evidenceIds: [
@@ -41300,6 +50853,7 @@ export function createAgentProjectService({
         ...result,
         project: usage.project,
         providerUsage: usage.record,
+        providerVaultBinding,
       };
     },
     reviewAgentSubmission({ projectId, submissionId, ...input } = {}) {
@@ -41314,6 +50868,29 @@ export function createAgentProjectService({
         project: store.getProject(projectId),
         ...input,
       }));
+    },
+    getProjectSettings(projectId) {
+      return buildProjectSettingsReadModel(store.getProject(projectId));
+    },
+    setProjectSettings(input = {}) {
+      const { projectId, language, privacyPolicy, providerBudgetPolicy, workspacePolicy, toolGrantPolicy, updatedBy = '', source = '', now = nowIso() } = input;
+      const settingsInput = {
+        updatedBy,
+        source,
+        now,
+      };
+      if (Object.prototype.hasOwnProperty.call(input, 'language')) settingsInput.language = language;
+      if (Object.prototype.hasOwnProperty.call(input, 'privacyPolicy')) settingsInput.privacyPolicy = privacyPolicy;
+      if (Object.prototype.hasOwnProperty.call(input, 'providerBudgetPolicy')) settingsInput.providerBudgetPolicy = providerBudgetPolicy;
+      if (Object.prototype.hasOwnProperty.call(input, 'workspacePolicy')) settingsInput.workspacePolicy = workspacePolicy;
+      if (Object.prototype.hasOwnProperty.call(input, 'toolGrantPolicy')) settingsInput.toolGrantPolicy = toolGrantPolicy;
+      const result = updateProjectSettings(store.getProject(projectId), settingsInput);
+      const savedProject = saveProject(result.project);
+      return {
+        ...result,
+        project: savedProject,
+        projectSettings: buildProjectSettingsReadModel(savedProject),
+      };
     },
     getProjectMembershipPolicy(projectId) {
       const project = store.getProject(projectId);
@@ -41755,6 +51332,13 @@ export function createAgentProjectService({
         ...input,
       }));
     },
+    createTranscriptChannel({ projectId, ...input } = {}) {
+      return persistResult(createProjectTranscriptChannel({
+        project: store.getProject(projectId),
+        messages: store.getMessages(projectId),
+        ...input,
+      }));
+    },
     submitMultiChannelChangeRequest({ projectId, ...input }) {
       return persistResult(submitProjectMultiChannelChangeRequest({
         project: store.getProject(projectId),
@@ -41782,6 +51366,338 @@ export function createAgentProjectService({
         artifactWriter: artifactWriter || (projectRuntime?.writeArtifact ? projectRuntime.writeArtifact.bind(projectRuntime) : null),
         ...input,
       }));
+    },
+    async runAgentWorkCycleWithProviderEvidence({ projectId, agentId, ...input } = {}) {
+      const now = input.now || nowIso();
+      const operation = input.operation || 'search:evidence';
+      const query = input.evidenceSearchQuery || input.query || input.purpose || '';
+      const purpose = input.evidenceSearchPurpose || input.purpose || `Collect provider-backed evidence for ${query || 'the current Agent task'}.`;
+      const status = searchProviderStatus();
+      let project = store.getProject(projectId);
+      const providerVaultBinding = buildProviderVaultBindingProof({ projectId, kind: 'search' });
+      const providerPolicyStatus = providerControlPolicyStatus(project);
+      const requireProvider = Boolean(input.requireProviderEvidenceSearch);
+      const useProviderEvidenceSearch = Boolean(input.useProviderEvidenceSearch || input.useProvider || requireProvider);
+      const autonomousProviderPreflight = input.autonomousProviderPreflight?.schemaVersion === 'autonomous-provider-preflight/v1'
+        ? input.autonomousProviderPreflight
+        : buildAutonomousProviderPreflight({
+            projectId,
+            kind: 'search',
+            operation,
+            agentId,
+            requested: useProviderEvidenceSearch,
+            requireProvider,
+            targetStageId: input.autopilotTargetStageId || input.autopilotTargetControl?.targetStageId || input.targetControl?.targetStageId || '',
+            estimatedCostCents: input.estimatedCostCents,
+            now,
+          });
+      const runCycle = (projectForCycle, overrides = {}) => persistResult(runAgentWorkCycle({
+        project: projectForCycle,
+        agentId,
+        artifactWriter: artifactWriter || (projectRuntime?.writeArtifact ? projectRuntime.writeArtifact.bind(projectRuntime) : null),
+        ...input,
+        now,
+        recordEvidenceSearch: true,
+        evidenceSearchQuery: query,
+        evidenceSearchPurpose: purpose,
+        ...overrides,
+      }));
+      if (!useProviderEvidenceSearch) {
+        return persistResult(runAgentWorkCycle({
+          project: store.getProject(projectId),
+          agentId,
+          artifactWriter: artifactWriter || (projectRuntime?.writeArtifact ? projectRuntime.writeArtifact.bind(projectRuntime) : null),
+          ...input,
+        }));
+      }
+      const runLocalFallback = (projectForCycle, reason) => {
+        const fallbackFindings = [
+          ...(Array.isArray(input.evidenceSearchFindings) ? input.evidenceSearchFindings : [input.evidenceSearchFindings]).filter(Boolean),
+          `Provider evidence search fell back to local worker proof: ${reason}.`,
+        ];
+        const result = runCycle(projectForCycle, {
+          evidenceSearchFindings: fallbackFindings,
+          evidenceSearchProvider: 'agent-autonomous-worker',
+          evidenceSearchMode: 'worker-local-evidence-search',
+        });
+        return {
+          ...result,
+          providerEvidenceSearch: {
+            schemaVersion: 'agent-worker-provider-evidence/v1',
+            status: 'fallback',
+            reason,
+            provider: 'agent-autonomous-worker',
+            searchMode: 'worker-local-evidence-search',
+            evidenceSearchId: result.evidenceSearch?.id || null,
+            providerReceiptId: result.evidenceSearch?.providerReceiptId || null,
+            providerVaultBinding,
+            autonomousProviderPreflight,
+            autonomousProviderPreflightChecksum: autonomousProviderPreflight.checksum || null,
+            autonomousProviderPreflightAction: autonomousProviderPreflight.action || null,
+          },
+          searchProviderStatus: status,
+          providerVaultBinding,
+          autonomousProviderPreflight,
+        };
+      };
+
+      if (typeof searchProvider?.search !== 'function') {
+        if (requireProvider) throw new Error('search-provider-not-configured');
+        return runLocalFallback(store.getProject(projectId), 'search-provider-not-configured');
+      }
+      if (!status.enabled) {
+        const decision = {
+          allowed: false,
+          wouldDeny: true,
+          reason: status.configured ? 'search-provider-disabled' : 'search-provider-not-configured',
+          reasons: [status.configured ? 'search-provider-disabled' : 'search-provider-not-configured'],
+        };
+        const usage = appendProviderUsageRecord({
+          project: store.getProject(projectId),
+          kind: 'search',
+          operation,
+          providerStatus: status,
+          agentId,
+          decision,
+          ok: false,
+          status: 'unavailable',
+          reason: decision.reason,
+          request: { query, purpose, operation },
+          providerVaultBinding,
+          autonomousProviderPreflight,
+          estimatedCostCents: input.estimatedCostCents,
+          startedAt: now,
+          completedAt: now,
+        });
+        if (requireProvider) throw new Error(`search-provider-unavailable:${decision.reason}`);
+        return runLocalFallback(usage.project, decision.reason);
+      }
+
+      if (useProviderEvidenceSearch && !autonomousProviderPreflight.canCallProvider) {
+        const decision = {
+          ...(autonomousProviderPreflight.policyDecision || {}),
+          allowed: false,
+          wouldDeny: true,
+          reason: autonomousProviderPreflight.reason || 'autonomous-provider-preflight-blocked',
+          reasons: autonomousProviderPreflight.reasons?.length
+            ? autonomousProviderPreflight.reasons
+            : [autonomousProviderPreflight.reason || 'autonomous-provider-preflight-blocked'],
+        };
+        const usage = appendProviderUsageRecord({
+          project: store.getProject(projectId),
+          kind: 'search',
+          operation,
+          providerStatus: status,
+          agentId,
+          decision,
+          ok: false,
+          status: autonomousProviderPreflight.shouldPause ? 'preflight-paused' : 'preflight-blocked',
+          reason: decision.reason,
+          request: { query, purpose, operation },
+          circuitBreaker: autonomousProviderPreflight.circuitBreaker || null,
+          providerVaultBinding,
+          autonomousProviderPreflight,
+          estimatedCostCents: input.estimatedCostCents,
+          startedAt: now,
+          completedAt: now,
+        });
+        if (requireProvider) throw new Error(`autonomous-provider-preflight:${decision.reason}`);
+        return runLocalFallback(usage.project, decision.reason);
+      }
+
+      const policyDecision = evaluateProviderPolicy({
+        project,
+        policy: providerPolicyStatus,
+        kind: 'search',
+        operation,
+        providerStatus: status,
+        agentId,
+        estimatedCostCents: input.estimatedCostCents,
+        now,
+      });
+      if (!policyDecision.allowed) {
+        const usage = appendProviderUsageRecord({
+          project,
+          kind: 'search',
+          operation,
+          providerStatus: status,
+          agentId,
+          decision: policyDecision,
+          ok: false,
+          status: 'denied',
+          reason: policyDecision.reason,
+          request: { query, purpose, operation },
+          providerVaultBinding,
+          autonomousProviderPreflight,
+          estimatedCostCents: input.estimatedCostCents,
+          startedAt: now,
+          completedAt: now,
+        });
+        if (requireProvider) throw new Error(`provider-policy-denied:${policyDecision.reason}`);
+        return runLocalFallback(usage.project, policyDecision.reason);
+      }
+
+      const circuitDecision = evaluateProviderCircuitBreaker({
+        project,
+        policy: providerPolicyStatus,
+        kind: 'search',
+        providerStatus: status,
+        now,
+      });
+      if (!circuitDecision.allowed) {
+        const decision = {
+          ...policyDecision,
+          allowed: false,
+          wouldDeny: true,
+          reason: circuitDecision.reason,
+          reasons: uniqueStrings([...(policyDecision.reasons || []), circuitDecision.reason]),
+        };
+        const usage = appendProviderUsageRecord({
+          project,
+          kind: 'search',
+          operation,
+          providerStatus: status,
+          agentId,
+          decision,
+          ok: false,
+          status: 'circuit-open',
+          reason: circuitDecision.reason,
+          request: { query, purpose, operation },
+          circuitBreaker: circuitDecision.row,
+          providerVaultBinding,
+          autonomousProviderPreflight,
+          estimatedCostCents: input.estimatedCostCents,
+          startedAt: now,
+          completedAt: now,
+        });
+        if (requireProvider) throw new Error(`provider-policy-denied:${circuitDecision.reason}`);
+        return runLocalFallback(usage.project, circuitDecision.reason);
+      }
+
+      const providerAttempt = await runProviderWithRetry({
+        policy: providerPolicyStatus,
+        now,
+        run: () => searchProvider.search({
+          query,
+          purpose,
+          now,
+          maxResults: input.maxResults,
+          extraBody: input.providerBody || {},
+        }),
+      });
+      const providerResult = {
+        ...(providerAttempt.result || {}),
+        retry: providerAttempt.retry,
+      };
+      if (!providerResult.ok) {
+        const reason = providerResult.reason || providerResult.error || 'unknown';
+        const usage = appendProviderUsageRecord({
+          project,
+          kind: 'search',
+          operation,
+          providerStatus: status,
+          agentId,
+          decision: policyDecision,
+          result: providerResult,
+          ok: false,
+          status: 'failed',
+          reason,
+          request: { query, purpose, operation },
+          retry: providerAttempt.retry,
+          circuitBreaker: circuitDecision.row,
+          providerVaultBinding,
+          autonomousProviderPreflight,
+          estimatedCostCents: input.estimatedCostCents,
+          startedAt: now,
+          completedAt: nowIso(),
+        });
+        if (requireProvider) throw new Error(`search-provider-unavailable:${reason}`);
+        return runLocalFallback(usage.project, reason);
+      }
+
+      const completedAt = nowIso();
+      const providerReceipt = {
+        providerResult,
+        providerStatus: status,
+        policyDecision,
+          retry: providerAttempt.retry,
+          circuitBreaker: circuitDecision.row,
+          providerVaultBinding,
+          autonomousProviderPreflight,
+          request: {
+            query,
+            purpose,
+          operation,
+          maxResults: input.maxResults,
+          estimatedCostCents: input.estimatedCostCents,
+        },
+        startedAt: now,
+        completedAt,
+      };
+      const cycle = runCycle(project, {
+        evidenceSearchSources: providerResult.sources || input.sources || input.evidenceSearchSources || [],
+        evidenceSearchFindings: [
+          ...(providerResult.findings || []),
+          ...(Array.isArray(input.findings) ? input.findings : [input.findings]).filter(Boolean),
+          ...(Array.isArray(input.evidenceSearchFindings) ? input.evidenceSearchFindings : [input.evidenceSearchFindings]).filter(Boolean),
+        ],
+        evidenceSearchConfidence: providerResult.confidence || input.confidence || input.evidenceSearchConfidence || 'medium',
+        evidenceSearchProvider: providerResult.provider || status.provider || 'search-provider',
+        evidenceSearchMode: providerResult.searchMode || input.searchMode || 'provider-search',
+        evidenceSearchProviderReceipt: providerReceipt,
+      });
+      const usage = appendProviderUsageRecord({
+        project: cycle.project,
+        kind: 'search',
+        operation,
+        providerStatus: status,
+        agentId,
+        decision: policyDecision,
+        result: providerResult,
+        ok: true,
+        status: 'completed',
+        request: { query, purpose, operation },
+        retry: providerAttempt.retry,
+        circuitBreaker: circuitDecision.row,
+        providerVaultBinding,
+        autonomousProviderPreflight,
+        estimatedCostCents: input.estimatedCostCents,
+        providerReceiptId: cycle.evidenceSearch?.providerReceiptId || null,
+        evidenceIds: [
+          cycle.evidenceSearch?.providerReceiptId,
+          cycle.evidenceSearch?.id,
+          cycle.evidenceSearchLog?.id,
+          cycle.evidenceSearch?.eventId,
+          cycle.task?.id,
+        ].filter(Boolean),
+        startedAt: now,
+        completedAt,
+      });
+      return {
+        ...cycle,
+        project: usage.project,
+        providerUsage: usage.record,
+        providerEvidenceSearch: {
+          schemaVersion: 'agent-worker-provider-evidence/v1',
+          status: 'completed',
+          provider: providerResult.provider || status.provider || 'search-provider',
+          searchMode: providerResult.searchMode || input.searchMode || 'provider-search',
+          providerUsageId: usage.record?.id || null,
+          providerReceiptId: cycle.evidenceSearch?.providerReceiptId || null,
+          evidenceSearchId: cycle.evidenceSearch?.id || null,
+          sourceCount: providerResult.sources?.length || 0,
+          retry: providerAttempt.retry,
+          circuitBreaker: circuitDecision.row,
+          providerVaultBinding,
+          autonomousProviderPreflight,
+          autonomousProviderPreflightChecksum: autonomousProviderPreflight.checksum || null,
+          autonomousProviderPreflightAction: autonomousProviderPreflight.action || null,
+        },
+        searchProviderStatus: status,
+        providerVaultBinding,
+        autonomousProviderPreflight,
+        allMessages: store.getMessages(projectId),
+      };
     },
     runDueAutonomousCycles(input = {}) {
       const summary = runDueProjectAutonomousCycles({
@@ -41940,6 +51856,159 @@ export function createAgentProjectService({
         });
         if (processedSessionCount > 0) summary.processedProjectCount += 1;
       });
+      return {
+        ...summary,
+        allMessages: store.getMessages(),
+      };
+    },
+    async runDueAutonomousRunControlSessionsWithProviderEvidence(input = {}) {
+      const {
+        now = nowIso(),
+        actor = 'Autopilot Scheduler',
+        reason = 'autopilot-due-worker',
+        intervalMs = 60_000,
+        maxProjects = Infinity,
+        maxSessionsPerProject = 1,
+        forceDue = false,
+        forceReason = 'autopilot-forced-sweep',
+        forceProjectIds = [],
+        loopCount = 1,
+        force = true,
+        targetKind = 'product-team-delivery-trace',
+        requestBodyOverrides = {},
+        language,
+      } = input;
+      const shouldAttemptProviderEvidence = input.providerEvidenceSearchEnabled !== false && Boolean(
+        input.useProviderEvidenceSearch
+        || input.providerEvidenceSearchEnabled
+        || requestBodyOverrides.useProviderEvidenceSearch
+        || requestBodyOverrides.requireProviderEvidenceSearch
+        || requestBodyOverrides.autopilotTargetControl?.targetStageId === 'evidence-quality'
+        || requestBodyOverrides.targetControl?.targetStageId === 'evidence-quality'
+        || searchProviderStatus().enabled
+      );
+      if (!shouldAttemptProviderEvidence) {
+        return this.runDueAutonomousRunControlSessions(input);
+      }
+      const forceProjectIdSet = new Set((forceProjectIds || []).map(normalizeProjectIdKey).filter(Boolean));
+      const forcedProjectFilterActive = Boolean(forceDue) && forceProjectIdSet.size > 0;
+      const summary = {
+        processed: [],
+        skipped: [],
+        messages: [],
+        processedProjectCount: 0,
+        schemaVersion: 'autopilot-due-worker-summary/v1',
+        providerEvidenceSearchEnabled: true,
+      };
+      for (const project of store.listProjects()) {
+        if (!project?.id) continue;
+        const projectIdKey = normalizeProjectIdKey(project.id);
+        if (forcedProjectFilterActive && !forceProjectIdSet.has(projectIdKey)) {
+          summary.skipped.push({
+            projectId: project.id,
+            reason: 'autopilot-force-project-filter',
+            sessions: [],
+          });
+          continue;
+        }
+        if (summary.processedProjectCount >= maxProjects) {
+          summary.skipped.push({
+            projectId: project.id,
+            reason: 'autopilot-project-limit-reached',
+            sessions: [],
+          });
+          continue;
+        }
+        const projectForceDue = Boolean(forceDue) && (!forceProjectIdSet.size || forceProjectIdSet.has(projectIdKey));
+        const activeSessions = (project.autonomousRunControlSessionLedger || [])
+          .filter((session) => ['running', 'waiting'].includes(session.status))
+          .sort((a, b) => safeDateMs(a.lastTickAt || a.startedAt || a.createdAt || now) - safeDateMs(b.lastTickAt || b.startedAt || b.createdAt || now));
+        if (!activeSessions.length) {
+          summary.skipped.push({
+            projectId: project.id,
+            reason: 'autopilot-no-active-session',
+            sessions: [],
+          });
+          continue;
+        }
+        let processedSessionCount = 0;
+        for (const session of activeSessions) {
+          const schedule = evaluateAutopilotRunControlSessionSchedule({
+            session,
+            now,
+            intervalMs,
+            forceDue: projectForceDue,
+            forceReason,
+          });
+          if (processedSessionCount >= maxSessionsPerProject) {
+            summary.skipped.push({
+              projectId: project.id,
+              sessionId: session.id,
+              reason: 'autopilot-session-limit-reached',
+              nextRunAt: schedule.nextRunAt,
+              schedule,
+            });
+            continue;
+          }
+          if (!schedule.due) {
+            summary.skipped.push({
+              projectId: project.id,
+              sessionId: session.id,
+              reason: schedule.reason,
+              nextRunAt: schedule.nextRunAt,
+              schedule,
+            });
+            continue;
+          }
+          const result = await this.tickAutonomousRunControlSessionWithProviderEvidence({
+            projectId: project.id,
+            sessionId: session.id,
+            now,
+            actor,
+            reason: projectForceDue ? forceReason : reason,
+            loopCount,
+            force,
+            targetKind,
+            requestBodyOverrides: {
+              ...requestBodyOverrides,
+              includeReadModels: false,
+              schedulerWorker: 'autopilot-due-worker',
+              useProviderEvidenceSearch: true,
+            },
+            language: language || project.language || 'en',
+          });
+          processedSessionCount += 1;
+          summary.processed.push({
+            projectId: project.id,
+            sessionId: session.id,
+            reason: projectForceDue ? forceReason : schedule.reason,
+            dueAt: schedule.dueAt,
+            nextRunAt: result.autonomousRunControlSession?.status === 'completed'
+              ? null
+              : new Date(safeDateMs(now) + (Number(intervalMs) || 60_000)).toISOString(),
+            statusAfter: result.autonomousRunControlSessionTick?.statusAfter || result.autonomousRunControlSession?.status || null,
+            tickId: result.autonomousRunControlSessionTick?.id || null,
+            loopReceiptIds: result.autonomousRunControlSessionTick?.loopReceiptIds || [],
+            runReceiptIds: result.autonomousRunControlSessionTick?.runReceiptIds || [],
+            actionLanes: result.autonomousRunControlSessionTick?.actionLanes || [],
+            targetStageId: result.autonomousRunControlSessionTick?.targetControl?.targetStageId || null,
+            providerEvidenceSearch: result.providerEvidenceSearch || null,
+            providerUsageId: result.providerUsage?.id || null,
+            autonomousProviderPreflight: result.autonomousProviderPreflight || result.autonomousRunControlSessionTick?.autonomousProviderPreflight || null,
+            autonomousProviderPreflightChecksum: result.autonomousProviderPreflight?.checksum || result.autonomousRunControlSessionTick?.autonomousProviderPreflightChecksum || null,
+            autonomousProviderPreflightAction: result.autonomousProviderPreflight?.action || result.autonomousRunControlSessionTick?.autonomousProviderPreflightAction || null,
+            autonomousActionDecision: result.autonomousActionDecision || result.autonomousRunControlSessionTick?.autonomousActionDecision || result.agentAutonomousActionRun?.autonomousActionDecision || null,
+            autonomousActionDecisionChecksum: result.autonomousActionDecision?.checksum || result.autonomousRunControlSessionTick?.autonomousActionDecisionChecksum || result.agentAutonomousActionRun?.autonomousActionDecisionChecksum || null,
+            autonomousActionDecisionAction: result.autonomousActionDecision?.action || result.autonomousRunControlSessionTick?.autonomousActionDecisionAction || result.agentAutonomousActionRun?.autonomousActionDecisionAction || null,
+            evidenceSearchId: result.evidenceSearch?.id || null,
+            providerEvidenceMessageId: result.autonomousRunControlSessionTick?.providerEvidenceMessageId || null,
+            result,
+            schedule,
+          });
+          summary.messages.push(...(result.messages || []));
+        }
+        if (processedSessionCount > 0) summary.processedProjectCount += 1;
+      }
       return {
         ...summary,
         allMessages: store.getMessages(),

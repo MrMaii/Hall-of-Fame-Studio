@@ -97,6 +97,7 @@ function createMockAdapterGateway() {
         const rows = [
           ...(snapshot.projectQueue || []),
           ...(snapshot.agentQueue || []),
+          ...(snapshot.autopilotQueue || []),
         ];
         writeJson(response, 200, receipt('worker-queue-adapter-execution-receipt/v1', {
           projectId: body.projectId || null,

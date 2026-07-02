@@ -8,7 +8,7 @@ import {
   Send, Hash, GitCommit, GitBranch, FileText, Code2, MessageCircle, Users, Mic2,
   DoorOpen, ScrollText, Monitor, ClipboardList, Sparkles, CircleDot,
   Pin, Reply, AtSign, Volume2, ChevronLeft, Paperclip, BellDot, Headphones, X,
-  UserCircle, KeyRound, Server, Globe2, PlugZap, WalletCards, Eye, EyeOff, Save, PackageCheck, RefreshCw
+  UserCircle, KeyRound, Server, Globe2, PlugZap, WalletCards, Eye, Save, PackageCheck, RefreshCw
 } from 'lucide-react';
 import {
   PERSON_SKILL_COUNT,
@@ -72,6 +72,14 @@ const SUBMISSION_REVIEW_VERDICTS = [
   { id: 'under-review', label: 'Mark Under Review' },
   { id: 'rejected', label: 'Reject' },
 ];
+const SETTINGS_TOOL_GRANT_OPTIONS = [
+  { id: 'provider:test', label: 'Provider health test', detail: 'Allow backend provider health checks before an Agent run.' },
+  { id: 'model:kickoff', label: 'Model kickoff support', detail: 'Allow model-assisted kickoff synthesis with Manager approval.' },
+  { id: 'model:intent', label: 'Model intent support', detail: 'Allow model-assisted meeting intent parsing.' },
+  { id: 'model:artifact-draft', label: 'Model artifact draft', detail: 'Allow Agents to request draft artifacts through the model provider.' },
+  { id: 'search:evidence', label: 'Search evidence', detail: 'Allow Agents to collect provider-backed evidence search nodes.' },
+];
+const DEFAULT_SETTINGS_TOOL_GRANTS = SETTINGS_TOOL_GRANT_OPTIONS.map(option => option.id);
 
 function mergeProjectMessages(existing = [], incoming = []) {
   const messageTimeValue = (message = {}) => {
@@ -892,7 +900,7 @@ const chatTypeForRecoveredProof = (type = '', eventType = '') => {
   return 'text';
 };
 
-const CHAT_PROOF_ID_PATTERN = /^(msg_|m_|chat_|agent_chat_|agent_message_|agent_work_|agent_management_|agent_management_response_|worker_chat_|room_|u_|multi_channel_change_|manager_demo_|manager_ui_dual_change_|manager_change_composer_|manager_assignment_composer_|manager_ui_agent_message_|director_brief_|decision_|system_.*_kickoff|leader_bid_|leader_assign_|leader_ack_|assign_|ack_|role_negotiation_|change_discuss_|change_confirm_|change_sync_|peer_handoff_|peer_handoff_ack_)/;
+const CHAT_PROOF_ID_PATTERN = /^(msg_|m_|chat_|agent_chat_|agent_message_|agent_work_|agent_management_|agent_management_response_|worker_chat_|room_|transcript_channel_created_|u_|multi_channel_change_|manager_demo_|manager_ui_dual_change_|manager_change_composer_|manager_assignment_composer_|manager_ui_agent_message_|director_brief_|decision_|system_.*_kickoff|leader_bid_|leader_assign_|leader_ack_|assign_|ack_|role_negotiation_|change_discuss_|change_confirm_|change_sync_|peer_handoff_|peer_handoff_ack_)/;
 const KICKOFF_MEETING_TRANSCRIPT_ID_PATTERN = /^kickoff_meeting_[^_]+_(director_brief|director_clarification|role_\d+|leader_\d+|candidate_)/;
 
 const isChatProofId = (id = '') => {
@@ -918,6 +926,15 @@ const chatProofIdsFromRow = (row = {}) => Array.from(new Set([
   ...chatProofIdsFromIds(row.proofIds || []),
 ].filter(Boolean).filter(isChatProofId)));
 
+const chatProofIdsFromAttachment = (attachment = {}) => Array.from(new Set([
+  attachment.messageId,
+  attachment.providerEvidenceMessageId,
+  ...(attachment.providerEvidenceMessageIds || []),
+  ...(attachment.chatProofIds || []),
+  ...(attachment.messageIds || []),
+  ...chatProofIdsFromIds(attachment.proofIds || []),
+].filter(Boolean).filter(isChatProofId)));
+
 const transcriptProofIdsFromRow = (row = {}) => Array.from(new Set([
   ...(row.messages || []).map(message => message.id),
   ...(row.archivedProofIds || []),
@@ -934,6 +951,7 @@ const chatProofIdsFromNode = (node = {}) => Array.from(new Set([
   ...(node.messageIds || []),
   ...(node.sourceMessageIds || []),
   ...(node.discussionMessageIds || []),
+  ...(node.attachments || []).flatMap(attachment => chatProofIdsFromAttachment(attachment)),
   ...(node.proofIds || []).filter(isChatProofId),
 ].filter(Boolean).filter(isChatProofId)));
 
@@ -1039,20 +1057,29 @@ const loadBackendBaseUrl = () => {
   return readStoredJson(STORAGE_KEYS.backendUrl, DEFAULT_AGENT_BACKEND_URL);
 };
 
-const isDevelopmentInitiationFallbackEnabled = () => {
+const isDevelopmentFallbackSwitchEnabled = (windowFlag, storageKey, envFlag) => {
+  if (!import.meta.env?.DEV) return false;
   if (typeof window !== 'undefined') {
-    if (window.__HOF_ALLOW_DEV_INITIATION_FALLBACK__ === true) return true;
-    if (readStoredJson(STORAGE_KEYS.devInitiationFallback, false) === true) return true;
+    if (window[windowFlag] === true) return true;
+    if (readStoredJson(storageKey, false) === true) return true;
   }
-  return Boolean(import.meta.env?.DEV && import.meta.env?.VITE_HOFS_ALLOW_LOCAL_INITIATION_FALLBACK === 'true');
+  return Boolean(import.meta.env?.[envFlag] === 'true');
+};
+
+const isDevelopmentInitiationFallbackEnabled = () => {
+  return isDevelopmentFallbackSwitchEnabled(
+    '__HOF_ALLOW_DEV_INITIATION_FALLBACK__',
+    STORAGE_KEYS.devInitiationFallback,
+    'VITE_HOFS_ALLOW_LOCAL_INITIATION_FALLBACK',
+  );
 };
 
 const isDevelopmentLocalRuntimeFallbackEnabled = () => {
-  if (typeof window !== 'undefined') {
-    if (window.__HOF_ALLOW_LOCAL_RUNTIME_FALLBACK__ === true) return true;
-    if (readStoredJson(STORAGE_KEYS.devLocalRuntimeFallback, false) === true) return true;
-  }
-  return Boolean(import.meta.env?.DEV && import.meta.env?.VITE_HOFS_ALLOW_LOCAL_RUNTIME_FALLBACK === 'true');
+  return isDevelopmentFallbackSwitchEnabled(
+    '__HOF_ALLOW_LOCAL_RUNTIME_FALLBACK__',
+    STORAGE_KEYS.devLocalRuntimeFallback,
+    'VITE_HOFS_ALLOW_LOCAL_RUNTIME_FALLBACK',
+  );
 };
 
 const defaultInitiationActionDrafts = (output = 'the first execution artifact', language = 'en') => {
@@ -1097,11 +1124,37 @@ const buildInitiationMeetingSkillBrief = ({ draft, output, language }) => {
     ].join('\n');
 };
 
-const loadInitialProjects = () => {
+const readStoredProjectArray = () => {
   const stored = readStoredJson(STORAGE_KEYS.projects, null);
-  const storedProjects = Array.isArray(stored)
-    ? stored.filter(project => !isManagerDemoProject(project))
-    : [];
+  return Array.isArray(stored) ? stored : [];
+};
+
+const isBackendManagedBrowserCacheProject = (project = {}) => (
+  Boolean(project?.id)
+  && !isManagerDemoProject(project)
+  && !isDevelopmentLocalRuntimeFallbackEnabled()
+  && isBackendKickoffProject(project)
+);
+
+const cachedBackendManagedProjectIds = () => new Set(
+  readStoredProjectArray()
+    .filter(isBackendManagedBrowserCacheProject)
+    .map(project => project.id)
+    .filter(Boolean)
+);
+
+const cachedBrowserProjectIds = () => new Set(
+  readStoredProjectArray()
+    .filter(project => !isManagerDemoProject(project))
+    .filter(project => !isBackendManagedBrowserCacheProject(project))
+    .map(project => project.id)
+    .filter(Boolean)
+);
+
+const loadInitialProjects = () => {
+  const storedProjects = readStoredProjectArray()
+    .filter(project => !isManagerDemoProject(project))
+    .filter(project => !isBackendManagedBrowserCacheProject(project));
   return storedProjects.map(hydrateProject);
 };
 
@@ -1360,6 +1413,37 @@ const PROJECT_CHANNELS = [
   { id: 'standup', name: 'Standup', description: 'Voice standup channel.', category: 'voice', unread: 0 },
 ];
 
+const labelFromChannelId = (channelId = 'room') => String(channelId || 'room')
+  .replace(/[-_]+/g, ' ')
+  .replace(/\b\w/g, char => char.toUpperCase());
+
+const normalizeUiTranscriptChannel = (channel = {}) => {
+  const id = channel.channelId || channel.id;
+  if (!id) return null;
+  return {
+    id,
+    name: channel.name || labelFromChannelId(id),
+    description: channel.description || 'Backend transcript channel visible to project members.',
+    category: ['text', 'decisions', 'voice'].includes(channel.category) ? channel.category : 'text',
+    unread: 0,
+    backendBacked: true,
+    apiPath: channel.apiPath || null,
+  };
+};
+
+const mergeTranscriptChannelsIntoUi = (existingChannels = [], transcriptChannels = []) => {
+  const normalized = transcriptChannels.map(normalizeUiTranscriptChannel).filter(Boolean);
+  if (!normalized.length) return existingChannels;
+  const byId = new Map(existingChannels.map(channel => [channel.id, channel]));
+  normalized.forEach(channel => {
+    byId.set(channel.id, {
+      ...(byId.get(channel.id) || {}),
+      ...channel,
+    });
+  });
+  return [...byId.values()];
+};
+
 const DEFAULT_CHAT_PROJECT_ID = '__unscoped__';
 const hydrateChatMessage = (message) => ({
   ...message,
@@ -1368,9 +1452,16 @@ const hydrateChatMessage = (message) => ({
 
 const loadInitialChatMessages = () => {
   const stored = readStoredJson(STORAGE_KEYS.chatMessages, null);
+  const backendManagedCachedIds = cachedBackendManagedProjectIds();
+  const browserProjectIds = cachedBrowserProjectIds();
   return (Array.isArray(stored) ? stored : [])
     .map(hydrateChatMessage)
-    .filter(message => !isManagerDemoMessage(message));
+    .filter(message => !isManagerDemoMessage(message))
+    .filter(message => !backendManagedCachedIds.has(message.projectId || DEFAULT_CHAT_PROJECT_ID))
+    .filter(message => {
+      const projectId = message.projectId || DEFAULT_CHAT_PROJECT_ID;
+      return projectId === DEFAULT_CHAT_PROJECT_ID || browserProjectIds.has(projectId);
+    });
 };
 
 const createStableIdPart = (value = '') => String(value || 'project')
@@ -1483,13 +1574,37 @@ export default function EngineWorkspace() {
   const [projectLauncherOpen, setProjectLauncherOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState('deployment');
-  const [showPrimaryKey, setShowPrimaryKey] = useState(false);
   const [healthCheck, setHealthCheck] = useState({
     running: false,
     lastRunAt: null,
     baseUrl: loadBackendBaseUrl(),
     rows: [],
     summary: null,
+    error: null,
+  });
+  const [providerRuntimeStatus, setProviderRuntimeStatus] = useState({
+    running: false,
+    lastRunAt: null,
+    baseUrl: loadBackendBaseUrl(),
+    modelProvider: null,
+    searchProvider: null,
+    secretVaultStatus: null,
+    secretVaultRecords: null,
+    providerVaultBindings: null,
+    settingsProviderReadiness: null,
+    settingsRuntimeReadiness: null,
+    settingsIntegrationReadiness: null,
+    localMvpStartupReadiness: null,
+    modelTest: null,
+    searchTest: null,
+    error: null,
+  });
+  const [providerSecretDrafts, setProviderSecretDrafts] = useState({
+    modelApiKey: '',
+    searchApiKey: '',
+    searchEndpoint: '',
+    running: false,
+    lastReceipt: null,
     error: null,
   });
 
@@ -1532,7 +1647,7 @@ export default function EngineWorkspace() {
   const transcriptEndRef = useRef(null);
 
   // --- Project Workspace State ---
-  const [roomInput, setRoomInput] = useState('');
+  const [roomInputDrafts, setRoomInputDrafts] = useState({});
   const [roomVoiceStatus, setRoomVoiceStatus] = useState('idle');
   const [roomIntentions, setRoomIntentions] = useState([]);
   const [roomSpeaker, setRoomSpeaker] = useState(null);
@@ -1541,24 +1656,18 @@ export default function EngineWorkspace() {
   ]);
   const [meetingStartTime, setMeetingStartTime] = useState(null);
   const [meetingElapsed, setMeetingElapsed] = useState(0);
-  const [activeChannelId, setActiveChannelId] = useState('main');
+  const [activeChannelDrafts, setActiveChannelDrafts] = useState({});
   const [chatChannels, setChatChannels] = useState(PROJECT_CHANNELS);
   const [chatMessages, setChatMessages] = useState(loadInitialChatMessages);
-  const [chatInput, setChatInput] = useState('');
-  const [managerChangeDraft, setManagerChangeDraft] = useState({
-    text: '',
-    mode: 'dual',
-  });
-  const [managerAssignmentDraft, setManagerAssignmentDraft] = useState({
-    targetAgentId: '',
-    text: '',
-  });
+  const [chatInputDrafts, setChatInputDrafts] = useState({});
+  const [managerChangeDrafts, setManagerChangeDrafts] = useState({});
+  const [managerAssignmentDrafts, setManagerAssignmentDrafts] = useState({});
   const [showMentionPicker, setShowMentionPicker] = useState(false);
   const [mentionFilter, setMentionFilter] = useState('');
   const [mentionIndex, setMentionIndex] = useState(0);
-  const [focusedChatProofIds, setFocusedChatProofIds] = useState([]);
-  const [focusedTimelineProofIds, setFocusedTimelineProofIds] = useState([]);
-  const [selectedTimelineEventId, setSelectedTimelineEventId] = useState(null);
+  const [focusedChatProofIdDrafts, setFocusedChatProofIdDrafts] = useState({});
+  const [focusedTimelineProofIdDrafts, setFocusedTimelineProofIdDrafts] = useState({});
+  const [selectedTimelineEventDrafts, setSelectedTimelineEventDrafts] = useState({});
   const [timelineScale, setTimelineScale] = useState('day');
   const [tlPan, setTlPan] = useState({ x: 0, y: 0 });
   const [tlZoom, setTlZoom] = useState(1);
@@ -1579,8 +1688,10 @@ export default function EngineWorkspace() {
     loading: false,
     lastAction: null,
     lastProjectSyncAt: null,
+    lastProjectSyncProjectId: null,
     projectSyncCount: 0,
     managerReadyPackage: null,
+    mvpReadinessOperatorActionRun: null,
     lastManagerReadyPackageSyncAt: null,
     managerReadyPackageSyncCount: 0,
     managerDashboard: null,
@@ -1591,6 +1702,8 @@ export default function EngineWorkspace() {
     managerFlowGraphSyncCount: 0,
     managerCommandCenter: null,
     managerCommandCenterRun: null,
+    managerActionRun: null,
+    managerActionRunOutput: null,
     lastManagerCommandCenterSyncAt: null,
     managerCommandCenterSyncCount: 0,
     managerScenarioTrail: null,
@@ -1614,15 +1727,29 @@ export default function EngineWorkspace() {
     autonomousRunControl: null,
     productTeamOperatingLoop: null,
     teamCollaborationDiagnostics: null,
+    collaborationIntentQueue: null,
+    collaborationIntentRun: null,
+    collaborationIntentRunOutput: null,
     runtimeContracts: null,
     autonomousCycleConsistency: null,
+    runtimeAutonomyStatus: null,
     autonomousRunControlRun: null,
+    autonomousRunControlRunOutput: null,
+    autonomousActionDecision: null,
     autonomousRunControlLoop: null,
     autonomousRunControlSessions: null,
     autonomousRunControlSession: null,
     autonomousRunControlSessionTick: null,
     autonomousRunControlSessionWorker: null,
+    autonomousRunControlProviderEvidence: null,
+    autonomousRunControlEvidenceSearch: null,
+    autonomousRunControlProviderUsage: null,
+    productTeamMissionRun: null,
+    productTeamMissionRuns: null,
+    lastProductTeamMissionSyncAt: null,
+    productTeamMissionSyncCount: 0,
     agentAutonomousActionRun: null,
+    agentAutonomousActionRunOutput: null,
     lastManagerActionQueueSyncAt: null,
     managerActionQueueSyncCount: 0,
     lastAgentAutonomousActionQueueSyncAt: null,
@@ -1633,10 +1760,14 @@ export default function EngineWorkspace() {
     productTeamOperatingLoopSyncCount: 0,
     lastTeamCollaborationDiagnosticsSyncAt: null,
     teamCollaborationDiagnosticsSyncCount: 0,
+    lastCollaborationIntentQueueSyncAt: null,
+    collaborationIntentQueueSyncCount: 0,
     lastRuntimeContractsSyncAt: null,
     runtimeContractsSyncCount: 0,
     lastAutonomousCycleConsistencySyncAt: null,
     autonomousCycleConsistencySyncCount: 0,
+    lastRuntimeAutonomyStatusSyncAt: null,
+    runtimeAutonomyStatusSyncCount: 0,
     projectCatalog: [],
     lastProjectCatalogSyncAt: null,
     projectCatalogSyncCount: 0,
@@ -1644,6 +1775,12 @@ export default function EngineWorkspace() {
     transcriptChannels: {},
     lastTranscriptSyncAt: null,
     transcriptSyncCount: 0,
+    meetingSummaries: null,
+    lastMeetingSummarySyncAt: null,
+    meetingSummarySyncCount: 0,
+    projectMemoryReadiness: null,
+    lastProjectMemoryReadinessSyncAt: null,
+    projectMemoryReadinessSyncCount: 0,
     timelineReadModel: null,
     eventLedgerReadModel: null,
     lastTimelineEventSyncAt: null,
@@ -1672,6 +1809,92 @@ export default function EngineWorkspace() {
   const timelineViewportRef = useRef(null);
   const tlEntranceTimersRef = useRef([]);
   const logIdRef = useRef(0);
+  const backendProjectSeedInFlightRef = useRef({});
+
+  const projectInputUiStateKey = selectedProjectId || DEFAULT_CHAT_PROJECT_ID;
+  const activeChannelId = activeChannelDrafts[projectInputUiStateKey] || 'main';
+  const setActiveChannelId = (value) => {
+    setActiveChannelDrafts(prev => {
+      const current = prev[projectInputUiStateKey] || 'main';
+      const nextValue = typeof value === 'function' ? value(current) : value;
+      return {
+        ...prev,
+        [projectInputUiStateKey]: nextValue || 'main',
+      };
+    });
+  };
+  const chatInput = chatInputDrafts[projectInputUiStateKey] || '';
+  const setChatInput = (value) => {
+    setChatInputDrafts(prev => {
+      const current = prev[projectInputUiStateKey] || '';
+      const nextValue = typeof value === 'function' ? value(current) : value;
+      return {
+        ...prev,
+        [projectInputUiStateKey]: nextValue || '',
+      };
+    });
+  };
+  const roomInput = roomInputDrafts[projectInputUiStateKey] || '';
+  const setRoomInput = (value) => {
+    setRoomInputDrafts(prev => {
+      const current = prev[projectInputUiStateKey] || '';
+      const nextValue = typeof value === 'function' ? value(current) : value;
+      return {
+        ...prev,
+        [projectInputUiStateKey]: nextValue || '',
+      };
+    });
+  };
+  const focusedChatProofIds = focusedChatProofIdDrafts[projectInputUiStateKey] || [];
+  const setFocusedChatProofIds = (value) => {
+    setFocusedChatProofIdDrafts(prev => {
+      const current = prev[projectInputUiStateKey] || [];
+      const nextValue = typeof value === 'function' ? value(current) : value;
+      return {
+        ...prev,
+        [projectInputUiStateKey]: Array.isArray(nextValue) ? nextValue : [],
+      };
+    });
+  };
+  const focusedTimelineProofIds = focusedTimelineProofIdDrafts[projectInputUiStateKey] || [];
+  const setFocusedTimelineProofIds = (value) => {
+    setFocusedTimelineProofIdDrafts(prev => {
+      const current = prev[projectInputUiStateKey] || [];
+      const nextValue = typeof value === 'function' ? value(current) : value;
+      return {
+        ...prev,
+        [projectInputUiStateKey]: Array.isArray(nextValue) ? nextValue : [],
+      };
+    });
+  };
+  const selectedTimelineEventId = selectedTimelineEventDrafts[projectInputUiStateKey] || null;
+  const setSelectedTimelineEventId = (value) => {
+    setSelectedTimelineEventDrafts(prev => {
+      const current = prev[projectInputUiStateKey] || null;
+      const nextValue = typeof value === 'function' ? value(current) : value;
+      return {
+        ...prev,
+        [projectInputUiStateKey]: nextValue || null,
+      };
+    });
+  };
+  const isBackendManagedRealProject = (project = {}) => (
+    Boolean(project?.id)
+    && !isManagerDemoProject(project)
+    && !isDevelopmentLocalRuntimeFallbackEnabled()
+    && (isBackendKickoffProject(project) || projectHasBackendSyncEvidence(project))
+  );
+  const canPersistProjectToBrowserCache = (project = {}) => (
+    Boolean(project?.id)
+    && !isBackendManagedRealProject(project)
+  );
+  const canPersistChatMessageToBrowserCache = (message = {}, projectById = new Map()) => {
+    const projectId = message.projectId || DEFAULT_CHAT_PROJECT_ID;
+    if (projectId === DEFAULT_CHAT_PROJECT_ID) return true;
+    const project = projectById.get(projectId);
+    if (!project) return false;
+    return canPersistProjectToBrowserCache(project) && !isManagerDemoMessage(message);
+  };
 
   // Inject Styles
   useEffect(() => {
@@ -1682,12 +1905,17 @@ export default function EngineWorkspace() {
   }, []);
 
   useEffect(() => {
-    writeStoredJson(STORAGE_KEYS.projects, projects);
-  }, [projects]);
+    const browserCacheProjects = projects.filter(canPersistProjectToBrowserCache);
+    writeStoredJson(STORAGE_KEYS.projects, browserCacheProjects);
+  }, [projects, backendStation.projectCatalog, backendStation.lastProjectSyncAt, backendStation.lastManagerDashboardSyncAt]);
 
   useEffect(() => {
-    writeStoredJson(STORAGE_KEYS.chatMessages, chatMessages.slice(-200));
-  }, [chatMessages]);
+    const projectById = new Map(projects.map(project => [project.id, project]));
+    const browserCacheMessages = chatMessages
+      .filter(message => canPersistChatMessageToBrowserCache(message, projectById))
+      .slice(-200);
+    writeStoredJson(STORAGE_KEYS.chatMessages, browserCacheMessages);
+  }, [chatMessages, projects, backendStation.projectCatalog, backendStation.lastProjectSyncAt, backendStation.lastManagerDashboardSyncAt]);
 
   useEffect(() => () => {
     if (sceneTransitionTimerRef.current) clearTimeout(sceneTransitionTimerRef.current);
@@ -1948,6 +2176,44 @@ export default function EngineWorkspace() {
   // Derived Data
   const activeProject = projects.find(p => p.id === selectedProjectId);
   const activeLanguage = activeProject?.language || language;
+  const renderAutonomousActionDecision = (decision, {
+    testId = 'backend-autonomous-action-decision',
+    dark = false,
+    text = (value) => localizeText(String(value ?? ''), activeLanguage),
+  } = {}) => {
+    if (!decision?.schemaVersion) return null;
+    const baseClass = dark
+      ? 'mt-2 border border-[#2a2118] bg-[#0d0c0b]/55 px-2 py-2'
+      : 'mt-2 border border-[#59684b] bg-[#f7edcf] px-2 py-2';
+    const labelClass = dark
+      ? 'font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]'
+      : 'font-mono text-[8px] uppercase tracking-widest text-[#59684b]';
+    const bodyClass = dark
+      ? 'mt-1 font-mono text-[7px] uppercase tracking-widest text-[#bcae86] leading-relaxed break-words'
+      : 'mt-1 font-mono text-[7px] uppercase tracking-widest text-[#6b5a3d] leading-relaxed break-words';
+    const rationale = (decision.rationale || []).filter(Boolean).slice(0, 2).join(' / ');
+    return (
+      <div data-testid={testId} className={baseClass}>
+        <div className={labelClass}>{text('Action Decision')}</div>
+        <div className={bodyClass}>
+          {text(decision.action || 'decision')} / {text(decision.selectedAction || 'selected action')} / {text(decision.agentName || decision.agentId || 'agent')}
+        </div>
+        <div className={bodyClass}>
+          Strategy {decision.strategyDecisionId || 'recorded'} / initiative {decision.initiativeId || 'none'} / checksum {decision.checksum || 'pending'}
+        </div>
+        {(decision.providerPreflightChecksum || decision.providerPreflightAction) && (
+          <div className={bodyClass}>
+            Provider preflight {decision.providerPreflightAction || 'recorded'} / {decision.providerPreflightChecksum || 'checksum pending'}
+          </div>
+        )}
+        {rationale && (
+          <div className={bodyClass}>
+            Why: {text(rationale)}
+          </div>
+        )}
+      </div>
+    );
+  };
 
   useEffect(() => {
     setProjectLanguage(activeProject?.language || null);
@@ -2060,7 +2326,7 @@ export default function EngineWorkspace() {
     const localizedBody = body && typeof body === 'object'
       ? {
         ...body,
-        language: body.language || activeLanguage,
+        language: Object.prototype.hasOwnProperty.call(body, 'language') ? body.language : activeLanguage,
         ...(body.project ? { project: { ...body.project, language: body.project.language || activeLanguage } } : {}),
       }
       : body;
@@ -2082,6 +2348,251 @@ export default function EngineWorkspace() {
       return payload;
     } finally {
       clearTimeout(timeout);
+    }
+  };
+
+  const providerRuntimeErrorDetail = (error) => (
+    error?.name === 'AbortError'
+      ? 'Request timed out.'
+      : error?.message || String(error)
+  );
+
+  const syncSettingsProviderRuntime = async ({ runTests = false } = {}) => {
+    if (providerRuntimeStatus.running) return;
+    const baseUrl = (backendStation.draftBaseUrl || backendStation.baseUrl || DEFAULT_AGENT_BACKEND_URL).trim().replace(/\/+$/, '');
+    const settingsProjectId = activeProject?.id ? encodeURIComponent(activeProject.id) : '';
+    const providerVaultBindingsRoute = settingsProjectId ? `/projects/${settingsProjectId}/provider-vault-bindings` : '/provider-vault-bindings';
+    const settingsProviderReadinessRoute = settingsProjectId ? `/projects/${settingsProjectId}/settings-provider-readiness` : '/settings/provider-readiness';
+    const settingsRuntimeReadinessRoute = settingsProjectId ? `/projects/${settingsProjectId}/settings-runtime-readiness` : '/settings/runtime-readiness';
+    const now = new Date().toISOString();
+    setProviderRuntimeStatus(prev => ({
+      ...prev,
+      running: true,
+      lastRunAt: now,
+      baseUrl,
+      error: null,
+      ...(runTests ? { modelTest: null, searchTest: null } : {}),
+    }));
+
+    const readStatus = async (path, key) => {
+      try {
+        const payload = await requestAgentBackend(path, { baseUrl, timeoutMs: 2500 });
+        return payload?.[key] || { provider: 'unknown', enabled: false, configured: false };
+      } catch (error) {
+        return {
+          provider: 'unreachable',
+          enabled: false,
+          configured: false,
+          error: providerRuntimeErrorDetail(error),
+        };
+      }
+    };
+
+    const runProviderTest = async (path, body, timeoutMs) => {
+      try {
+        return await requestAgentBackend(path, { method: 'POST', baseUrl, timeoutMs, body });
+      } catch (error) {
+        return {
+          ok: false,
+          error: providerRuntimeErrorDetail(error),
+          status: error?.payload?.status || null,
+        };
+      }
+    };
+
+    try {
+      const [modelProvider, searchProvider, secretVaultStatus, secretVaultRecords, providerVaultBindings, settingsProviderReadiness, settingsRuntimeReadiness, localMvpStartupReadiness] = await Promise.all([
+        readStatus('/llm/status', 'modelProvider'),
+        readStatus('/search/status', 'searchProvider'),
+        readStatus('/secret-vault/status', 'secretVaultStatus'),
+        readStatus('/secret-vault/records', 'secretVaultRecords'),
+        readStatus(providerVaultBindingsRoute, 'providerVaultBindings'),
+        readStatus(settingsProviderReadinessRoute, 'settingsProviderReadiness'),
+        readStatus(settingsRuntimeReadinessRoute, 'settingsRuntimeReadiness'),
+        readStatus('/local-mvp-startup-readiness', 'localMvpStartupReadiness'),
+      ]);
+      const modelReady = Boolean(modelProvider.enabled && modelProvider.configured);
+      const searchReady = Boolean(searchProvider.enabled && searchProvider.configured);
+      const modelTest = runTests
+        ? (modelReady
+          ? await runProviderTest('/llm/test', {
+              prompt: 'Return compact JSON only: {"ok":true,"message":"settings provider runtime ready"}',
+            }, 60000)
+          : { ok: false, skipped: true, reason: 'model-provider-not-configured' })
+        : providerRuntimeStatus.modelTest;
+      const searchTest = runTests
+        ? (searchReady
+          ? await runProviderTest('/search/test', {
+              query: 'product team provider readiness proof',
+            }, 25000)
+          : { ok: false, skipped: true, reason: 'search-provider-not-configured' })
+        : providerRuntimeStatus.searchTest;
+
+      setProviderRuntimeStatus({
+        running: false,
+        lastRunAt: now,
+        baseUrl,
+        modelProvider,
+        searchProvider,
+        secretVaultStatus,
+        secretVaultRecords,
+        providerVaultBindings,
+        settingsProviderReadiness,
+        settingsRuntimeReadiness,
+        settingsIntegrationReadiness: providerRuntimeStatus.settingsIntegrationReadiness,
+        localMvpStartupReadiness,
+        modelTest,
+        searchTest,
+        error: modelProvider.error || searchProvider.error || null,
+      });
+    } catch (error) {
+      setProviderRuntimeStatus(prev => ({
+        ...prev,
+        running: false,
+        baseUrl,
+        error: providerRuntimeErrorDetail(error),
+      }));
+    }
+  };
+
+  const syncSettingsIntegrationReadiness = async () => {
+    if (!activeProject?.id || providerRuntimeStatus.running) return;
+    const baseUrl = (backendStation.draftBaseUrl || backendStation.baseUrl || DEFAULT_AGENT_BACKEND_URL).trim().replace(/\/+$/, '');
+    const projectId = encodeURIComponent(activeProject.id);
+    const now = new Date().toISOString();
+    setProviderRuntimeStatus(prev => ({
+      ...prev,
+      running: true,
+      lastRunAt: now,
+      baseUrl,
+      error: null,
+    }));
+    try {
+      const payload = await requestAgentBackend(`/projects/${projectId}/settings-integration-readiness`, {
+        baseUrl,
+        timeoutMs: 5000,
+      });
+      const settingsIntegrationReadiness = payload.settingsIntegrationReadiness || payload;
+      setProviderRuntimeStatus(prev => ({
+        ...prev,
+        running: false,
+        lastRunAt: now,
+        baseUrl,
+        settingsIntegrationReadiness,
+        error: null,
+      }));
+      setBackendStation(prev => ({
+        ...prev,
+        connectionStatus: 'online',
+        readyPackageSubmodels: {
+          ...(String(prev.readyPackageSubmodelsProjectId || '').toLowerCase() === String(activeProject.id).toLowerCase() ? (prev.readyPackageSubmodels || {}) : {}),
+          settingsIntegrationReadiness,
+        },
+        readyPackageSubmodelsProjectId: activeProject.id,
+        lastReadyPackageSubmodelSyncAt: now,
+        readyPackageSubmodelSyncCount: (prev.readyPackageSubmodelSyncCount || 0) + 1,
+      }));
+    } catch (error) {
+      setProviderRuntimeStatus(prev => ({
+        ...prev,
+        running: false,
+        baseUrl,
+        error: providerRuntimeErrorDetail(error),
+      }));
+    }
+  };
+
+  const sealSettingsProviderSecret = async (kind) => {
+    const secretConfig = {
+      model: {
+        field: 'modelApiKey',
+        name: 'model.apiKey',
+        scope: 'model-provider',
+        requiredMessage: 'Model API key is required.',
+        metadata: { providerKind: 'model', secretKind: 'api-key' },
+      },
+      search: {
+        field: 'searchApiKey',
+        name: 'search.apiKey',
+        scope: 'search-provider',
+        requiredMessage: 'Evidence search API key is required.',
+        metadata: { providerKind: 'search', secretKind: 'api-key' },
+      },
+      searchEndpoint: {
+        field: 'searchEndpoint',
+        name: 'search.endpoint',
+        scope: 'search-provider',
+        requiredMessage: 'Evidence search endpoint is required.',
+        metadata: { providerKind: 'search', secretKind: 'endpoint', provider: 'http-json' },
+      },
+    }[kind];
+    if (!secretConfig) {
+      setProviderSecretDrafts(prev => ({
+        ...prev,
+        error: 'Unknown provider secret type.',
+      }));
+      return null;
+    }
+    const value = String(providerSecretDrafts[secretConfig.field] || '').trim();
+    if (!value) {
+      setProviderSecretDrafts(prev => ({
+        ...prev,
+        error: secretConfig.requiredMessage,
+      }));
+      return null;
+    }
+    if (!providerRuntimeStatus.secretVaultStatus?.ready) {
+      setProviderSecretDrafts(prev => ({
+        ...prev,
+        error: 'Secret vault backend is not ready. Start the backend with SECRET_VAULT_ENABLED=true and SECRET_VAULT_KEY before sealing keys.',
+      }));
+      return null;
+    }
+    const baseUrl = (backendStation.draftBaseUrl || backendStation.baseUrl || DEFAULT_AGENT_BACKEND_URL).trim().replace(/\/+$/, '');
+    setProviderSecretDrafts(prev => ({
+      ...prev,
+      running: true,
+      error: null,
+    }));
+    try {
+      const payload = await requestAgentBackend('/secret-vault/seal', {
+        method: 'POST',
+        baseUrl,
+        timeoutMs: 8000,
+        body: {
+          name: secretConfig.name,
+          value,
+          scope: secretConfig.scope,
+          source: 'settings-provider-boundary',
+          metadata: {
+            ...secretConfig.metadata,
+            sealedFrom: 'settings-ui',
+          },
+        },
+      });
+      setProviderSecretDrafts(prev => ({
+        ...prev,
+        [secretConfig.field]: '',
+        running: false,
+        lastReceipt: payload.secretVaultSealReceipt || null,
+        error: null,
+      }));
+      setProviderRuntimeStatus(prev => ({
+        ...prev,
+        baseUrl,
+        secretVaultStatus: payload.secretVaultStatus || prev.secretVaultStatus,
+        secretVaultRecords: payload.secretVaultRecords || prev.secretVaultRecords,
+        error: null,
+      }));
+      setTimeout(() => syncSettingsProviderRuntime({ runTests: false }), 0);
+      return payload;
+    } catch (error) {
+      setProviderSecretDrafts(prev => ({
+        ...prev,
+        running: false,
+        error: providerRuntimeErrorDetail(error),
+      }));
+      return null;
     }
   };
 
@@ -2186,6 +2697,7 @@ export default function EngineWorkspace() {
         .filter(result => result.status === 'fulfilled' && result.value?.channelId)
         .map(result => result.value);
       const channelMap = Object.fromEntries(channelPayloads.map(channel => [channel.channelId, channel]));
+      setChatChannels(prev => mergeTranscriptChannelsIntoUi(prev, transcriptIndex.channels || []));
       const transcriptMessages = transcriptMessagesFromBackendChannels(projectId, channelPayloads);
       if (transcriptMessages.length) {
         setChatMessages(prev => mergeProjectMessages(prev, transcriptMessages));
@@ -2215,6 +2727,79 @@ export default function EngineWorkspace() {
         loading: silent ? prev.loading : false,
         lastAction: silent ? prev.lastAction : 'Backend transcript sync failed',
         error: silent ? prev.error : error.name === 'AbortError' ? 'Backend transcript sync timed out.' : error.message || String(error),
+      }));
+      return null;
+    }
+  };
+
+  const syncBackendMeetingSummaries = async ({
+    silent = true,
+    projectId = activeProject?.id,
+  } = {}) => {
+    if (!projectId) return null;
+    if (!silent) setBackendStation(prev => ({ ...prev, loading: true }));
+    try {
+      const payload = await requestAgentBackend(`/projects/${encodeURIComponent(projectId)}/meeting-summaries`, {
+        timeoutMs: silent ? 1200 : 3000,
+      });
+      const meetingSummaries = payload.meetingSummaries || payload;
+      setBackendStation(prev => ({
+        ...prev,
+        connectionStatus: 'online',
+        loading: silent ? prev.loading : false,
+        meetingSummaries,
+        lastMeetingSummarySyncAt: new Date().toISOString(),
+        meetingSummarySyncCount: (prev.meetingSummarySyncCount || 0) + 1,
+        lastAction: silent ? prev.lastAction || 'Backend meeting summaries synced' : 'Backend meeting summaries synced',
+        error: null,
+      }));
+      return meetingSummaries;
+    } catch (error) {
+      setBackendStation(prev => ({
+        ...prev,
+        connectionStatus: silent ? prev.connectionStatus : 'offline',
+        loading: silent ? prev.loading : false,
+        lastAction: silent ? prev.lastAction : 'Backend meeting summaries sync failed',
+        error: silent ? prev.error : error.name === 'AbortError' ? 'Backend meeting summaries sync timed out.' : error.message || String(error),
+      }));
+      return null;
+    }
+  };
+
+  const syncBackendProjectMemoryReadiness = async ({
+    silent = true,
+    projectId = activeProject?.id,
+  } = {}) => {
+    if (!projectId) return null;
+    if (!silent) setBackendStation(prev => ({ ...prev, loading: true }));
+    try {
+      const payload = await requestAgentBackend(`/projects/${encodeURIComponent(projectId)}/memory-readiness`, {
+        timeoutMs: silent ? 1400 : 3500,
+      });
+      const projectMemoryReadiness = payload.projectMemoryReadiness || payload;
+      setBackendStation(prev => ({
+        ...prev,
+        connectionStatus: 'online',
+        loading: silent ? prev.loading : false,
+        projectMemoryReadiness,
+        readyPackageSubmodels: {
+          ...(String(prev.readyPackageSubmodelsProjectId || '').toLowerCase() === String(projectId).toLowerCase() ? (prev.readyPackageSubmodels || {}) : {}),
+          projectMemoryReadiness,
+        },
+        readyPackageSubmodelsProjectId: projectId,
+        lastProjectMemoryReadinessSyncAt: new Date().toISOString(),
+        projectMemoryReadinessSyncCount: (prev.projectMemoryReadinessSyncCount || 0) + 1,
+        lastAction: silent ? prev.lastAction || 'Backend project memory readiness synced' : 'Backend project memory readiness synced',
+        error: null,
+      }));
+      return projectMemoryReadiness;
+    } catch (error) {
+      setBackendStation(prev => ({
+        ...prev,
+        connectionStatus: silent ? prev.connectionStatus : 'offline',
+        loading: silent ? prev.loading : false,
+        lastAction: silent ? prev.lastAction : 'Backend project memory readiness sync failed',
+        error: silent ? prev.error : error.name === 'AbortError' ? 'Backend project memory readiness sync timed out.' : error.message || String(error),
       }));
       return null;
     }
@@ -2284,6 +2869,62 @@ export default function EngineWorkspace() {
     if (healthCheck.running) return;
     const baseUrl = (backendStation.draftBaseUrl || backendStation.baseUrl || DEFAULT_AGENT_BACKEND_URL).trim().replace(/\/+$/, '');
     const now = new Date().toISOString();
+    if (!workflow) {
+      setHealthCheck({
+        running: true,
+        lastRunAt: now,
+        baseUrl,
+        rows: [
+          { id: 'settings-health-readiness', label: 'Settings Health', status: 'running', detail: `GET ${baseUrl}/settings/health-readiness` },
+        ],
+        summary: null,
+        error: null,
+      });
+      try {
+        const payload = await requestAgentBackend('/settings/health-readiness', { baseUrl, timeoutMs: 5000 });
+        const readiness = payload.settingsHealthReadiness || {};
+        if (readiness.schemaVersion !== 'settings-health-readiness/v1') {
+          throw new Error('Settings health readiness schema missing.');
+        }
+        setHealthCheck({
+          running: false,
+          lastRunAt: readiness.generatedAt || now,
+          baseUrl,
+          rows: readiness.rows || [],
+          summary: readiness.status || 'synced',
+          error: null,
+          backendRoutes: readiness.backendRoutes || {},
+          checksum: readiness.checksum || null,
+        });
+        setProviderRuntimeStatus(prev => ({
+          ...prev,
+          baseUrl,
+          modelProvider: readiness.providerStatus?.model || prev.modelProvider,
+          searchProvider: readiness.providerStatus?.search || prev.searchProvider,
+          secretVaultStatus: readiness.secretVaultStatus || prev.secretVaultStatus,
+          localMvpStartupReadiness: readiness.startupReadiness?.schemaVersion === 'local-mvp-startup-readiness/v1'
+            ? readiness.startupReadiness
+            : prev.localMvpStartupReadiness,
+          lastRunAt: readiness.generatedAt || now,
+          error: null,
+        }));
+      } catch (error) {
+        const detail = error?.name === 'AbortError'
+          ? 'Settings health readiness timed out.'
+          : error?.message || String(error);
+        setHealthCheck({
+          running: false,
+          lastRunAt: now,
+          baseUrl,
+          rows: [
+            { id: 'settings-health-readiness', label: 'Settings Health', status: 'fail', detail },
+          ],
+          summary: 'failed',
+          error: detail,
+        });
+      }
+      return;
+    }
     const rows = [
       { id: 'backend', label: 'Backend worker station', status: 'pending', detail: 'Waiting for /workers/autonomous/status.' },
       { id: 'provider', label: 'Model provider config', status: 'pending', detail: 'Waiting for /llm/status.' },
@@ -2413,15 +3054,15 @@ export default function EngineWorkspace() {
           timeoutMs: 70000,
           body: {
             projectId: probeId,
-            name: 'UI Health Research Probe',
-            brief: 'Smoke-test whether the Harness backend can drive a compact research project through model intent, group chat, and timeline evidence.',
+            name: 'UI Health Product-Team Probe',
+            brief: 'Smoke-test whether the Harness backend can drive a compact product-team workflow through model intent, group chat, and timeline evidence.',
             team,
             selectedLeaderId: 'turing',
             reviewerId: 'jobs',
             tasks: [
               {
                 id: `${probeId}_brief`,
-                text: 'Draft the first-page research brief and list evidence gaps.',
+                text: 'Draft the first-page product-team brief and list evidence gaps.',
                 assignee: 'Marie Curie',
                 status: 'pending',
               },
@@ -2435,7 +3076,7 @@ export default function EngineWorkspace() {
           baseUrl,
           timeoutMs: 70000,
           body: {
-            text: '@Alan Turing assign Marie Curie to produce the first research timeline artifact, then ask Steve Jobs to review framing.',
+            text: '@Alan Turing assign Marie Curie to produce the first product-team timeline artifact, then ask Steve Jobs to review framing.',
             author: 'Director',
             authorId: 'director',
             channelId: 'main',
@@ -2488,6 +3129,14 @@ export default function EngineWorkspace() {
   const applyBackendManagerDashboardPayload = (payload = {}) => {
     const managerDashboardPayload = payload.managerDashboard || payload.managerReadyPackage?.managerDashboard || null;
     if (!managerDashboardPayload?.projectId) return false;
+    const readinessProofMapPayload = payload.readinessProofMap
+      || payload.managerReadyPackage?.readinessProofMap
+      || managerDashboardPayload.readinessProofMap
+      || payload.managerReadyPackage?.managerDashboard?.readinessProofMap
+      || null;
+    const managerDashboardWithProofMap = readinessProofMapPayload
+      ? { ...managerDashboardPayload, readinessProofMap: readinessProofMapPayload }
+      : managerDashboardPayload;
     const walkthroughPayload = payload.managerScenarioWalkthrough || payload.managerReadyPackage?.managerScenarioWalkthrough || managerDashboardPayload.managerScenarioWalkthrough || null;
     const requirementMatrixPayload = payload.managerReadyPackage?.managerRequirementMatrix || managerDashboardPayload.managerRequirementMatrix || null;
     const useCaseAuditPayload = payload.managerReadyPackage?.managerUseCaseAudit || managerDashboardPayload.managerUseCaseAudit || null;
@@ -2497,13 +3146,20 @@ export default function EngineWorkspace() {
       || payload.managerReadyPackage?.autonomousRunControl
       || managerDashboardPayload.autonomousRunControl
       || null;
+    const collaborationIntentQueuePayload = payload.collaborationIntentQueue
+      || payload.managerReadyPackage?.collaborationIntentQueue
+      || null;
+    const runtimeAutonomyStatusPayload = payload.runtimeAutonomyStatus
+      || payload.managerReadyPackage?.runtimeAutonomyStatus
+      || null;
     const commandCenterPayload = payload.managerCommandCenter || payload.managerReadyPackage?.managerCommandCenter || managerDashboardPayload.managerCommandCenter || null;
     const flowGraphPayload = payload.managerFlowGraph || payload.managerReadyPackage?.managerFlowGraph || null;
     setBackendStation(prev => ({
       ...prev,
       connectionStatus: 'online',
-      managerDashboard: managerDashboardPayload,
+      managerDashboard: managerDashboardWithProofMap,
       managerReadyPackage: payload.managerReadyPackage || prev.managerReadyPackage,
+      readinessProofMap: readinessProofMapPayload || prev.readinessProofMap,
       managerFlowGraph: flowGraphPayload || prev.managerFlowGraph,
       managerCommandCenter: commandCenterPayload || prev.managerCommandCenter,
       managerCommandCenterRun: payload.managerCommandCenterRun || prev.managerCommandCenterRun,
@@ -2514,10 +3170,14 @@ export default function EngineWorkspace() {
       managerActionQueue: actionQueuePayload || prev.managerActionQueue,
       agentAutonomousActionQueue: agentAutonomousActionQueuePayload || prev.agentAutonomousActionQueue,
       autonomousRunControl: autonomousRunControlPayload || prev.autonomousRunControl,
+      collaborationIntentQueue: collaborationIntentQueuePayload || prev.collaborationIntentQueue,
+      runtimeAutonomyStatus: runtimeAutonomyStatusPayload || prev.runtimeAutonomyStatus,
       autonomousRunControlRun: payload.autonomousRunControlRun || prev.autonomousRunControlRun,
       agentAutonomousActionRun: payload.agentAutonomousActionRun || prev.agentAutonomousActionRun,
       lastManagerDashboardSyncAt: new Date().toISOString(),
       managerDashboardSyncCount: (prev.managerDashboardSyncCount || 0) + 1,
+      lastReadinessProofMapSyncAt: readinessProofMapPayload ? new Date().toISOString() : prev.lastReadinessProofMapSyncAt,
+      readinessProofMapSyncCount: readinessProofMapPayload ? (prev.readinessProofMapSyncCount || 0) + 1 : prev.readinessProofMapSyncCount,
       lastManagerFlowGraphSyncAt: flowGraphPayload ? new Date().toISOString() : prev.lastManagerFlowGraphSyncAt,
       managerFlowGraphSyncCount: flowGraphPayload ? (prev.managerFlowGraphSyncCount || 0) + 1 : prev.managerFlowGraphSyncCount,
       lastManagerReadyPackageSyncAt: payload.managerReadyPackage ? new Date().toISOString() : prev.lastManagerReadyPackageSyncAt,
@@ -2538,6 +3198,10 @@ export default function EngineWorkspace() {
       agentAutonomousActionQueueSyncCount: agentAutonomousActionQueuePayload ? (prev.agentAutonomousActionQueueSyncCount || 0) + 1 : prev.agentAutonomousActionQueueSyncCount,
       lastAutonomousRunControlSyncAt: autonomousRunControlPayload ? new Date().toISOString() : prev.lastAutonomousRunControlSyncAt,
       autonomousRunControlSyncCount: autonomousRunControlPayload ? (prev.autonomousRunControlSyncCount || 0) + 1 : prev.autonomousRunControlSyncCount,
+      lastCollaborationIntentQueueSyncAt: collaborationIntentQueuePayload ? new Date().toISOString() : prev.lastCollaborationIntentQueueSyncAt,
+      collaborationIntentQueueSyncCount: collaborationIntentQueuePayload ? (prev.collaborationIntentQueueSyncCount || 0) + 1 : prev.collaborationIntentQueueSyncCount,
+      lastRuntimeAutonomyStatusSyncAt: runtimeAutonomyStatusPayload ? new Date().toISOString() : prev.lastRuntimeAutonomyStatusSyncAt,
+      runtimeAutonomyStatusSyncCount: runtimeAutonomyStatusPayload ? (prev.runtimeAutonomyStatusSyncCount || 0) + 1 : prev.runtimeAutonomyStatusSyncCount,
       error: null,
     }));
     return true;
@@ -2672,6 +3336,8 @@ export default function EngineWorkspace() {
         managerActionQueue: payload.managerActionQueue || prev.managerActionQueue,
         agentAutonomousActionQueue: payload.managerDashboard?.agentAutonomousActionQueue || prev.agentAutonomousActionQueue,
         autonomousRunControl: payload.autonomousRunControl || payload.managerDashboard?.autonomousRunControl || prev.autonomousRunControl,
+        collaborationIntentQueue: payload.collaborationIntentQueue || prev.collaborationIntentQueue,
+        runtimeAutonomyStatus: payload.runtimeAutonomyStatus || prev.runtimeAutonomyStatus,
         lastManagerReadyPackageSyncAt: new Date().toISOString(),
         managerReadyPackageSyncCount: (prev.managerReadyPackageSyncCount || 0) + 1,
         lastManagerDashboardSyncAt: payload.managerDashboard ? new Date().toISOString() : prev.lastManagerDashboardSyncAt,
@@ -2694,6 +3360,10 @@ export default function EngineWorkspace() {
         agentAutonomousActionQueueSyncCount: payload.managerDashboard?.agentAutonomousActionQueue ? (prev.agentAutonomousActionQueueSyncCount || 0) + 1 : prev.agentAutonomousActionQueueSyncCount,
         lastAutonomousRunControlSyncAt: (payload.autonomousRunControl || payload.managerDashboard?.autonomousRunControl) ? new Date().toISOString() : prev.lastAutonomousRunControlSyncAt,
         autonomousRunControlSyncCount: (payload.autonomousRunControl || payload.managerDashboard?.autonomousRunControl) ? (prev.autonomousRunControlSyncCount || 0) + 1 : prev.autonomousRunControlSyncCount,
+        lastCollaborationIntentQueueSyncAt: payload.collaborationIntentQueue ? new Date().toISOString() : prev.lastCollaborationIntentQueueSyncAt,
+        collaborationIntentQueueSyncCount: payload.collaborationIntentQueue ? (prev.collaborationIntentQueueSyncCount || 0) + 1 : prev.collaborationIntentQueueSyncCount,
+        lastRuntimeAutonomyStatusSyncAt: payload.runtimeAutonomyStatus ? new Date().toISOString() : prev.lastRuntimeAutonomyStatusSyncAt,
+        runtimeAutonomyStatusSyncCount: payload.runtimeAutonomyStatus ? (prev.runtimeAutonomyStatusSyncCount || 0) + 1 : prev.runtimeAutonomyStatusSyncCount,
         lastAction: silent ? prev.lastAction || 'BACKEND MANAGER READY PACKAGE SYNCED' : 'BACKEND MANAGER READY PACKAGE SYNCED',
         error: null,
       }));
@@ -2741,8 +3411,12 @@ export default function EngineWorkspace() {
       ['autonomousRunControl', `/projects/${encodeURIComponent(projectId)}/autonomous-run-control`, 'autonomousRunControl'],
       ['productTeamOperatingLoop', `/projects/${encodeURIComponent(projectId)}/product-team-operating-loop`, 'productTeamOperatingLoop'],
       ['teamCollaborationDiagnostics', `/projects/${encodeURIComponent(projectId)}/team-collaboration-diagnostics`, 'teamCollaborationDiagnostics'],
+      ['collaborationIntentQueue', `/projects/${encodeURIComponent(projectId)}/collaboration-intent-queue`, 'collaborationIntentQueue'],
       ['runtimeContracts', `/projects/${encodeURIComponent(projectId)}/runtime-contracts`, 'runtimeContracts'],
+      ['projectMemoryReadiness', `/projects/${encodeURIComponent(projectId)}/memory-readiness`, 'projectMemoryReadiness'],
+      ['settingsIntegrationReadiness', `/projects/${encodeURIComponent(projectId)}/settings-integration-readiness`, 'settingsIntegrationReadiness'],
       ['autonomousCycleConsistency', `/projects/${encodeURIComponent(projectId)}/autonomous-cycle-consistency`, 'autonomousCycleConsistency'],
+      ['runtimeAutonomyStatus', `/projects/${encodeURIComponent(projectId)}/runtime-autonomy-status`, 'runtimeAutonomyStatus'],
       ['productionInfrastructureRehearsal', `/projects/${encodeURIComponent(projectId)}/production-infrastructure-rehearsal`, 'productionInfrastructureRehearsal', 3600],
     ];
     const launchControlSubmodelRoutes = [
@@ -2813,8 +3487,11 @@ export default function EngineWorkspace() {
       autonomousRunControl: nextSubmodels.autonomousRunControl || prev.autonomousRunControl,
       productTeamOperatingLoop: nextSubmodels.productTeamOperatingLoop || prev.productTeamOperatingLoop,
       teamCollaborationDiagnostics: nextSubmodels.teamCollaborationDiagnostics || prev.teamCollaborationDiagnostics,
+      collaborationIntentQueue: nextSubmodels.collaborationIntentQueue || prev.collaborationIntentQueue,
       runtimeContracts: nextSubmodels.runtimeContracts || prev.runtimeContracts,
+      projectMemoryReadiness: nextSubmodels.projectMemoryReadiness || prev.projectMemoryReadiness,
       autonomousCycleConsistency: nextSubmodels.autonomousCycleConsistency || prev.autonomousCycleConsistency,
+      runtimeAutonomyStatus: nextSubmodels.runtimeAutonomyStatus || prev.runtimeAutonomyStatus,
       readyPackageSubmodelsProjectId: projectId,
       lastReadyPackageSubmodelSyncAt: new Date().toISOString(),
       readyPackageSubmodelSyncCount: (prev.readyPackageSubmodelSyncCount || 0) + 1,
@@ -2824,16 +3501,186 @@ export default function EngineWorkspace() {
       productTeamOperatingLoopSyncCount: nextSubmodels.productTeamOperatingLoop ? (prev.productTeamOperatingLoopSyncCount || 0) + 1 : prev.productTeamOperatingLoopSyncCount,
       lastTeamCollaborationDiagnosticsSyncAt: nextSubmodels.teamCollaborationDiagnostics ? new Date().toISOString() : prev.lastTeamCollaborationDiagnosticsSyncAt,
       teamCollaborationDiagnosticsSyncCount: nextSubmodels.teamCollaborationDiagnostics ? (prev.teamCollaborationDiagnosticsSyncCount || 0) + 1 : prev.teamCollaborationDiagnosticsSyncCount,
+      lastCollaborationIntentQueueSyncAt: nextSubmodels.collaborationIntentQueue ? new Date().toISOString() : prev.lastCollaborationIntentQueueSyncAt,
+      collaborationIntentQueueSyncCount: nextSubmodels.collaborationIntentQueue ? (prev.collaborationIntentQueueSyncCount || 0) + 1 : prev.collaborationIntentQueueSyncCount,
       lastRuntimeContractsSyncAt: nextSubmodels.runtimeContracts ? new Date().toISOString() : prev.lastRuntimeContractsSyncAt,
       runtimeContractsSyncCount: nextSubmodels.runtimeContracts ? (prev.runtimeContractsSyncCount || 0) + 1 : prev.runtimeContractsSyncCount,
+      lastProjectMemoryReadinessSyncAt: nextSubmodels.projectMemoryReadiness ? new Date().toISOString() : prev.lastProjectMemoryReadinessSyncAt,
+      projectMemoryReadinessSyncCount: nextSubmodels.projectMemoryReadiness ? (prev.projectMemoryReadinessSyncCount || 0) + 1 : prev.projectMemoryReadinessSyncCount,
       lastAutonomousCycleConsistencySyncAt: nextSubmodels.autonomousCycleConsistency ? new Date().toISOString() : prev.lastAutonomousCycleConsistencySyncAt,
       autonomousCycleConsistencySyncCount: nextSubmodels.autonomousCycleConsistency ? (prev.autonomousCycleConsistencySyncCount || 0) + 1 : prev.autonomousCycleConsistencySyncCount,
+      lastRuntimeAutonomyStatusSyncAt: nextSubmodels.runtimeAutonomyStatus ? new Date().toISOString() : prev.lastRuntimeAutonomyStatusSyncAt,
+      runtimeAutonomyStatusSyncCount: nextSubmodels.runtimeAutonomyStatus ? (prev.runtimeAutonomyStatusSyncCount || 0) + 1 : prev.runtimeAutonomyStatusSyncCount,
       lastAction: silent
         ? prev.lastAction || (includeLaunchControls ? 'Backend proof and launch models synced' : 'Backend proof models synced')
         : includeLaunchControls ? 'Backend proof and launch models synced' : 'Backend proof models synced',
       error: null,
     }));
     return nextSubmodels;
+  };
+
+  const refreshReceiptReadModels = async ({
+    payload = {},
+    projectId = payload.project?.id || activeProject?.id,
+    workflowKey = null,
+    includeLaunchControls = false,
+    actionLabel = null,
+  } = {}) => {
+    const readRoutes = payload.readModels || {};
+    const targetProjectId = projectId || payload.project?.id || activeProject?.id;
+    if (!targetProjectId || !readRoutes || readRoutes.included !== false) return null;
+    const fetchReadModel = (route, fallbackRoute, timeoutMs = 3600) => {
+      const resolvedRoute = route || fallbackRoute;
+      if (!resolvedRoute) return Promise.resolve(null);
+      return requestAgentBackend(resolvedRoute, { timeoutMs });
+    };
+    const routeSpecs = [
+      ['managerDashboard', readRoutes.managerDashboardRoute, 'managerDashboard', 5000],
+      ['managerReadyPackage', readRoutes.managerReadyPackageRoute, null, 7000],
+      ['managerFlowGraph', readRoutes.managerFlowGraphRoute, null, 5000],
+      ['readinessProofMap', readRoutes.readinessProofMapRoute, null, 5000],
+      ['transcriptIndex', readRoutes.transcriptsRoute, null, 3600],
+      ['mainTranscript', readRoutes.mainTranscriptRoute, null, 3600],
+      ['timeline', readRoutes.timelineRoute, null, 3600],
+      ['events', readRoutes.eventsRoute, null, 3600],
+      ['pilotLaunchReadiness', readRoutes.pilotLaunchReadinessRoute, 'pilotLaunchReadiness', 4200],
+      ['productionLaunchAudit', readRoutes.productionLaunchAuditRoute, 'productionLaunchAudit', 5200],
+      ['projectEvidenceArchive', readRoutes.projectEvidenceArchiveRoute, 'projectEvidenceArchive', 5200],
+      ['projectEvidenceExportWorkflow', readRoutes.projectEvidenceExportsRoute || readRoutes.projectEvidenceExportWorkflowRoute, 'projectEvidenceExportWorkflow', 4200],
+      ['privatePilotGoLiveReadiness', readRoutes.privatePilotGoLiveReadinessRoute, 'privatePilotGoLiveReadiness', 4200],
+      ['privatePilotReleaseCandidateWorkflow', readRoutes.privatePilotReleaseCandidateWorkflowRoute, 'privatePilotReleaseCandidateWorkflow', 4200],
+      ['privatePilotLaunchRunWorkflow', readRoutes.privatePilotLaunchRunWorkflowRoute, 'privatePilotLaunchRunWorkflow', 4200],
+      ['privatePilotLaunchHealthCheckWorkflow', readRoutes.privatePilotLaunchHealthCheckWorkflowRoute, 'privatePilotLaunchHealthCheckWorkflow', 4200],
+      ['privatePilotAcceptanceReportWorkflow', readRoutes.privatePilotAcceptanceReportWorkflowRoute, 'privatePilotAcceptanceReportWorkflow', 4200],
+      ['productionOperationsReadiness', readRoutes.productionOperationsReadinessRoute, 'productionOperationsReadiness', 5200],
+      ['productionOperationsControlReceiptWorkflow', readRoutes.productionOperationsControlReceiptWorkflowRoute, 'productionOperationsControlReceiptWorkflow', 4200],
+      ['productionDeploymentControlReceiptWorkflow', readRoutes.productionDeploymentControlReceiptWorkflowRoute, 'productionDeploymentControlReceiptWorkflow', 4200],
+      ['productionSecurityControlReceiptWorkflow', readRoutes.productionSecurityControlReceiptWorkflowRoute, 'productionSecurityControlReceiptWorkflow', 4200],
+      ['productionProviderControlReceiptWorkflow', readRoutes.productionProviderControlReceiptWorkflowRoute, 'productionProviderControlReceiptWorkflow', 4200],
+      ['productionInfrastructureRehearsal', readRoutes.productionInfrastructureRehearsalRoute, 'productionInfrastructureRehearsal', 5200],
+      ['productionLaunchGapRegister', readRoutes.productionLaunchGapRegisterRoute, 'productionLaunchGapRegister', 5200],
+      ['productionLaunchControlCenter', readRoutes.productionLaunchControlCenterRoute, 'productionLaunchControlCenter', 5200],
+      ['productionLaunchEvidenceDossier', readRoutes.productionLaunchEvidenceDossierRoute, 'productionLaunchEvidenceDossier', 5200],
+      ['productionEvidenceIntegrityAudit', readRoutes.productionEvidenceIntegrityAuditRoute, 'productionEvidenceIntegrityAudit', 5200],
+      ['deploymentPreflight', readRoutes.deploymentPreflightRoute, 'deploymentPreflight', 4200],
+      ['adapterGatewayPreflight', readRoutes.adapterGatewayPreflightRoute, 'adapterGatewayPreflight', 4200],
+      ['persistenceAdapterDryRun', readRoutes.persistenceAdapterDryRunRoute, 'persistenceAdapterDryRun', 5200],
+      ['workerQueueAdapterDryRun', readRoutes.workerQueueAdapterDryRunRoute, 'workerQueueAdapterDryRun', 5200],
+      ['securityBoundary', readRoutes.securityBoundaryRoute, 'securityBoundary', 4200],
+      ['providerReadiness', readRoutes.providerReadinessRoute, 'providerReadiness', 4200],
+      ['providerControlledRun', readRoutes.providerControlledRunRoute, 'providerControlledRun', 4200],
+      ['providerEvalRunWorkflow', readRoutes.providerEvalRunWorkflowRoute, 'providerEvalRunWorkflow', 4200],
+      ['launchApprovalWorkflow', readRoutes.launchApprovalWorkflowRoute, 'launchApprovalWorkflow', 4200],
+    ].filter(([, route]) => route);
+    const results = await Promise.allSettled(routeSpecs.map(([, route,, timeoutMs]) => (
+      fetchReadModel(route, null, timeoutMs)
+    )));
+    const refreshed = {};
+    results.forEach((result, index) => {
+      if (result.status !== 'fulfilled' || !result.value) return;
+      const [key,, payloadKey] = routeSpecs[index];
+      refreshed[key] = payloadKey ? (result.value[payloadKey] || result.value) : result.value;
+    });
+    if (refreshed.mainTranscript?.channelId) {
+      const messages = transcriptMessagesFromBackendChannels(targetProjectId, [refreshed.mainTranscript]);
+      if (messages.length) setChatMessages(prev => mergeProjectMessages(prev, messages));
+    }
+    if (refreshed.timeline || refreshed.events) {
+      applyBackendTimelineEventReadModels({
+        projectId: targetProjectId,
+        timeline: refreshed.timeline,
+        events: refreshed.events,
+      });
+    }
+    if (refreshed.managerDashboard || refreshed.managerReadyPackage || refreshed.managerFlowGraph || refreshed.readinessProofMap) {
+      applyBackendManagerDashboardPayload({
+        managerDashboard: refreshed.managerDashboard || refreshed.managerReadyPackage?.managerDashboard || null,
+        managerReadyPackage: refreshed.managerReadyPackage || null,
+        managerFlowGraph: refreshed.managerFlowGraph || refreshed.managerReadyPackage?.managerFlowGraph || null,
+        readinessProofMap: refreshed.readinessProofMap || null,
+      });
+    }
+    const readyPackageSubmodels = Object.fromEntries(Object.entries(refreshed).filter(([key]) => (
+      !['managerDashboard', 'managerReadyPackage', 'managerFlowGraph', 'readinessProofMap', 'transcriptIndex', 'mainTranscript', 'timeline', 'events'].includes(key)
+    )));
+    if (workflowKey && payload[workflowKey]) readyPackageSubmodels[workflowKey] = payload[workflowKey];
+    setBackendStation(prev => ({
+      ...prev,
+      connectionStatus: 'online',
+      managerDashboard: refreshed.managerDashboard || prev.managerDashboard,
+      managerReadyPackage: refreshed.managerReadyPackage || prev.managerReadyPackage,
+      managerFlowGraph: refreshed.managerFlowGraph || prev.managerFlowGraph,
+      readinessProofMap: refreshed.readinessProofMap || prev.readinessProofMap,
+      transcriptIndex: refreshed.transcriptIndex || prev.transcriptIndex,
+      transcriptChannels: refreshed.mainTranscript?.channelId ? {
+        ...(prev.transcriptChannels || {}),
+        [targetProjectId]: {
+          ...((prev.transcriptChannels || {})[targetProjectId] || {}),
+          [refreshed.mainTranscript.channelId]: refreshed.mainTranscript,
+        },
+      } : prev.transcriptChannels,
+      timelineReadModel: refreshed.timeline || prev.timelineReadModel,
+      eventLedgerReadModel: refreshed.events || prev.eventLedgerReadModel,
+      readyPackageSubmodels: {
+        ...(String(prev.readyPackageSubmodelsProjectId || '').toLowerCase() === String(targetProjectId).toLowerCase() ? (prev.readyPackageSubmodels || {}) : {}),
+        ...readyPackageSubmodels,
+      },
+      readyPackageSubmodelsProjectId: targetProjectId,
+      lastManagerDashboardSyncAt: refreshed.managerDashboard ? new Date().toISOString() : prev.lastManagerDashboardSyncAt,
+      managerDashboardSyncCount: refreshed.managerDashboard ? (prev.managerDashboardSyncCount || 0) + 1 : prev.managerDashboardSyncCount,
+      lastReadinessProofMapSyncAt: refreshed.readinessProofMap ? new Date().toISOString() : prev.lastReadinessProofMapSyncAt,
+      readinessProofMapSyncCount: refreshed.readinessProofMap ? (prev.readinessProofMapSyncCount || 0) + 1 : prev.readinessProofMapSyncCount,
+      lastManagerReadyPackageSyncAt: refreshed.managerReadyPackage ? new Date().toISOString() : prev.lastManagerReadyPackageSyncAt,
+      managerReadyPackageSyncCount: refreshed.managerReadyPackage ? (prev.managerReadyPackageSyncCount || 0) + 1 : prev.managerReadyPackageSyncCount,
+      lastManagerFlowGraphSyncAt: refreshed.managerFlowGraph ? new Date().toISOString() : prev.lastManagerFlowGraphSyncAt,
+      managerFlowGraphSyncCount: refreshed.managerFlowGraph ? (prev.managerFlowGraphSyncCount || 0) + 1 : prev.managerFlowGraphSyncCount,
+      lastTranscriptSyncAt: (refreshed.transcriptIndex || refreshed.mainTranscript) ? new Date().toISOString() : prev.lastTranscriptSyncAt,
+      transcriptSyncCount: (refreshed.transcriptIndex || refreshed.mainTranscript) ? (prev.transcriptSyncCount || 0) + 1 : prev.transcriptSyncCount,
+      lastTimelineEventSyncAt: (refreshed.timeline || refreshed.events) ? new Date().toISOString() : prev.lastTimelineEventSyncAt,
+      timelineEventSyncCount: (refreshed.timeline || refreshed.events) ? (prev.timelineEventSyncCount || 0) + 1 : prev.timelineEventSyncCount,
+      lastReadyPackageSubmodelSyncAt: Object.keys(readyPackageSubmodels).length ? new Date().toISOString() : prev.lastReadyPackageSubmodelSyncAt,
+      readyPackageSubmodelSyncCount: Object.keys(readyPackageSubmodels).length ? (prev.readyPackageSubmodelSyncCount || 0) + 1 : prev.readyPackageSubmodelSyncCount,
+      lastAction: actionLabel || (includeLaunchControls ? 'Receipt proof and launch routes refreshed' : 'Receipt proof routes refreshed'),
+      error: null,
+    }));
+    return refreshed;
+  };
+
+  const syncBackendCollaborationIntentQueue = async ({ silent = true, projectId = activeProject?.id } = {}) => {
+    if (!projectId) return null;
+    if (!silent) setBackendStation(prev => ({ ...prev, loading: true }));
+    try {
+      await ensureBackendProjectSeedForReadModelSync(projectId);
+      const payload = await requestAgentBackend(`/projects/${encodeURIComponent(projectId)}/collaboration-intent-queue`, {
+        timeoutMs: silent ? 1800 : 5000,
+      });
+      const collaborationIntentQueue = payload.collaborationIntentQueue || payload;
+      setBackendStation(prev => ({
+        ...prev,
+        connectionStatus: 'online',
+        loading: silent ? prev.loading : false,
+        collaborationIntentQueue,
+        readyPackageSubmodels: {
+          ...(String(prev.readyPackageSubmodelsProjectId || '').toLowerCase() === String(projectId).toLowerCase() ? (prev.readyPackageSubmodels || {}) : {}),
+          collaborationIntentQueue,
+        },
+        readyPackageSubmodelsProjectId: projectId,
+        lastCollaborationIntentQueueSyncAt: new Date().toISOString(),
+        collaborationIntentQueueSyncCount: (prev.collaborationIntentQueueSyncCount || 0) + 1,
+        lastAction: silent ? prev.lastAction || 'Backend collaboration intent queue synced' : 'Backend collaboration intent queue synced',
+        error: null,
+      }));
+      return collaborationIntentQueue;
+    } catch (error) {
+      setBackendStation(prev => ({
+        ...prev,
+        connectionStatus: silent ? prev.connectionStatus : 'offline',
+        loading: silent ? prev.loading : false,
+        lastAction: silent ? prev.lastAction : 'Backend collaboration intent queue sync failed',
+        error: silent ? prev.error : error.name === 'AbortError' ? 'Backend collaboration intent queue sync timed out.' : error.message || String(error),
+      }));
+      return null;
+    }
   };
 
   const syncBackendManagerFlowGraph = async ({ silent = true, projectId = activeProject?.id } = {}) => {
@@ -2864,6 +3711,24 @@ export default function EngineWorkspace() {
       }));
       return null;
     }
+  };
+  const openManagerFlowNode = async (nodeId, {
+    project = activeProject,
+    chatProofIds = [],
+    timelineLogIds = [],
+  } = {}) => {
+    if (!nodeId) return;
+    if (chatProofIds.length) setFocusedChatProofIds(chatProofIds);
+    if (timelineLogIds.length) setFocusedTimelineProofIds(timelineLogIds);
+    const currentGraph = backendStation.managerFlowGraph?.projectId === project?.id ? backendStation.managerFlowGraph : null;
+    if (!currentGraph?.nodes?.some(node => node.id === nodeId)) {
+      await syncBackendManagerFlowGraph({ projectId: project?.id, silent: true });
+    }
+    setSelectedTimelineEventId(nodeId);
+    enterProjectScene('timeline');
+    window.setTimeout(() => {
+      setSelectedTimelineEventId(nodeId);
+    }, 620);
   };
 
   const syncBackendManagerCommandCenter = async ({ silent = true, projectId = activeProject?.id } = {}) => {
@@ -3410,6 +4275,51 @@ export default function EngineWorkspace() {
     return candidates.find(item => !targetProjectId || String(item.projectId || '') === targetProjectId) || candidates[0];
   };
 
+  const extractAutopilotProviderEvidenceReceipt = (payload = {}, projectId = activeProject?.id) => {
+    const targetProjectId = String(projectId || '');
+    const directCandidates = [
+      payload,
+      payload.autopilotSessionWorker,
+      payload.autonomousRunControlSessionWorker,
+      payload.result,
+      ...(Array.isArray(payload.autopilotProcessed) ? payload.autopilotProcessed : []),
+      ...(Array.isArray(payload.result?.autopilotProcessed) ? payload.result.autopilotProcessed : []),
+      ...(Array.isArray(payload.scheduler?.lastResult?.autopilotProcessed) ? payload.scheduler.lastResult.autopilotProcessed : []),
+      ...(Array.isArray(payload.status?.lastResult?.autopilotProcessed) ? payload.status.lastResult.autopilotProcessed : []),
+    ].filter(Boolean);
+    const candidate = directCandidates.find((item) => {
+      if (targetProjectId && item.projectId && String(item.projectId) !== targetProjectId) return false;
+      return item.providerEvidenceSearch || item.evidenceSearch || item.providerUsage || item.autonomousRunControlSessionTick?.providerEvidenceSearch;
+    });
+    if (!candidate) return null;
+    const tick = candidate.autonomousRunControlSessionTick || payload.autonomousRunControlSessionTick || null;
+    const providerEvidenceSearch = candidate.providerEvidenceSearch || tick?.providerEvidenceSearch || null;
+    const evidenceSearch = candidate.evidenceSearch || (candidate.project?.evidenceSearches || []).find(record => (
+      record.id === candidate.evidenceSearchId
+      || record.id === providerEvidenceSearch?.evidenceSearchId
+      || record.providerReceiptId === providerEvidenceSearch?.providerReceiptId
+    )) || null;
+    const providerUsage = candidate.providerUsage || (candidate.project?.providerUsageLedger || []).find(record => (
+      record.id === candidate.providerUsageId
+      || record.id === providerEvidenceSearch?.providerUsageId
+      || record.providerReceiptId === providerEvidenceSearch?.providerReceiptId
+    )) || null;
+    return {
+      providerEvidenceSearch,
+      evidenceSearch,
+      providerUsage,
+      evidenceSearchId: candidate.evidenceSearchId || evidenceSearch?.id || providerEvidenceSearch?.evidenceSearchId || tick?.evidenceSearchId || null,
+      providerUsageId: candidate.providerUsageId || providerUsage?.id || providerEvidenceSearch?.providerUsageId || tick?.providerUsageId || null,
+      providerReceiptId: providerEvidenceSearch?.providerReceiptId || evidenceSearch?.providerReceiptId || providerUsage?.providerReceiptId || null,
+      provider: providerEvidenceSearch?.provider || evidenceSearch?.provider || providerUsage?.provider || null,
+      status: providerEvidenceSearch?.status || providerUsage?.status || evidenceSearch?.status || null,
+      sourceCount: providerEvidenceSearch?.sourceCount ?? evidenceSearch?.sources?.length ?? providerUsage?.evidenceIds?.length ?? 0,
+      sessionId: candidate.sessionId || tick?.sessionId || null,
+      tickId: candidate.tickId || tick?.id || null,
+      targetStageId: candidate.targetStageId || tick?.targetControl?.targetStageId || null,
+    };
+  };
+
   const syncBackendAutonomousControlBundle = async ({ silent = true, projectId = activeProject?.id } = {}) => {
     const [controlResult, queueResult] = await Promise.allSettled([
       syncBackendAutonomousRunControl({ silent, projectId }),
@@ -3439,6 +4349,7 @@ export default function EngineWorkspace() {
       const schedulerAgentQueue = extractBackendAgentAutonomousActionQueueFromPayload(payload);
       const schedulerRunControl = extractBackendAutonomousRunControlFromPayload(payload);
       const schedulerAutopilotWorker = extractBackendAutopilotSessionWorkerFromPayload(payload);
+      const schedulerProviderEvidence = extractAutopilotProviderEvidenceReceipt(payload);
       setBackendStation(prev => ({
         ...prev,
         connectionStatus: 'online',
@@ -3454,6 +4365,9 @@ export default function EngineWorkspace() {
         autonomousRunControlSessionTick: schedulerAutopilotWorker?.autonomousRunControlSessionTick || prev.autonomousRunControlSessionTick,
         autonomousRunControlLoop: schedulerAutopilotWorker?.autonomousRunControlLoops?.[0] || prev.autonomousRunControlLoop,
         autonomousRunControlRun: schedulerAutopilotWorker?.autonomousRunControlRuns?.[0] || prev.autonomousRunControlRun,
+        autonomousRunControlProviderEvidence: schedulerProviderEvidence?.providerEvidenceSearch || prev.autonomousRunControlProviderEvidence,
+        autonomousRunControlEvidenceSearch: schedulerProviderEvidence?.evidenceSearch || (schedulerProviderEvidence?.evidenceSearchId ? { id: schedulerProviderEvidence.evidenceSearchId, provider: schedulerProviderEvidence.provider, status: schedulerProviderEvidence.status } : prev.autonomousRunControlEvidenceSearch),
+        autonomousRunControlProviderUsage: schedulerProviderEvidence?.providerUsage || (schedulerProviderEvidence?.providerUsageId ? { id: schedulerProviderEvidence.providerUsageId, providerReceiptId: schedulerProviderEvidence.providerReceiptId, status: schedulerProviderEvidence.status } : prev.autonomousRunControlProviderUsage),
         lastAgentAutonomousActionQueueSyncAt: schedulerAgentQueue ? new Date().toISOString() : prev.lastAgentAutonomousActionQueueSyncAt,
         agentAutonomousActionQueueSyncCount: schedulerAgentQueue ? (prev.agentAutonomousActionQueueSyncCount || 0) + 1 : prev.agentAutonomousActionQueueSyncCount,
         lastAutonomousRunControlSyncAt: schedulerRunControl ? new Date().toISOString() : prev.lastAutonomousRunControlSyncAt,
@@ -3468,6 +4382,7 @@ export default function EngineWorkspace() {
         setTimeout(() => syncBackendManagerDashboard({ silent: true, projectId: activeProject.id }), 0);
         setTimeout(() => syncBackendAutonomousRunControl({ silent: true, projectId: activeProject.id }), 0);
         setTimeout(() => syncBackendAgentAutonomousActionQueue({ silent: true, projectId: activeProject.id }), 0);
+        setTimeout(() => syncBackendCollaborationIntentQueue({ silent: true, projectId: activeProject.id }), 0);
       }
       setTimeout(() => syncBackendProjectCatalog({ silent: true, baseUrl: baseUrlOverride || backendStation.baseUrl }), 0);
       return payload.scheduler || null;
@@ -3492,11 +4407,14 @@ export default function EngineWorkspace() {
       draftBaseUrl: nextUrl,
       connectionStatus: 'unknown',
       scheduler: null,
+      lastProjectSyncProjectId: null,
       managerReadyPackage: null,
       managerDashboard: null,
       managerFlowGraph: null,
       managerCommandCenter: null,
       managerCommandCenterRun: null,
+      managerActionRun: null,
+      managerActionRunOutput: null,
       managerScenarioTrail: null,
       managerScenarioWalkthrough: null,
       managerScenarioWalkthroughReceipt: null,
@@ -3508,9 +4426,21 @@ export default function EngineWorkspace() {
       autonomousRunControl: null,
       productTeamOperatingLoop: null,
       teamCollaborationDiagnostics: null,
+      collaborationIntentQueue: null,
       runtimeContracts: null,
+      projectMemoryReadiness: null,
       autonomousCycleConsistency: null,
+      runtimeAutonomyStatus: null,
       autonomousRunControlRun: null,
+      autonomousRunControlRunOutput: null,
+      autonomousRunControlLoop: null,
+      autonomousRunControlSessions: null,
+      autonomousRunControlSession: null,
+      autonomousRunControlSessionTick: null,
+      autonomousRunControlSessionWorker: null,
+      autonomousRunControlProviderEvidence: null,
+      autonomousRunControlEvidenceSearch: null,
+      autonomousRunControlProviderUsage: null,
       agentAutonomousActionRun: null,
       lastAutonomousRunControlSyncAt: null,
       autonomousRunControlSyncCount: 0,
@@ -3518,10 +4448,16 @@ export default function EngineWorkspace() {
       productTeamOperatingLoopSyncCount: 0,
       lastTeamCollaborationDiagnosticsSyncAt: null,
       teamCollaborationDiagnosticsSyncCount: 0,
+      lastCollaborationIntentQueueSyncAt: null,
+      collaborationIntentQueueSyncCount: 0,
       lastRuntimeContractsSyncAt: null,
       runtimeContractsSyncCount: 0,
+      lastProjectMemoryReadinessSyncAt: null,
+      projectMemoryReadinessSyncCount: 0,
       lastAutonomousCycleConsistencySyncAt: null,
       autonomousCycleConsistencySyncCount: 0,
+      lastRuntimeAutonomyStatusSyncAt: null,
+      runtimeAutonomyStatusSyncCount: 0,
       projectCatalog: [],
       lastProjectCatalogSyncAt: null,
       projectCatalogSyncCount: 0,
@@ -3550,26 +4486,13 @@ export default function EngineWorkspace() {
     setBackendStation(prev => ({
       ...prev,
       loading: true,
-      lastAction: action === 'start' ? 'Started backend scheduler' : prev.lastAction,
+      lastAction: action === 'start' ? 'Starting backend scheduler' : prev.lastAction,
       scheduler: action === 'start'
         ? {
           ...(prev.scheduler || {}),
-          lastStartedRunImmediately: true,
-          lastResult: {
-            processed: activeProject ? [{
-              projectId: activeProject.id,
-              reason: 'backend-scheduler-start-first-work',
-              nextRunAt: activeProject.nextAutonomousRunAt || null,
-            }] : [],
-            skipped: [],
-            agentsProcessed: (activeProject?.team || []).slice(0, 5).map(agent => ({
-              projectId: activeProject.id,
-              agentId: agent.id,
-              trigger: 'http-autonomous-scheduler-startup-agents',
-            })),
-            agentsSkipped: [],
-            messageCount: 0,
-          },
+          startPending: true,
+          lastStartedRunImmediately: false,
+          lastStartRequestedAt: new Date().toISOString(),
         }
         : prev.scheduler,
     }));
@@ -3584,12 +4507,15 @@ export default function EngineWorkspace() {
             ...backendSchedulerAgentSweepBody(),
             tickAutopilotSessions: Boolean(activeAutopilotSessionId),
             forceAutopilotRun: Boolean(activeProject?.id && activeAutopilotSessionId),
+            useProviderEvidenceSearch: Boolean(activeAutopilotSessionId),
+            providerEvidenceSearchEnabled: Boolean(activeAutopilotSessionId),
             forceAutopilotProjectIds: activeProject?.id ? [activeProject.id] : [],
             autopilotLoopCount: 1,
             maxAutopilotProjects: 1,
             maxAutopilotSessionsPerProject: 1,
             autopilotRequestBodyOverrides: {
               forceDue: true,
+              useProviderEvidenceSearch: true,
               submitAgentWorkArtifacts: true,
               reviewPendingSubmissions: true,
               respondToReviewObligations: true,
@@ -3602,6 +4528,7 @@ export default function EngineWorkspace() {
       const schedulerAgentQueue = extractBackendAgentAutonomousActionQueueFromPayload(payload);
       const schedulerRunControl = extractBackendAutonomousRunControlFromPayload(payload);
       const schedulerAutopilotWorker = extractBackendAutopilotSessionWorkerFromPayload(payload);
+      const schedulerProviderEvidence = extractAutopilotProviderEvidenceReceipt(payload);
       setBackendStation(prev => ({
         ...prev,
         connectionStatus: 'online',
@@ -3611,6 +4538,7 @@ export default function EngineWorkspace() {
             ...(payload.scheduler || {}),
             lastResult: payload.scheduler?.lastResult || prev.scheduler?.lastResult || null,
             lastStartedRunImmediately: true,
+            startPending: false,
           }
           : payload.scheduler || prev.scheduler,
         agentAutonomousActionQueue: schedulerAgentQueue || prev.agentAutonomousActionQueue,
@@ -3620,6 +4548,9 @@ export default function EngineWorkspace() {
         autonomousRunControlSessionTick: schedulerAutopilotWorker?.autonomousRunControlSessionTick || prev.autonomousRunControlSessionTick,
         autonomousRunControlLoop: schedulerAutopilotWorker?.autonomousRunControlLoops?.[0] || prev.autonomousRunControlLoop,
         autonomousRunControlRun: schedulerAutopilotWorker?.autonomousRunControlRuns?.[0] || prev.autonomousRunControlRun,
+        autonomousRunControlProviderEvidence: schedulerProviderEvidence?.providerEvidenceSearch || prev.autonomousRunControlProviderEvidence,
+        autonomousRunControlEvidenceSearch: schedulerProviderEvidence?.evidenceSearch || (schedulerProviderEvidence?.evidenceSearchId ? { id: schedulerProviderEvidence.evidenceSearchId, provider: schedulerProviderEvidence.provider, status: schedulerProviderEvidence.status } : prev.autonomousRunControlEvidenceSearch),
+        autonomousRunControlProviderUsage: schedulerProviderEvidence?.providerUsage || (schedulerProviderEvidence?.providerUsageId ? { id: schedulerProviderEvidence.providerUsageId, providerReceiptId: schedulerProviderEvidence.providerReceiptId, status: schedulerProviderEvidence.status } : prev.autonomousRunControlProviderUsage),
         lastAgentAutonomousActionQueueSyncAt: schedulerAgentQueue ? new Date().toISOString() : prev.lastAgentAutonomousActionQueueSyncAt,
         agentAutonomousActionQueueSyncCount: schedulerAgentQueue ? (prev.agentAutonomousActionQueueSyncCount || 0) + 1 : prev.agentAutonomousActionQueueSyncCount,
         lastAutonomousRunControlSyncAt: schedulerRunControl ? new Date().toISOString() : prev.lastAutonomousRunControlSyncAt,
@@ -3643,6 +4574,13 @@ export default function EngineWorkspace() {
         ...prev,
         connectionStatus: 'offline',
         loading: false,
+        scheduler: action === 'start'
+          ? {
+            ...(prev.scheduler || {}),
+            startPending: false,
+            lastStartedRunImmediately: false,
+          }
+          : prev.scheduler,
         lastAction: 'Scheduler command failed',
         error: error.name === 'AbortError' ? 'Backend command timed out.' : error.message || String(error),
       }));
@@ -3693,6 +4631,7 @@ export default function EngineWorkspace() {
         loading: silent ? prev.loading : false,
         lastAction: silent ? prev.lastAction || 'Backend project loaded' : 'Backend project loaded',
         lastProjectSyncAt: new Date().toISOString(),
+        lastProjectSyncProjectId: payload.project.id,
         projectSyncCount: (prev.projectSyncCount || 0) + 1,
         error: null,
       }));
@@ -3732,7 +4671,7 @@ export default function EngineWorkspace() {
       const payload = await requestAgentBackend(`/projects/${encodeURIComponent(activeProject.id)}`, {
         method: 'PUT',
         body: { project: activeProject },
-        timeoutMs: silent ? 1800 : 5000,
+        timeoutMs: silent ? 5000 : 20000,
       });
       applyBackendProjectSnapshot(payload);
       setBackendStation(prev => ({
@@ -3741,6 +4680,7 @@ export default function EngineWorkspace() {
         loading: silent ? prev.loading : false,
         lastAction: silent ? prev.lastAction || 'Project saved to backend' : 'Project saved to backend',
         lastProjectSyncAt: new Date().toISOString(),
+        lastProjectSyncProjectId: payload.project?.id || activeProject.id,
         projectSyncCount: (prev.projectSyncCount || 0) + 1,
         error: null,
       }));
@@ -3778,6 +4718,7 @@ export default function EngineWorkspace() {
         loading: silent ? prev.loading : false,
         lastAction: silent ? prev.lastAction || 'Backend state synced' : 'Backend state synced',
         lastProjectSyncAt: new Date().toISOString(),
+        lastProjectSyncProjectId: payload.project?.id || activeProject.id,
         projectSyncCount: (prev.projectSyncCount || 0) + 1,
         error: null,
       }));
@@ -3813,10 +4754,15 @@ export default function EngineWorkspace() {
       timeoutMs: backendStation.connectionStatus === 'online' ? 20_000 : 5_000,
     });
     applyBackendProjectSnapshot(payload);
+    const commandLabel = action === 'meeting'
+      ? 'Meeting'
+      : action === 'transcripts'
+        ? 'Transcript channel'
+        : 'Chat';
     setBackendStation(prev => ({
       ...prev,
       connectionStatus: 'online',
-      lastAction: `${action === 'meeting' ? 'Meeting' : 'Chat'} sent through backend`,
+      lastAction: `${commandLabel} sent through backend`,
       lastProjectSyncAt: new Date().toISOString(),
       projectSyncCount: (prev.projectSyncCount || 0) + 1,
       error: null,
@@ -3832,6 +4778,376 @@ export default function EngineWorkspace() {
     setTimeout(() => syncBackendTimelineAndEvents({ silent: true, projectId: payload.project?.id || activeProject.id }), 0);
     setTimeout(() => syncBackendReadyPackageSubmodels({ silent: true, projectId: payload.project?.id || activeProject.id }), 0);
     return payload;
+  };
+
+  const updateProjectLanguageSetting = async (nextLanguage = null) => {
+    if (!activeProject) return null;
+    const normalizedLanguage = nextLanguage || null;
+    const applyLocalLanguage = () => {
+      setProjectLanguage(normalizedLanguage);
+      setProjects(prev => prev.map(project => (
+        project.id === activeProject.id
+          ? { ...project, ...(normalizedLanguage ? { language: normalizedLanguage } : { language: undefined }) }
+          : project
+      )));
+    };
+
+    if (shouldAttemptBackendProjectWrite(activeProject)) {
+      try {
+        await ensureBackendProjectSeed();
+        const now = new Date().toISOString();
+        const payload = await requestAgentBackend(`/projects/${encodeURIComponent(activeProject.id)}/project-settings`, {
+          method: 'PUT',
+          body: {
+            includeReadModels: false,
+            language: normalizedLanguage,
+            updatedBy: 'Director',
+            source: 'settings-project-language',
+            now,
+          },
+          timeoutMs: backendStation.connectionStatus === 'online' ? 8_000 : 4_000,
+        });
+        applyBackendProjectSnapshot(payload);
+        setProjectLanguage(payload.project?.language || null);
+        setBackendStation(prev => ({
+          ...prev,
+          connectionStatus: 'online',
+          lastAction: 'Project language saved through backend settings',
+          lastProjectSyncAt: new Date().toISOString(),
+          projectSyncCount: (prev.projectSyncCount || 0) + 1,
+          error: null,
+        }));
+        if (!applyBackendManagerDashboardPayload(payload)) {
+          syncBackendManagerDashboard({ silent: true, projectId: payload.project?.id || activeProject.id });
+        }
+        setTimeout(() => syncBackendTimelineAndEvents({ silent: true, projectId: payload.project?.id || activeProject.id }), 0);
+        setTimeout(() => syncBackendReadyPackageSubmodels({ silent: true, projectId: payload.project?.id || activeProject.id }), 0);
+        return payload;
+      } catch (error) {
+        const allowFallback = allowLocalRuntimeFallbackForActiveProject(activeProject);
+        markBackendCommandFailure({
+          lastAction: allowFallback
+            ? 'Backend project language failed, used allowed local runtime fallback'
+            : 'Backend project language failed; local fallback disabled for backend-online project',
+          timeoutMessage: 'Backend project language update timed out.',
+          error,
+          allowFallback,
+        });
+        if (!allowFallback) return null;
+      }
+    }
+
+    applyLocalLanguage();
+    return null;
+  };
+
+  const updateProjectPrivacyPolicySetting = async (patch = {}) => {
+    if (!activeProject) return null;
+    const currentPolicy = activeProject.projectSettings?.privacyPolicy || {};
+    const nextPrivacyPolicy = {
+      schemaVersion: 'project-privacy-policy/v1',
+      retentionMode: currentPolicy.retentionMode || 'project-local',
+      modelTrainingAllowed: currentPolicy.modelTrainingAllowed === true,
+      providerLogMode: currentPolicy.providerLogMode || 'redacted',
+      evidenceExportRequiresApproval: currentPolicy.evidenceExportRequiresApproval !== false,
+      readyForProduction: false,
+      ...patch,
+    };
+    const applyLocalPrivacyPolicy = () => {
+      setProjects(prev => prev.map(project => (
+        project.id === activeProject.id
+          ? {
+              ...project,
+              projectSettings: {
+                ...(project.projectSettings || {}),
+                privacyPolicy: nextPrivacyPolicy,
+              },
+            }
+          : project
+      )));
+    };
+
+    if (shouldAttemptBackendProjectWrite(activeProject)) {
+      try {
+        await ensureBackendProjectSeed();
+        const now = new Date().toISOString();
+        const payload = await requestAgentBackend(`/projects/${encodeURIComponent(activeProject.id)}/project-settings`, {
+          method: 'PUT',
+          body: {
+            includeReadModels: false,
+            privacyPolicy: nextPrivacyPolicy,
+            updatedBy: 'Director',
+            source: 'settings-project-privacy',
+            now,
+          },
+          timeoutMs: backendStation.connectionStatus === 'online' ? 8_000 : 4_000,
+        });
+        applyBackendProjectSnapshot(payload);
+        setBackendStation(prev => ({
+          ...prev,
+          connectionStatus: 'online',
+          lastAction: 'Project privacy policy saved through backend settings',
+          lastProjectSyncAt: new Date().toISOString(),
+          projectSyncCount: (prev.projectSyncCount || 0) + 1,
+          error: null,
+        }));
+        if (!applyBackendManagerDashboardPayload(payload)) {
+          syncBackendManagerDashboard({ silent: true, projectId: payload.project?.id || activeProject.id });
+        }
+        setTimeout(() => syncBackendTimelineAndEvents({ silent: true, projectId: payload.project?.id || activeProject.id }), 0);
+        setTimeout(() => syncBackendReadyPackageSubmodels({ silent: true, projectId: payload.project?.id || activeProject.id }), 0);
+        return payload;
+      } catch (error) {
+        const allowFallback = allowLocalRuntimeFallbackForActiveProject(activeProject);
+        markBackendCommandFailure({
+          lastAction: allowFallback
+            ? 'Backend privacy policy failed, used allowed local runtime fallback'
+            : 'Backend privacy policy failed; local fallback disabled for backend-online project',
+          timeoutMessage: 'Backend privacy policy update timed out.',
+          error,
+          allowFallback,
+        });
+        if (!allowFallback) return null;
+      }
+    }
+
+    applyLocalPrivacyPolicy();
+    return null;
+  };
+
+  const updateProjectProviderBudgetPolicySetting = async (patch = {}) => {
+    if (!activeProject) return null;
+    const currentPolicy = activeProject.projectSettings?.providerBudgetPolicy || {};
+    const nextProviderBudgetPolicy = {
+      schemaVersion: 'project-provider-budget-policy/v1',
+      dailyBudgetCents: Number(currentPolicy.dailyBudgetCents) || 0,
+      maxRequestsPerProjectHour: Number(currentPolicy.maxRequestsPerProjectHour) || 0,
+      currency: currentPolicy.currency || 'USD',
+      enforcementMode: currentPolicy.enforcementMode || 'enforced',
+      readyForProduction: false,
+      ...patch,
+    };
+    const applyLocalProviderBudgetPolicy = () => {
+      setProjects(prev => prev.map(project => (
+        project.id === activeProject.id
+          ? {
+              ...project,
+              projectSettings: {
+                ...(project.projectSettings || {}),
+                providerBudgetPolicy: nextProviderBudgetPolicy,
+              },
+            }
+          : project
+      )));
+    };
+
+    if (shouldAttemptBackendProjectWrite(activeProject)) {
+      try {
+        await ensureBackendProjectSeed();
+        const now = new Date().toISOString();
+        const payload = await requestAgentBackend(`/projects/${encodeURIComponent(activeProject.id)}/project-settings`, {
+          method: 'PUT',
+          body: {
+            includeReadModels: false,
+            providerBudgetPolicy: nextProviderBudgetPolicy,
+            updatedBy: 'Director',
+            source: 'settings-provider-budget',
+            now,
+          },
+          timeoutMs: backendStation.connectionStatus === 'online' ? 8_000 : 4_000,
+        });
+        applyBackendProjectSnapshot(payload);
+        setBackendStation(prev => ({
+          ...prev,
+          connectionStatus: 'online',
+          lastAction: 'Project provider budget saved through backend settings',
+          lastProjectSyncAt: new Date().toISOString(),
+          projectSyncCount: (prev.projectSyncCount || 0) + 1,
+          error: null,
+        }));
+        if (!applyBackendManagerDashboardPayload(payload)) {
+          syncBackendManagerDashboard({ silent: true, projectId: payload.project?.id || activeProject.id });
+        }
+        setTimeout(() => syncBackendTimelineAndEvents({ silent: true, projectId: payload.project?.id || activeProject.id }), 0);
+        setTimeout(() => syncBackendReadyPackageSubmodels({ silent: true, projectId: payload.project?.id || activeProject.id }), 0);
+        return payload;
+      } catch (error) {
+        const allowFallback = allowLocalRuntimeFallbackForActiveProject(activeProject);
+        markBackendCommandFailure({
+          lastAction: allowFallback
+            ? 'Backend provider budget failed, used allowed local runtime fallback'
+            : 'Backend provider budget failed; local fallback disabled for backend-online project',
+          timeoutMessage: 'Backend provider budget update timed out.',
+          error,
+          allowFallback,
+        });
+        if (!allowFallback) return null;
+      }
+    }
+
+    applyLocalProviderBudgetPolicy();
+    return null;
+  };
+
+  const updateProjectWorkspacePolicySetting = async (patch = {}) => {
+    if (!activeProject) return null;
+    const currentPolicy = activeProject.projectSettings?.workspacePolicy || {};
+    const nextWorkspacePolicy = {
+      schemaVersion: 'project-workspace-policy/v1',
+      interfaceDensity: currentPolicy.interfaceDensity || 'comfortable',
+      defaultVisibility: currentPolicy.defaultVisibility || 'team',
+      autosaveCadenceSeconds: Number(currentPolicy.autosaveCadenceSeconds) || 60,
+      readyForProduction: false,
+      ...patch,
+    };
+    const applyLocalWorkspacePolicy = () => {
+      setProjects(prev => prev.map(project => (
+        project.id === activeProject.id
+          ? {
+              ...project,
+              projectSettings: {
+                ...(project.projectSettings || {}),
+                workspacePolicy: nextWorkspacePolicy,
+              },
+            }
+          : project
+      )));
+    };
+
+    if (shouldAttemptBackendProjectWrite(activeProject)) {
+      try {
+        await ensureBackendProjectSeed();
+        const now = new Date().toISOString();
+        const payload = await requestAgentBackend(`/projects/${encodeURIComponent(activeProject.id)}/project-settings`, {
+          method: 'PUT',
+          body: {
+            includeReadModels: false,
+            workspacePolicy: nextWorkspacePolicy,
+            updatedBy: 'Director',
+            source: 'settings-workspace-policy',
+            now,
+          },
+          timeoutMs: backendStation.connectionStatus === 'online' ? 8_000 : 4_000,
+        });
+        applyBackendProjectSnapshot(payload);
+        setBackendStation(prev => ({
+          ...prev,
+          connectionStatus: 'online',
+          lastAction: 'Project workspace policy saved through backend settings',
+          lastProjectSyncAt: new Date().toISOString(),
+          projectSyncCount: (prev.projectSyncCount || 0) + 1,
+          error: null,
+        }));
+        if (!applyBackendManagerDashboardPayload(payload)) {
+          syncBackendManagerDashboard({ silent: true, projectId: payload.project?.id || activeProject.id });
+        }
+        setTimeout(() => syncBackendTimelineAndEvents({ silent: true, projectId: payload.project?.id || activeProject.id }), 0);
+        setTimeout(() => syncBackendReadyPackageSubmodels({ silent: true, projectId: payload.project?.id || activeProject.id }), 0);
+        return payload;
+      } catch (error) {
+        const allowFallback = allowLocalRuntimeFallbackForActiveProject(activeProject);
+        markBackendCommandFailure({
+          lastAction: allowFallback
+            ? 'Backend workspace policy failed, used allowed local runtime fallback'
+            : 'Backend workspace policy failed; local fallback disabled for backend-online project',
+          timeoutMessage: 'Backend workspace policy update timed out.',
+          error,
+          allowFallback,
+        });
+        if (!allowFallback) return null;
+      }
+    }
+
+    applyLocalWorkspacePolicy();
+    return null;
+  };
+
+  const updateProjectToolGrantPolicySetting = async (patch = {}) => {
+    if (!activeProject) return null;
+    const currentPolicy = activeProject.projectSettings?.toolGrantPolicy || {};
+    const currentGrants = Array.isArray(currentPolicy.defaultToolGrants)
+      ? currentPolicy.defaultToolGrants
+      : DEFAULT_SETTINGS_TOOL_GRANTS;
+    const nextToolGrantPolicy = {
+      schemaVersion: 'project-tool-grant-policy/v1',
+      defaultToolGrants: currentGrants,
+      agentToolGrants: currentPolicy.agentToolGrants || {},
+      enforcementMode: currentPolicy.enforcementMode || 'enforced',
+      readyForProduction: false,
+      ...patch,
+    };
+    const applyLocalToolGrantPolicy = () => {
+      setProjects(prev => prev.map(project => (
+        project.id === activeProject.id
+          ? {
+              ...project,
+              projectSettings: {
+                ...(project.projectSettings || {}),
+                toolGrantPolicy: nextToolGrantPolicy,
+              },
+            }
+          : project
+      )));
+    };
+
+    if (shouldAttemptBackendProjectWrite(activeProject)) {
+      try {
+        await ensureBackendProjectSeed();
+        const now = new Date().toISOString();
+        const payload = await requestAgentBackend(`/projects/${encodeURIComponent(activeProject.id)}/project-settings`, {
+          method: 'PUT',
+          body: {
+            includeReadModels: false,
+            toolGrantPolicy: nextToolGrantPolicy,
+            updatedBy: 'Director',
+            source: 'settings-tool-grants',
+            now,
+          },
+          timeoutMs: backendStation.connectionStatus === 'online' ? 8_000 : 4_000,
+        });
+        applyBackendProjectSnapshot(payload);
+        setBackendStation(prev => ({
+          ...prev,
+          connectionStatus: 'online',
+          lastAction: 'Project tool grants saved through backend settings',
+          lastProjectSyncAt: new Date().toISOString(),
+          projectSyncCount: (prev.projectSyncCount || 0) + 1,
+          error: null,
+        }));
+        if (!applyBackendManagerDashboardPayload(payload)) {
+          syncBackendManagerDashboard({ silent: true, projectId: payload.project?.id || activeProject.id });
+        }
+        setTimeout(() => syncBackendTimelineAndEvents({ silent: true, projectId: payload.project?.id || activeProject.id }), 0);
+        setTimeout(() => syncBackendReadyPackageSubmodels({ silent: true, projectId: payload.project?.id || activeProject.id }), 0);
+        return payload;
+      } catch (error) {
+        const allowFallback = allowLocalRuntimeFallbackForActiveProject(activeProject);
+        markBackendCommandFailure({
+          lastAction: allowFallback
+            ? 'Backend tool grants failed, used allowed local runtime fallback'
+            : 'Backend tool grants failed; local fallback disabled for backend-online project',
+          timeoutMessage: 'Backend tool grant update timed out.',
+          error,
+          allowFallback,
+        });
+        if (!allowFallback) return null;
+      }
+    }
+
+    applyLocalToolGrantPolicy();
+    return null;
+  };
+
+  const toggleProjectToolGrantSetting = (toolId) => {
+    if (!activeProject) return null;
+    const currentPolicy = activeProject.projectSettings?.toolGrantPolicy || {};
+    const currentGrants = Array.isArray(currentPolicy.defaultToolGrants)
+      ? currentPolicy.defaultToolGrants
+      : DEFAULT_SETTINGS_TOOL_GRANTS;
+    const nextGrants = currentGrants.includes(toolId)
+      ? currentGrants.filter(grant => grant !== toolId)
+      : [...currentGrants, toolId];
+    return updateProjectToolGrantPolicySetting({ defaultToolGrants: nextGrants });
   };
 
   const runMultiChannelChangeBroadcast = async (text = '@all add a dual-channel manager review packet', {
@@ -4195,12 +5511,99 @@ export default function EngineWorkspace() {
     return runAutonomousCycle(activeProject.id, cadence);
   };
 
-  const applyBackendAgentDashboardPayload = (agentId, payload = {}) => {
-    if (!agentId || !payload) return false;
+  const agentDashboardSnapshotKey = (projectId, agentId) => (
+    `${String(projectId || 'no-project').toLowerCase()}::${String(agentId || 'no-agent').toLowerCase()}`
+  );
+
+  const agentDashboardSnapshotFor = (agentId, projectId = activeProject?.id) => {
+    if (!agentId || !projectId) return null;
+    const snapshot = agentDashboardSnapshots[agentDashboardSnapshotKey(projectId, agentId)] || null;
+    if (!snapshot) return null;
+    const snapshotProjectId = String(snapshot.projectId || '').toLowerCase();
+    const snapshotAgentId = String(snapshot.agentId || '').toLowerCase();
+    if (snapshotProjectId && snapshotProjectId !== String(projectId).toLowerCase()) return null;
+    if (snapshotAgentId && snapshotAgentId !== String(agentId).toLowerCase()) return null;
+    return snapshot;
+  };
+
+  const projectAgentUiStateKey = (projectId, agentId) => (
+    `${String(projectId || 'no-project').toLowerCase()}::${String(agentId || 'no-agent').toLowerCase()}`
+  );
+
+  const projectSubmissionUiStateKey = (projectId, submissionId) => (
+    `${String(projectId || 'no-project').toLowerCase()}::${String(submissionId || 'no-submission').toLowerCase()}`
+  );
+
+  const projectManagerUiStateKey = (projectId, scope) => (
+    `${String(projectId || 'no-project').toLowerCase()}::${String(scope || 'manager').toLowerCase()}`
+  );
+
+  const managerChangeDraftFor = (projectId = activeProject?.id) => ({
+    text: '',
+    mode: 'dual',
+    ...(projectId ? managerChangeDrafts[projectManagerUiStateKey(projectId, 'change-intake')] || {} : {}),
+  });
+
+  const managerAssignmentDraftFor = (projectId = activeProject?.id) => ({
+    targetAgentId: '',
+    text: '',
+    ...(projectId ? managerAssignmentDrafts[projectManagerUiStateKey(projectId, 'leader-assignment')] || {} : {}),
+  });
+
+  const managerChangeDraft = managerChangeDraftFor(activeProject?.id);
+  const managerAssignmentDraft = managerAssignmentDraftFor(activeProject?.id);
+
+  const updateManagerChangeDraft = (patch = {}) => {
+    if (!activeProject?.id) return;
+    const key = projectManagerUiStateKey(activeProject.id, 'change-intake');
+    setManagerChangeDrafts(prev => ({
+      ...prev,
+      [key]: {
+        text: '',
+        mode: 'dual',
+        ...(prev[key] || {}),
+        ...patch,
+      },
+    }));
+  };
+
+  const updateManagerAssignmentDraft = (patch = {}) => {
+    if (!activeProject?.id) return;
+    const key = projectManagerUiStateKey(activeProject.id, 'leader-assignment');
+    setManagerAssignmentDrafts(prev => ({
+      ...prev,
+      [key]: {
+        targetAgentId: '',
+        text: '',
+        ...(prev[key] || {}),
+        ...patch,
+      },
+    }));
+  };
+
+  const agentWorkDraftFor = (agentId, projectId = activeProject?.id) => (
+    agentId && projectId ? agentWorkDrafts[projectAgentUiStateKey(projectId, agentId)] || {} : {}
+  );
+
+  const agentMessageDraftFor = (agentId, projectId = activeProject?.id) => (
+    agentId && projectId ? agentMessageDrafts[projectAgentUiStateKey(projectId, agentId)] || {} : {}
+  );
+
+  const submissionReviewDraftFor = (submissionId, projectId = activeProject?.id) => (
+    submissionId && projectId ? submissionReviewDrafts[projectSubmissionUiStateKey(projectId, submissionId)] || {} : {}
+  );
+
+  const applyBackendAgentDashboardPayload = (agentId, payload = {}, projectId = activeProject?.id) => {
+    const dashboard = payload?.agentDashboard || payload;
+    const resolvedAgentId = dashboard?.agentId || agentId;
+    const resolvedProjectId = dashboard?.projectId || projectId;
+    if (!resolvedAgentId || !resolvedProjectId || !dashboard) return false;
     setAgentDashboardSnapshots(prev => ({
       ...prev,
-      [agentId]: {
-        ...payload,
+      [agentDashboardSnapshotKey(resolvedProjectId, resolvedAgentId)]: {
+        ...dashboard,
+        projectId: resolvedProjectId,
+        agentId: resolvedAgentId,
         syncedAt: new Date().toISOString(),
       },
     }));
@@ -4211,7 +5614,7 @@ export default function EngineWorkspace() {
     const targetProjectId = payload.project?.id || projectId;
     if (!targetProjectId || !agentId) return null;
     if (payload.project) applyBackendProjectSnapshot(payload);
-    if (payload.agentDashboard) applyBackendAgentDashboardPayload(agentId, payload.agentDashboard);
+    if (payload.agentDashboard) applyBackendAgentDashboardPayload(agentId, payload.agentDashboard, targetProjectId);
     if (applyBackendManagerDashboardPayload(payload) && payload.managerFlowGraph && payload.managerReadyPackage) {
       return {
         dashboard: payload.managerDashboard || payload.managerReadyPackage?.managerDashboard || null,
@@ -4224,19 +5627,32 @@ export default function EngineWorkspace() {
     const readRoutes = payload.readModels || {};
     const fetchReadModel = (route, fallbackRoute, timeoutMs = 8000) => requestAgentBackend(route || fallbackRoute, { timeoutMs });
     const [
+      projectResult,
       dashboardResult,
       flowGraphResult,
       agentDashboardResult,
       readyPackageResult,
       autonomousRunControlResult,
+      readinessProofMapResult,
+      transcriptIndexResult,
+      mainTranscriptResult,
+      timelineResult,
+      eventsResult,
     ] = await Promise.allSettled([
+      fetchReadModel(readRoutes.projectRoute, `/projects/${encodeURIComponent(targetProjectId)}`, 10000),
       fetchReadModel(readRoutes.managerDashboardRoute, `/projects/${encodeURIComponent(targetProjectId)}/manager-dashboard`, 8000),
       fetchReadModel(readRoutes.managerFlowGraphRoute, `/projects/${encodeURIComponent(targetProjectId)}/manager-flow-graph`, 8000),
       fetchReadModel(readRoutes.agentDashboardRoute, `/projects/${encodeURIComponent(targetProjectId)}/agents/${encodeURIComponent(agentId)}/dashboard`, 8000),
       fetchReadModel(readRoutes.managerReadyPackageRoute, `/projects/${encodeURIComponent(targetProjectId)}/manager-ready-package`, 12000),
       fetchReadModel(readRoutes.autonomousRunControlRoute, `/projects/${encodeURIComponent(targetProjectId)}/autonomous-run-control`, 8000),
+      fetchReadModel(readRoutes.readinessProofMapRoute, `/projects/${encodeURIComponent(targetProjectId)}/readiness-proof-map`, 8000),
+      fetchReadModel(readRoutes.transcriptsRoute, `/projects/${encodeURIComponent(targetProjectId)}/transcripts`, 5000),
+      fetchReadModel(readRoutes.mainTranscriptRoute, `/projects/${encodeURIComponent(targetProjectId)}/transcripts/main`, 5000),
+      fetchReadModel(readRoutes.timelineRoute, `/projects/${encodeURIComponent(targetProjectId)}/timeline`, 5000),
+      fetchReadModel(readRoutes.eventsRoute, `/projects/${encodeURIComponent(targetProjectId)}/events`, 5000),
     ]);
 
+    const projectPayload = projectResult.status === 'fulfilled' ? projectResult.value : null;
     const dashboard = dashboardResult.status === 'fulfilled' ? dashboardResult.value : null;
     const flowGraph = flowGraphResult.status === 'fulfilled' ? flowGraphResult.value : null;
     const agentDashboard = agentDashboardResult.status === 'fulfilled' ? agentDashboardResult.value : null;
@@ -4244,8 +5660,55 @@ export default function EngineWorkspace() {
     const autonomousRunControlPayload = autonomousRunControlResult.status === 'fulfilled'
       ? (autonomousRunControlResult.value?.autonomousRunControl || autonomousRunControlResult.value)
       : null;
-    if (dashboard) applyBackendManagerDashboardPayload({ managerDashboard: dashboard, managerReadyPackage: readyPackage || null, managerFlowGraph: flowGraph || null });
-    if (agentDashboard) applyBackendAgentDashboardPayload(agentId, agentDashboard);
+    const readinessProofMap = readinessProofMapResult.status === 'fulfilled' ? readinessProofMapResult.value : null;
+    const transcriptIndex = transcriptIndexResult.status === 'fulfilled' ? transcriptIndexResult.value : null;
+    const mainTranscript = mainTranscriptResult.status === 'fulfilled' ? mainTranscriptResult.value : null;
+    const timeline = timelineResult.status === 'fulfilled' ? timelineResult.value : null;
+    const events = eventsResult.status === 'fulfilled' ? eventsResult.value : null;
+    if (projectPayload?.project) applyBackendProjectSnapshot(projectPayload);
+    if (dashboard || readinessProofMap) applyBackendManagerDashboardPayload({
+      managerDashboard: dashboard ? {
+        ...dashboard,
+        readinessProofMap: readinessProofMap || dashboard.readinessProofMap,
+      } : null,
+      managerReadyPackage: readyPackage || null,
+      managerFlowGraph: flowGraph || null,
+    });
+    if (agentDashboard) applyBackendAgentDashboardPayload(agentId, agentDashboard, targetProjectId);
+    if (transcriptIndex || mainTranscript) {
+      const channelPayloads = [mainTranscript].filter(channel => channel?.channelId);
+      const transcriptMessages = transcriptMessagesFromBackendChannels(targetProjectId, channelPayloads);
+      if (transcriptMessages.length) {
+        setChatMessages(prev => mergeProjectMessages(prev, transcriptMessages));
+      }
+      setBackendStation(prev => ({
+        ...prev,
+        connectionStatus: 'online',
+        transcriptIndex: transcriptIndex || prev.transcriptIndex,
+        transcriptChannels: mainTranscript?.channelId ? {
+          ...(prev.transcriptChannels || {}),
+          [targetProjectId]: {
+            ...((prev.transcriptChannels || {})[targetProjectId] || {}),
+            [mainTranscript.channelId]: mainTranscript,
+          },
+        } : prev.transcriptChannels,
+        lastTranscriptSyncAt: new Date().toISOString(),
+        transcriptSyncCount: (prev.transcriptSyncCount || 0) + 1,
+        error: null,
+      }));
+    }
+    if (timeline || events) {
+      applyBackendTimelineEventReadModels({ projectId: targetProjectId, timeline, events });
+      setBackendStation(prev => ({
+        ...prev,
+        connectionStatus: 'online',
+        timelineReadModel: timeline || prev.timelineReadModel,
+        eventLedgerReadModel: events || prev.eventLedgerReadModel,
+        lastTimelineEventSyncAt: new Date().toISOString(),
+        timelineEventSyncCount: (prev.timelineEventSyncCount || 0) + 1,
+        error: null,
+      }));
+    }
     if (flowGraph || readyPackage) {
       setBackendStation(prev => ({
         ...prev,
@@ -4272,10 +5735,319 @@ export default function EngineWorkspace() {
         error: null,
       }));
     }
-    setTimeout(() => syncBackendProjectTranscripts({ silent: true, projectId: targetProjectId }), 0);
-    setTimeout(() => syncBackendTimelineAndEvents({ silent: true, projectId: targetProjectId }), 0);
+    if (!transcriptIndex && !mainTranscript) setTimeout(() => syncBackendProjectTranscripts({ silent: true, projectId: targetProjectId }), 0);
+    if (!timeline && !events) setTimeout(() => syncBackendTimelineAndEvents({ silent: true, projectId: targetProjectId }), 0);
     setTimeout(() => syncBackendReadyPackageSubmodels({ silent: true, projectId: targetProjectId }), 0);
-    return { dashboard, flowGraph, readyPackage, agentDashboard };
+    return {
+      project: projectPayload?.project || payload.project || null,
+      messages: projectPayload?.messages || payload.messages || [],
+      dashboard,
+      flowGraph,
+      readyPackage,
+      agentDashboard,
+      readinessProofMap,
+      transcriptIndex,
+      mainTranscript,
+      timeline,
+      events,
+    };
+  };
+
+  const refreshAutonomousRunControlReadModels = async ({ payload = {}, projectId = activeProject?.id, agentIds = [] } = {}) => {
+    const targetProjectId = payload.project?.id || projectId;
+    if (!targetProjectId) return null;
+    if (payload.project) applyBackendProjectSnapshot(payload);
+    const readRoutes = payload.readModels || {};
+    const uniqueAgentIds = Array.from(new Set((agentIds || []).filter(Boolean).map(agentId => String(agentId))));
+    const fetchReadModel = (route, fallbackRoute, timeoutMs = 8000) => requestAgentBackend(route || fallbackRoute, { timeoutMs });
+    const [
+      projectResult,
+      dashboardResult,
+      readyPackageResult,
+      flowGraphResult,
+      sessionsResult,
+      controlResult,
+      agentQueueResult,
+      operatingLoopResult,
+      collaborationIntentQueueResult,
+      cycleConsistencyResult,
+      runtimeAutonomyStatusResult,
+      timelineResult,
+      eventsResult,
+    ] = await Promise.allSettled([
+      fetchReadModel(readRoutes.projectRoute, `/projects/${encodeURIComponent(targetProjectId)}`, 10000),
+      fetchReadModel(readRoutes.managerDashboardRoute, `/projects/${encodeURIComponent(targetProjectId)}/manager-dashboard`, 10000),
+      fetchReadModel(readRoutes.managerReadyPackageRoute, `/projects/${encodeURIComponent(targetProjectId)}/manager-ready-package`, 12000),
+      fetchReadModel(readRoutes.managerFlowGraphRoute, `/projects/${encodeURIComponent(targetProjectId)}/manager-flow-graph`, 10000),
+      fetchReadModel(readRoutes.autonomousRunControlSessionsRoute, `/projects/${encodeURIComponent(targetProjectId)}/autonomous-run-control/sessions`, 8000),
+      fetchReadModel(readRoutes.autonomousRunControlRoute, `/projects/${encodeURIComponent(targetProjectId)}/autonomous-run-control`, 8000),
+      fetchReadModel(readRoutes.agentAutonomousActionQueueRoute, `/projects/${encodeURIComponent(targetProjectId)}/agent-autonomous-action-queue`, 8000),
+      fetchReadModel(readRoutes.productTeamOperatingLoopRoute, `/projects/${encodeURIComponent(targetProjectId)}/product-team-operating-loop`, 8000),
+      fetchReadModel(readRoutes.collaborationIntentQueueRoute, `/projects/${encodeURIComponent(targetProjectId)}/collaboration-intent-queue`, 8000),
+      fetchReadModel(readRoutes.autonomousCycleConsistencyRoute, `/projects/${encodeURIComponent(targetProjectId)}/autonomous-cycle-consistency`, 8000),
+      fetchReadModel(readRoutes.runtimeAutonomyStatusRoute, `/projects/${encodeURIComponent(targetProjectId)}/runtime-autonomy-status`, 8000),
+      fetchReadModel(readRoutes.timelineRoute, `/projects/${encodeURIComponent(targetProjectId)}/timeline`, 5000),
+      fetchReadModel(readRoutes.eventsRoute, `/projects/${encodeURIComponent(targetProjectId)}/events`, 5000),
+    ]);
+
+    const projectPayload = projectResult.status === 'fulfilled' ? projectResult.value : null;
+    const dashboard = dashboardResult.status === 'fulfilled' ? dashboardResult.value : null;
+    const readyPackage = readyPackageResult.status === 'fulfilled' ? readyPackageResult.value : null;
+    const flowGraph = flowGraphResult.status === 'fulfilled' ? flowGraphResult.value : null;
+    const sessionsPayload = sessionsResult.status === 'fulfilled' ? sessionsResult.value : null;
+    const controlPayload = controlResult.status === 'fulfilled' ? controlResult.value : null;
+    const agentQueue = agentQueueResult.status === 'fulfilled' ? agentQueueResult.value : null;
+    const operatingLoopPayload = operatingLoopResult.status === 'fulfilled' ? operatingLoopResult.value : null;
+    const collaborationIntentQueuePayload = collaborationIntentQueueResult.status === 'fulfilled' ? collaborationIntentQueueResult.value : null;
+    const cycleConsistencyPayload = cycleConsistencyResult.status === 'fulfilled' ? cycleConsistencyResult.value : null;
+    const runtimeAutonomyStatusPayload = runtimeAutonomyStatusResult.status === 'fulfilled' ? runtimeAutonomyStatusResult.value : null;
+    const timeline = timelineResult.status === 'fulfilled' ? timelineResult.value : null;
+    const events = eventsResult.status === 'fulfilled' ? eventsResult.value : null;
+
+    const autonomousRunControlSessions = sessionsPayload?.autonomousRunControlSessions || sessionsPayload || null;
+    const autonomousRunControl = controlPayload?.autonomousRunControl
+      || autonomousRunControlSessions?.autonomousRunControl
+      || dashboard?.autonomousRunControl
+      || readyPackage?.autonomousRunControl
+      || null;
+    const agentAutonomousActionQueue = agentQueue?.agentAutonomousActionQueue || agentQueue || dashboard?.agentAutonomousActionQueue || null;
+    const productTeamOperatingLoop = operatingLoopPayload?.productTeamOperatingLoop || operatingLoopPayload || readyPackage?.productTeamOperatingLoop || null;
+    const collaborationIntentQueue = collaborationIntentQueuePayload?.collaborationIntentQueue || collaborationIntentQueuePayload || readyPackage?.collaborationIntentQueue || null;
+    const autonomousCycleConsistency = cycleConsistencyPayload?.autonomousCycleConsistency || cycleConsistencyPayload || readyPackage?.autonomousCycleConsistency || null;
+    const runtimeAutonomyStatus = runtimeAutonomyStatusPayload?.runtimeAutonomyStatus || runtimeAutonomyStatusPayload || readyPackage?.runtimeAutonomyStatus || null;
+
+    if (projectPayload?.project) applyBackendProjectSnapshot(projectPayload);
+    if (dashboard || readyPackage || flowGraph) {
+      applyBackendManagerDashboardPayload({
+        managerDashboard: dashboard || null,
+        managerReadyPackage: readyPackage || null,
+        managerFlowGraph: flowGraph || null,
+      });
+    }
+    if (timeline || events) {
+      applyBackendTimelineEventReadModels({ projectId: targetProjectId, timeline, events });
+    }
+    uniqueAgentIds.forEach(agentId => {
+      if (agentId) setTimeout(() => syncBackendAgentDashboard(agentId, { silent: true, projectId: targetProjectId }), 0);
+    });
+    setBackendStation(prev => ({
+      ...prev,
+      connectionStatus: 'online',
+      managerDashboard: dashboard || readyPackage?.managerDashboard || prev.managerDashboard,
+      managerReadyPackage: readyPackage || prev.managerReadyPackage,
+      managerFlowGraph: flowGraph || prev.managerFlowGraph,
+      autonomousRunControlSessions: autonomousRunControlSessions || prev.autonomousRunControlSessions,
+      autonomousRunControlSession: autonomousRunControlSessions?.activeSession || autonomousRunControlSessions?.latestSession || prev.autonomousRunControlSession,
+      autonomousRunControl: autonomousRunControl || prev.autonomousRunControl,
+      agentAutonomousActionQueue: agentAutonomousActionQueue || prev.agentAutonomousActionQueue,
+      productTeamOperatingLoop: productTeamOperatingLoop || prev.productTeamOperatingLoop,
+      collaborationIntentQueue: collaborationIntentQueue || prev.collaborationIntentQueue,
+      autonomousCycleConsistency: autonomousCycleConsistency || prev.autonomousCycleConsistency,
+      runtimeAutonomyStatus: runtimeAutonomyStatus || prev.runtimeAutonomyStatus,
+      timelineReadModel: timeline || prev.timelineReadModel,
+      eventLedgerReadModel: events || prev.eventLedgerReadModel,
+      lastManagerDashboardSyncAt: dashboard ? new Date().toISOString() : prev.lastManagerDashboardSyncAt,
+      managerDashboardSyncCount: dashboard ? (prev.managerDashboardSyncCount || 0) + 1 : prev.managerDashboardSyncCount,
+      lastManagerReadyPackageSyncAt: readyPackage ? new Date().toISOString() : prev.lastManagerReadyPackageSyncAt,
+      managerReadyPackageSyncCount: readyPackage ? (prev.managerReadyPackageSyncCount || 0) + 1 : prev.managerReadyPackageSyncCount,
+      lastManagerFlowGraphSyncAt: flowGraph ? new Date().toISOString() : prev.lastManagerFlowGraphSyncAt,
+      managerFlowGraphSyncCount: flowGraph ? (prev.managerFlowGraphSyncCount || 0) + 1 : prev.managerFlowGraphSyncCount,
+      lastAgentAutonomousActionQueueSyncAt: agentAutonomousActionQueue ? new Date().toISOString() : prev.lastAgentAutonomousActionQueueSyncAt,
+      agentAutonomousActionQueueSyncCount: agentAutonomousActionQueue ? (prev.agentAutonomousActionQueueSyncCount || 0) + 1 : prev.agentAutonomousActionQueueSyncCount,
+      lastAutonomousRunControlSyncAt: autonomousRunControl || autonomousRunControlSessions ? new Date().toISOString() : prev.lastAutonomousRunControlSyncAt,
+      autonomousRunControlSyncCount: autonomousRunControl || autonomousRunControlSessions ? (prev.autonomousRunControlSyncCount || 0) + 1 : prev.autonomousRunControlSyncCount,
+      lastProductTeamOperatingLoopSyncAt: productTeamOperatingLoop ? new Date().toISOString() : prev.lastProductTeamOperatingLoopSyncAt,
+      productTeamOperatingLoopSyncCount: productTeamOperatingLoop ? (prev.productTeamOperatingLoopSyncCount || 0) + 1 : prev.productTeamOperatingLoopSyncCount,
+      lastCollaborationIntentQueueSyncAt: collaborationIntentQueue ? new Date().toISOString() : prev.lastCollaborationIntentQueueSyncAt,
+      collaborationIntentQueueSyncCount: collaborationIntentQueue ? (prev.collaborationIntentQueueSyncCount || 0) + 1 : prev.collaborationIntentQueueSyncCount,
+      lastAutonomousCycleConsistencySyncAt: autonomousCycleConsistency ? new Date().toISOString() : prev.lastAutonomousCycleConsistencySyncAt,
+      autonomousCycleConsistencySyncCount: autonomousCycleConsistency ? (prev.autonomousCycleConsistencySyncCount || 0) + 1 : prev.autonomousCycleConsistencySyncCount,
+      lastRuntimeAutonomyStatusSyncAt: runtimeAutonomyStatus ? new Date().toISOString() : prev.lastRuntimeAutonomyStatusSyncAt,
+      runtimeAutonomyStatusSyncCount: runtimeAutonomyStatus ? (prev.runtimeAutonomyStatusSyncCount || 0) + 1 : prev.runtimeAutonomyStatusSyncCount,
+      lastTimelineEventSyncAt: timeline || events ? new Date().toISOString() : prev.lastTimelineEventSyncAt,
+      timelineEventSyncCount: timeline || events ? (prev.timelineEventSyncCount || 0) + 1 : prev.timelineEventSyncCount,
+      error: null,
+    }));
+    return {
+      project: projectPayload?.project || payload.project || null,
+      dashboard,
+      readyPackage,
+      flowGraph,
+      autonomousRunControlSessions,
+      autonomousRunControl,
+      agentAutonomousActionQueue,
+      productTeamOperatingLoop,
+      collaborationIntentQueue,
+      autonomousCycleConsistency,
+      runtimeAutonomyStatus,
+      timeline,
+      events,
+    };
+  };
+
+  const refreshProjectInitiationReadModels = async ({ payload = {}, projectId } = {}) => {
+    const targetProjectId = payload.project?.id || projectId;
+    if (!targetProjectId) return null;
+    if (payload.project) applyBackendProjectSnapshot(payload);
+
+    const readRoutes = payload.readModels || {};
+    const fetchReadModel = (route, fallbackRoute, timeoutMs = 8000) => requestAgentBackend(route || fallbackRoute, { timeoutMs });
+    const [
+      projectResult,
+      dashboardResult,
+      readyPackageResult,
+      flowGraphResult,
+      transcriptIndexResult,
+      mainTranscriptResult,
+      timelineResult,
+      eventsResult,
+      productTeamMissionRunsResult,
+      autonomousRunControlResult,
+      productTeamOperatingLoopResult,
+      collaborationIntentQueueResult,
+      autonomousCycleConsistencyResult,
+      runtimeAutonomyStatusResult,
+    ] = await Promise.allSettled([
+      fetchReadModel(readRoutes.projectRoute, `/projects/${encodeURIComponent(targetProjectId)}`, 10000),
+      fetchReadModel(readRoutes.managerDashboardRoute, `/projects/${encodeURIComponent(targetProjectId)}/manager-dashboard`, 10000),
+      fetchReadModel(readRoutes.managerReadyPackageRoute, `/projects/${encodeURIComponent(targetProjectId)}/manager-ready-package`, 12000),
+      fetchReadModel(readRoutes.managerFlowGraphRoute, `/projects/${encodeURIComponent(targetProjectId)}/manager-flow-graph`, 10000),
+      fetchReadModel(readRoutes.transcriptsRoute, `/projects/${encodeURIComponent(targetProjectId)}/transcripts`, 5000),
+      fetchReadModel(readRoutes.mainTranscriptRoute, `/projects/${encodeURIComponent(targetProjectId)}/transcripts/main`, 5000),
+      fetchReadModel(readRoutes.timelineRoute, `/projects/${encodeURIComponent(targetProjectId)}/timeline`, 5000),
+      fetchReadModel(readRoutes.eventsRoute, `/projects/${encodeURIComponent(targetProjectId)}/events`, 5000),
+      fetchReadModel(readRoutes.productTeamMissionRunsRoute, `/projects/${encodeURIComponent(targetProjectId)}/product-team-missions`, 8000),
+      fetchReadModel(readRoutes.autonomousRunControlRoute, `/projects/${encodeURIComponent(targetProjectId)}/autonomous-run-control`, 8000),
+      fetchReadModel(readRoutes.productTeamOperatingLoopRoute, `/projects/${encodeURIComponent(targetProjectId)}/product-team-operating-loop`, 8000),
+      fetchReadModel(readRoutes.collaborationIntentQueueRoute, `/projects/${encodeURIComponent(targetProjectId)}/collaboration-intent-queue`, 8000),
+      fetchReadModel(readRoutes.autonomousCycleConsistencyRoute, `/projects/${encodeURIComponent(targetProjectId)}/autonomous-cycle-consistency`, 8000),
+      fetchReadModel(readRoutes.runtimeAutonomyStatusRoute, `/projects/${encodeURIComponent(targetProjectId)}/runtime-autonomy-status`, 8000),
+    ]);
+
+    const projectPayload = projectResult.status === 'fulfilled' ? projectResult.value : null;
+    const dashboard = dashboardResult.status === 'fulfilled' ? dashboardResult.value : null;
+    const readyPackage = readyPackageResult.status === 'fulfilled' ? readyPackageResult.value : null;
+    const flowGraph = flowGraphResult.status === 'fulfilled' ? flowGraphResult.value : null;
+    const transcriptIndex = transcriptIndexResult.status === 'fulfilled' ? transcriptIndexResult.value : null;
+    const mainTranscript = mainTranscriptResult.status === 'fulfilled' ? mainTranscriptResult.value : null;
+    const timeline = timelineResult.status === 'fulfilled' ? timelineResult.value : null;
+    const events = eventsResult.status === 'fulfilled' ? eventsResult.value : null;
+    const productTeamMissionRuns = productTeamMissionRunsResult.status === 'fulfilled'
+      ? productTeamMissionRunsResult.value?.productTeamMissionRuns || productTeamMissionRunsResult.value || null
+      : null;
+    const autonomousRunControl = autonomousRunControlResult.status === 'fulfilled'
+      ? autonomousRunControlResult.value?.autonomousRunControl || autonomousRunControlResult.value || dashboard?.autonomousRunControl || readyPackage?.autonomousRunControl || null
+      : dashboard?.autonomousRunControl || readyPackage?.autonomousRunControl || null;
+    const productTeamOperatingLoop = productTeamOperatingLoopResult.status === 'fulfilled'
+      ? productTeamOperatingLoopResult.value?.productTeamOperatingLoop || productTeamOperatingLoopResult.value || readyPackage?.productTeamOperatingLoop || null
+      : readyPackage?.productTeamOperatingLoop || null;
+    const collaborationIntentQueue = collaborationIntentQueueResult.status === 'fulfilled'
+      ? collaborationIntentQueueResult.value?.collaborationIntentQueue || collaborationIntentQueueResult.value || readyPackage?.collaborationIntentQueue || null
+      : readyPackage?.collaborationIntentQueue || null;
+    const autonomousCycleConsistency = autonomousCycleConsistencyResult.status === 'fulfilled'
+      ? autonomousCycleConsistencyResult.value?.autonomousCycleConsistency || autonomousCycleConsistencyResult.value || readyPackage?.autonomousCycleConsistency || null
+      : readyPackage?.autonomousCycleConsistency || null;
+    const runtimeAutonomyStatus = runtimeAutonomyStatusResult.status === 'fulfilled'
+      ? runtimeAutonomyStatusResult.value?.runtimeAutonomyStatus || runtimeAutonomyStatusResult.value || readyPackage?.runtimeAutonomyStatus || null
+      : readyPackage?.runtimeAutonomyStatus || null;
+
+    if (projectPayload?.project) applyBackendProjectSnapshot(projectPayload);
+    if (dashboard || readyPackage || flowGraph) {
+      applyBackendManagerDashboardPayload({
+        managerDashboard: dashboard || readyPackage?.managerDashboard || null,
+        managerReadyPackage: readyPackage || null,
+        managerFlowGraph: flowGraph || null,
+      });
+    }
+    if (transcriptIndex || mainTranscript) {
+      const channelPayloads = [mainTranscript].filter(channel => channel?.channelId);
+      const transcriptMessages = transcriptMessagesFromBackendChannels(targetProjectId, channelPayloads);
+      if (transcriptMessages.length) {
+        setChatMessages(prev => mergeProjectMessages(prev, transcriptMessages));
+      }
+      setBackendStation(prev => ({
+        ...prev,
+        connectionStatus: 'online',
+        transcriptIndex: transcriptIndex || prev.transcriptIndex,
+        transcriptChannels: mainTranscript?.channelId ? {
+          ...(prev.transcriptChannels || {}),
+          [targetProjectId]: {
+            ...((prev.transcriptChannels || {})[targetProjectId] || {}),
+            [mainTranscript.channelId]: mainTranscript,
+          },
+        } : prev.transcriptChannels,
+        lastTranscriptSyncAt: new Date().toISOString(),
+        transcriptSyncCount: (prev.transcriptSyncCount || 0) + 1,
+        error: null,
+      }));
+    }
+    if (timeline || events) {
+      applyBackendTimelineEventReadModels({ projectId: targetProjectId, timeline, events });
+      setBackendStation(prev => ({
+        ...prev,
+        connectionStatus: 'online',
+        timelineReadModel: timeline || prev.timelineReadModel,
+        eventLedgerReadModel: events || prev.eventLedgerReadModel,
+        lastTimelineEventSyncAt: new Date().toISOString(),
+        timelineEventSyncCount: (prev.timelineEventSyncCount || 0) + 1,
+        error: null,
+      }));
+    }
+    if (productTeamMissionRuns) {
+      const missionRows = Array.isArray(productTeamMissionRuns)
+        ? productTeamMissionRuns
+        : productTeamMissionRuns.rows || [];
+      setBackendStation(prev => ({
+        ...prev,
+        connectionStatus: 'online',
+        productTeamMissionRuns,
+        productTeamMissionRun: productTeamMissionRuns.latestRun || missionRows[0] || prev.productTeamMissionRun,
+        lastProductTeamMissionSyncAt: new Date().toISOString(),
+        productTeamMissionSyncCount: (prev.productTeamMissionSyncCount || 0) + 1,
+        error: null,
+      }));
+    }
+    if (autonomousRunControl || productTeamOperatingLoop || collaborationIntentQueue || autonomousCycleConsistency || runtimeAutonomyStatus) {
+      setBackendStation(prev => ({
+        ...prev,
+        connectionStatus: 'online',
+        autonomousRunControl: autonomousRunControl || prev.autonomousRunControl,
+        productTeamOperatingLoop: productTeamOperatingLoop || prev.productTeamOperatingLoop,
+        collaborationIntentQueue: collaborationIntentQueue || prev.collaborationIntentQueue,
+        autonomousCycleConsistency: autonomousCycleConsistency || prev.autonomousCycleConsistency,
+        runtimeAutonomyStatus: runtimeAutonomyStatus || prev.runtimeAutonomyStatus,
+        lastAutonomousRunControlSyncAt: autonomousRunControl ? new Date().toISOString() : prev.lastAutonomousRunControlSyncAt,
+        autonomousRunControlSyncCount: autonomousRunControl ? (prev.autonomousRunControlSyncCount || 0) + 1 : prev.autonomousRunControlSyncCount,
+        lastProductTeamOperatingLoopSyncAt: productTeamOperatingLoop ? new Date().toISOString() : prev.lastProductTeamOperatingLoopSyncAt,
+        productTeamOperatingLoopSyncCount: productTeamOperatingLoop ? (prev.productTeamOperatingLoopSyncCount || 0) + 1 : prev.productTeamOperatingLoopSyncCount,
+        lastCollaborationIntentQueueSyncAt: collaborationIntentQueue ? new Date().toISOString() : prev.lastCollaborationIntentQueueSyncAt,
+        collaborationIntentQueueSyncCount: collaborationIntentQueue ? (prev.collaborationIntentQueueSyncCount || 0) + 1 : prev.collaborationIntentQueueSyncCount,
+        lastAutonomousCycleConsistencySyncAt: autonomousCycleConsistency ? new Date().toISOString() : prev.lastAutonomousCycleConsistencySyncAt,
+        autonomousCycleConsistencySyncCount: autonomousCycleConsistency ? (prev.autonomousCycleConsistencySyncCount || 0) + 1 : prev.autonomousCycleConsistencySyncCount,
+        lastRuntimeAutonomyStatusSyncAt: runtimeAutonomyStatus ? new Date().toISOString() : prev.lastRuntimeAutonomyStatusSyncAt,
+        runtimeAutonomyStatusSyncCount: runtimeAutonomyStatus ? (prev.runtimeAutonomyStatusSyncCount || 0) + 1 : prev.runtimeAutonomyStatusSyncCount,
+        error: null,
+      }));
+    }
+
+    setTimeout(() => syncBackendReadyPackageSubmodels({ silent: true, projectId: targetProjectId }), 0);
+    return {
+      project: projectPayload?.project || payload.project || null,
+      messages: projectPayload?.messages || payload.messages || [],
+      dashboard: dashboard || readyPackage?.managerDashboard || null,
+      readyPackage,
+      flowGraph,
+      transcriptIndex,
+      mainTranscript,
+      timeline,
+      events,
+      productTeamMissionRuns,
+      autonomousRunControl,
+      productTeamOperatingLoop,
+      collaborationIntentQueue,
+      autonomousCycleConsistency,
+      runtimeAutonomyStatus,
+    };
   };
 
   const syncBackendAgentDashboard = async (agentId, { silent = true, projectId = activeProject?.id } = {}) => {
@@ -4285,7 +6057,7 @@ export default function EngineWorkspace() {
       const payload = await requestAgentBackend(`/projects/${encodeURIComponent(projectId)}/agents/${encodeURIComponent(agentId)}/dashboard`, {
         timeoutMs: silent ? 8000 : 10000,
       });
-      applyBackendAgentDashboardPayload(agentId, payload);
+      applyBackendAgentDashboardPayload(agentId, payload, projectId);
       setBackendStation(prev => ({
         ...prev,
         connectionStatus: 'online',
@@ -4307,20 +6079,24 @@ export default function EngineWorkspace() {
   };
 
   const updateAgentWorkDraft = (agentId, patch = {}) => {
+    const key = projectAgentUiStateKey(activeProject?.id, agentId);
+    if (!activeProject?.id || !agentId) return;
     setAgentWorkDrafts(prev => ({
       ...prev,
-      [agentId]: {
-        ...(prev[agentId] || {}),
+      [key]: {
+        ...(prev[key] || {}),
         ...patch,
       },
     }));
   };
 
   const updateSubmissionReviewDraft = (submissionId, patch = {}) => {
+    const key = projectSubmissionUiStateKey(activeProject?.id, submissionId);
+    if (!activeProject?.id || !submissionId) return;
     setSubmissionReviewDrafts(prev => ({
       ...prev,
-      [submissionId]: {
-        ...(prev[submissionId] || {}),
+      [key]: {
+        ...(prev[key] || {}),
         ...patch,
       },
     }));
@@ -4339,6 +6115,23 @@ export default function EngineWorkspace() {
 
   const ensureBackendProjectSeed = async () => {
     if (!activeProject?.id) return null;
+    const seedKey = String(activeProject.id).toLowerCase();
+    if (backendProjectSeedInFlightRef.current[seedKey]) {
+      return backendProjectSeedInFlightRef.current[seedKey];
+    }
+    const seedPromise = (async () => {
+    const activeProjectSeenByBackend = () => {
+      const normalizedActiveId = String(activeProject.id || '').toLowerCase();
+      return [
+        backendStation.lastProjectSyncProjectId,
+        backendStation.managerDashboard?.projectId,
+        backendStation.managerReadyPackage?.projectId,
+        backendStation.managerFlowGraph?.projectId,
+        backendStation.managerActionQueue?.projectId,
+        backendStation.agentAutonomousActionQueue?.projectId,
+        backendStation.autonomousRunControl?.projectId,
+      ].some((id) => String(id || '').toLowerCase() === normalizedActiveId);
+    };
     let readError = null;
     try {
       const payload = await requestAgentBackend(`/projects/${encodeURIComponent(activeProject.id)}`, {
@@ -4350,6 +6143,7 @@ export default function EngineWorkspace() {
           ...prev,
           connectionStatus: 'online',
           lastProjectSyncAt: new Date().toISOString(),
+          lastProjectSyncProjectId: payload.project.id,
           projectSyncCount: (prev.projectSyncCount || 0) + 1,
           error: null,
         }));
@@ -4361,8 +6155,10 @@ export default function EngineWorkspace() {
       }
       readError = error;
     }
-    if (!canSeedActiveProjectSnapshotToBackend(activeProject)) {
-      const error = new Error('Backend project not found; local snapshot seeding is disabled for real projects.');
+    if (!canSeedActiveProjectSnapshotToBackend(activeProject) || activeProjectSeenByBackend()) {
+      const error = new Error(activeProjectSeenByBackend()
+        ? 'Backend project not found after prior sync; local snapshot reseeding is suppressed.'
+        : 'Backend project not found; local snapshot seeding is disabled for real projects.');
       error.status = readError?.status || 404;
       setBackendStation(prev => ({
         ...prev,
@@ -4384,11 +6180,21 @@ export default function EngineWorkspace() {
         connectionStatus: 'online',
         lastAction: prev.lastAction || 'Project seeded to backend',
         lastProjectSyncAt: new Date().toISOString(),
+        lastProjectSyncProjectId: payload.project.id,
         projectSyncCount: (prev.projectSyncCount || 0) + 1,
         error: null,
       }));
     }
     return payload;
+    })();
+    backendProjectSeedInFlightRef.current[seedKey] = seedPromise;
+    try {
+      return await seedPromise;
+    } finally {
+      if (backendProjectSeedInFlightRef.current[seedKey] === seedPromise) {
+        delete backendProjectSeedInFlightRef.current[seedKey];
+      }
+    }
   };
 
   const agentWorkbenchTaskId = (agentId, draft = {}) => {
@@ -4404,7 +6210,7 @@ export default function EngineWorkspace() {
   };
 
   const agentWorkbenchReviewOptions = (agentId) => {
-    const dashboardRows = agentDashboardSnapshots[agentId]?.ownedSubmissionReviews || [];
+    const dashboardRows = agentDashboardSnapshotFor(agentId)?.ownedSubmissionReviews || [];
     const projectRows = (activeProject?.submissionReviews || []).filter(review => (
       review.reviewerAgentId === agentId
       || review.submitterAgentId === agentId
@@ -4420,7 +6226,7 @@ export default function EngineWorkspace() {
   };
 
   const agentWorkbenchSubmissionOptions = (agentId) => {
-    const dashboardRows = agentDashboardSnapshots[agentId]?.ownedSubmissions || [];
+    const dashboardRows = agentDashboardSnapshotFor(agentId)?.ownedSubmissions || [];
     const projectRows = (activeProject?.agentSubmissions || []).filter(submission => (
       submission.agentId === agentId
       || submission.submitterAgentId === agentId
@@ -4476,7 +6282,7 @@ export default function EngineWorkspace() {
 
   const runBackendSubmissionReview = async (submission = {}) => {
     if (!activeProject?.id || !submission?.id || !shouldAttemptBackendProjectWrite(activeProject)) return;
-    const draft = submissionReviewDrafts[submission.id] || {};
+    const draft = submissionReviewDraftFor(submission.id, activeProject.id);
     const reviewerAgentId = draft.reviewerAgentId || defaultSubmissionReviewerId(submission);
     if (!reviewerAgentId) return;
     const reviewer = activeProject.team.find(agent => agent.id === reviewerAgentId);
@@ -4496,6 +6302,19 @@ export default function EngineWorkspace() {
       .map(item => item.trim())
       .filter(Boolean);
     const now = new Date().toISOString();
+    updateSubmissionReviewDraft(submission.id, {
+      reviewerAgentId,
+      verdict,
+      comments,
+      requestedChanges: requestedChanges.join('\n'),
+      lastReceipt: {
+        action: 'submission-review-pending',
+        at: now,
+        reviewId: 'pending-backend-confirmation',
+        submissionId: submission.id,
+        readModels: null,
+      },
+    });
     setBackendStation(prev => ({ ...prev, loading: true, lastAction: 'Submission review running' }));
     try {
       await ensureBackendProjectSeed();
@@ -4511,27 +6330,23 @@ export default function EngineWorkspace() {
         },
         timeoutMs: 20000,
       });
+      updateSubmissionReviewDraft(submission.id, {
+        reviewerAgentId,
+        verdict,
+        comments,
+        requestedChanges: requestedChanges.join('\n'),
+        lastReceipt: {
+          action: 'submission-review',
+          at: new Date().toISOString(),
+          reviewId: payload.review?.id || null,
+          submissionId: payload.submission?.id || submission.id,
+          readModels: payload.readModels || null,
+        },
+      });
       await refreshAgentWriteReadModels({ payload, agentId: reviewerAgentId, projectId: activeProject.id });
       if (submitterId && submitterId !== reviewerAgentId) {
         setTimeout(() => syncBackendAgentDashboard(submitterId, { silent: true }), 0);
       }
-      setSubmissionReviewDrafts(prev => ({
-        ...prev,
-        [submission.id]: {
-          ...(prev[submission.id] || {}),
-          reviewerAgentId,
-          verdict,
-          comments,
-          requestedChanges: requestedChanges.join('\n'),
-          lastReceipt: {
-            action: 'submission-review',
-            at: new Date().toISOString(),
-            reviewId: payload.review?.id || null,
-            submissionId: payload.submission?.id || submission.id,
-            readModels: payload.readModels || null,
-          },
-        },
-      }));
       setBackendStation(prev => ({
         ...prev,
         connectionStatus: 'online',
@@ -4554,81 +6369,122 @@ export default function EngineWorkspace() {
 
   const runBackendAgentEvidenceSearch = async (agentId) => {
     if (!activeProject || !agentId || !shouldAttemptBackendProjectWrite(activeProject)) return;
-    const draft = agentWorkDrafts[agentId] || {};
+    const draft = agentWorkDraftFor(agentId, activeProject.id);
     const agent = activeProject.team.find(member => member.id === agentId);
     const now = new Date().toISOString();
     const taskId = agentWorkbenchTaskId(agentId, draft);
     const query = (draft.query || `${activeProject.name} product evidence`).trim();
     const purpose = (draft.purpose || draft.summary || `Collect decision evidence for ${activeProject.name}.`).trim();
     const sourceUrl = (draft.sourceUrl || '').trim();
-    setBackendStation(prev => ({ ...prev, loading: true, lastAction: 'Agent evidence search running' }));
+    const sourceTitle = (draft.sourceTitle || sourceUrl).trim();
+    const sourceSummary = (draft.finding || draft.summary || purpose).trim();
+    const evidenceFindings = [
+      draft.finding || draft.summary || `Evidence recorded by ${agent?.name || agentId} for manager review.`,
+    ].filter(Boolean);
+    const requestEvidenceSearch = (body = {}) => requestAgentBackend(`/projects/${encodeURIComponent(activeProject.id)}/agents/${encodeURIComponent(agentId)}/evidence-searches`, {
+      method: 'POST',
+      body,
+      timeoutMs: 20000,
+    });
+    setBackendStation(prev => ({ ...prev, loading: true, lastAction: 'Agent provider evidence search running' }));
     try {
       await ensureBackendProjectSeed();
-      const payload = await requestAgentBackend(`/projects/${encodeURIComponent(activeProject.id)}/agents/${encodeURIComponent(agentId)}/evidence-searches`, {
-        method: 'POST',
-        body: {
-          includeReadModels: false,
-          query,
-          purpose,
-          taskId,
-          confidence: draft.confidence || 'medium',
-          findings: [
-            draft.finding || draft.summary || `Evidence recorded by ${agent?.name || agentId} for manager review.`,
-          ].filter(Boolean),
-          sources: [
-            sourceUrl
-              ? {
-                  title: draft.sourceTitle || sourceUrl,
-                  url: sourceUrl,
-                  summary: draft.finding || purpose,
-                  kind: 'source',
-                  confidence: draft.confidence || 'medium',
-                }
-              : {
-                  title: draft.sourceTitle || `${agent?.name || 'Agent'} evidence note`,
-                  summary: draft.finding || purpose,
-                  kind: 'agent-note',
-                  confidence: draft.confidence || 'medium',
-                },
-          ],
-          tags: ['agent-workbench', 'evidence'],
-          now,
-        },
-        timeoutMs: 20000,
+      const payload = await requestEvidenceSearch({
+        includeReadModels: false,
+        useProvider: true,
+        operation: 'search:evidence',
+        query,
+        purpose,
+        taskId,
+        confidence: draft.confidence || 'medium',
+        findings: evidenceFindings,
+        maxResults: 3,
+        tags: ['agent-workbench', 'evidence', 'provider-search'],
+        now,
       });
       await refreshAgentWriteReadModels({ payload, agentId, projectId: activeProject.id });
-      setAgentWorkDrafts(prev => ({
-        ...prev,
-        [agentId]: {
-          ...(prev[agentId] || {}),
-          query,
-          purpose,
-          ...agentWorkbenchReceiptPatch(payload, 'evidence-search'),
-        },
-      }));
+      updateAgentWorkDraft(agentId, {
+        query,
+        purpose,
+        ...agentWorkbenchReceiptPatch(payload, 'provider-evidence-search'),
+      });
       setBackendStation(prev => ({
         ...prev,
         connectionStatus: 'online',
         loading: false,
-        lastAction: `Agent evidence recorded: ${agent?.name || agentId}`,
+        lastAction: `Agent provider evidence recorded: ${agent?.name || agentId}`,
         lastProjectSyncAt: new Date().toISOString(),
         projectSyncCount: (prev.projectSyncCount || 0) + 1,
         error: null,
       }));
-    } catch (error) {
-      setBackendStation(prev => ({
-        ...prev,
-        connectionStatus: 'offline',
-        loading: false,
-        lastAction: 'Agent evidence failed',
-        error: error.name === 'AbortError' ? 'Backend Agent evidence timed out.' : error.message || String(error),
-      }));
+    } catch (providerError) {
+      if (!sourceUrl) {
+        setBackendStation(prev => ({
+          ...prev,
+          connectionStatus: 'offline',
+          loading: false,
+          lastAction: 'Agent provider evidence failed; local source note blocked',
+          error: providerError.name === 'AbortError'
+            ? 'Backend provider evidence timed out. No manual source URL was provided, so no local source note was created.'
+            : `${providerError.message || String(providerError)} No manual source URL was provided, so no local source note was created.`,
+        }));
+        return;
+      }
+      try {
+        const payload = await requestEvidenceSearch({
+          includeReadModels: false,
+          query,
+          purpose,
+          taskId,
+          status: 'completed',
+          provider: 'agent-recorded',
+          searchMode: 'manual-source-record',
+          confidence: draft.confidence || 'medium',
+          findings: evidenceFindings,
+          sources: [
+            {
+              title: sourceTitle || sourceUrl,
+              url: sourceUrl,
+              summary: sourceSummary,
+              kind: 'manual-source',
+              confidence: draft.confidence || 'medium',
+            },
+          ],
+          tags: ['agent-workbench', 'evidence', 'manual-source-record', 'provider-search-failed'],
+          now,
+        });
+        await refreshAgentWriteReadModels({ payload, agentId, projectId: activeProject.id });
+        updateAgentWorkDraft(agentId, {
+          query,
+          purpose,
+          ...agentWorkbenchReceiptPatch(payload, 'manual-source-record'),
+        });
+        setBackendStation(prev => ({
+          ...prev,
+          connectionStatus: 'online',
+          loading: false,
+          lastAction: `Agent manual source recorded after provider search failed: ${agent?.name || agentId}`,
+          lastProjectSyncAt: new Date().toISOString(),
+          projectSyncCount: (prev.projectSyncCount || 0) + 1,
+          error: null,
+        }));
+      } catch (error) {
+        setBackendStation(prev => ({
+          ...prev,
+          connectionStatus: 'offline',
+          loading: false,
+          lastAction: 'Agent evidence failed',
+          error: error.name === 'AbortError'
+            ? 'Backend Agent evidence timed out.'
+            : `${error.message || String(error)} Provider attempt also failed: ${providerError.message || String(providerError)}`,
+        }));
+      }
     }
   };
 
   const runBackendAgentArtifactSubmission = async (agentId) => {
     if (!activeProject || !agentId || !shouldAttemptBackendProjectWrite(activeProject)) return;
-    const draft = agentWorkDrafts[agentId] || {};
+    const draft = agentWorkDraftFor(agentId, activeProject.id);
     const agent = activeProject.team.find(member => member.id === agentId);
     const now = new Date().toISOString();
     const artifactType = draft.artifactType || 'discovery-report';
@@ -4685,19 +6541,15 @@ export default function EngineWorkspace() {
         timeoutMs: 20000,
       });
       await refreshAgentWriteReadModels({ payload, agentId, projectId: activeProject.id });
-      setAgentWorkDrafts(prev => ({
-        ...prev,
-        [agentId]: {
-          ...(prev[agentId] || {}),
-          title,
-          summary,
-          body,
-          artifactType,
-          respondsToReviewId,
-          revisesSubmissionId,
-          ...agentWorkbenchReceiptPatch(payload, 'artifact-submission'),
-        },
-      }));
+      updateAgentWorkDraft(agentId, {
+        title,
+        summary,
+        body,
+        artifactType,
+        respondsToReviewId,
+        revisesSubmissionId,
+        ...agentWorkbenchReceiptPatch(payload, 'artifact-submission'),
+      });
       setBackendStation(prev => ({
         ...prev,
         connectionStatus: 'online',
@@ -4720,7 +6572,7 @@ export default function EngineWorkspace() {
 
   const runBackendAgentArtifactDraft = async (agentId) => {
     if (!activeProject || !agentId || !shouldAttemptBackendProjectWrite(activeProject)) return;
-    const draft = agentWorkDrafts[agentId] || {};
+    const draft = agentWorkDraftFor(agentId, activeProject.id);
     const agent = activeProject.team.find(member => member.id === agentId);
     const now = new Date().toISOString();
     const artifactType = draft.artifactType || 'product-brief';
@@ -4744,18 +6596,14 @@ export default function EngineWorkspace() {
         timeoutMs: 30000,
       });
       await refreshAgentWriteReadModels({ payload, agentId, projectId: activeProject.id });
-      setAgentWorkDrafts(prev => ({
-        ...prev,
-        [agentId]: {
-          ...(prev[agentId] || {}),
-          instruction,
-          artifactType,
-          title: payload.artifactDraft?.title || prev[agentId]?.title || '',
-          summary: payload.artifactDraft?.summary || prev[agentId]?.summary || '',
-          body: payload.artifactDraft?.body || prev[agentId]?.body || '',
-          ...agentWorkbenchReceiptPatch(payload, 'artifact-draft-submit'),
-        },
-      }));
+      updateAgentWorkDraft(agentId, {
+        instruction,
+        artifactType,
+        title: payload.artifactDraft?.title || draft.title || '',
+        summary: payload.artifactDraft?.summary || draft.summary || '',
+        body: payload.artifactDraft?.body || draft.body || '',
+        ...agentWorkbenchReceiptPatch(payload, 'artifact-draft-submit'),
+      });
       setBackendStation(prev => ({
         ...prev,
         connectionStatus: 'online',
@@ -4794,7 +6642,7 @@ export default function EngineWorkspace() {
           ...(cadence ? { cadence } : {}),
           ...backendAgentCollaborationBody(agentId),
         },
-        timeoutMs: 8000,
+        timeoutMs: 20000,
       });
       applyBackendProjectSnapshot(payload);
       setBackendStation(prev => ({
@@ -4912,10 +6760,12 @@ export default function EngineWorkspace() {
   });
 
   const updateAgentMessageDraft = (agentId, patch = {}) => {
+    const key = projectAgentUiStateKey(activeProject?.id, agentId);
+    if (!activeProject?.id || !agentId) return;
     setAgentMessageDrafts(prev => ({
       ...prev,
-      [agentId]: {
-        ...(prev[agentId] || {}),
+      [key]: {
+        ...(prev[key] || {}),
         ...patch,
       },
     }));
@@ -4925,7 +6775,7 @@ export default function EngineWorkspace() {
     if (!activeProject || !agentId || !shouldAttemptBackendProjectWrite(activeProject)) return;
     const sender = activeProject.team.find(agent => agent.id === agentId);
     const fallbackTarget = activeProject.team.find(agent => agent.id !== agentId)?.id || '';
-    const draft = agentMessageDrafts[agentId] || {};
+    const draft = agentMessageDraftFor(agentId, activeProject.id);
     const targetAgentId = draft.targetAgentId || fallbackTarget;
     const text = (draft.text || `@${activeProject.team.find(agent => agent.id === targetAgentId)?.name || 'team'} coordination note: keep the latest proof visible for manager review.`).trim();
     if (!sender || !text || !targetAgentId) return;
@@ -4954,14 +6804,10 @@ export default function EngineWorkspace() {
         projectSyncCount: (prev.projectSyncCount || 0) + 1,
         error: null,
       }));
-      setAgentMessageDrafts(prev => ({
-        ...prev,
-        [agentId]: {
-          ...(prev[agentId] || {}),
-          text: '',
-          targetAgentId,
-        },
-      }));
+      updateAgentMessageDraft(agentId, {
+        text: '',
+        targetAgentId,
+      });
       await refreshAgentWriteReadModels({ payload, agentId, projectId: activeProject.id });
       if (targetAgentId && targetAgentId !== agentId) {
         syncBackendAgentDashboard(targetAgentId, { silent: true });
@@ -5762,23 +7608,35 @@ export default function EngineWorkspace() {
         : kickoffPayload.team,
     };
     let kickoffResult = null;
+    let kickoffReadModelRefresh = null;
 
     try {
       const sessionId = initiationMeetingSession?.id;
-      kickoffResult = sessionId ? await requestAgentBackend(`/kickoff-meetings/${encodeURIComponent(sessionId)}/approve`, {
+      kickoffResult = await requestAgentBackend('/product-team-missions', {
         method: 'POST',
         body: {
-          selectedLeaderId: selectedLeaderCandidateId || initiationMeetingSession.recommendedLeaderId || undefined,
+          ...confirmedKickoffPayload,
+          missionId: `mission_${confirmedKickoffPayload.projectId}_${Date.parse(approvedAt) || Date.now()}`,
+          missionType: 'generic-product-team',
+          missionBrief: confirmedKickoffPayload.brief,
+          validationSample: /research/i.test(`${confirmedKickoffPayload.name} ${confirmedKickoffPayload.brief}`) ? 'research-project' : null,
+          meetingId: sessionId || `meeting_${confirmedKickoffPayload.projectId}`,
+          kickoffMeetingId: sessionId || undefined,
+          reuseExistingKickoffMeeting: Boolean(sessionId),
+          selectedLeaderId: selectedLeaderCandidateId || initiationMeetingSession?.recommendedLeaderId || confirmedKickoffPayload.selectedLeaderId,
           selectedTeamIds,
           reviewerId: kickoffPayload.reviewerId,
           tasks: kickoffPayload.tasks,
           now: approvedAt,
+          source: 'manager-ui-product-team-mission-approval',
+          startAutopilot: true,
+          runInitialTick: true,
+          maxLoops: 6,
+          maxStepsPerLoop: 3,
+          submitWorkArtifactOn: 'completed-task',
           language: activeLanguage,
+          includeReadModels: false,
         },
-        timeoutMs: 60_000,
-      }) : await requestAgentBackend('/projects/initiate', {
-        method: 'POST',
-        body: confirmedKickoffPayload,
         timeoutMs: 60_000,
       });
       if (kickoffResult.meeting) {
@@ -5787,12 +7645,27 @@ export default function EngineWorkspace() {
       setBackendStation(prev => ({
         ...prev,
         connectionStatus: 'online',
-        lastAction: sessionId ? 'Kickoff meeting approved through backend' : 'Initiation created through backend',
+        lastAction: 'Product Team Mission Runner approved kickoff and started backend autonomy',
         lastProjectSyncAt: new Date().toISOString(),
         projectSyncCount: (prev.projectSyncCount || 0) + 1,
+        productTeamMissionRun: kickoffResult.productTeamMissionRun || prev.productTeamMissionRun,
+        autonomousRunControlSession: kickoffResult.autonomousRunControlSession || prev.autonomousRunControlSession,
+        autonomousRunControlSessionTick: kickoffResult.autonomousRunControlSessionTick || prev.autonomousRunControlSessionTick,
+        autonomousRunControlSessions: kickoffResult.autonomousRunControlSessions || prev.autonomousRunControlSessions,
+        autonomousRunControl: kickoffResult.autonomousRunControl || prev.autonomousRunControl,
+        productTeamOperatingLoop: kickoffResult.productTeamOperatingLoop || prev.productTeamOperatingLoop,
+        collaborationIntentQueue: kickoffResult.collaborationIntentQueue || prev.collaborationIntentQueue,
+        lastProductTeamMissionSyncAt: kickoffResult.productTeamMissionRun ? new Date().toISOString() : prev.lastProductTeamMissionSyncAt,
+        productTeamMissionSyncCount: kickoffResult.productTeamMissionRun ? (prev.productTeamMissionSyncCount || 0) + 1 : prev.productTeamMissionSyncCount,
         error: null,
       }));
-      applyBackendManagerDashboardPayload(kickoffResult);
+      kickoffReadModelRefresh = await refreshProjectInitiationReadModels({
+        payload: kickoffResult,
+        projectId: kickoffResult.project?.id || confirmedKickoffPayload.projectId || kickoffPayload.projectId,
+      });
+      if (!kickoffReadModelRefresh?.dashboard) {
+        applyBackendManagerDashboardPayload(kickoffResult);
+      }
     } catch (error) {
       if (!isDevelopmentInitiationFallbackEnabled()) {
         setBackendStation(prev => ({
@@ -5842,11 +7715,11 @@ export default function EngineWorkspace() {
     }
 
     let projectReadyForWork = {
-      ...kickoffResult.project,
-      language: kickoffResult.project?.language || activeLanguage,
+      ...(kickoffReadModelRefresh?.project || kickoffResult.project),
+      language: (kickoffReadModelRefresh?.project || kickoffResult.project)?.language || activeLanguage,
     };
     const createdProjectId = projectReadyForWork.id || kickoffPayload.projectId;
-    if (shouldAttemptBackendProjectWrite(projectReadyForWork)) {
+    if (shouldAttemptBackendProjectWrite(projectReadyForWork) && !kickoffReadModelRefresh?.project) {
       try {
         const hydratedProject = await requestAgentBackend(`/projects/${encodeURIComponent(createdProjectId)}`, {
           timeoutMs: 10_000,
@@ -5862,10 +7735,10 @@ export default function EngineWorkspace() {
         // Keep the approval receipt visible; later explicit sync can recover the full backend snapshot.
       }
     }
-    let approvedManagerDashboard = kickoffResult.managerDashboard || null;
+    let approvedManagerDashboard = kickoffReadModelRefresh?.dashboard || kickoffResult.managerDashboard || null;
     if (shouldAttemptBackendProjectWrite(projectReadyForWork) && !approvedManagerDashboard) {
       try {
-        approvedManagerDashboard = await requestAgentBackend(`/projects/${encodeURIComponent(createdProjectId)}/manager-dashboard`, {
+        approvedManagerDashboard = await requestAgentBackend(kickoffResult.readModels?.managerDashboardRoute || `/projects/${encodeURIComponent(createdProjectId)}/manager-dashboard`, {
           timeoutMs: 10_000,
         });
       } catch {
@@ -5882,6 +7755,17 @@ export default function EngineWorkspace() {
         error: null,
       }));
     }
+    if (kickoffResult.productTeamMissionRun && shouldAttemptBackendProjectWrite(projectReadyForWork)) {
+      try {
+        await refreshAutonomousRunControlReadModels({
+          payload: kickoffResult,
+          projectId: createdProjectId,
+          agentIds: (confirmedKickoffPayload.team || []).map(agent => agent.id).filter(Boolean),
+        });
+      } catch {
+        // The mission receipt remains visible; explicit sync controls can recover the autonomy read models.
+      }
+    }
 
     setProjects(prev => {
       const exists = prev.some(p => p.id === createdProjectId);
@@ -5891,7 +7775,7 @@ export default function EngineWorkspace() {
     });
     setChatMessages(prev => mergeProjectMessages(
       prev.filter(message => (message.projectId || DEFAULT_CHAT_PROJECT_ID) !== createdProjectId),
-      kickoffResult.messages,
+      kickoffReadModelRefresh?.messages?.length ? kickoffReadModelRefresh.messages : kickoffResult.messages,
     ));
     if (shouldAttemptBackendProjectWrite(projectReadyForWork)) {
       setTimeout(() => syncBackendProjectCatalog({ silent: true }), 0);
@@ -5924,7 +7808,7 @@ export default function EngineWorkspace() {
     setActiveRoute('project_detail');
   };
   const enterProjectScene = (mode) => {
-    if (sceneTransition || projectMode !== 'dashboard') return;
+    if (sceneTransition || projectMode === mode) return;
     if (sceneTransitionTimerRef.current) clearTimeout(sceneTransitionTimerRef.current);
     setProjectLauncherOpen(false);
     setSceneTransition(mode);
@@ -6074,6 +7958,89 @@ export default function EngineWorkspace() {
       return;
     }
     openContractProjectPicker(id);
+  };
+
+  const playBackendMeetingTurns = ({ userMessage = null, meetingAgentTurns = [], submittedText = '', projectOverride = activeProject } = {}) => {
+    const backendTurns = (meetingAgentTurns || []).filter(turn => turn?.text);
+    if (!backendTurns.length) return false;
+    const team = projectOverride?.team || [];
+    roomSimulationTimersRef.current.forEach(timer => clearTimeout(timer));
+    roomSimulationTimersRef.current = [];
+    setRoomSpeaker(null);
+    setRoomIntentions(backendTurns.map((turn, index) => {
+      const agent = team.find(item => item.id === turn.speakerId || item.name === turn.speaker);
+      return {
+        id: `backend_meeting_${turn.messageId || turn.id || index}`,
+        name: turn.speaker || agent?.name || 'Agent',
+        role: turn.role || agent?.role || 'Meeting participant',
+        target: turn.source || 'backend meeting turn',
+        origin: submittedText.slice(0, 28) || userMessage?.text?.slice(0, 28) || 'backend meeting input',
+        score: turn.score || 8,
+        rank: turn.rank || index + 1,
+        speakerRank: index,
+        wait: index + 1,
+        status: 'queued',
+        proofIds: turn.proofIds || [],
+        eventIds: turn.eventIds || [],
+      };
+    }));
+    setRoomTranscript(prev => [...prev, {
+      id: userMessage?.id || `u_${Date.now()}`,
+      speaker: userMessage?.author || 'Director',
+      role: 'User',
+      text: userMessage?.text || submittedText,
+      score: 10,
+      source: userMessage?.source || 'war-room-meeting-message',
+      proofIds: userMessage?.id ? [userMessage.id] : [],
+    }]);
+    backendTurns.forEach((turn, index) => {
+      const timer = setTimeout(() => {
+        const agent = team.find(item => item.id === turn.speakerId || item.name === turn.speaker);
+        const intentId = `backend_meeting_${turn.messageId || turn.id || index}`;
+        if (turn.speakerId || agent?.id) setRoomSpeaker(turn.speakerId || agent.id);
+        setRoomIntentions(prev => prev.map(intent => (
+          intent.id === intentId ? { ...intent, status: 'speaking' } : intent
+        )));
+        setRoomTranscript(prev => [...prev, {
+          id: turn.messageId || turn.id || `backend_meeting_${Date.now()}_${index}`,
+          speaker: turn.speaker || agent?.name || 'Agent',
+          role: turn.role || agent?.role || 'Meeting participant',
+          score: turn.score || 8,
+          text: turn.text,
+          source: turn.source || 'war-room-meeting-agent-turn',
+          proofIds: turn.proofIds || [],
+          eventIds: turn.eventIds || [],
+        }]);
+        const yieldTimer = setTimeout(() => {
+          setRoomIntentions(prev => prev.map(intent => (
+            intent.id === intentId ? { ...intent, status: 'yielded' } : intent
+          )));
+          if (index === backendTurns.length - 1) setRoomSpeaker(null);
+        }, 1200);
+        roomSimulationTimersRef.current.push(yieldTimer);
+      }, turn.delayMs || (650 + index * 1450));
+      roomSimulationTimersRef.current.push(timer);
+    });
+    const clearSpeakerTimer = setTimeout(() => {
+      setRoomSpeaker(null);
+      roomSimulationTimersRef.current = [];
+    }, Math.max(...backendTurns.map((turn, index) => turn.delayMs || (650 + index * 1450))) + 1800);
+    roomSimulationTimersRef.current.push(clearSpeakerTimer);
+    return true;
+  };
+
+  const blockMissingBackendMeetingTurns = ({
+    project = activeProject,
+    lastAction = 'Backend meeting returned no Agent turns; local simulation blocked',
+    error = 'Backend meeting response lacked meetingAgentTurns; no local mock meeting was created.',
+  } = {}) => {
+    setBackendStation(prev => ({
+      ...prev,
+      connectionStatus: project?.backendSyncStatus === 'online' ? 'online' : prev.connectionStatus,
+      lastAction,
+      error,
+    }));
+    return false;
   };
 
   const runRoomSimulation = (text, projectOverride = activeProject) => {
@@ -6234,7 +8201,24 @@ export default function EngineWorkspace() {
           messageId,
         });
         const nextProject = backendResult?.project || projectOverride;
-        runRoomSimulation(text, nextProject);
+        const renderedBackendTurns = playBackendMeetingTurns({
+          userMessage: backendResult?.userMessage || backendResult?.messages?.[0],
+          meetingAgentTurns: backendResult?.meetingAgentTurns || backendResult?.responses?.meetingAgentTurns || [],
+          submittedText: text,
+          projectOverride: nextProject,
+        });
+        if (!renderedBackendTurns) {
+          const allowFallback = allowLocalRuntimeFallbackForActiveProject(nextProject);
+          if (!allowFallback) {
+            blockMissingBackendMeetingTurns({ project: nextProject });
+            return;
+          }
+          setBackendStation(prev => ({
+            ...prev,
+            lastAction: 'Backend meeting returned no Agent turns, used allowed local runtime fallback',
+          }));
+          runRoomSimulation(text, nextProject);
+        }
         const changeResponse = backendResult?.responses?.changeResponse;
         if (changeResponse) queueRoomChangeDiscussion(changeResponse, nextProject);
         return;
@@ -6326,10 +8310,57 @@ export default function EngineWorkspace() {
     setChatMessages(prev => mergeProjectMessages(prev, chatResult.messages));
   };
 
-  const createMockChannel = () => {
+  const createProjectTranscriptChannel = async () => {
     const nextIndex = chatChannels.length + 1;
     const id = `room_${nextIndex}`;
-    setChatChannels(prev => [...prev, { id, name: `Room ${nextIndex}`, description: 'Public project channel visible to project members.', category: 'text', unread: 0 }]);
+    const channelDraft = {
+      id,
+      channelId: id,
+      name: `Room ${nextIndex}`,
+      description: 'Public project channel visible to project members.',
+      category: 'text',
+      unread: 0,
+    };
+    if (activeProject && shouldAttemptBackendProjectWrite(activeProject)) {
+      try {
+        const payload = await runBackendProjectCommand('transcripts', {
+          channelId: channelDraft.channelId,
+          name: channelDraft.name,
+          description: channelDraft.description,
+          category: channelDraft.category,
+          now: new Date().toISOString(),
+        });
+        const backendChannel = payload?.transcriptChannel || channelDraft;
+        setChatChannels(prev => mergeTranscriptChannelsIntoUi(prev, [backendChannel]));
+        setActiveChannelId(backendChannel.channelId || backendChannel.id || id);
+        setBackendStation(prev => ({
+          ...prev,
+          lastAction: 'Backend transcript channel created',
+          error: null,
+        }));
+        return;
+      } catch (error) {
+        const allowFallback = allowLocalRuntimeFallbackForActiveProject(activeProject);
+        markBackendCommandFailure({
+          lastAction: allowFallback
+            ? 'Backend channel creation failed, used allowed local runtime fallback'
+            : 'Backend channel creation failed; local fallback disabled for backend-online project',
+          timeoutMessage: 'Backend channel creation timed out.',
+          error,
+          allowFallback,
+        });
+        if (!allowFallback) return;
+      }
+    }
+    if (activeProject && !allowLocalRuntimeFallbackForActiveProject(activeProject)) {
+      setBackendStation(prev => ({
+        ...prev,
+        lastAction: 'Backend channel creation required',
+        error: 'Channel creation for backend-online projects must use the backend transcript/channel contract.',
+      }));
+      return;
+    }
+    setChatChannels(prev => mergeTranscriptChannelsIntoUi(prev, [channelDraft]));
     setActiveChannelId(id);
   };
 
@@ -6345,7 +8376,90 @@ export default function EngineWorkspace() {
   };
 
   // --- Meeting Actions ---
-  const startMeeting = () => {
+  const startMeeting = async () => {
+    if (!activeProject) return;
+    const now = new Date().toISOString();
+    const openingText = 'Meeting opened. Director is ready to review project status, decisions, and next work.';
+    const messageId = `meeting_start_${Date.parse(now) || Date.now()}`;
+
+    if (shouldAttemptBackendProjectWrite(activeProject)) {
+      setMeetingState('active');
+      setMeetingLogs([{
+        id: ++logIdRef.current,
+        type: 'system',
+        text: 'BACKEND WAR ROOM SESSION REQUESTED',
+      }]);
+      try {
+        const backendResult = await runBackendProjectCommand('meeting', {
+          text: openingText,
+          now,
+          messageId,
+          channelId: 'main',
+        });
+        const backendTurns = backendResult?.meetingAgentTurns || backendResult?.responses?.meetingAgentTurns || [];
+        setMeetingLogs([
+          {
+            id: ++logIdRef.current,
+            type: 'system',
+            text: 'BACKEND WAR ROOM SESSION OPENED',
+          },
+          {
+            id: ++logIdRef.current,
+            type: 'user',
+            text: backendResult?.userMessage?.text || openingText,
+            targetNames: ['all'],
+            proofIds: backendResult?.userMessage?.id ? [backendResult.userMessage.id] : [],
+          },
+        ]);
+        backendTurns.forEach((turn, index) => {
+          const agent = activeProject.team.find(item => item.id === turn.speakerId || item.name === turn.speaker) || {
+            id: turn.speakerId || `backend-meeting-${index}`,
+            name: turn.speaker || 'Agent',
+            role: turn.role || 'Meeting participant',
+          };
+          const delayMs = turn.delayMs || (900 + index * 950);
+          setTimeout(() => {
+            setSpeakingAgent(agent.id);
+            setMeetingLogs(prev => [...prev, {
+              id: ++logIdRef.current,
+              type: 'ai',
+              agent,
+              text: turn.text,
+              proofIds: turn.proofIds || [],
+              timelineLogIds: turn.timelineLogIds || [],
+              eventIds: turn.eventIds || [],
+              source: turn.source || 'war-room-meeting-agent-turn',
+            }]);
+          }, delayMs);
+          setTimeout(() => setSpeakingAgent(null), delayMs + 1400);
+        });
+        if (!backendTurns.length) {
+          setMeetingLogs(prev => [...prev, {
+            id: ++logIdRef.current,
+            type: 'system',
+            text: 'BACKEND SESSION RECORDED; NO AGENT TURN RETURNED',
+          }]);
+        }
+        setTimeout(() => setSpeakingAgent(null), Math.max(3500, 1200 + backendTurns.length * 950));
+        return;
+      } catch (error) {
+        const allowFallback = allowLocalRuntimeFallbackForActiveProject(activeProject);
+        markBackendCommandFailure({
+          lastAction: allowFallback
+            ? 'Backend meeting start failed, used allowed local runtime fallback'
+            : 'Backend meeting start failed; local fallback disabled for backend-online project',
+          timeoutMessage: 'Backend meeting start timed out.',
+          error,
+          allowFallback,
+        });
+        if (!allowFallback) {
+          setMeetingState('idle');
+          setSpeakingAgent(null);
+          return;
+        }
+      }
+    }
+
     const session = startAgentSession(activeProject.team, {
       projectId: activeProject.id,
       projectName: activeProject.name,
@@ -6391,18 +8505,35 @@ export default function EngineWorkspace() {
         },
       });
 
-      const playTerminalMeetingResponse = (changeResponse = null) => {
+      const playTerminalMeetingResponse = (changeResponse = null, backendMeetingTurns = []) => {
         setMeetingLogs(prev => [...prev, { id: ++logIdRef.current, type: 'user', text: val, targetNames: routed.targetNames }]);
         setTimeout(() => setSpeakingAgent(null), 1000);
 
-        routed.events
-          .filter(event => event.kind === 'agent')
+        const backendTurnEvents = (backendMeetingTurns || []).filter(turn => turn?.text).map((turn, index) => ({
+          kind: 'agent',
+          agent: activeProject.team.find(item => item.id === turn.speakerId || item.name === turn.speaker) || {
+            id: turn.speakerId || `backend-meeting-${index}`,
+            name: turn.speaker || 'Agent',
+            role: turn.role || 'Meeting participant',
+          },
+          text: turn.text,
+          delayMs: turn.delayMs || (650 + index * 1450),
+          proofIds: turn.proofIds || [],
+          eventIds: turn.eventIds || [],
+        }));
+        const meetingTurnEvents = backendTurnEvents.length
+          ? backendTurnEvents
+          : routed.events.filter(event => event.kind === 'agent');
+
+        meetingTurnEvents
           .forEach((event, index, events) => {
             setTimeout(() => {
               setSpeakingAgent(event.agent.id);
               setMeetingLogs(prev => [...prev, {
                 id: ++logIdRef.current, type: 'ai', agent: event.agent,
-                text: event.text
+                text: event.text,
+                proofIds: event.proofIds || [],
+                eventIds: event.eventIds || [],
               }]);
             }, event.delayMs || (2000 + index * 900));
             setTimeout(() => setSpeakingAgent(null), (event.delayMs || (2000 + index * 900)) + 1400);
@@ -6434,7 +8565,33 @@ export default function EngineWorkspace() {
             now: submittedAt,
             messageId,
           });
-          playTerminalMeetingResponse(backendResult?.responses?.changeResponse || null);
+          const backendTurns = backendResult?.meetingAgentTurns || backendResult?.responses?.meetingAgentTurns || [];
+          const hasBackendTurns = backendTurns.some(turn => turn?.text);
+          if (!hasBackendTurns) {
+            const allowFallback = allowLocalRuntimeFallbackForActiveProject(activeProject);
+            if (!allowFallback) {
+              setMeetingLogs(prev => [...prev, {
+                id: ++logIdRef.current,
+                type: 'system',
+                text: 'BACKEND MEETING RECORDED; AGENT TURNS MISSING',
+              }]);
+              setTimeout(() => setSpeakingAgent(null), 1000);
+              blockMissingBackendMeetingTurns({
+                project: activeProject,
+                lastAction: 'Backend legacy terminal meeting returned no Agent turns; local route simulation blocked',
+                error: 'Backend legacy terminal meeting response lacked meetingAgentTurns; no local mock meeting was created.',
+              });
+              return;
+            }
+            setBackendStation(prev => ({
+              ...prev,
+              lastAction: 'Backend legacy terminal meeting returned no Agent turns, used allowed local runtime fallback',
+            }));
+          }
+          playTerminalMeetingResponse(
+            backendResult?.responses?.changeResponse || null,
+            backendTurns,
+          );
           return;
         } catch (error) {
           const allowFallback = allowLocalRuntimeFallbackForActiveProject(activeProject);
@@ -6497,17 +8654,52 @@ export default function EngineWorkspace() {
     }
   };
 
-  const endMeeting = () => {
-    const updatedProjects = projects.map(p => {
+  const endMeeting = async () => {
+    const meetingProject = activeProject || projects.find(p => p.id === selectedProjectId);
+    const now = new Date().toISOString();
+    const closeMeetingUi = () => {
+      setMeetingState('idle');
+      setSpeakingAgent(null);
+      setTargetNodeIds([]);
+      setActiveRoute('project_detail');
+    };
+
+    if (meetingProject && shouldAttemptBackendProjectWrite(meetingProject)) {
+      try {
+        await runBackendProjectCommand('meeting', {
+          text: 'Meeting ended. Directives logged and distributed.',
+          now,
+          messageId: `meeting_close_${Date.parse(now) || Date.now()}`,
+          channelId: 'main',
+        });
+        closeMeetingUi();
+        return;
+      } catch (error) {
+        const allowFallback = allowLocalRuntimeFallbackForActiveProject(meetingProject);
+        markBackendCommandFailure({
+          lastAction: allowFallback
+            ? 'Backend meeting close failed, used allowed local runtime fallback'
+            : 'Backend meeting close failed; local fallback disabled for backend-online project',
+          timeoutMessage: 'Backend meeting close timed out.',
+          error,
+          allowFallback,
+        });
+        if (!allowFallback) {
+          closeMeetingUi();
+          return;
+        }
+      }
+    }
+
+    setProjects(prev => prev.map(p => {
       if (p.id === selectedProjectId) {
-         return {
-           ...p,
-           logs: [{ time: 'Just now', agent: 'System', log: 'Session ended. Directives logged and distributed.' }, ...p.logs]
-         };
+        return {
+          ...p,
+          logs: [{ time: 'Just now', agent: 'System', log: 'Session ended. Directives logged and distributed.' }, ...p.logs],
+        };
       }
       return p;
-    });
-    setProjects(updatedProjects);
+    }));
     setMeetingState('idle');
     setSpeakingAgent(null);
     setTargetNodeIds([]);
@@ -6586,14 +8778,91 @@ export default function EngineWorkspace() {
       { id: 'deployment', label: t('settings.deployment'), icon: Server },
       { id: 'keys', label: t('settings.keys'), icon: KeyRound },
       { id: 'models', label: t('settings.models'), icon: Cpu },
+      { id: 'health', label: 'Health', icon: Activity },
       { id: 'privacy', label: t('settings.privacy'), icon: Shield },
       { id: 'workspace', label: t('settings.workspace'), icon: SlidersHorizontal },
       { id: 'integrations', label: t('settings.integrations'), icon: PlugZap },
-      { id: 'health', label: 'Health', icon: Activity },
     ];
 
     const fieldClass = 'w-full border border-[#d1d0c9] bg-[#f8f6ee] px-3 py-2 font-mono text-xs text-[#1a1a1a] outline-none transition-colors focus:border-[#1a1a1a]';
     const labelClass = 'font-mono text-[10px] uppercase tracking-[0.16em] text-[#7d786b]';
+    const activePrivacyPolicy = activeProject?.projectSettings?.privacyPolicy || {};
+    const privacyPolicy = {
+      retentionMode: activePrivacyPolicy.retentionMode || 'project-local',
+      modelTrainingAllowed: activePrivacyPolicy.modelTrainingAllowed === true,
+      providerLogMode: activePrivacyPolicy.providerLogMode || 'redacted',
+      evidenceExportRequiresApproval: activePrivacyPolicy.evidenceExportRequiresApproval !== false,
+      readyForProduction: activePrivacyPolicy.readyForProduction === true,
+    };
+    const activeProviderBudgetPolicy = activeProject?.projectSettings?.providerBudgetPolicy || {};
+    const providerBudgetPolicy = {
+      dailyBudgetCents: Number(activeProviderBudgetPolicy.dailyBudgetCents) || 0,
+      maxRequestsPerProjectHour: Number(activeProviderBudgetPolicy.maxRequestsPerProjectHour) || 0,
+      currency: activeProviderBudgetPolicy.currency || 'USD',
+      readyForProduction: activeProviderBudgetPolicy.readyForProduction === true,
+    };
+    const activeToolGrantPolicy = activeProject?.projectSettings?.toolGrantPolicy || {};
+    const toolGrantPolicy = {
+      defaultToolGrants: Array.isArray(activeToolGrantPolicy.defaultToolGrants)
+        ? activeToolGrantPolicy.defaultToolGrants
+        : DEFAULT_SETTINGS_TOOL_GRANTS,
+      agentToolGrants: activeToolGrantPolicy.agentToolGrants || {},
+      readyForProduction: activeToolGrantPolicy.readyForProduction === true,
+    };
+    const activeWorkspacePolicy = activeProject?.projectSettings?.workspacePolicy || {};
+    const workspacePolicy = {
+      interfaceDensity: activeWorkspacePolicy.interfaceDensity || 'comfortable',
+      defaultVisibility: activeWorkspacePolicy.defaultVisibility || 'team',
+      autosaveCadenceSeconds: Number(activeWorkspacePolicy.autosaveCadenceSeconds) || 60,
+      readyForProduction: activeWorkspacePolicy.readyForProduction === true,
+    };
+    const activeToolGrantSet = new Set(toolGrantPolicy.defaultToolGrants);
+    const integrationCapabilities = activeProject?.projectSettings?.integrationCapabilities || null;
+    const integrationCapabilityRows = Array.isArray(integrationCapabilities?.rows)
+      ? integrationCapabilities.rows
+      : [];
+    const integrationCapabilitySummary = integrationCapabilities?.summary || {};
+    const workspaceCapabilities = activeProject?.projectSettings?.workspaceCapabilities || null;
+    const workspaceCapabilityRows = Array.isArray(workspaceCapabilities?.rows)
+      ? workspaceCapabilities.rows
+      : [];
+    const workspaceCapabilitySummary = workspaceCapabilities?.summary || {};
+    const backendMeetingSummaries = backendStation.meetingSummaries?.projectId === activeProject?.id
+      ? backendStation.meetingSummaries
+      : null;
+    const meetingSummaryRows = Array.isArray(backendMeetingSummaries?.rows)
+      ? backendMeetingSummaries.rows
+      : [];
+    const backendProjectMemoryReadiness = backendStation.projectMemoryReadiness?.projectId === activeProject?.id
+      ? backendStation.projectMemoryReadiness
+      : (
+          String(backendStation.readyPackageSubmodelsProjectId || '').toLowerCase() === String(activeProject?.id || '').toLowerCase()
+            ? backendStation.readyPackageSubmodels?.projectMemoryReadiness || null
+            : null
+        );
+    const projectMemoryReadinessRows = Array.isArray(backendProjectMemoryReadiness?.rows)
+      ? backendProjectMemoryReadiness.rows
+      : [];
+    const projectMemoryReadinessGates = Array.isArray(backendProjectMemoryReadiness?.gates)
+      ? backendProjectMemoryReadiness.gates
+      : [];
+    const toolGrantCapability = integrationCapabilityRows.find(row => row.id === 'agent-tool-grant-policy') || null;
+    const proxyWebhookCapability = integrationCapabilityRows.find(row => row.id === 'proxy-webhook') || null;
+    const mcpToolsCapability = integrationCapabilityRows.find(row => row.id === 'mcp-tools') || null;
+    const vectorStoreCapability = integrationCapabilityRows.find(row => row.id === 'vector-store') || null;
+    const budgetAlertCapability = integrationCapabilityRows.find(row => row.id === 'budget-alerts') || null;
+    const errorReportingCapability = integrationCapabilityRows.find(row => row.id === 'error-reporting') || null;
+    const integrationRouteStatusFallback = integrationCapabilities ? 'contract-row-missing' : 'sync-required';
+    const backendSettingsIntegrationReadiness = providerRuntimeStatus.settingsIntegrationReadiness?.schemaVersion === 'settings-integration-readiness/v1'
+      ? providerRuntimeStatus.settingsIntegrationReadiness
+      : (
+          String(backendStation.readyPackageSubmodelsProjectId || '').toLowerCase() === String(activeProject?.id || '').toLowerCase()
+            ? backendStation.readyPackageSubmodels?.settingsIntegrationReadiness || null
+            : null
+        );
+    const settingsIntegrationReadinessRows = Array.isArray(backendSettingsIntegrationReadiness?.rows)
+      ? backendSettingsIntegrationReadiness.rows
+      : [];
 
     const SettingField = ({ label, hint, children }) => (
       <div className="space-y-2">
@@ -6601,16 +8870,6 @@ export default function EngineWorkspace() {
         {children}
         {hint && <p className="font-mono text-[10px] leading-relaxed text-[#8b8678]">{localizeText(hint, activeLanguage)}</p>}
       </div>
-    );
-
-    const ToggleField = ({ label, hint, defaultChecked = false }) => (
-      <label className="flex items-start justify-between gap-4 border border-[#d1d0c9] bg-[#f5f4f0] px-4 py-3">
-        <span className="min-w-0">
-          <span className="block font-mono text-xs text-[#1a1a1a]">{localizeText(label, activeLanguage)}</span>
-          {hint && <span className="mt-1 block font-mono text-[10px] leading-relaxed text-[#7d786b]">{localizeText(hint, activeLanguage)}</span>}
-        </span>
-        <input type="checkbox" defaultChecked={defaultChecked} className="mt-0.5 h-4 w-4 accent-[#1a1a1a]" />
-      </label>
     );
 
     const SmallButton = ({ children, onClick, disabled = false }) => (
@@ -6645,6 +8904,51 @@ export default function EngineWorkspace() {
       pending: 'Queued',
       idle: 'Idle',
     };
+    const settingsProviderReadiness = providerRuntimeStatus.settingsProviderReadiness?.schemaVersion === 'settings-provider-readiness/v1'
+      ? providerRuntimeStatus.settingsProviderReadiness
+      : null;
+    const settingsRuntimeReadiness = providerRuntimeStatus.settingsRuntimeReadiness?.schemaVersion === 'settings-runtime-readiness/v1'
+      ? providerRuntimeStatus.settingsRuntimeReadiness
+      : null;
+    const settingsRuntimeRows = Array.isArray(settingsRuntimeReadiness?.rows)
+      ? settingsRuntimeReadiness.rows
+      : [];
+    const localMvpStartupReadiness = providerRuntimeStatus.localMvpStartupReadiness?.schemaVersion === 'local-mvp-startup-readiness/v1'
+      ? providerRuntimeStatus.localMvpStartupReadiness
+      : null;
+    const settingsSecretVaultReady = Boolean(settingsProviderReadiness?.canSealSecrets ?? providerRuntimeStatus.secretVaultStatus?.ready);
+    const settingsSecretVaultUnavailableMessage = providerRuntimeStatus.secretVaultStatus
+      ? 'API fields are editable, but the Secret Vault is not ready. Start the backend with SECRET_VAULT_ENABLED=true and SECRET_VAULT_KEY before sealing keys.'
+      : 'API fields are editable, but backend provider status has not been synced. Start agents:server with Secret Vault env, then Sync status before sealing keys.';
+    const settingsSecretVaultActionMessage = settingsSecretVaultReady
+      ? (settingsProviderReadiness?.uiGuidance?.message || 'API fields are editable and can be sealed through the backend Vault. Plaintext is cleared after the receipt returns.')
+      : (settingsProviderReadiness?.uiGuidance?.message || 'API fields are editable now, but Seal stays disabled until the backend Secret Vault is ready. The browser will not persist provider secrets.');
+    const settingsSecretVaultSetupRows = [
+      ['Target backend', providerRuntimeStatus.baseUrl || backendStation.baseUrl || DEFAULT_AGENT_BACKEND_URL],
+      ['Required env', 'SECRET_VAULT_ENABLED=true and SECRET_VAULT_KEY set before npm run agents:server'],
+      ['Startup preflight route', localMvpStartupReadiness?.backendRoutes?.localMvpStartupReadiness || '/local-mvp-startup-readiness'],
+      ['Startup readiness', localMvpStartupReadiness?.status || 'not synced'],
+      ['Startup next action', localMvpStartupReadiness?.nextAction?.label || 'Sync local MVP startup readiness'],
+      ['Settings / provider / first run', `${localMvpStartupReadiness?.readyForSettingsEntry ? 'yes' : 'unknown'} / ${localMvpStartupReadiness?.readyForProviderSetup ? 'yes' : 'no'} / ${localMvpStartupReadiness?.readyForFirstProjectRun ? 'yes' : 'no'}`],
+      ['Readiness route', '/settings/provider-readiness and /secret-vault/status'],
+      ['Seal route', '/secret-vault/seal after canSealSecrets=true'],
+    ];
+    const providerStatusReachedBackend = (status) => Boolean(
+      status
+      && status.provider
+      && status.provider !== 'unreachable'
+    );
+    const settingsBackendReady = backendStation.connectionStatus === 'online'
+      || Boolean(settingsProviderReadiness)
+      || Boolean(providerRuntimeStatus.secretVaultStatus?.ready)
+      || providerStatusReachedBackend(providerRuntimeStatus.modelProvider)
+      || providerStatusReachedBackend(providerRuntimeStatus.searchProvider);
+    const settingsBackendStatusLabel = settingsBackendReady
+      ? 'Backend-backed controls save on change for this project'
+      : providerRuntimeStatus.lastRunAt || backendStation.connectionStatus === 'offline'
+        ? 'Backend or Vault unavailable; controls remain route-required'
+        : 'Backend sync required before settings are treated as saved';
+    const SettingsBackendStatusIcon = settingsBackendReady ? CheckCircle2 : Server;
 
     return (
       <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/45 px-6 py-6">
@@ -6691,150 +8995,489 @@ export default function EngineWorkspace() {
 
             <div className="flex-1 overflow-y-auto px-7 py-6">
               {settingsTab === 'deployment' && (
-                <div className="space-y-6">
-                  <div className="grid grid-cols-2 gap-5">
-                    <SettingField label="Deployment Mode" hint="Choose cloud API, enterprise gateway, local model service, or hybrid fallback.">
-                      <select className={fieldClass} defaultValue="gateway">
-                        <option value="gateway">Unified API Gateway</option>
-                        <option value="openai-compatible">OpenAI Compatible Endpoint</option>
-                        <option value="azure">Azure OpenAI</option>
-                        <option value="gemini">Google Gemini API</option>
-                        <option value="local">Local Runtime / Ollama</option>
-                      </select>
-                    </SettingField>
-                    <SettingField label="Environment" hint="Switch between development, staging, and production.">
-                      <select className={fieldClass} defaultValue="dev">
-                        <option value="dev">Development</option>
-                        <option value="staging">Staging</option>
-                        <option value="prod">Production</option>
-                      </select>
-                    </SettingField>
+                <div className="space-y-6" data-testid="settings-deployment-runtime-boundary">
+                  <div className="border border-[#d1d0c9] bg-[#f5f4f0] p-5">
+                    <div className="flex flex-wrap items-start justify-between gap-4">
+                      <div className="max-w-2xl">
+                        <div className={labelClass}>Backend Runtime Target</div>
+                        <h3 className="mt-2 font-serif text-2xl leading-none text-[#1a1a1a]">Deployment is owned by the worker station</h3>
+                        <p className="mt-3 font-mono text-[11px] leading-relaxed text-[#5f5a50]">
+                          This screen reflects the configured backend runtime. Deployment mode, provider endpoints, concurrency, retry, and scheduler controls must come from backend env, adapter gateway, or managed infrastructure receipts.
+                        </p>
+                      </div>
+                      <SmallButton onClick={() => syncSettingsProviderRuntime({ runTests: false })} disabled={providerRuntimeStatus.running}>
+                        <RefreshCw size={12} className="inline-block mr-2" />Sync runtime
+                      </SmallButton>
+                    </div>
+                    <div className="mt-4 grid gap-3 md:grid-cols-2">
+                      <div className="border border-[#d1d0c9] bg-[#f8f6ee] p-3">
+                        <div className={labelClass}>Backend URL</div>
+                        <div data-testid="settings-deployment-backend-url" className="mt-2 break-all font-mono text-xs text-[#1a1a1a]">{providerRuntimeStatus.baseUrl || backendStation.baseUrl}</div>
+                      </div>
+                      <div className="border border-[#d1d0c9] bg-[#f8f6ee] p-3">
+                        <div className={labelClass}>Worker Route</div>
+                        <div className="mt-2 break-all font-mono text-xs text-[#1a1a1a]">/workers/autonomous/status</div>
+                      </div>
+                    </div>
                   </div>
-                  <SettingField label="API Base URL" hint="Use a self-hosted gateway, reverse proxy, or model provider endpoint.">
-                    <input className={fieldClass} defaultValue="https://api.halloffame.studio/v1" />
-                  </SettingField>
-                  <div className="grid grid-cols-3 gap-5">
-                    <SettingField label="Request Timeout">
-                      <input className={fieldClass} defaultValue="60s" />
-                    </SettingField>
-                    <SettingField label="Concurrency Limit">
-                      <input className={fieldClass} defaultValue="8" />
-                    </SettingField>
-                    <SettingField label="Retry Limit">
-                      <input className={fieldClass} defaultValue="2" />
-                    </SettingField>
+
+                  <div data-testid="settings-runtime-readiness-contract" className="border border-[#d1d0c9] bg-[#f5f4f0] p-4">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <div className={labelClass}>/settings/runtime-readiness</div>
+                        <div className="mt-2 font-serif text-xl leading-tight">Backend-owned runtime readiness</div>
+                      </div>
+                      <span className={`border px-2 py-1 font-mono text-[9px] uppercase tracking-[0.14em] ${
+                        settingsRuntimeReadiness?.readyForLocalMvpRuntime ? healthStatusClass.pass : settingsRuntimeReadiness ? healthStatusClass.pending : healthStatusClass.idle
+                      }`}>
+                        {settingsRuntimeReadiness?.status || 'not synced'}
+                      </span>
+                    </div>
+                    <div className="mt-3 grid gap-2 md:grid-cols-2">
+                      {(settingsRuntimeRows.length ? settingsRuntimeRows : [
+                        { id: 'runtime-not-synced', label: 'Runtime readiness', status: 'idle', detail: 'Click Sync runtime to read the backend contract.', route: activeProject?.id ? `/projects/${activeProject.id}/settings-runtime-readiness` : '/settings/runtime-readiness' },
+                      ]).map(row => (
+                        <div key={row.id} data-testid={`settings-runtime-readiness-row-${row.id}`} className="border border-[#d1d0c9] bg-[#f8f6ee] p-3">
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="font-mono text-[10px] uppercase tracking-[0.14em] text-[#1a1a1a]">{row.label}</div>
+                            <span className={`border px-2 py-0.5 font-mono text-[8px] uppercase tracking-[0.12em] ${healthStatusClass[row.status] || healthStatusClass.idle}`}>
+                              {row.status || 'idle'}
+                            </span>
+                          </div>
+                          <p className="mt-2 font-mono text-[10px] leading-relaxed text-[#5f5a50]">{row.detail}</p>
+                          <div className="mt-2 break-all font-mono text-[9px] text-[#7d786b]">{row.route}</div>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="mt-3 break-all font-mono text-[10px] leading-relaxed text-[#7d786b]">
+                      Validation: {(settingsRuntimeReadiness?.validationCommands || ['npm run agents:settings-runtime-readiness']).join(' / ')}
+                    </div>
                   </div>
-                  <ToggleField label="Enable Health Checks" hint="Check backend and model availability before meetings, search, and long-running tasks." defaultChecked />
-                  <ToggleField label="Enable Streaming Output" hint="Display Agent replies progressively when supported." defaultChecked />
+
+                  <div className="grid gap-4 md:grid-cols-3">
+                    {[
+                      ['Model status', '/llm/status', providerRuntimeStatus.modelProvider?.enabled && providerRuntimeStatus.modelProvider?.configured],
+                      ['Evidence status', '/search/status', providerRuntimeStatus.searchProvider?.enabled && providerRuntimeStatus.searchProvider?.configured],
+                      ['Provider vault bindings', '/provider-vault-bindings', providerRuntimeStatus.providerVaultBindings?.summary?.boundProviderCount > 0],
+                      ['Provider readiness', activeProject?.id ? `/projects/${activeProject.id}/provider-readiness` : '/projects/:id/provider-readiness', Boolean(providerRuntimeStatus.modelProvider?.enabled && providerRuntimeStatus.searchProvider?.enabled)],
+                    ].map(([label, route, ready]) => (
+                      <div key={label} data-testid={`settings-deployment-route-${label.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`} className="border border-[#d1d0c9] bg-[#f8f6ee] p-4">
+                        <div className={labelClass}>{label}</div>
+                        <div className="mt-2 break-all font-mono text-[11px] text-[#1a1a1a]">{route}</div>
+                        <div className={`mt-3 inline-flex border px-2 py-1 font-mono text-[9px] uppercase tracking-[0.14em] ${ready ? healthStatusClass.pass : healthStatusClass.idle}`}>
+                          {ready ? 'backend ready' : 'sync required'}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="border border-[#d1d0c9] bg-[#f5f4f0] p-4 font-mono text-[11px] leading-relaxed text-[#5f5a50]">
+                    Production rule: the browser cannot switch deployment environments or provider endpoints. Public production deployment still requires managed persistence, durable queue/cron, signed access, centralized audit, provider/BYOK controls, and launch-governance receipts.
+                  </div>
                 </div>
               )}
 
               {settingsTab === 'keys' && (
-                <div className="space-y-6">
-                  <div className="grid grid-cols-[1fr_auto] gap-3">
-                    <SettingField label="Primary API Key" hint="Used by the local backend for model requests; never bundle secrets into the frontend.">
-                      <input className={fieldClass} type={showPrimaryKey ? 'text' : 'password'} placeholder="Configured on the local backend" />
-                    </SettingField>
-                    <button onClick={() => setShowPrimaryKey(!showPrimaryKey)} className="mt-6 h-[34px] border border-[#d1d0c9] bg-[#f8f6ee] px-3 text-[#555047] hover:border-[#1a1a1a] hover:text-black" aria-label="Toggle API key visibility">
-                      {showPrimaryKey ? <EyeOff size={16} /> : <Eye size={16} />}
-                    </button>
+                <div className="space-y-6" data-testid="settings-provider-boundary">
+                  <div className="border border-[#d1d0c9] bg-[#f5f4f0] p-5">
+                    <div className="flex flex-wrap items-start justify-between gap-4">
+                      <div className="max-w-2xl">
+                        <div className={labelClass}>BYOK Runtime Boundary</div>
+                        <h3 className="mt-2 font-serif text-2xl leading-none text-[#1a1a1a]">Backend-owned provider credentials</h3>
+                        <p className="mt-3 font-mono text-[11px] leading-relaxed text-[#5f5a50]">
+                          The frontend never stores provider keys. It only reads redacted backend status, runs provider tests through backend routes, and shows whether the secret-vault boundary is active.
+                        </p>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <SmallButton onClick={() => syncSettingsProviderRuntime({ runTests: false })} disabled={providerRuntimeStatus.running}>
+                          <RefreshCw size={12} className="inline-block mr-2" />Sync status
+                        </SmallButton>
+                        <button
+                          type="button"
+                          data-testid="settings-provider-runtime-test"
+                          onClick={() => syncSettingsProviderRuntime({ runTests: true })}
+                          disabled={providerRuntimeStatus.running}
+                          className={`border border-[#1a1a1a] px-3 py-2 font-mono text-[10px] uppercase tracking-widest transition-colors ${providerRuntimeStatus.running ? 'cursor-not-allowed opacity-50' : 'hover:bg-[#d1d0c9] hover:text-black'}`}
+                        >
+                          <Play size={12} className="inline-block mr-2" />Run tests
+                        </button>
+                      </div>
+                    </div>
+                    <div className="mt-4 grid gap-3 font-mono text-[10px] uppercase tracking-[0.14em] text-[#7d786b] md:grid-cols-2">
+                      <div data-testid="settings-provider-base-url" className="break-all">Target: {providerRuntimeStatus.baseUrl || backendStation.baseUrl}</div>
+                      <div>Last sync: {providerRuntimeStatus.lastRunAt ? new Date(providerRuntimeStatus.lastRunAt).toLocaleTimeString() : 'never'}</div>
+                    </div>
                   </div>
-                  <div className="grid grid-cols-2 gap-5">
-                    <SettingField label="Gemini API Key">
-                      <input className={fieldClass} type="password" placeholder="Configured on the local backend" />
+
+                  <div className="grid gap-4 lg:grid-cols-2">
+                    {[
+                      {
+                        id: 'model',
+                        label: 'Model provider',
+                        route: '/llm/status',
+                        testRoute: '/llm/test',
+                        status: providerRuntimeStatus.modelProvider,
+                        test: providerRuntimeStatus.modelTest,
+                      },
+                      {
+                        id: 'search',
+                        label: 'Evidence provider',
+                        route: '/search/status',
+                        testRoute: '/search/test',
+                        status: providerRuntimeStatus.searchProvider,
+                        test: providerRuntimeStatus.searchTest,
+                      },
+                    ].map(item => {
+                      const status = item.status || {};
+                      const ready = Boolean(status.enabled && status.configured);
+                      const configuredButDisabled = Boolean(status.configured && !status.enabled);
+                      const hasBackendKey = Boolean(status.hasApiKey || status.apiKeySource === 'not-required');
+                      const statusLabel = ready
+                        ? 'Backend ready'
+                        : configuredButDisabled
+                          ? 'Runtime disabled'
+                          : hasBackendKey
+                            ? 'Key saved'
+                            : 'Vault required';
+                      const statusClass = ready
+                        ? healthStatusClass.pass
+                        : configuredButDisabled || hasBackendKey
+                          ? healthStatusClass.pending
+                          : healthStatusClass.fail;
+                      const vault = status.secretVault || {};
+                      const testStatus = item.test ? (item.test.ok ? 'pass' : 'fail') : 'idle';
+                      return (
+                        <div key={item.id} data-testid={`settings-provider-${item.id}-status`} className="border border-[#d1d0c9] bg-[#f8f6ee] p-4">
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <div className={labelClass}>{item.route}</div>
+                              <div className="mt-2 font-serif text-xl leading-tight">{item.label}</div>
+                            </div>
+                            <span className={`border px-2 py-1 font-mono text-[9px] uppercase tracking-[0.14em] ${statusClass}`}>
+                              {statusLabel}
+                            </span>
+                          </div>
+                          <div className="mt-4 grid gap-2 font-mono text-[10px] uppercase tracking-[0.12em] text-[#5f5a50]">
+                            <div>Provider: {status.provider || 'not synced'}</div>
+                            <div>Configured: {status.configured ? 'yes' : 'no'} / enabled: {status.enabled ? 'yes' : 'no'}</div>
+                            <div>Runtime enabled: {status.runtimeEnabled ? 'yes' : 'no'} / source {status.enabledSource || 'not synced'}</div>
+                            <div>Secret source: {status.apiKeySource || (status.hasApiKey ? 'configured' : 'missing')}</div>
+                            <div>API field: editable / Seal: {settingsSecretVaultReady ? 'available' : 'waiting for Secret Vault'}</div>
+                            <div>Vault: {vault.provider || 'none'} / ready {vault.ready ? 'yes' : 'no'} / key {vault.keyId || 'none'}</div>
+                            <div>Endpoint source: {status.endpointSource || (status.hasEndpoint ? 'configured' : 'missing')}</div>
+                            <div className="break-all">Endpoint: {status.baseURL || status.endpoint || 'not exposed'}</div>
+                            <div>Test route: {item.testRoute}</div>
+                            <div>Test: <span className={testStatus === 'pass' ? 'text-green-700' : testStatus === 'fail' ? 'text-red-800' : 'text-[#7d786b]'}>{item.test ? (item.test.ok ? 'pass' : item.test.reason || item.test.error || 'failed') : 'not run'}</span></div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  <div data-testid="settings-provider-vault-bindings" className="border border-[#d1d0c9] bg-[#f8f6ee] p-4">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <div className={labelClass}>/provider-vault-bindings</div>
+                        <div className="mt-2 font-serif text-xl leading-tight">Provider-vault binding proof</div>
+                      </div>
+                      <span className={`border px-2 py-1 font-mono text-[9px] uppercase tracking-[0.14em] ${providerRuntimeStatus.providerVaultBindings?.redaction?.rawLeakCount === 0 && providerRuntimeStatus.providerVaultBindings?.summary?.boundProviderCount > 0 ? healthStatusClass.pass : healthStatusClass.idle}`}>
+                        {providerRuntimeStatus.providerVaultBindings?.summary?.boundProviderCount > 0 ? 'vault backed' : 'sync required'}
+                      </span>
+                    </div>
+                    <div className="mt-4 grid gap-2 font-mono text-[10px] uppercase tracking-[0.12em] text-[#5f5a50] md:grid-cols-2">
+                      <div>Schema: {providerRuntimeStatus.providerVaultBindings?.schemaVersion || 'not synced'}</div>
+                      <div>Bound providers: {providerRuntimeStatus.providerVaultBindings?.summary?.boundProviderCount ?? 'not synced'}</div>
+                      <div>Vault records: {providerRuntimeStatus.providerVaultBindings?.summary?.encryptedVaultRecordCount ?? 'not synced'}</div>
+                      <div>Redaction leaks: {providerRuntimeStatus.providerVaultBindings?.redaction?.rawLeakCount ?? 'not synced'}</div>
+                      <div className="break-all md:col-span-2">Project route: {activeProject?.id ? `/projects/${activeProject.id}/provider-vault-bindings` : '/projects/:id/provider-vault-bindings'}</div>
+                      <div className="break-all md:col-span-2">Checksum: {providerRuntimeStatus.providerVaultBindings?.checksum || 'not synced'}</div>
+                    </div>
+                  </div>
+
+                  <div data-testid="settings-secret-vault-status" className="border border-[#d1d0c9] bg-[#f8f6ee] p-4">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <div className={labelClass}>/secret-vault/status</div>
+                        <div className="mt-2 font-serif text-xl leading-tight">Secret vault</div>
+                      </div>
+                      <span className={`border px-2 py-1 font-mono text-[9px] uppercase tracking-[0.14em] ${providerRuntimeStatus.secretVaultStatus?.ready ? healthStatusClass.pass : healthStatusClass.fail}`}>
+                        {providerRuntimeStatus.secretVaultStatus?.ready ? 'ready' : 'vault required'}
+                      </span>
+                    </div>
+                    <div className="mt-4 grid gap-2 font-mono text-[10px] uppercase tracking-[0.12em] text-[#5f5a50] md:grid-cols-2">
+                      <div>Provider: {providerRuntimeStatus.secretVaultStatus?.provider || 'not synced'}</div>
+                      <div>Key: {providerRuntimeStatus.secretVaultStatus?.keyId || 'missing'}</div>
+                      <div>Encrypted records: {providerRuntimeStatus.secretVaultStatus?.encryptedRecordCount ?? providerRuntimeStatus.secretVaultRecords?.records?.length ?? 'not synced'}</div>
+                      <div>Raw leaks: {providerRuntimeStatus.secretVaultStatus?.rawSecretRecordCount ?? 'not synced'}</div>
+                      <div className="break-all md:col-span-2">Seal route: /secret-vault/seal</div>
+                    </div>
+                    <div data-testid="settings-provider-readiness-contract" className="mt-3 border border-[#d1d0c9] bg-[#f5f4f0] px-3 py-2 font-mono text-[11px] leading-relaxed text-[#5f5a50]">
+                      <div>Status: {settingsProviderReadiness?.status || 'not synced'}</div>
+                      <div>API fields: {settingsProviderReadiness?.canTypeApiFields === false ? 'blocked by backend contract' : 'editable for typing'} / Seal: {settingsSecretVaultReady ? 'available' : 'requires backend Vault'}</div>
+                      <div>Next action: {settingsProviderReadiness?.actionRequired?.label || 'Sync provider readiness'}</div>
+                      <div className="break-all">Readiness route: {settingsProviderReadiness?.backendRoutes?.settingsProviderReadiness || '/settings/provider-readiness'}</div>
+                      <div className="break-all">Checksum: {settingsProviderReadiness?.checksum || 'not synced'}</div>
+                    </div>
+                    <div data-testid="settings-secret-vault-local-startup-contract" className="mt-3 border border-[#b9a55f] bg-[#fbf7df] px-3 py-2 font-mono text-[11px] leading-relaxed text-[#75631d]">
+                      {settingsSecretVaultSetupRows.map(([label, value]) => (
+                        <div key={label} className="break-all">
+                          {label}: {value}
+                        </div>
+                      ))}
+                    </div>
+                    {!settingsSecretVaultReady && (
+                      <div data-testid="settings-secret-vault-unavailable" className="mt-3 border border-red-800 bg-red-50 px-3 py-2 font-mono text-[11px] leading-relaxed text-red-800">
+                        {settingsSecretVaultUnavailableMessage}
+                      </div>
+                    )}
+                    <div data-testid="settings-secret-vault-action-required" className={`mt-3 border px-3 py-2 font-mono text-[11px] leading-relaxed ${settingsSecretVaultReady ? 'border-[#59684b] bg-[#eef5df] text-[#3f5136]' : 'border-[#b9a55f] bg-[#fbf7df] text-[#75631d]'}`}>
+                      {settingsSecretVaultActionMessage}
+                    </div>
+                  </div>
+
+                  {providerRuntimeStatus.error && (
+                    <div className="border border-red-800 bg-red-50 px-4 py-3 font-mono text-[11px] leading-relaxed text-red-800">
+                      {providerRuntimeStatus.error}
+                    </div>
+                  )}
+
+                  <div className="grid gap-5 lg:grid-cols-2">
+                    <SettingField label="Model API Key" hint="Saved through the backend secret-vault seal route; the browser clears the field after submit.">
+                      <div className="flex gap-2">
+                        <input
+                          className={fieldClass}
+                          data-testid="settings-provider-model-key-input"
+                          type="password"
+                          autoComplete="off"
+                          value={providerSecretDrafts.modelApiKey}
+                          placeholder={providerRuntimeStatus.modelProvider?.hasApiKey ? 'Configured on backend' : 'Enter model provider key'}
+                          onChange={(event) => setProviderSecretDrafts(prev => ({ ...prev, modelApiKey: event.target.value, error: null }))}
+                        />
+                        <button
+                          type="button"
+                          data-testid="settings-provider-seal-model-key"
+                          onClick={() => sealSettingsProviderSecret('model')}
+                          disabled={providerSecretDrafts.running || !settingsSecretVaultReady || !providerSecretDrafts.modelApiKey.trim()}
+                          className={`shrink-0 border border-[#1a1a1a] px-3 py-2 font-mono text-[10px] uppercase tracking-widest transition-colors ${providerSecretDrafts.running || !settingsSecretVaultReady || !providerSecretDrafts.modelApiKey.trim() ? 'cursor-not-allowed opacity-50' : 'hover:bg-[#d1d0c9] hover:text-black'}`}
+                        >
+                          Seal
+                        </button>
+                      </div>
                     </SettingField>
-                    <SettingField label="Azure / Enterprise Token">
-                      <input className={fieldClass} type="password" placeholder="Paste token..." />
+                    <SettingField label="Evidence Search API Key" hint="Saved through the backend secret-vault seal route; the browser clears the field after submit.">
+                      <div className="flex gap-2">
+                        <input
+                          className={fieldClass}
+                          data-testid="settings-provider-search-key-input"
+                          type="password"
+                          autoComplete="off"
+                          value={providerSecretDrafts.searchApiKey}
+                          placeholder={providerRuntimeStatus.searchProvider?.hasApiKey ? 'Configured on backend' : 'Enter evidence provider key'}
+                          onChange={(event) => setProviderSecretDrafts(prev => ({ ...prev, searchApiKey: event.target.value, error: null }))}
+                        />
+                        <button
+                          type="button"
+                          data-testid="settings-provider-seal-search-key"
+                          onClick={() => sealSettingsProviderSecret('search')}
+                          disabled={providerSecretDrafts.running || !settingsSecretVaultReady || !providerSecretDrafts.searchApiKey.trim()}
+                          className={`shrink-0 border border-[#1a1a1a] px-3 py-2 font-mono text-[10px] uppercase tracking-widest transition-colors ${providerSecretDrafts.running || !settingsSecretVaultReady || !providerSecretDrafts.searchApiKey.trim() ? 'cursor-not-allowed opacity-50' : 'hover:bg-[#d1d0c9] hover:text-black'}`}
+                        >
+                          Seal
+                        </button>
+                      </div>
+                    </SettingField>
+                    <SettingField label="Evidence Search Endpoint" hint="Saved through the backend secret-vault seal route; status shows only a redacted endpoint.">
+                      <div className="flex gap-2">
+                        <input
+                          className={fieldClass}
+                          data-testid="settings-provider-search-endpoint-input"
+                          type="text"
+                          autoComplete="off"
+                          value={providerSecretDrafts.searchEndpoint}
+                          placeholder={providerRuntimeStatus.searchProvider?.hasEndpoint ? 'Configured on backend' : 'Enter evidence search endpoint'}
+                          onChange={(event) => setProviderSecretDrafts(prev => ({ ...prev, searchEndpoint: event.target.value, error: null }))}
+                        />
+                        <button
+                          type="button"
+                          data-testid="settings-provider-seal-search-endpoint"
+                          onClick={() => sealSettingsProviderSecret('searchEndpoint')}
+                          disabled={providerSecretDrafts.running || !settingsSecretVaultReady || !providerSecretDrafts.searchEndpoint.trim()}
+                          className={`shrink-0 border border-[#1a1a1a] px-3 py-2 font-mono text-[10px] uppercase tracking-widest transition-colors ${providerSecretDrafts.running || !settingsSecretVaultReady || !providerSecretDrafts.searchEndpoint.trim() ? 'cursor-not-allowed opacity-50' : 'hover:bg-[#d1d0c9] hover:text-black'}`}
+                        >
+                          Seal
+                        </button>
+                      </div>
                     </SettingField>
                   </div>
-                  <div className="grid grid-cols-2 gap-5">
-                    <SettingField label="Key Scope">
-                      <select className={fieldClass} defaultValue="workspace">
-                        <option value="personal">Personal</option>
-                        <option value="workspace">Workspace</option>
-                        <option value="project">Project Only</option>
-                      </select>
-                    </SettingField>
-                    <SettingField label="Rotation Reminder">
-                      <select className={fieldClass} defaultValue="30">
-                        <option value="14">Every 14 days</option>
-                        <option value="30">Every 30 days</option>
-                        <option value="90">Every 90 days</option>
-                      </select>
-                    </SettingField>
+
+                  {(providerSecretDrafts.lastReceipt || providerSecretDrafts.error) && (
+                    <div data-testid="settings-provider-seal-receipt" className={`border px-4 py-3 font-mono text-[11px] leading-relaxed ${providerSecretDrafts.error ? 'border-red-800 bg-red-50 text-red-800' : 'border-[#59684b] bg-[#eef5df] text-[#3f5136]'}`}>
+                      {providerSecretDrafts.error
+                        ? providerSecretDrafts.error
+                        : `Sealed ${providerSecretDrafts.lastReceipt?.recordName || providerSecretDrafts.lastReceipt?.name || 'provider secret'} through backend vault / checksum ${providerSecretDrafts.lastReceipt?.checksum || 'recorded'}`}
+                    </div>
+                  )}
+
+                  <div data-testid="settings-provider-route-contract" className="border border-[#d1d0c9] bg-[#f5f4f0] p-4 font-mono text-[11px] leading-relaxed text-[#5f5a50]">
+                    Production rule: Manager and Agent autonomy can call model/search providers only through backend provider policy, usage ledger, retry/circuit controls, and vault/KMS status. Public production remains blocked until managed KMS, revocation, centralized audit, cost alerts, calibrated evals, and incident controls are proven.
                   </div>
-                  <ToggleField label="Read Keys From Environment" hint="Supports HOF_API_KEY, GEMINI_API_KEY, and AZURE_OPENAI_API_KEY." defaultChecked />
-                  <ToggleField label="Validate Before Saving" hint="Run a lightweight ping before saving credentials." defaultChecked />
                 </div>
               )}
 
               {settingsTab === 'models' && (
-                <div className="space-y-6">
-                  <div className="grid grid-cols-2 gap-5">
-                    <SettingField label="Default Chat Model">
-                      <select className={fieldClass} defaultValue="gpt-4.1">
-                        <option value="gpt-4.1">GPT-4.1</option>
-                        <option value="gemini-2.5-pro">Gemini 2.5 Pro</option>
-                        <option value="claude-sonnet">Claude Sonnet</option>
-                        <option value="local">Local Model</option>
-                      </select>
-                    </SettingField>
-                    <SettingField label="Deep Reasoning Model">
-                      <select className={fieldClass} defaultValue="gpt-4.1">
-                        <option value="gpt-4.1">GPT-4.1</option>
-                        <option value="gemini-2.5-pro">Gemini 2.5 Pro</option>
-                        <option value="o-series">O-series Reasoning</option>
-                      </select>
-                    </SettingField>
+                <div className="space-y-6" data-testid="settings-model-runtime-boundary">
+                  <div className="border border-[#d1d0c9] bg-[#f5f4f0] p-5">
+                    <div className="flex flex-wrap items-start justify-between gap-4">
+                      <div className="max-w-2xl">
+                        <div className={labelClass}>Model Runtime Contract</div>
+                        <h3 className="mt-2 font-serif text-2xl leading-none text-[#1a1a1a]">Models are selected by backend provider policy</h3>
+                        <p className="mt-3 font-mono text-[11px] leading-relaxed text-[#5f5a50]">
+                          Agent autonomy uses the model provider configured on the backend. The UI shows model/status evidence and can run a backend test, but it does not choose models from a browser-only list.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        data-testid="settings-model-runtime-test"
+                        onClick={() => syncSettingsProviderRuntime({ runTests: true })}
+                        disabled={providerRuntimeStatus.running}
+                        className={`border border-[#1a1a1a] px-3 py-2 font-mono text-[10px] uppercase tracking-widest transition-colors ${providerRuntimeStatus.running ? 'cursor-not-allowed opacity-50' : 'hover:bg-[#d1d0c9] hover:text-black'}`}
+                      >
+                        <Play size={12} className="inline-block mr-2" />Test model
+                      </button>
+                    </div>
                   </div>
-                  <div className="grid grid-cols-3 gap-5">
-                    <SettingField label="Temperature">
-                      <input className={fieldClass} defaultValue="0.7" />
-                    </SettingField>
-                    <SettingField label="Max Tokens">
-                      <input className={fieldClass} defaultValue="8192" />
-                    </SettingField>
-                    <SettingField label="Context Window">
-                      <input className={fieldClass} defaultValue="128k" />
-                    </SettingField>
+
+                  <div className="grid gap-4 lg:grid-cols-2">
+                    <div data-testid="settings-model-provider-status" className="border border-[#d1d0c9] bg-[#f8f6ee] p-4">
+                      <div className={labelClass}>/llm/status</div>
+                      <div className="mt-2 font-serif text-xl leading-tight">{providerRuntimeStatus.modelProvider?.provider || 'Model provider not synced'}</div>
+                      <div className="mt-4 grid gap-2 font-mono text-[10px] uppercase tracking-[0.12em] text-[#5f5a50]">
+                        <div>Model: {providerRuntimeStatus.modelProvider?.model || 'not synced'}</div>
+                        <div>Configured: {providerRuntimeStatus.modelProvider?.configured ? 'yes' : 'no'} / enabled: {providerRuntimeStatus.modelProvider?.enabled ? 'yes' : 'no'}</div>
+                        <div>Concurrency: {providerRuntimeStatus.modelProvider?.maxConcurrency || 'not synced'}</div>
+                        <div>Queued: {providerRuntimeStatus.modelProvider?.queuedRequests ?? 'not synced'} / active: {providerRuntimeStatus.modelProvider?.activeRequests ?? 'not synced'}</div>
+                        <div>Key source: {providerRuntimeStatus.modelProvider?.apiKeySource || 'not synced'}</div>
+                      </div>
+                    </div>
+                    <div data-testid="settings-model-policy-boundary" className="border border-[#d1d0c9] bg-[#f8f6ee] p-4">
+                      <div className={labelClass}>Policy Boundary</div>
+                      <div className="mt-2 font-serif text-xl leading-tight">Provider policy, not browser routing</div>
+                      <div className="mt-4 grid gap-2 font-mono text-[10px] uppercase tracking-[0.12em] text-[#5f5a50]">
+                        <div>Status route: /llm/status</div>
+                        <div>Test route: /llm/test</div>
+                        <div>Search route: /search/status</div>
+                        <div>Vault binding route: /provider-vault-bindings</div>
+                        <div>Provider enabled: {providerRuntimeStatus.modelProvider?.enabled ? 'yes' : 'no or unsynced'}</div>
+                        <div>Production: blocked until provider-readiness and launch gates pass</div>
+                      </div>
+                    </div>
                   </div>
-                  <SettingField label="Model Routing Rules" hint="Choose models by task type, context length, and reasoning depth.">
-                    <textarea className={`${fieldClass} min-h-[96px] resize-none`} defaultValue={'agent_market: fast\nroundtable: reasoning\nproject_chat: default\ntimeline_analysis: long-context'} />
-                  </SettingField>
-                  <ToggleField label="Cost-First Fallback" hint="Switch to lower-cost models when quota or peak load requires it." />
-                  <ToggleField label="Per-Agent System Prompt" hint="Each Agent can keep an independent persona, rules, and memory." defaultChecked />
+
+                  <div data-testid="settings-model-runtime-readiness-contract" className="border border-[#d1d0c9] bg-[#f5f4f0] p-4">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <div className={labelClass}>/settings/runtime-readiness</div>
+                        <div className="mt-2 font-serif text-xl leading-tight">Model policy readiness comes from the backend</div>
+                      </div>
+                      <span className={`border px-2 py-1 font-mono text-[9px] uppercase tracking-[0.14em] ${
+                        settingsRuntimeReadiness?.readyForExplicitProviderTests ? healthStatusClass.pass : settingsRuntimeReadiness ? healthStatusClass.pending : healthStatusClass.idle
+                      }`}>
+                        {settingsRuntimeReadiness?.readyForExplicitProviderTests ? 'test ready' : settingsRuntimeReadiness?.status || 'not synced'}
+                      </span>
+                    </div>
+                    <div className="mt-3 grid gap-2 font-mono text-[10px] uppercase tracking-[0.12em] text-[#5f5a50] md:grid-cols-2">
+                      <div>Model runtime: {settingsRuntimeReadiness?.summary?.modelRuntimeReady ? 'ready' : 'blocked or unsynced'}</div>
+                      <div>Search runtime: {settingsRuntimeReadiness?.summary?.searchRuntimeReady ? 'ready' : 'blocked or unsynced'}</div>
+                      <div>Vault redaction: {settingsRuntimeReadiness?.summary?.providerVaultRedacted ? 'ready' : 'blocked or unsynced'}</div>
+                      <div>Provider tests: {settingsRuntimeReadiness?.readyForExplicitProviderTests ? '/llm/test and /search/test ready' : 'configure provider first'}</div>
+                    </div>
+                    <div className="mt-3 break-all font-mono text-[10px] leading-relaxed text-[#7d786b]">
+                      Route: {settingsRuntimeReadiness?.backendRoutes?.settingsRuntimeReadiness || (activeProject?.id ? `/projects/${activeProject.id}/settings-runtime-readiness` : '/settings/runtime-readiness')}
+                    </div>
+                  </div>
+
+                  <div data-testid="settings-model-route-contract" className="border border-[#d1d0c9] bg-[#f5f4f0] p-4 font-mono text-[11px] leading-relaxed text-[#5f5a50]">
+                    Model routing, temperature, max tokens, fallback policy, and per-Agent prompt strategy must be represented by backend provider policy and Agent Skill/persona contracts before they are treated as real controls. Until then, this UI shows runtime proof only.
+                  </div>
                 </div>
               )}
 
               {settingsTab === 'privacy' && (
-                <div className="space-y-6">
-                  <div className="grid grid-cols-2 gap-5">
-                    <SettingField label="Data Retention">
-                      <select className={fieldClass} defaultValue="30">
-                        <option value="session">Session Only</option>
-                        <option value="30">30 Days</option>
-                        <option value="forever">Until Manual Delete</option>
-                      </select>
-                    </SettingField>
-                    <SettingField label="Log Level">
-                      <select className={fieldClass} defaultValue="metadata">
-                        <option value="off">Off</option>
-                        <option value="metadata">Metadata Only</option>
-                        <option value="full">Full Debug</option>
-                      </select>
-                    </SettingField>
+                <div className="space-y-6" data-testid="settings-privacy-runtime-boundary">
+                  <div className="border border-[#d1d0c9] bg-[#f8f6ee] p-4">
+                    <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#7d786b]">Backend privacy boundary</div>
+                    <div className="mt-2 font-serif text-xl text-[#1a1a1a]">Privacy policy is receipt-backed.</div>
+                    <p className="mt-2 font-mono text-[11px] leading-relaxed text-[#5f5a50]">
+                      Retention, provider logging, training-data policy, and export approval are saved through backend project settings with timeline and event proof. Production compliance still requires managed security controls.
+                    </p>
                   </div>
-                  <ToggleField label="Disable Training Data Sharing" hint="Enterprise deployments should not send user content for third-party model training." defaultChecked />
-                  <ToggleField label="Redact Sensitive Information" hint="Automatically redact keys, emails, phone numbers, and financial identifiers." defaultChecked />
-                  <ToggleField label="Project-Level Access Control" hint="Isolate projects, meeting records, and timeline nodes by member permissions." defaultChecked />
-                  <ToggleField label="Confirm Before Export" hint="Confirm permissions before exporting chat logs, Agent dossiers, or project materials." defaultChecked />
+                  <div className="grid gap-5 lg:grid-cols-[1fr_0.8fr]">
+                    <div className="grid grid-cols-2 gap-4">
+                      <SettingField label="Retention mode" hint="Saved to project-settings/v1; production retention is still gated by managed operations controls.">
+                        <select
+                          data-testid="settings-privacy-retention-mode"
+                          className={fieldClass}
+                          value={privacyPolicy.retentionMode}
+                          disabled={!activeProject}
+                          onChange={(event) => updateProjectPrivacyPolicySetting({ retentionMode: event.target.value })}
+                        >
+                          <option value="project-local">Project local</option>
+                          <option value="session-only">Session only</option>
+                          <option value="manual-export">Manual export only</option>
+                        </select>
+                      </SettingField>
+                      <SettingField label="Provider logs" hint="Controls the local project policy receipt; provider-side enforcement needs managed provider controls.">
+                        <select
+                          data-testid="settings-privacy-provider-log-mode"
+                          className={fieldClass}
+                          value={privacyPolicy.providerLogMode}
+                          disabled={!activeProject}
+                          onChange={(event) => updateProjectPrivacyPolicySetting({ providerLogMode: event.target.value })}
+                        >
+                          <option value="redacted">Redacted</option>
+                          <option value="metadata-only">Metadata only</option>
+                        </select>
+                      </SettingField>
+                    </div>
+                    <div className="border border-[#d1d0c9] bg-[#f5f4f0] p-4">
+                      <label className="flex items-start gap-3 font-mono text-[11px] leading-relaxed text-[#1a1a1a]">
+                        <input
+                          data-testid="settings-privacy-export-approval"
+                          type="checkbox"
+                          className="mt-0.5"
+                          checked={privacyPolicy.evidenceExportRequiresApproval}
+                          disabled={!activeProject}
+                          onChange={(event) => updateProjectPrivacyPolicySetting({ evidenceExportRequiresApproval: event.target.checked })}
+                        />
+                        <span>Require approval before evidence export</span>
+                      </label>
+                      <div className="mt-4 border-t border-[#d1d0c9] pt-4 font-mono text-[11px] leading-relaxed text-[#5f5a50]">
+                        <div data-testid="settings-privacy-policy-revision">Revision: {activeProject?.projectSettings?.revision || 0}</div>
+                        <div data-testid="settings-privacy-policy-production">Production: {privacyPolicy.readyForProduction ? 'ready' : 'blocked'}</div>
+                        <div>Model training: {privacyPolicy.modelTrainingAllowed ? 'allowed' : 'disabled'}</div>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    {[
+                      ['Policy Receipt', activeProject?.id ? `/projects/${activeProject.id}/project-settings` : '/projects/:id/project-settings'],
+                      ['Access Control', activeProject?.id ? `/projects/${activeProject.id}/security-boundary` : '/projects/:id/security-boundary'],
+                      ['Evidence Export', activeProject?.id ? `/projects/${activeProject.id}/project-evidence-exports` : '/projects/:id/project-evidence-exports'],
+                      ['Operations Audit', activeProject?.id ? `/projects/${activeProject.id}/operations-readiness` : '/projects/:id/operations-readiness'],
+                    ].map(([label, detail]) => (
+                      <div key={label} data-testid={`settings-privacy-${label.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`} className="border border-[#d1d0c9] bg-[#f5f4f0] p-4">
+                        <div className={labelClass}>{label}</div>
+                        <div className="mt-2 break-all font-mono text-[11px] leading-relaxed text-[#5f5a50]">{detail}</div>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               )}
 
               {settingsTab === 'workspace' && (
-                <div className="space-y-6">
+                <div className="space-y-6" data-testid="settings-workspace-runtime-boundary">
                   <div className="grid grid-cols-2 gap-5">
-                    <SettingField label={t('settings.defaultLanguage')} hint={t('settings.languageHint')}>
+                    <SettingField label={t('settings.defaultLanguage')} hint="Local UI preference; stored in the browser, not the backend project.">
                       <select data-testid="settings-global-language" className={fieldClass} value={language} onChange={(event) => setLanguage(event.target.value)}>
                         <option value="zh">{t('language.zh')}</option>
                         <option value="en">{t('language.en')}</option>
@@ -6849,12 +9492,7 @@ export default function EngineWorkspace() {
                         onChange={(event) => {
                           if (!activeProject) return;
                           const nextLanguage = event.target.value === 'inherit' ? undefined : event.target.value;
-                          setProjectLanguage(nextLanguage || null);
-                          setProjects(prev => prev.map(project => (
-                            project.id === activeProject.id
-                              ? { ...project, ...(nextLanguage ? { language: nextLanguage } : { language: undefined }) }
-                              : project
-                          )));
+                          updateProjectLanguageSetting(nextLanguage || null);
                         }}
                       >
                         <option value="inherit">{t('settings.inheritGlobal')}</option>
@@ -6862,65 +9500,429 @@ export default function EngineWorkspace() {
                         <option value="en">{t('language.en')}</option>
                       </select>
                     </SettingField>
-                    <SettingField label={t('settings.interfaceDensity')}>
-                      <select className={fieldClass} defaultValue="compact">
-                        <option value="compact">{t('settings.compact')}</option>
-                        <option value="comfortable">{t('settings.comfortable')}</option>
+                  </div>
+                  <div data-testid="settings-workspace-policy-controls" className="grid gap-5 md:grid-cols-3">
+                    <SettingField label="Interface density" hint="Saved through project-settings/v1 as a project workspace policy.">
+                      <select
+                        data-testid="settings-workspace-interface-density"
+                        className={fieldClass}
+                        value={workspacePolicy.interfaceDensity}
+                        disabled={!activeProject}
+                        onChange={(event) => updateProjectWorkspacePolicySetting({ interfaceDensity: event.target.value })}
+                      >
+                        <option value="comfortable">Comfortable</option>
+                        <option value="compact">Compact</option>
+                        <option value="expanded">Expanded</option>
                       </select>
                     </SettingField>
-                  </div>
-                  <div className="grid grid-cols-2 gap-5">
-                    <SettingField label="Default Project Visibility">
-                      <select className={fieldClass} defaultValue="invite">
+                    <SettingField label="Default visibility" hint="Saved through project-settings/v1 for local MVP collaboration defaults.">
+                      <select
+                        data-testid="settings-workspace-default-visibility"
+                        className={fieldClass}
+                        value={workspacePolicy.defaultVisibility}
+                        disabled={!activeProject}
+                        onChange={(event) => updateProjectWorkspacePolicySetting({ defaultVisibility: event.target.value })}
+                      >
+                        <option value="team">Team</option>
+                        <option value="manager-only">Manager only</option>
                         <option value="private">Private</option>
-                        <option value="invite">Invite Only</option>
-                        <option value="workspace">Workspace</option>
                       </select>
                     </SettingField>
-                    <SettingField label="Autosave Interval">
-                      <select className={fieldClass} defaultValue="15">
-                        <option value="5">5 seconds</option>
-                        <option value="15">15 seconds</option>
-                        <option value="60">1 minute</option>
+                    <SettingField label="Autosave cadence" hint="Saved through project-settings/v1; production conflict handling still needs managed persistence.">
+                      <select
+                        data-testid="settings-workspace-autosave-cadence"
+                        className={fieldClass}
+                        value={String(workspacePolicy.autosaveCadenceSeconds)}
+                        disabled={!activeProject}
+                        onChange={(event) => updateProjectWorkspacePolicySetting({ autosaveCadenceSeconds: Number(event.target.value) || 60 })}
+                      >
+                        <option value="30">30 seconds</option>
+                        <option value="60">60 seconds</option>
+                        <option value="120">2 minutes</option>
+                        <option value="300">5 minutes</option>
                       </select>
                     </SettingField>
                   </div>
-                  <ToggleField label="Enable Project Rules" hint="Store writing patterns, brand constraints, and output formats per project." defaultChecked />
-                  <ToggleField label="Enable Long-Term Memory" hint="Remember user preferences, common personas, and project background." />
-                  <ToggleField label="Auto-Summarize Meetings" hint="Create decisions, tasks, risks, and blockers after a roundtable ends." defaultChecked />
+                  <div className="border border-[#d1d0c9] bg-[#f8f6ee] p-4">
+                    <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#7d786b]">Backend workspace boundary</div>
+                    <div className="mt-2 font-serif text-xl text-[#1a1a1a]">Project workspace settings save through backend receipts.</div>
+                    <p className="mt-2 font-mono text-[11px] leading-relaxed text-[#5f5a50]">
+                      Global interface language is a local UI preference. Project language and workspace policy write through project-settings/v1. Runtime contract rules and long-term memory readiness are backend-backed and read-only; production managed memory remains blocked until managed storage and retention controls exist.
+                    </p>
+                    <div data-testid="settings-workspace-capabilities-summary" className="mt-4 grid gap-2 font-mono text-[11px] text-[#5f5a50] sm:grid-cols-4">
+                      <div>Contract: {workspaceCapabilities?.schemaVersion || 'backend-model-missing'}</div>
+                      <div>Backend-backed: {workspaceCapabilitySummary.backendBackedCount ?? 0}</div>
+                      <div>Backend-required: {workspaceCapabilitySummary.backendRequiredCount ?? 0}</div>
+                      <div>Browser-local: {workspaceCapabilitySummary.browserLocalCount ?? 0}</div>
+                    </div>
+                  </div>
+                  <div data-testid="settings-workspace-capability-contract" className="grid gap-3 lg:grid-cols-2">
+                    {workspaceCapabilityRows.length ? workspaceCapabilityRows.map(row => (
+                      <div
+                        key={row.id}
+                        data-testid={`settings-workspace-capability-${row.id}`}
+                        className="border border-[#d1d0c9] bg-[#f8f6ee] p-4"
+                      >
+                        <div className="flex items-start justify-between gap-4">
+                          <div>
+                            <div className={labelClass}>{row.category || 'workspace'}</div>
+                            <div className="mt-1 font-mono text-xs text-[#1a1a1a]">{row.label}</div>
+                          </div>
+                          <span className={`border px-2 py-1 font-mono text-[10px] uppercase tracking-[0.12em] ${row.status === 'backend-backed' ? 'border-[#59684b] text-[#3f5136]' : row.status === 'browser-local' ? 'border-[#7d786b] text-[#5f5a50]' : 'border-[#b9a55f] text-[#75631d]'}`}>
+                            {row.status}
+                          </span>
+                        </div>
+                        <p className="mt-3 font-mono text-[11px] leading-relaxed text-[#5f5a50]">{row.detail}</p>
+                        <div className="mt-3 space-y-1 font-mono text-[10px] leading-relaxed text-[#7d786b]">
+                          <div>Route: {row.requiredBackendRoute}</div>
+                          <div>Editable: {row.editable ? 'yes' : 'no'}</div>
+                          <div>Production blocker: {row.productionBlocker}</div>
+                        </div>
+                      </div>
+                    )) : (
+                      <div data-testid="settings-workspace-capabilities-missing" className="border border-[#b9a55f] bg-[#fbf7df] p-4 font-mono text-[11px] leading-relaxed text-[#75631d] lg:col-span-2">
+                        Backend workspace capability model missing. Sync or update project settings through {activeProject?.id ? `/projects/${activeProject.id}/project-settings` : '/projects/:id/project-settings'} before treating workspace controls as backend-backed.
+                      </div>
+                    )}
+                  </div>
+                  <div data-testid="settings-workspace-memory-readiness" className="border border-[#d1d0c9] bg-[#f8f6ee] p-4">
+                    <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+                      <div className="min-w-0">
+                        <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#7d786b]">/projects/:id/memory-readiness</div>
+                        <div className="mt-2 font-serif text-xl text-[#1a1a1a]">Backend project memory readiness</div>
+                        <p className="mt-2 font-mono text-[11px] leading-relaxed text-[#5f5a50]">
+                          Read-only project memory proof from backend state, transcripts, meeting summaries, evidence/artifact index rows, and persistence adapter planning. No managed memory write control is exposed here.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        data-testid="settings-workspace-sync-memory-readiness"
+                        onClick={() => syncBackendProjectMemoryReadiness({ silent: false })}
+                        disabled={!activeProject || backendStation.loading}
+                        className={`shrink-0 border border-[#1a1a1a] px-3 py-2 font-mono text-[10px] uppercase tracking-widest transition-colors ${!activeProject || backendStation.loading ? 'cursor-not-allowed opacity-50' : 'hover:bg-[#d1d0c9] hover:text-black'}`}
+                      >
+                        <Database size={12} className="inline-block mr-2" />Sync memory
+                      </button>
+                    </div>
+                    <div data-testid="settings-workspace-memory-readiness-status" className="mt-4 grid gap-2 font-mono text-[11px] text-[#5f5a50] sm:grid-cols-4">
+                      <div>Status: {backendProjectMemoryReadiness?.status || 'not synced'}</div>
+                      <div>Rows: {backendProjectMemoryReadiness?.summary?.rowCount ?? 0}</div>
+                      <div>Evidence rows: {backendProjectMemoryReadiness?.summary?.evidenceIndexRowCount ?? 0}</div>
+                      <div>Production: {backendProjectMemoryReadiness?.readyForProduction ? 'ready' : 'blocked'}</div>
+                    </div>
+                    <div data-testid="settings-workspace-memory-readiness-route" className="mt-2 break-all font-mono text-[10px] leading-relaxed text-[#7d786b]">
+                      Route: {backendProjectMemoryReadiness?.backendRoutes?.memoryReadiness || (activeProject?.id ? `/projects/${activeProject.id}/memory-readiness` : '/projects/:id/memory-readiness')}
+                    </div>
+                    {projectMemoryReadinessRows.length > 0 && (
+                      <div data-testid="settings-workspace-memory-readiness-rows" className="mt-4 grid gap-3 lg:grid-cols-2">
+                        {projectMemoryReadinessRows.slice(0, 4).map(row => (
+                          <div key={row.id} data-testid={`settings-workspace-memory-readiness-row-${row.id}`} className="border border-[#d1d0c9] bg-[#f5f4f0] p-3">
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="min-w-0">
+                                <div className={labelClass}>{row.status || 'memory'}</div>
+                                <div className="mt-1 line-clamp-2 font-mono text-[11px] leading-relaxed text-[#1a1a1a]">{row.label}</div>
+                              </div>
+                              <span className="shrink-0 border border-[#7d786b] px-2 py-1 font-mono text-[9px] uppercase tracking-[0.12em] text-[#5f5a50]">
+                                {row.recordCount || 0}
+                              </span>
+                            </div>
+                            <div className="mt-3 space-y-1 font-mono text-[10px] leading-relaxed text-[#7d786b]">
+                              <div className="line-clamp-2">{row.detail}</div>
+                              <div className="break-all">Route: {row.route || 'not available'}</div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {projectMemoryReadinessGates.length > 0 && (
+                      <div data-testid="settings-workspace-memory-readiness-gates" className="mt-4 grid gap-2 font-mono text-[10px] text-[#5f5a50] sm:grid-cols-2">
+                        {projectMemoryReadinessGates.slice(0, 4).map(gate => (
+                          <div key={gate.id} data-testid={`settings-workspace-memory-readiness-gate-${gate.id}`} className="flex items-center justify-between gap-3 border border-[#d1d0c9] bg-[#f5f4f0] px-3 py-2">
+                            <span className="min-w-0 truncate">{gate.label || gate.id}</span>
+                            <span className={`shrink-0 border px-2 py-0.5 uppercase tracking-[0.12em] ${gate.status === 'passed' ? 'border-[#59684b] text-[#3f5136]' : gate.status === 'blocked' ? 'border-[#b9a55f] text-[#75631d]' : 'border-[#8f1e18] text-[#8f1e18]'}`}>
+                              {gate.status || 'unknown'}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  <div data-testid="settings-workspace-meeting-summaries" className="border border-[#d1d0c9] bg-[#f8f6ee] p-4">
+                    <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+                      <div className="min-w-0">
+                        <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#7d786b]">/projects/:id/meeting-summaries</div>
+                        <div className="mt-2 font-serif text-xl text-[#1a1a1a]">Backend meeting summaries</div>
+                        <p className="mt-2 font-mono text-[11px] leading-relaxed text-[#5f5a50]">
+                          Read-only summaries derived from backend transcripts, timeline logs, and event-ledger proof. No browser-local meeting notes are treated as saved summaries.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        data-testid="settings-workspace-sync-meeting-summaries"
+                        onClick={() => syncBackendMeetingSummaries({ silent: false })}
+                        disabled={!activeProject || backendStation.loading}
+                        className={`shrink-0 border border-[#1a1a1a] px-3 py-2 font-mono text-[10px] uppercase tracking-widest transition-colors ${!activeProject || backendStation.loading ? 'cursor-not-allowed opacity-50' : 'hover:bg-[#d1d0c9] hover:text-black'}`}
+                      >
+                        <MessageSquare size={12} className="inline-block mr-2" />Sync summaries
+                      </button>
+                    </div>
+                    <div data-testid="settings-workspace-meeting-summary-status" className="mt-4 grid gap-2 font-mono text-[11px] text-[#5f5a50] sm:grid-cols-4">
+                      <div>Status: {backendMeetingSummaries?.status || 'not synced'}</div>
+                      <div>Rows: {backendMeetingSummaries?.summary?.rowCount ?? 0}</div>
+                      <div>Proof ids: {backendMeetingSummaries?.summary?.proofIdCount ?? 0}</div>
+                      <div>Timeline ids: {backendMeetingSummaries?.summary?.timelineLogIdCount ?? 0}</div>
+                    </div>
+                    <div data-testid="settings-workspace-meeting-summary-route" className="mt-2 break-all font-mono text-[10px] leading-relaxed text-[#7d786b]">
+                      Route: {activeProject?.id ? `/projects/${activeProject.id}/meeting-summaries` : '/projects/:id/meeting-summaries'}
+                    </div>
+                    {meetingSummaryRows.length > 0 && (
+                      <div data-testid="settings-workspace-meeting-summary-rows" className="mt-4 grid gap-3 lg:grid-cols-2">
+                        {meetingSummaryRows.slice(0, 4).map(row => (
+                          <div key={row.id} data-testid={`settings-workspace-meeting-summary-${row.channelId}`} className="border border-[#d1d0c9] bg-[#f5f4f0] p-3">
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="min-w-0">
+                                <div className={labelClass}>{row.meetingKind || 'meeting'} / {row.channelName || row.channelId}</div>
+                                <div className="mt-1 line-clamp-2 font-mono text-[11px] leading-relaxed text-[#1a1a1a]">{row.topic}</div>
+                              </div>
+                              <span className={`shrink-0 border px-2 py-1 font-mono text-[9px] uppercase tracking-[0.12em] ${row.readyForLocalMvp ? 'border-[#59684b] text-[#3f5136]' : 'border-[#b9a55f] text-[#75631d]'}`}>
+                                {row.readyForLocalMvp ? 'proofed' : 'proof gap'}
+                              </span>
+                            </div>
+                            <div className="mt-3 grid gap-1 font-mono text-[10px] leading-relaxed text-[#7d786b]">
+                              <div>Messages: {row.messageCount || 0} / turns {row.meetingTurnCount || 0}</div>
+                              <div>Actions: {row.actionCount || 0} / evidence {row.evidenceCount || 0} / risks {row.riskCount || 0}</div>
+                              <div className="break-all">Transcript: {row.transcriptRoute || 'not available'}</div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  <div data-testid="settings-workspace-route-contract" className="border border-[#d1d0c9] bg-[#f5f4f0] p-4 font-mono text-[11px] leading-relaxed text-[#5f5a50]">
+                    <div data-testid="settings-global-language-local-preference">Global language: browser-local UI preference only</div>
+                    <div>Project settings write: {activeProject?.id ? `/projects/${activeProject.id}/project-settings` : '/projects/:id/project-settings'}</div>
+                    <div>Project read model: {activeProject?.id ? `/projects/${activeProject.id}` : '/projects/:id'}</div>
+                    <div>Workspace capability contract: {workspaceCapabilities?.schemaVersion || 'project-workspace-capabilities/v1'}</div>
+                  </div>
                 </div>
               )}
 
               {settingsTab === 'integrations' && (
-                <div className="space-y-6">
-                  <div className="grid grid-cols-2 gap-5">
-                    <SettingField label="Proxy / Network">
-                      <input className={fieldClass} placeholder="https://proxy.company.com:8080" />
-                    </SettingField>
-                    <SettingField label="Webhook URL">
-                      <input className={fieldClass} placeholder="https://hooks.company.com/hof" />
-                    </SettingField>
+                <div className="space-y-6" data-testid="settings-integrations-runtime-boundary">
+                  <div className="border border-[#d1d0c9] bg-[#f8f6ee] p-4">
+                    <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#7d786b]">Backend integration boundary</div>
+                    <div className="mt-2 font-serif text-xl text-[#1a1a1a]">External tools are backend-governed.</div>
+                    <p className="mt-2 font-mono text-[11px] leading-relaxed text-[#5f5a50]">
+                      Agent tool grants and provider budget are project settings with backend receipts. Local evidence index, adapter gateway, MCP governance, budget alert, and error reporting readiness are backend routes; managed vector memory and production adapters still require backend controls before they become editable controls.
+                    </p>
+                    <div data-testid="settings-integration-capabilities-summary" className="mt-4 grid gap-2 font-mono text-[11px] text-[#5f5a50] sm:grid-cols-3">
+                      <div>Contract: {integrationCapabilities?.schemaVersion || 'backend-model-missing'}</div>
+                      <div>Backend-backed: {integrationCapabilitySummary.backendBackedCount ?? 0}</div>
+                      <div>Missing backend rows: {integrationCapabilitySummary.backendRequiredCount ?? 0}</div>
+                    </div>
+                    <div className="mt-4 flex flex-wrap items-center gap-3">
+                      <SmallButton onClick={syncSettingsIntegrationReadiness} disabled={!activeProject || providerRuntimeStatus.running}>
+                        Sync integration readiness
+                      </SmallButton>
+                      <div data-testid="settings-integration-readiness-summary" className="font-mono text-[10px] leading-relaxed text-[#5f5a50]">
+                        {backendSettingsIntegrationReadiness
+                          ? `${backendSettingsIntegrationReadiness.status} / ${backendSettingsIntegrationReadiness.summary?.routeReadyCount || 0}/${backendSettingsIntegrationReadiness.summary?.rowCount || 0} routes ready`
+                          : 'settings-integration-readiness not synced'}
+                      </div>
+                    </div>
                   </div>
-                  <div className="grid grid-cols-3 gap-4">
-                    <div className="border border-[#d1d0c9] bg-[#f5f4f0] p-4">
+                  {settingsIntegrationReadinessRows.length > 0 && (
+                    <div data-testid="settings-integration-readiness-contract" className="grid gap-3 lg:grid-cols-2">
+                      {settingsIntegrationReadinessRows.map(row => (
+                        <div key={row.id} data-testid={`settings-integration-readiness-row-${row.id}`} className="border border-[#d1d0c9] bg-[#f5f4f0] p-3">
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <div className={labelClass}>{row.category || 'integration'}</div>
+                              <div className="mt-1 font-mono text-xs text-[#1a1a1a]">{row.label}</div>
+                            </div>
+                            <span className={`border px-2 py-1 font-mono text-[9px] uppercase tracking-[0.12em] ${row.currentReady ? 'border-[#59684b] text-[#3f5136]' : row.routeReady ? 'border-[#b9a55f] text-[#75631d]' : 'border-red-800 text-red-800'}`}>
+                              {row.currentReady ? 'ready' : row.routeReady ? 'action required' : 'route missing'}
+                            </span>
+                          </div>
+                          <div className="mt-3 space-y-1 font-mono text-[10px] leading-relaxed text-[#7d786b]">
+                            <div>Status: {row.currentStatus}</div>
+                            <div>Route: {row.requiredBackendRoute}</div>
+                            <div>Schema: {row.readinessSchemaVersion || 'not synced'}</div>
+                            <div>Checksum: {row.readinessChecksum || 'not synced'}</div>
+                            <div>Production blocker: {row.productionBlocker}</div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <div data-testid="settings-integration-capability-contract" className="grid gap-3 lg:grid-cols-2">
+                    {integrationCapabilityRows.length ? integrationCapabilityRows.map(row => (
+                      <div
+                        key={row.id}
+                        data-testid={`settings-integration-capability-${row.id}`}
+                        className="border border-[#d1d0c9] bg-[#f8f6ee] p-4"
+                      >
+                        <div className="flex items-start justify-between gap-4">
+                          <div>
+                            <div className={labelClass}>{row.category || 'integration'}</div>
+                            <div className="mt-1 font-mono text-xs text-[#1a1a1a]">{row.label}</div>
+                          </div>
+                          <span className={`border px-2 py-1 font-mono text-[10px] uppercase tracking-[0.12em] ${row.status === 'backend-backed' ? 'border-[#59684b] text-[#3f5136]' : 'border-[#b9a55f] text-[#75631d]'}`}>
+                            {row.status}
+                          </span>
+                        </div>
+                        <p className="mt-3 font-mono text-[11px] leading-relaxed text-[#5f5a50]">{row.detail}</p>
+                        <div className="mt-3 space-y-1 font-mono text-[10px] leading-relaxed text-[#7d786b]">
+                          <div>Route: {row.requiredBackendRoute}</div>
+                          <div>Editable: {row.editable ? 'yes' : 'no'}</div>
+                          <div>Production blocker: {row.productionBlocker}</div>
+                        </div>
+                      </div>
+                    )) : (
+                      <div data-testid="settings-integration-capabilities-missing" className="border border-[#b9a55f] bg-[#fbf7df] p-4 font-mono text-[11px] leading-relaxed text-[#75631d] lg:col-span-2">
+                        Backend integration capability model missing. Sync or update project settings through {activeProject?.id ? `/projects/${activeProject.id}/project-settings` : '/projects/:id/project-settings'} before treating integration controls as backend-backed.
+                      </div>
+                    )}
+                  </div>
+                  <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                    <div data-testid="settings-integration-browser-tools-boundary" className="border border-[#d1d0c9] bg-[#f5f4f0] p-4">
                       <Globe2 size={18} className="mb-3" />
-                      <div className="font-mono text-xs">Browser Tools</div>
-                      <div className="mt-1 font-mono text-[10px] text-[#7d786b]">Enabled</div>
+                      <div className="font-mono text-xs">{toolGrantCapability?.label || 'Agent tool grant policy'}</div>
+                      <div className="mt-1 font-mono text-[10px] text-[#7d786b]">
+                        {toolGrantCapability?.status || 'backend-backed'} / project settings
+                      </div>
+                      <div data-testid="settings-agent-tool-grant-policy-route" className="mt-2 break-all font-mono text-[9px] leading-relaxed text-[#5f5a50]">
+                        {toolGrantCapability?.requiredBackendRoute || (activeProject?.id ? `/projects/${activeProject.id}/project-settings` : '/projects/:id/project-settings')}
+                      </div>
                     </div>
-                    <div className="border border-[#d1d0c9] bg-[#f5f4f0] p-4">
+                    <div data-testid="settings-integration-proxy-webhook-boundary" className="border border-[#d1d0c9] bg-[#f5f4f0] p-4">
+                      <PlugZap size={18} className="mb-3" />
+                      <div className="font-mono text-xs">{proxyWebhookCapability?.label || 'Proxy and webhook'}</div>
+                      <div className="mt-1 font-mono text-[10px] text-[#7d786b]">
+                        {proxyWebhookCapability?.status || integrationRouteStatusFallback} / adapter preflight
+                      </div>
+                      <div data-testid="settings-proxy-webhook-preflight-route" className="mt-2 break-all font-mono text-[9px] leading-relaxed text-[#5f5a50]">
+                        {proxyWebhookCapability?.requiredBackendRoute || (activeProject?.id ? `/projects/${activeProject.id}/adapter-gateway-preflight` : '/projects/:id/adapter-gateway-preflight')}
+                      </div>
+                    </div>
+                    <div data-testid="settings-integration-mcp-tools-boundary" className="border border-[#d1d0c9] bg-[#f5f4f0] p-4">
+                      <Server size={18} className="mb-3" />
+                      <div className="font-mono text-xs">{mcpToolsCapability?.label || 'MCP tools'}</div>
+                      <div className="mt-1 font-mono text-[10px] text-[#7d786b]">
+                        {mcpToolsCapability?.status || integrationRouteStatusFallback} / provider readiness
+                      </div>
+                      <div data-testid="settings-mcp-tools-readiness-route" className="mt-2 break-all font-mono text-[9px] leading-relaxed text-[#5f5a50]">
+                        {mcpToolsCapability?.requiredBackendRoute || (activeProject?.id ? `/projects/${activeProject.id}/provider-readiness` : '/projects/:id/provider-readiness')}
+                      </div>
+                    </div>
+                    <div data-testid="settings-integration-vector-boundary" className="border border-[#d1d0c9] bg-[#f5f4f0] p-4">
                       <Database size={18} className="mb-3" />
-                      <div className="font-mono text-xs">Vector Store</div>
-                      <div className="mt-1 font-mono text-[10px] text-[#7d786b]">Pending</div>
+                      <div className="font-mono text-xs">{vectorStoreCapability?.label || 'Evidence index / vector store'}</div>
+                      <div className="mt-1 font-mono text-[10px] text-[#7d786b]">
+                        {vectorStoreCapability?.status || integrationRouteStatusFallback} / local index route
+                      </div>
+                      <div data-testid="settings-evidence-index-readiness-route" className="mt-2 break-all font-mono text-[9px] leading-relaxed text-[#5f5a50]">
+                        {vectorStoreCapability?.requiredBackendRoute || (activeProject?.id ? `/projects/${activeProject.id}/evidence-index-readiness` : '/projects/:id/evidence-index-readiness')}
+                      </div>
                     </div>
-                    <div className="border border-[#d1d0c9] bg-[#f5f4f0] p-4">
+                    <div data-testid="settings-integration-budget-boundary" className="border border-[#d1d0c9] bg-[#f5f4f0] p-4">
                       <WalletCards size={18} className="mb-3" />
-                      <div className="font-mono text-xs">Usage Budget</div>
-                      <div className="mt-1 font-mono text-[10px] text-[#7d786b]">$120 / month</div>
+                      <div className="font-mono text-xs">{budgetAlertCapability?.label || 'Budget alerts'}</div>
+                      <div className="mt-1 font-mono text-[10px] text-[#7d786b]">
+                        {budgetAlertCapability?.status || integrationRouteStatusFallback} / local headroom route
+                      </div>
+                      <div data-testid="settings-budget-alert-readiness-route" className="mt-2 break-all font-mono text-[9px] leading-relaxed text-[#5f5a50]">
+                        {budgetAlertCapability?.requiredBackendRoute || (activeProject?.id ? `/projects/${activeProject.id}/budget-alert-readiness` : '/projects/:id/budget-alert-readiness')}
+                      </div>
+                    </div>
+                    <div data-testid="settings-integration-error-reporting-boundary" className="border border-[#d1d0c9] bg-[#f5f4f0] p-4">
+                      <BellDot size={18} className="mb-3" />
+                      <div className="font-mono text-xs">{errorReportingCapability?.label || 'Error reporting'}</div>
+                      <div className="mt-1 font-mono text-[10px] text-[#7d786b]">
+                        {errorReportingCapability?.status || integrationRouteStatusFallback} / local error route
+                      </div>
+                      <div data-testid="settings-error-reporting-readiness-route" className="mt-2 break-all font-mono text-[9px] leading-relaxed text-[#5f5a50]">
+                        {errorReportingCapability?.requiredBackendRoute || (activeProject?.id ? `/projects/${activeProject.id}/error-reporting-readiness` : '/projects/:id/error-reporting-readiness')}
+                      </div>
                     </div>
                   </div>
-                  <ToggleField label="Enable MCP / External Tools" hint="Reserve integration points for filesystems, browser, database, and design tools." defaultChecked />
-                  <ToggleField label="Warn Near Budget Limit" hint="Show a sidebar and project warning when usage reaches 80% of budget." defaultChecked />
-                  <ToggleField label="Automatic Error Reporting" hint="Report error type, request id, and runtime environment without message content." />
+                  <div data-testid="settings-tool-grant-policy" className="grid gap-5 lg:grid-cols-[1fr_0.8fr]">
+                    <div className="grid gap-3">
+                      {SETTINGS_TOOL_GRANT_OPTIONS.map(option => (
+                        <label
+                          key={option.id}
+                          data-testid={`settings-tool-grant-${option.id.replace(':', '-')}`}
+                          className="flex items-start gap-3 border border-[#d1d0c9] bg-[#f8f6ee] p-3"
+                        >
+                          <input
+                            type="checkbox"
+                            className="mt-1 h-4 w-4 accent-[#1a1a1a]"
+                            checked={activeToolGrantSet.has(option.id)}
+                            disabled={!activeProject}
+                            onChange={() => toggleProjectToolGrantSetting(option.id)}
+                          />
+                          <span>
+                            <span className="block font-mono text-[11px] uppercase tracking-[0.12em] text-[#1a1a1a]">{option.label}</span>
+                            <span className="mt-1 block font-mono text-[10px] leading-relaxed text-[#7d786b]">{option.detail}</span>
+                            <span className="mt-1 block font-mono text-[10px] text-[#5f5a50]">{option.id}</span>
+                          </span>
+                        </label>
+                      ))}
+                    </div>
+                    <div className="border border-[#d1d0c9] bg-[#f5f4f0] p-4 font-mono text-[11px] leading-relaxed text-[#5f5a50]">
+                      <div data-testid="settings-tool-grant-summary">Default grants: {toolGrantPolicy.defaultToolGrants.length}/{SETTINGS_TOOL_GRANT_OPTIONS.length}</div>
+                      <div>Agent overrides: {Object.keys(toolGrantPolicy.agentToolGrants || {}).length}</div>
+                      <div>Policy route: {activeProject?.id ? `/projects/${activeProject.id}/project-settings` : '/projects/:id/project-settings'}</div>
+                      <div>Provider readiness: {activeProject?.id ? `/projects/${activeProject.id}/provider-readiness` : '/projects/:id/provider-readiness'}</div>
+                      <div>Controlled run: {activeProject?.id ? `/projects/${activeProject.id}/provider-controlled-run` : '/projects/:id/provider-controlled-run'}</div>
+                      <div>Production: {toolGrantPolicy.readyForProduction ? 'ready' : 'blocked'}</div>
+                    </div>
+                  </div>
+                  <div data-testid="settings-provider-budget-policy" className="grid gap-5 lg:grid-cols-[1fr_0.8fr]">
+                    <div className="grid grid-cols-2 gap-4">
+                      <SettingField label="Daily provider budget" hint="Saved to project-settings/v1 and consumed by provider-controlled-run.">
+                        <select
+                          data-testid="settings-provider-budget-daily"
+                          className={fieldClass}
+                          value={String(providerBudgetPolicy.dailyBudgetCents)}
+                          disabled={!activeProject}
+                          onChange={(event) => updateProjectProviderBudgetPolicySetting({ dailyBudgetCents: Number(event.target.value) || 0 })}
+                        >
+                          <option value="0">Unlimited local</option>
+                          <option value="100">$1 / day</option>
+                          <option value="500">$5 / day</option>
+                          <option value="2000">$20 / day</option>
+                        </select>
+                      </SettingField>
+                      <SettingField label="Hourly provider requests" hint="A local MVP guardrail; production alerting still requires managed controls.">
+                        <select
+                          data-testid="settings-provider-budget-hourly"
+                          className={fieldClass}
+                          value={String(providerBudgetPolicy.maxRequestsPerProjectHour)}
+                          disabled={!activeProject}
+                          onChange={(event) => updateProjectProviderBudgetPolicySetting({ maxRequestsPerProjectHour: Number(event.target.value) || 0 })}
+                        >
+                          <option value="0">Unlimited local</option>
+                          <option value="20">20 / hour</option>
+                          <option value="60">60 / hour</option>
+                          <option value="120">120 / hour</option>
+                        </select>
+                      </SettingField>
+                    </div>
+                    <div className="border border-[#d1d0c9] bg-[#f5f4f0] p-4 font-mono text-[11px] leading-relaxed text-[#5f5a50]">
+                      <div data-testid="settings-provider-budget-summary">Budget: {providerBudgetPolicy.dailyBudgetCents ? `${providerBudgetPolicy.dailyBudgetCents} cents/day` : 'unlimited local'}</div>
+                      <div>Hourly requests: {providerBudgetPolicy.maxRequestsPerProjectHour || 'unlimited local'}</div>
+                      <div>Policy route: {activeProject?.id ? `/projects/${activeProject.id}/project-settings` : '/projects/:id/project-settings'}</div>
+                      <div>Controlled run: {activeProject?.id ? `/projects/${activeProject.id}/provider-controlled-run` : '/projects/:id/provider-controlled-run'}</div>
+                      <div>Production: {providerBudgetPolicy.readyForProduction ? 'ready' : 'blocked'}</div>
+                    </div>
+                  </div>
+                  <div data-testid="settings-integrations-route-contract" className="border border-[#d1d0c9] bg-[#f5f4f0] p-4 font-mono text-[11px] leading-relaxed text-[#5f5a50]">
+                    <div>Provider readiness: {activeProject?.id ? `/projects/${activeProject.id}/provider-readiness` : '/projects/:id/provider-readiness'}</div>
+                    <div>Search/provider status: /search/status</div>
+                    <div>Secret vault status: /secret-vault/status</div>
+                    <div>Production integrations stay blocked until managed provider policy, operations controls, and launch gates pass.</div>
+                  </div>
                 </div>
               )}
 
@@ -6933,7 +9935,7 @@ export default function EngineWorkspace() {
                           <div className={labelClass}>Loop Test</div>
                           <h3 className="mt-2 font-serif text-2xl leading-none text-[#1a1a1a]">Backend health check</h3>
                           <p className="mt-3 max-w-xl font-mono text-[11px] leading-relaxed text-[#5f5a50]">
-                            Runs the real backend request loop against the configured worker station without exposing API keys.
+                            Quick check reads the backend Settings health contract without spending provider calls. Workflow smoke runs the deeper request and Agent probe path.
                           </p>
                         </div>
                         <Activity size={22} className={healthCheck.running ? 'animate-pulse text-[#8f1e18]' : 'text-[#555047]'} />
@@ -6994,9 +9996,12 @@ export default function EngineWorkspace() {
             </div>
 
             <footer className="flex h-16 shrink-0 items-center justify-between border-t border-[#d1d0c9] px-7">
-              <div className="flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.16em] text-green-700">
-                <CheckCircle2 size={14} />
-                {t('settings.saved')}
+              <div
+                data-testid="settings-footer-backend-save-status"
+                className={`flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.16em] ${settingsBackendReady ? 'text-green-700' : 'text-[#75631d]'}`}
+              >
+                <SettingsBackendStatusIcon size={14} />
+                {settingsBackendStatusLabel}
               </div>
               <div className="flex items-center gap-2">
                 <button
@@ -7007,7 +10012,6 @@ export default function EngineWorkspace() {
                 >
                   {t('settings.testConnection')}
                 </button>
-                <SmallButton><Save size={12} className="inline-block mr-2" />{t('settings.save')}</SmallButton>
               </div>
             </footer>
           </div>
@@ -7970,18 +10974,62 @@ export default function EngineWorkspace() {
       setSelectedInitiationMemberId(id);
     };
     const goStep = (id) => setInitiationStep(id);
-    const submitInitiationMeetingInput = (meetingProject) => {
+    const submitInitiationMeetingInput = async (meetingProject) => {
       const text = roomInput.trim();
       if (!text) return;
+      if (!initiationMeetingSession?.id) {
+        setBackendStation(prev => ({
+          ...prev,
+          connectionStatus: 'offline',
+          lastAction: 'Kickoff meeting input blocked; backend session required',
+          error: 'Initiation meeting input must be attached to a backend kickoff meeting session.',
+        }));
+        return;
+      }
       setRoomInput('');
-      setRoomTranscript(prev => [...prev, {
-        id: `initiation_director_input_${Date.now()}`,
-        speaker: 'Director',
-        role: 'Founder',
-        text,
-        score: 10,
-      }]);
-      runRoomSimulation(text, meetingProject);
+      const now = new Date().toISOString();
+      try {
+        const payload = await requestAgentBackend(`/kickoff-meetings/${encodeURIComponent(initiationMeetingSession.id)}/clarify`, {
+          method: 'POST',
+          body: {
+            questionId: selectedClarificationQuestion?.questionId,
+            text,
+            now,
+          },
+          timeoutMs: 20_000,
+        });
+        const meeting = payload.meeting;
+        setInitiationMeetingSession(meeting);
+        setSelectedInitiationClarificationQuestionId(
+          (meeting.roleQuestionResolutions || []).find(row => !row.answered)?.questionId
+          || selectedClarificationQuestion?.questionId
+          || null
+        );
+        setRoomTranscript(prev => [...prev, {
+          id: meeting.managerClarifications?.[meeting.managerClarifications.length - 1]?.id || `initiation_director_input_${Date.parse(now) || Date.now()}`,
+          speaker: 'Director',
+          role: 'Founder',
+          text,
+          score: 10,
+          source: 'backend-kickoff-meeting-clarification',
+          proofIds: meeting.evidence?.clarificationIds?.slice(-1) || [],
+        }]);
+        setBackendStation(prev => ({
+          ...prev,
+          connectionStatus: 'online',
+          lastAction: 'Kickoff meeting input saved through backend clarification',
+          error: null,
+        }));
+      } catch (error) {
+        setBackendStation(prev => ({
+          ...prev,
+          connectionStatus: 'offline',
+          lastAction: 'Kickoff meeting input failed',
+          error: error.name === 'AbortError'
+            ? 'Backend kickoff meeting input timed out. No local mock meeting response was saved.'
+            : `${error.message || String(error)} No local mock meeting response was saved.`,
+        }));
+      }
     };
 
     return (
@@ -8819,6 +11867,15 @@ export default function EngineWorkspace() {
       })) : []),
     ];
     const backendLatestAutopilotProcessed = backendLatestResult.autopilotProcessed || [];
+    const backendAutopilotProviderEvidenceReceipt = extractAutopilotProviderEvidenceReceipt({
+      ...backendLatestResult,
+      autopilotProcessed: backendLatestAutopilotProcessed,
+      providerEvidenceSearch: backendStation.autonomousRunControlProviderEvidence,
+      evidenceSearch: backendStation.autonomousRunControlEvidenceSearch,
+      providerUsage: backendStation.autonomousRunControlProviderUsage,
+      autonomousRunControlSessionWorker: backendStation.autonomousRunControlSessionWorker,
+      autonomousRunControlSessionTick: backendStation.autonomousRunControlSessionTick,
+    }, activeProject.id);
     const backendLastAction = backendStation.lastAction || '';
     const backendLatestTriggerText = Array.from(new Set([
       /Started backend scheduler|Scheduler start pulse published/i.test(backendLastAction) ? 'http-autonomous-scheduler-startup-agents' : null,
@@ -8848,13 +11905,48 @@ export default function EngineWorkspace() {
     ].filter(Boolean).map(item => String(item).toUpperCase()))).join(' / ');
     const backendManagerDashboard = backendStation.managerDashboard || null;
     const backendManagerReadyPackage = backendStation.managerReadyPackage || null;
-    const backendReadinessProofMap = backendManagerDashboard?.readinessProofMap || backendManagerReadyPackage?.managerDashboard?.readinessProofMap || null;
+    const backendStationReadinessProofMap = String(backendStation.readinessProofMap?.projectId || '').toLowerCase() === String(activeProject.id || '').toLowerCase()
+      ? backendStation.readinessProofMap
+      : null;
+    const backendReadinessProofMap = backendStationReadinessProofMap || backendManagerDashboard?.readinessProofMap || backendManagerReadyPackage?.managerDashboard?.readinessProofMap || backendManagerReadyPackage?.readinessProofMap || null;
+    const backendProductTeamMissionRuns = backendStation.productTeamMissionRuns || backendManagerDashboard?.productTeamMissionRuns || null;
+    const backendProductTeamMissionRows = Array.isArray(backendProductTeamMissionRuns)
+      ? backendProductTeamMissionRuns
+      : (backendProductTeamMissionRuns?.rows || []);
+    const backendLatestProductTeamMissionRun = backendStation.productTeamMissionRun
+      || backendProductTeamMissionRuns?.latestRun
+      || backendProductTeamMissionRows[0]
+      || null;
+    const backendProductTeamMissionChatProofIds = chatProofIdsFromIds(backendLatestProductTeamMissionRun?.proofIds || []);
+    const backendProductTeamMissionTimelineIds = Array.from(new Set([
+      ...(backendLatestProductTeamMissionRun?.timelineLogIds || []),
+    ].filter(Boolean)));
+    const backendProductTeamMissionFlowNodeId = backendLatestProductTeamMissionRun?.id
+      ? `product-team-mission-run-${backendLatestProductTeamMissionRun.id}`
+      : null;
     const backendTranscriptProofCoverageSummary = backendReadinessProofMap?.transcriptProofCoverageSummary || null;
     const backendTranscriptProofCoverageRoute = backendReadinessProofMap?.transcriptProofCoverageRoutes?.[0] || null;
     const backendTranscriptProofCoverageIds = Array.from(new Set([
       ...(backendTranscriptProofCoverageSummary?.proofIds || []),
       ...(backendTranscriptProofCoverageRoute?.proofIds || []),
     ].filter(Boolean)));
+    const backendTranscriptChannelSummary = backendReadinessProofMap?.transcriptChannelSummary || null;
+    const backendTranscriptChannelRoutes = backendReadinessProofMap?.transcriptChannelRoutes || [];
+    const backendLatestTranscriptChannelRoute = backendTranscriptChannelRoutes[0] || null;
+    const backendTranscriptChannelChatProofIds = chatProofIdsFromIds(backendTranscriptChannelRoutes.flatMap(route => route.proofIds || []));
+    const backendTranscriptChannelTimelineIds = Array.from(new Set(
+      backendTranscriptChannelRoutes.flatMap(route => route.timelineLogIds || []).filter(Boolean)
+    ));
+    const backendAgentMessageSummary = backendReadinessProofMap?.agentMessageSummary || null;
+    const backendAgentMessageRoutes = backendReadinessProofMap?.agentMessageRoutes || [];
+    const backendLatestAgentMessageRoute = backendAgentMessageRoutes[0] || null;
+    const backendAgentMessageChatProofIds = chatProofIdsFromIds(backendAgentMessageRoutes.flatMap(route => route.proofIds || []));
+    const backendAgentMessageTimelineProofIds = Array.from(new Set(
+      backendAgentMessageRoutes.flatMap(route => [
+        ...(route.timelineLogIds || []),
+        ...(route.eventIds || []),
+      ]).filter(Boolean)
+    ));
     const backendReadyPackageSubmodels = String(backendStation.readyPackageSubmodelsProjectId || '').toLowerCase() === String(activeProject.id || '').toLowerCase()
       ? (backendStation.readyPackageSubmodels || {})
       : {};
@@ -8869,6 +11961,7 @@ export default function EngineWorkspace() {
     const backendPrivatePilotGoLiveReadiness = backendReadyPackageSubmodels.privatePilotGoLiveReadiness || backendManagerReadyPackage?.privatePilotGoLiveReadiness || null;
     const backendOnlineForReadyPackage = backendStation.connectionStatus === 'online';
     const allowReadyPackageDerivedFallbacks = !backendOnlineForReadyPackage || isManagerDemoProject(activeProject);
+    const frontendFallbackMode = allowReadyPackageDerivedFallbacks ? 'demo-or-offline' : 'backend-required';
     const managerReadyPackageRoute = (routeKey, routeSlug) => (
       backendManagerReadyPackage?.backendRoutes?.[routeKey] || (activeProject?.id ? `/projects/${activeProject.id}/${routeSlug}` : null)
     );
@@ -9241,6 +12334,55 @@ export default function EngineWorkspace() {
         readyForProduction: false,
       },
     });
+    const missingCollaborationIntentQueue = () => missingReadyPackageReadModel('collaboration-intent-queue', 'collaborationIntentQueue', 'collaboration-intent-queue', {
+      readyForLocalPilotIntentQueue: false,
+      readyForProduction: false,
+      status: 'backend-model-missing',
+      meetingProtocol: {
+        schemaVersion: 'collaboration-intent-protocol/missing-backend',
+        ready: false,
+        apiPath: managerReadyPackageRoute('collaborationIntentQueue', 'collaboration-intent-queue'),
+      },
+      rows: [
+        {
+          id: 'backend-collaboration-intent-queue-required',
+          lane: 'backend-required',
+          actorType: 'system',
+          intent: 'Backend Collaboration Intent Queue is required',
+          rationale: 'Backend-online real projects require meeting, group-chat, and Agent action intent routing from the backend.',
+          status: 'backend-required',
+          canRun: false,
+          apiPath: managerReadyPackageRoute('collaborationIntentQueue', 'collaboration-intent-queue'),
+          proofIds: [],
+          timelineLogIds: [],
+          eventIds: [],
+        },
+      ],
+      nextRunnableIntent: null,
+      proofIds: [],
+      timelineLogIds: [],
+      eventIds: [],
+      requiredProductionControls: [
+        'managed-queue-or-cron',
+        'durable-audit-storage',
+        'provider-and-byok-policy',
+      ],
+      summary: {
+        rowCount: 1,
+        runnableCount: 0,
+        meetingIntentCount: 0,
+        chatIntentCount: 0,
+        agentInitiativeIntentCount: 0,
+        reviewIntentCount: 0,
+        managerIntentCount: 0,
+        blockedHandoffCount: 1,
+        proofIdCount: 0,
+        timelineLogIdCount: 0,
+        eventIdCount: 0,
+        readyForLocalPilotIntentQueue: false,
+        readyForProduction: false,
+      },
+    });
     const missingRuntimeContracts = () => missingReadyPackageReadModel('runtime-contracts', 'runtimeContracts', 'runtime-contracts', {
       readyForLocalPilotContractFreeze: false,
       readyForProduction: false,
@@ -9326,6 +12468,102 @@ export default function EngineWorkspace() {
         workerDeadLetterCount: 0,
         readyForLocalPilotCycleConsistency: false,
         readyForProduction: false,
+      },
+    });
+    const missingRuntimeAutonomyStatus = () => missingReadyPackageReadModel('runtime-autonomy-status', 'runtimeAutonomyStatus', 'runtime-autonomy-status', {
+      readyForLocalAutonomy: false,
+      readyForPrivatePilotAutonomy: false,
+      readyForUnattendedProduction: false,
+      status: 'backend-model-missing',
+      gates: [
+        {
+          id: 'backend-runtime-autonomy-status-required',
+          label: 'Backend Runtime Autonomy Status is required',
+          ready: false,
+          status: 'backend-required',
+          apiPath: managerReadyPackageRoute('runtimeAutonomyStatus', 'runtime-autonomy-status'),
+          detail: 'Backend-online real projects require runtime autonomy recovery proof from the backend.',
+        },
+      ],
+      failedLocalGates: [
+        {
+          id: 'backend-runtime-autonomy-status-required',
+          label: 'Backend Runtime Autonomy Status is required',
+          apiPath: managerReadyPackageRoute('runtimeAutonomyStatus', 'runtime-autonomy-status'),
+        },
+      ],
+      cSide: {
+        missionRunId: null,
+        missionRoute: managerReadyPackageRoute('productTeamMissions', 'product-team-missions'),
+        managerRunControlRoute: managerReadyPackageRoute('autonomousRunControl', 'autonomous-run-control'),
+        schedulerStatusRoute: '/workers/autonomous/status',
+        schedulerTickRoute: '/workers/autonomous/tick',
+      },
+      aSide: {
+        activeSessionCount: 0,
+        sessionCount: 0,
+        sessionTickCount: 0,
+        actionRunCount: 0,
+        loopRunCount: 0,
+        queuedAgentInitiativeCount: 0,
+        agentQueueCount: 0,
+        autopilotQueueCount: 0,
+        recoverableAutopilotQueueCount: 0,
+        autopilotSessionRecoveryReady: false,
+      },
+      bSide: {
+        proofIdCount: 0,
+        timelineLogIdCount: 0,
+        eventIdCount: 0,
+        flowGraphRoute: managerReadyPackageRoute('managerFlowGraph', 'manager-flow-graph'),
+        proofMapRoute: managerReadyPackageRoute('readinessProofMap', 'readiness-proof-map'),
+      },
+      workerQueue: {
+        queuedWorkerCount: 0,
+        waitingWorkerCount: 0,
+        deadLetterCount: 0,
+        retryableFailureCount: 0,
+        nextWakeAt: null,
+      },
+      adapter: {
+        planStatus: 'backend-model-missing',
+        dryRunStatus: 'backend-model-missing',
+        driver: 'unknown',
+        productionCutoverReady: false,
+      },
+      persistence: {
+        status: 'backend-model-missing',
+        totalRecordCount: 0,
+        productionCutoverReady: false,
+      },
+      proofIds: [],
+      timelineLogIds: [],
+      eventIds: [],
+      requiredProductionControls: [
+        'managed-durable-queue-or-cron',
+        'managed-database-cutover-with-restore-drill',
+        'real-byok-provider-policy-and-cost-controls',
+      ],
+      summary: {
+        missionRunCount: 0,
+        activeSessionCount: 0,
+        sessionCount: 0,
+        sessionTickCount: 0,
+        actionRunCount: 0,
+        loopRunCount: 0,
+        queuedWorkerCount: 0,
+        waitingWorkerCount: 0,
+        deadLetterCount: 0,
+        recoverableAutopilotQueueCount: 0,
+        autopilotSessionRecoveryReady: false,
+        localGateCount: 1,
+        readyLocalGateCount: 0,
+        failedLocalGateCount: 1,
+        proofIdCount: 0,
+        timelineLogIdCount: 0,
+        eventIdCount: 0,
+        readyForLocalAutonomy: false,
+        readyForUnattendedProduction: false,
       },
     });
     const missingProductionLaunchGapRegister = () => missingReadyPackageReadModel('production-launch-gap-register', 'productionLaunchGapRegister', 'production-launch-gap-register', {
@@ -9441,6 +12679,8 @@ export default function EngineWorkspace() {
     }));
     const backendProductionLaunchGapRegister = backendReadyPackageSubmodels.productionLaunchGapRegister || backendManagerReadyPackage?.productionLaunchGapRegister || (allowReadyPackageDerivedFallbacks && backendManagerReadyPackage ? {
       schemaVersion: 'production-launch-gap-register/v1',
+      dataSource: 'frontend-fallback',
+      frontendFallbackMode,
       status: backendProductionLaunchGapRowsFallback.length ? 'production-gaps-open' : 'production-gap-register-sync-pending',
       readyForProduction: false,
       productionDecision: backendManagerReadyPackage.productionLaunchAudit?.productionDecision || 'no-go',
@@ -9532,6 +12772,8 @@ export default function EngineWorkspace() {
     ];
     const backendProductionLaunchControlCenter = backendReadyPackageSubmodels.productionLaunchControlCenter || backendManagerReadyPackage?.productionLaunchControlCenter || (allowReadyPackageDerivedFallbacks && backendManagerReadyPackage ? {
       schemaVersion: 'production-launch-control-center/v1',
+      dataSource: 'frontend-fallback',
+      frontendFallbackMode,
       status: backendPrivatePilotGoLiveReadiness?.readyForPrivatePilotAcceptance ? 'production-launch-controls-blocked' : 'private-pilot-proof-needed',
       productionDecision: 'no-go',
       readyForPrivatePilotAcceptance: Boolean(backendPrivatePilotGoLiveReadiness?.readyForPrivatePilotAcceptance),
@@ -9556,6 +12798,8 @@ export default function EngineWorkspace() {
     } : backendOnlineForReadyPackage && backendManagerReadyPackage ? missingProductionLaunchControlCenter() : null);
     const backendProductionEvidenceIntegrityAudit = backendReadyPackageSubmodels.productionEvidenceIntegrityAudit || backendManagerReadyPackage?.productionEvidenceIntegrityAudit || (allowReadyPackageDerivedFallbacks && backendManagerReadyPackage ? {
       schemaVersion: 'production-evidence-integrity-audit/v1',
+      dataSource: 'frontend-fallback',
+      frontendFallbackMode,
       status: 'production-control-receipts-needed',
       readyForPrivatePilotEvidence: false,
       readyForManagedProductionEvidence: false,
@@ -9577,6 +12821,8 @@ export default function EngineWorkspace() {
     } : backendOnlineForReadyPackage && backendManagerReadyPackage ? missingProductionEvidenceIntegrityAudit() : null);
     const backendProductionLaunchEvidenceDossier = backendReadyPackageSubmodels.productionLaunchEvidenceDossier || backendManagerReadyPackage?.productionLaunchEvidenceDossier || (allowReadyPackageDerivedFallbacks && backendManagerReadyPackage ? {
       schemaVersion: 'production-launch-evidence-dossier/v1',
+      dataSource: 'frontend-fallback',
+      frontendFallbackMode,
       status: backendProductionLaunchControlCenter?.readyForPrivatePilotAcceptance ? 'private-pilot-dossier-ready-production-evidence-needed' : 'production-evidence-dossier-building',
       readyForPrivatePilotDossier: Boolean(backendProductionLaunchControlCenter?.readyForPrivatePilotAcceptance),
       readyForProduction: false,
@@ -9827,12 +13073,81 @@ export default function EngineWorkspace() {
     const backendTeamCollaborationDiagnostics = backendStation.teamCollaborationDiagnostics || backendReadyPackageSubmodels.teamCollaborationDiagnostics || backendManagerReadyPackage?.teamCollaborationDiagnostics || (
       backendOnlineForReadyPackage && backendManagerReadyPackage ? missingTeamCollaborationDiagnostics() : null
     );
+    const backendStationCollaborationIntentQueue = String(backendStation.collaborationIntentQueue?.projectId || '').toLowerCase() === String(activeProject.id || '').toLowerCase()
+      ? backendStation.collaborationIntentQueue
+      : null;
+    const backendCollaborationIntentQueue = backendStationCollaborationIntentQueue || backendReadyPackageSubmodels.collaborationIntentQueue || backendManagerReadyPackage?.collaborationIntentQueue || (
+      backendOnlineForReadyPackage && backendManagerReadyPackage ? missingCollaborationIntentQueue() : null
+    );
+    const backendCollaborationIntentQueueRoute = backendReadinessProofMap?.collaborationIntentQueueRoutes?.[0] || null;
+    const backendCollaborationIntentQueueProofIds = Array.from(new Set([
+      ...(backendCollaborationIntentQueueRoute?.proofIds || []),
+      ...(backendCollaborationIntentQueue?.proofIds || []),
+    ].filter(Boolean)));
+    const backendCollaborationIntentQueueChatProofIds = chatProofIdsFromIds(backendCollaborationIntentQueueProofIds);
+    const backendCollaborationIntentQueueTimelineIds = Array.from(new Set([
+      ...(backendCollaborationIntentQueueRoute?.timelineLogIds || []),
+      ...(backendCollaborationIntentQueue?.timelineLogIds || []),
+    ].filter(Boolean)));
+    const backendSubmissionReviewWorkflowRoute = backendReadinessProofMap?.submissionReviewWorkflowRoutes?.[0] || null;
+    const backendSubmissionReviewWorkflowProofIds = Array.from(new Set([
+      ...(backendSubmissionReviewWorkflowRoute?.proofIds || []),
+      ...(backendSubmissionReviewWorkflow?.proofIds || []),
+    ].filter(Boolean)));
+    const backendSubmissionReviewWorkflowChatProofIds = chatProofIdsFromIds(backendSubmissionReviewWorkflowProofIds);
+    const backendSubmissionReviewWorkflowTimelineIds = Array.from(new Set([
+      ...(backendSubmissionReviewWorkflowRoute?.timelineLogIds || []),
+      ...(backendSubmissionReviewWorkflow?.timelineLogIds || []),
+    ].filter(Boolean)));
+    const backendProductTeamAcceptanceChainRoute = backendReadinessProofMap?.productTeamAcceptanceChainRoutes?.[0] || null;
+    const backendProductTeamAcceptanceChainSummary = backendReadinessProofMap?.productTeamAcceptanceChainSummary || null;
+    const backendProductTeamAcceptanceChainProofIds = Array.from(new Set([
+      ...(backendProductTeamAcceptanceChainRoute?.proofIds || []),
+      ...(backendProductTeamAcceptanceChainSummary?.proofIds || []),
+    ].filter(Boolean)));
+    const backendProductTeamAcceptanceChainChatProofIds = chatProofIdsFromIds(backendProductTeamAcceptanceChainProofIds);
+    const backendProductTeamAcceptanceChainTimelineIds = Array.from(new Set([
+      ...(backendProductTeamAcceptanceChainRoute?.timelineLogIds || []),
+      ...(backendProductTeamAcceptanceChainSummary?.timelineLogIds || []),
+      ...(backendProductTeamAcceptanceChainRoute?.eventIds || []),
+      ...(backendProductTeamAcceptanceChainSummary?.eventIds || []),
+    ].filter(Boolean)));
+    const backendProductTeamAcceptanceChainReady = Boolean(
+      backendProductTeamAcceptanceChainRoute?.readyForGenericProductTeamAcceptance
+      || backendProductTeamAcceptanceChainSummary?.readyForGenericProductTeamAcceptance
+    );
+    const backendProductTeamDeliveryTraceRoute = backendReadinessProofMap?.productTeamDeliveryTraceRoutes?.[0] || null;
+    const backendProductTeamDeliveryTraceProofIds = Array.from(new Set([
+      ...(backendProductTeamDeliveryTraceRoute?.proofIds || []),
+      ...(backendProductTeamDeliveryTrace?.proofIds || []),
+    ].filter(Boolean)));
+    const backendProductTeamDeliveryTraceChatProofIds = chatProofIdsFromIds(backendProductTeamDeliveryTraceProofIds);
+    const backendProductTeamDeliveryTraceTimelineIds = Array.from(new Set([
+      ...(backendProductTeamDeliveryTraceRoute?.timelineLogIds || []),
+      ...(backendProductTeamDeliveryTrace?.timelineLogIds || []),
+    ].filter(Boolean)));
     const backendRuntimeContracts = backendStation.runtimeContracts || backendReadyPackageSubmodels.runtimeContracts || backendManagerReadyPackage?.runtimeContracts || (
       backendOnlineForReadyPackage && backendManagerReadyPackage ? missingRuntimeContracts() : null
     );
     const backendAutonomousCycleConsistency = backendStation.autonomousCycleConsistency || backendReadyPackageSubmodels.autonomousCycleConsistency || backendManagerReadyPackage?.autonomousCycleConsistency || (
       backendOnlineForReadyPackage && backendManagerReadyPackage ? missingAutonomousCycleConsistency() : null
     );
+    const backendRuntimeAutonomyStatus = backendStation.runtimeAutonomyStatus || backendReadyPackageSubmodels.runtimeAutonomyStatus || backendManagerReadyPackage?.runtimeAutonomyStatus || (
+      backendOnlineForReadyPackage && backendManagerReadyPackage ? missingRuntimeAutonomyStatus() : null
+    );
+    const backendRuntimeAutonomyStatusRoute = backendReadinessProofMap?.runtimeAutonomyStatusRoutes?.[0] || null;
+    const backendRuntimeAutonomyStatusProofIds = Array.from(new Set([
+      ...(backendRuntimeAutonomyStatusRoute?.proofIds || []),
+      ...(backendRuntimeAutonomyStatus?.proofIds || []),
+    ].filter(Boolean)));
+    const backendRuntimeAutonomyStatusChatProofIds = chatProofIdsFromIds(backendRuntimeAutonomyStatusProofIds);
+    const backendRuntimeAutonomyStatusTimelineIds = Array.from(new Set([
+      ...(backendRuntimeAutonomyStatusRoute?.timelineLogIds || []),
+      ...(backendRuntimeAutonomyStatus?.timelineLogIds || []),
+    ].filter(Boolean)));
+    const backendRuntimeAutonomyStatusFlowNodeId = backendRuntimeAutonomyStatusRoute?.apiPath || backendRuntimeAutonomyStatus?.backendRoutes?.runtimeAutonomyStatus
+      ? 'runtime-autonomy-status'
+      : null;
     const backendEvidenceQualityAudit = backendReadyPackageSubmodels.evidenceQualityAudit || backendManagerReadyPackage?.evidenceQualityAudit || (
       backendOnlineForReadyPackage && backendManagerReadyPackage ? missingEvidenceQualityAudit() : null
     );
@@ -9890,8 +13205,7 @@ export default function EngineWorkspace() {
       backendStation.lastAction === 'Backend timeline proof missing; local timeline focus suppressed'
       || backendStation.error === 'Backend-online real projects require timeline/event proof from the backend.'
     );
-    const allowManagerFrontendFallbacks = !backendOnline || isManagerDemoProject(activeProject);
-    const frontendFallbackMode = allowManagerFrontendFallbacks ? 'demo-or-offline' : 'backend-required';
+    const allowManagerFrontendFallbacks = frontendFallbackMode === 'demo-or-offline';
     const withFrontendFallbackMeta = (readModel = {}, readModelName = 'frontend-fallback') => ({
       ...readModel,
       dataSource: 'frontend-fallback',
@@ -9934,6 +13248,11 @@ export default function EngineWorkspace() {
         : readModel.dataSource === 'frontend-fallback'
           ? 'bg-[#b9782b] text-white'
           : 'bg-[#59684b] text-white'
+    );
+    const managerReadModelSourceBadge = (readModel = {}, testId) => (
+      <span data-testid={testId} className={`node-status-tag ${managerReadModelSourceClass(readModel)}`}>
+        {managerReadModelSourceLabel(readModel)}
+      </span>
     );
     const governanceNetwork = createAgentNetwork(activeProject.team, {
       projectId: activeProject.id,
@@ -10042,6 +13361,15 @@ export default function EngineWorkspace() {
     const changeLedger = activeProject.changeLedger || [];
     const peerHandoffs = activeProject.peerHandoffs || [];
     const agentNameById = Object.fromEntries(activeProject.team.map(agent => [agent.id, agent.name]));
+    const managerSubmissionReviewRows = backendManagerDashboard?.submissionReviews?.rows?.length
+      ? backendManagerDashboard.submissionReviews.rows
+      : (activeProject.submissionReviews || []).slice(0, 40).map(review => ({
+        ...review,
+        reviewerAgentName: review.reviewerAgentName || agentNameById[review.reviewerAgentId] || review.reviewerAgentId,
+        submitterAgentName: review.submitterAgentName || agentNameById[review.submitterAgentId] || review.submitterAgentId,
+        proofRoute: activeProject.id ? `/projects/${activeProject.id}/submission-reviews/${review.id}` : null,
+        submissionRoute: activeProject.id ? `/projects/${activeProject.id}/submissions/${review.submissionId}` : null,
+      }));
     const localProjectTranscriptMessages = chatMessages.filter(message => (
       (message.projectId || DEFAULT_CHAT_PROJECT_ID) === (activeProject.id || DEFAULT_CHAT_PROJECT_ID)
     ));
@@ -10114,6 +13442,72 @@ export default function EngineWorkspace() {
         ].filter(Boolean),
       };
     });
+    const collaborationProofSourceLabel = backendManagerDashboard ? 'backend-backed' : backendTranscriptSourceLabel;
+    const collaborationProofRows = [
+      ...((backendManagerDashboard?.evidenceSearches?.rows || activeProject.evidenceSearches || []).map(row => ({
+        id: `evidence-${row.id}`,
+        rawId: row.id,
+        testKind: 'evidence',
+        typeLabel: 'Evidence Search',
+        stageLabel: 'Search / Evidence',
+        title: row.query || row.purpose || row.summary || 'Evidence search',
+        actor: row.agentName || agentNameById[row.agentId] || row.agentId || 'Agent',
+        detail: row.evidenceJudgement?.summary || row.qualitySummary || row.purpose || `${row.sourceCount || row.sources?.length || 0} source(s) reviewed`,
+        status: row.evidenceJudgement?.status || row.qualityLevel || row.status || 'recorded',
+        route: row.proofRoute || row.apiPath || (activeProject.id ? `/projects/${activeProject.id}/evidence-searches/${row.id}` : null),
+        channelId: row.channelId || 'main',
+        chatProofIds: chatProofIdsFromRow(row),
+        timelineLogIds: Array.from(new Set([row.timelineLogId, ...(row.timelineLogIds || [])].filter(Boolean))),
+        eventIds: Array.from(new Set([row.eventId, ...(row.eventIds || [])].filter(Boolean))),
+        createdAt: row.createdAt || row.updatedAt || row.time || null,
+      }))),
+      ...((backendManagerDashboard?.submissions?.rows || activeProject.agentSubmissions || []).map(row => {
+        const artifactType = row.artifactType || row.type || 'artifact';
+        const isRevision = artifactType === 'revision-note' || row.respondsToReviewId || row.revisesSubmissionId;
+        const isFinal = artifactType === 'final-deliverable' || row.status === 'final';
+        return {
+          id: `submission-${row.id}`,
+          rawId: row.id,
+          testKind: isFinal ? 'final-deliverable' : isRevision ? 'revision' : 'submission',
+          typeLabel: isFinal ? 'Final Deliverable' : isRevision ? 'Revision Submission' : 'Agent Submission',
+          stageLabel: artifactType.replace(/-/g, ' '),
+          title: row.title || row.summary || artifactType.replace(/-/g, ' '),
+          actor: row.agentName || agentNameById[row.agentId] || row.agentId || 'Agent',
+          detail: row.summary || row.reviewStatus || row.status || 'Submitted for review',
+          status: row.reviewStatus || row.status || 'submitted',
+          route: row.proofRoute || row.apiPath || (activeProject.id ? `/projects/${activeProject.id}/submissions/${row.id}` : null),
+          channelId: row.channelId || 'main',
+          chatProofIds: chatProofIdsFromRow(row),
+          timelineLogIds: Array.from(new Set([row.timelineLogId, ...(row.timelineLogIds || [])].filter(Boolean))),
+          eventIds: Array.from(new Set([row.eventId, ...(row.eventIds || [])].filter(Boolean))),
+          createdAt: row.createdAt || row.updatedAt || row.submittedAt || null,
+        };
+      })),
+      ...((backendManagerDashboard?.submissionReviews?.rows || activeProject.submissionReviews || []).map(row => ({
+        id: `review-${row.id}`,
+        rawId: row.id,
+        testKind: 'review',
+        typeLabel: 'Submission Review',
+        stageLabel: row.verdict || row.status || 'review',
+        title: row.submissionTitle || row.comments || `Review ${row.submissionId || ''}`.trim(),
+        actor: row.reviewerAgentName || agentNameById[row.reviewerAgentId] || row.reviewerAgentId || 'Reviewer',
+        detail: row.comments || row.requestedChanges?.join?.(' / ') || row.verdict || 'Review recorded',
+        status: row.verdict || row.status || 'reviewed',
+        route: row.proofRoute || row.apiPath || (activeProject.id ? `/projects/${activeProject.id}/submission-reviews/${row.id}` : null),
+        channelId: row.channelId || 'main',
+        chatProofIds: chatProofIdsFromRow(row),
+        timelineLogIds: Array.from(new Set([row.timelineLogId, ...(row.timelineLogIds || [])].filter(Boolean))),
+        eventIds: Array.from(new Set([row.eventId, ...(row.eventIds || [])].filter(Boolean))),
+        createdAt: row.createdAt || row.updatedAt || row.time || null,
+      }))),
+    ]
+      .filter(row => row.rawId && (row.chatProofIds.length || row.timelineLogIds.length || row.eventIds.length))
+      .sort((a, b) => (Date.parse(b.createdAt) || 0) - (Date.parse(a.createdAt) || 0))
+      .slice(0, 12)
+      .map(row => ({
+        ...row,
+        safeId: `${row.testKind}-${String(row.rawId).replace(/[^a-zA-Z0-9_-]+/g, '-').slice(0, 80)}`,
+      }));
     const agentCommunicationRows = projectTranscriptMessages
       .filter(message => (
         message.source === 'agent-to-agent-message'
@@ -12222,6 +15616,29 @@ export default function EngineWorkspace() {
         return null;
       }
     };
+    const buildManagerActionRunOutput = (payload = {}, fallback = {}, generatedAt = new Date().toISOString()) => ({
+      schemaVersion: 'manager-action-run-output/v1',
+      generatedAt,
+      actionLabel: payload.managerActionRun?.actionLabel || payload.managerAction?.label || fallback.actionLabel || fallback.label || fallback.stage || fallback.id || null,
+      actionId: payload.managerActionRun?.actionId || payload.managerAction?.id || fallback.actionId || fallback.id || null,
+      requirementId: payload.managerActionRun?.requirementId || payload.managerAction?.requirementId || fallback.requirementId || null,
+      runId: payload.managerActionRun?.id || null,
+      resultRoute: payload.managerActionRun?.resultRoute || payload.route || null,
+      resultMessageIds: payload.managerActionRun?.resultMessageIds || (payload.messages || []).map(message => message.id).filter(Boolean),
+      timelineLogIds: payload.managerActionRun?.timelineLogIds || payload.resultInspection?.timelineLogIds || [payload.managerActionLog?.id, payload.log?.id].filter(Boolean),
+      eventIds: payload.managerActionRun?.eventIds || payload.resultInspection?.eventIds || [],
+      task: payload.task || null,
+      cycle: payload.cycle || null,
+      schedulerTick: payload.schedulerTick || null,
+      workSubmission: payload.workSubmission || payload.submission || null,
+      artifact: payload.artifact || null,
+      evidenceSearch: payload.evidenceSearch || null,
+      review: payload.review || null,
+      reviewedSubmission: payload.reviewedSubmission || null,
+      reviewResponseSubmission: payload.reviewResponseSubmission || null,
+      reviewResponseArtifact: payload.reviewResponseArtifact || null,
+    });
+
     const runManagerActionPlaybookRow = async (row) => {
       if (!activeProject || !backendCommandAvailable || !row || !row.canRun) return null;
       const resolvedPath = resolveManagerActionPath(row);
@@ -12252,9 +15669,14 @@ export default function EngineWorkspace() {
           ...prev,
           connectionStatus: 'online',
           loading: false,
+          managerActionQueue: payload.managerActionQueue || payload.managerDashboard?.managerActionQueue || prev.managerActionQueue,
+          managerActionRun: payload.managerActionRun || prev.managerActionRun,
+          managerActionRunOutput: buildManagerActionRunOutput(payload, row, now),
           lastAction: `Manager action ran: ${row.label || row.requirementId || row.id}`,
           lastProjectSyncAt: new Date().toISOString(),
           projectSyncCount: payload.project ? (prev.projectSyncCount || 0) + 1 : prev.projectSyncCount,
+          lastManagerActionQueueSyncAt: payload.managerActionQueue ? new Date().toISOString() : prev.lastManagerActionQueueSyncAt,
+          managerActionQueueSyncCount: payload.managerActionQueue ? (prev.managerActionQueueSyncCount || 0) + 1 : prev.managerActionQueueSyncCount,
           error: null,
         }));
         if (!appliedManagerPayload && (payload.project?.id || activeProject.id)) {
@@ -12293,12 +15715,32 @@ export default function EngineWorkspace() {
           applyBackendProjectSnapshot(payload);
         }
         const appliedManagerPayload = applyBackendManagerDashboardPayload(payload);
+        const providerEvidenceReceipt = extractAutopilotProviderEvidenceReceipt(payload, payload.project?.id || activeProject.id);
         setBackendStation(prev => ({
           ...prev,
           connectionStatus: 'online',
           loading: false,
           autonomousRunControl: payload.autonomousRunControl || payload.managerDashboard?.autonomousRunControl || payload.managerReadyPackage?.autonomousRunControl || prev.autonomousRunControl,
           autonomousRunControlRun: payload.autonomousRunControlRun || prev.autonomousRunControlRun,
+          autonomousActionDecision: payload.autonomousActionDecision || payload.autonomousRunControlRun?.autonomousActionDecision || payload.agentAutonomousActionRun?.autonomousActionDecision || prev.autonomousActionDecision,
+          autonomousRunControlRunOutput: {
+            schemaVersion: 'autonomous-run-control-run-output/v1',
+            generatedAt: now,
+            runId: payload.autonomousRunControlRun?.id || null,
+            actionLabel: payload.autonomousRunControlRun?.actionLabel || action.label || action.id || null,
+            actionLane: payload.autonomousRunControlRun?.actionLane || action.lane || null,
+            delegatedRunKind: payload.autonomousRunControlRun?.delegatedRunKind || null,
+            resultMessageIds: payload.autonomousRunControlRun?.resultMessageIds || [],
+            timelineLogIds: payload.autonomousRunControlRun?.timelineLogIds || [],
+            workSubmission: payload.workSubmission || payload.submission || null,
+            artifact: payload.artifact || null,
+            evidenceSearch: payload.evidenceSearch || null,
+            autonomousActionDecision: payload.autonomousActionDecision || payload.autonomousRunControlRun?.autonomousActionDecision || payload.agentAutonomousActionRun?.autonomousActionDecision || null,
+            review: payload.review || null,
+            reviewedSubmission: payload.reviewedSubmission || null,
+            reviewResponseSubmission: payload.reviewResponseSubmission || null,
+            reviewResponseArtifact: payload.reviewResponseArtifact || null,
+          },
           managerActionQueue: payload.managerActionQueue || payload.managerDashboard?.managerActionQueue || prev.managerActionQueue,
           agentAutonomousActionQueue: payload.agentAutonomousActionQueue || payload.managerDashboard?.agentAutonomousActionQueue || prev.agentAutonomousActionQueue,
           agentAutonomousActionRun: payload.agentAutonomousActionRun || prev.agentAutonomousActionRun,
@@ -12412,6 +15854,7 @@ export default function EngineWorkspace() {
             includeReadModels: false,
             requestBodyOverrides: {
               forceDue: true,
+              useProviderEvidenceSearch: true,
               submitAgentWorkArtifacts: true,
               reviewPendingSubmissions: true,
               respondToReviewObligations: true,
@@ -12442,6 +15885,11 @@ export default function EngineWorkspace() {
         if (!appliedManagerPayload && (payload.project?.id || activeProject.id)) {
           await syncBackendManagerDashboard({ silent: true, projectId: payload.project?.id || activeProject.id });
         }
+        await refreshAutonomousRunControlReadModels({
+          payload,
+          projectId: payload.project?.id || activeProject.id,
+          agentIds: payload.autonomousRunControlSession?.agentIds || [],
+        });
         setTimeout(() => syncBackendAutonomousRunControl({ silent: true, projectId: payload.project?.id || activeProject.id }), 0);
         setTimeout(() => syncBackendTimelineAndEvents({ silent: true, projectId: payload.project?.id || activeProject.id }), 0);
         setTimeout(() => syncBackendReadyPackageSubmodels({ silent: true, projectId: payload.project?.id || activeProject.id }), 0);
@@ -12528,9 +15976,11 @@ export default function EngineWorkspace() {
           method: 'POST',
           body: {
             now,
+            useProviderEvidenceSearch: true,
             includeReadModels: false,
             requestBodyOverrides: {
               forceDue: true,
+              useProviderEvidenceSearch: true,
               submitAgentWorkArtifacts: true,
               reviewPendingSubmissions: true,
               respondToReviewObligations: true,
@@ -12553,6 +16003,9 @@ export default function EngineWorkspace() {
           autonomousRunControlSessionTick: payload.autonomousRunControlSessionTick || prev.autonomousRunControlSessionTick,
           autonomousRunControlLoop: payload.autonomousRunControlLoops?.[0] || prev.autonomousRunControlLoop,
           autonomousRunControlRun: payload.autonomousRunControlRuns?.[0] || prev.autonomousRunControlRun,
+          autonomousRunControlProviderEvidence: providerEvidenceReceipt?.providerEvidenceSearch || prev.autonomousRunControlProviderEvidence,
+          autonomousRunControlEvidenceSearch: providerEvidenceReceipt?.evidenceSearch || (providerEvidenceReceipt?.evidenceSearchId ? { id: providerEvidenceReceipt.evidenceSearchId, provider: providerEvidenceReceipt.provider, status: providerEvidenceReceipt.status } : prev.autonomousRunControlEvidenceSearch),
+          autonomousRunControlProviderUsage: providerEvidenceReceipt?.providerUsage || (providerEvidenceReceipt?.providerUsageId ? { id: providerEvidenceReceipt.providerUsageId, providerReceiptId: providerEvidenceReceipt.providerReceiptId, status: providerEvidenceReceipt.status } : prev.autonomousRunControlProviderUsage),
           lastAutonomousRunControlSyncAt: payload.autonomousRunControl ? new Date().toISOString() : prev.lastAutonomousRunControlSyncAt,
           autonomousRunControlSyncCount: payload.autonomousRunControl ? (prev.autonomousRunControlSyncCount || 0) + 1 : prev.autonomousRunControlSyncCount,
           lastAction: `Autopilot tick: ${payload.autonomousRunControlSessionTick?.stepCount ?? 0} step(s)`,
@@ -12565,6 +16018,11 @@ export default function EngineWorkspace() {
         }
         (payload.autonomousRunControlSessionTick?.agentIds || payload.autonomousRunControlSession?.agentIds || []).forEach(agentId => {
           setTimeout(() => syncBackendAgentDashboard(agentId, { silent: true, projectId: payload.project?.id || activeProject.id }), 0);
+        });
+        await refreshAutonomousRunControlReadModels({
+          payload,
+          projectId: payload.project?.id || activeProject.id,
+          agentIds: payload.autonomousRunControlSessionTick?.agentIds || payload.autonomousRunControlSession?.agentIds || [],
         });
         setTimeout(() => syncBackendAutonomousRunControl({ silent: true, projectId: payload.project?.id || activeProject.id }), 0);
         setTimeout(() => syncBackendAgentAutonomousActionQueue({ silent: true, projectId: payload.project?.id || activeProject.id }), 0);
@@ -12615,12 +16073,15 @@ export default function EngineWorkspace() {
             ...backendSchedulerAgentSweepBody(),
             tickAutopilotSessions: true,
             forceAutopilotRun: true,
+            useProviderEvidenceSearch: true,
+            providerEvidenceSearchEnabled: true,
             forceAutopilotProjectIds: [activeProject.id],
             autopilotLoopCount: 1,
             maxAutopilotProjects: 1,
             maxAutopilotSessionsPerProject: 1,
             autopilotRequestBodyOverrides: {
               forceDue: true,
+              useProviderEvidenceSearch: true,
               submitAgentWorkArtifacts: true,
               reviewPendingSubmissions: true,
               respondToReviewObligations: true,
@@ -12632,6 +16093,7 @@ export default function EngineWorkspace() {
         const schedulerAutopilotWorker = extractBackendAutopilotSessionWorkerFromPayload(payload, activeProject.id);
         const schedulerAgentQueue = extractBackendAgentAutonomousActionQueueFromPayload(payload, activeProject.id);
         const schedulerRunControl = extractBackendAutonomousRunControlFromPayload(payload, activeProject.id);
+        const providerEvidenceReceipt = extractAutopilotProviderEvidenceReceipt(payload, activeProject.id);
         const projectResult = schedulerAutopilotWorker?.project
           ? schedulerAutopilotWorker
           : (payload.result?.agentProcessed || []).find(item => String(item.projectId) === String(activeProject.id) && item.project)
@@ -12658,6 +16120,9 @@ export default function EngineWorkspace() {
           autonomousRunControlSessionTick: schedulerAutopilotWorker?.autonomousRunControlSessionTick || prev.autonomousRunControlSessionTick,
           autonomousRunControlLoop: schedulerAutopilotWorker?.autonomousRunControlLoops?.[0] || prev.autonomousRunControlLoop,
           autonomousRunControlRun: schedulerAutopilotWorker?.autonomousRunControlRuns?.[0] || prev.autonomousRunControlRun,
+          autonomousRunControlProviderEvidence: providerEvidenceReceipt?.providerEvidenceSearch || prev.autonomousRunControlProviderEvidence,
+          autonomousRunControlEvidenceSearch: providerEvidenceReceipt?.evidenceSearch || (providerEvidenceReceipt?.evidenceSearchId ? { id: providerEvidenceReceipt.evidenceSearchId, provider: providerEvidenceReceipt.provider, status: providerEvidenceReceipt.status } : prev.autonomousRunControlEvidenceSearch),
+          autonomousRunControlProviderUsage: providerEvidenceReceipt?.providerUsage || (providerEvidenceReceipt?.providerUsageId ? { id: providerEvidenceReceipt.providerUsageId, providerReceiptId: providerEvidenceReceipt.providerReceiptId, status: providerEvidenceReceipt.status } : prev.autonomousRunControlProviderUsage),
           agentAutonomousActionQueue: schedulerAgentQueue || prev.agentAutonomousActionQueue,
           lastAutonomousRunControlSyncAt: schedulerRunControl || schedulerAutopilotWorker ? new Date().toISOString() : prev.lastAutonomousRunControlSyncAt,
           autonomousRunControlSyncCount: schedulerRunControl || schedulerAutopilotWorker ? (prev.autonomousRunControlSyncCount || 0) + 1 : prev.autonomousRunControlSyncCount,
@@ -12672,6 +16137,13 @@ export default function EngineWorkspace() {
           || schedulerAutopilotWorker?.autonomousRunControlSession?.agentIds
           || []).forEach(agentId => {
           setTimeout(() => syncBackendAgentDashboard(agentId, { silent: true, projectId: activeProject.id }), 0);
+        });
+        await refreshAutonomousRunControlReadModels({
+          payload: schedulerAutopilotWorker || payload,
+          projectId: activeProject.id,
+          agentIds: schedulerAutopilotWorker?.autonomousRunControlSessionTick?.agentIds
+            || schedulerAutopilotWorker?.autonomousRunControlSession?.agentIds
+            || [],
         });
         syncBackendManagerDashboard({ silent: true, projectId: activeProject.id });
         setTimeout(() => syncBackendAutonomousRunControl({ silent: true, projectId: activeProject.id }), 0);
@@ -12728,6 +16200,11 @@ export default function EngineWorkspace() {
         if (!appliedManagerPayload && (payload.project?.id || activeProject.id)) {
           await syncBackendManagerDashboard({ silent: true, projectId: payload.project?.id || activeProject.id });
         }
+        await refreshAutonomousRunControlReadModels({
+          payload,
+          projectId: payload.project?.id || activeProject.id,
+          agentIds: payload.autonomousRunControlSession?.agentIds || [],
+        });
         setTimeout(() => syncBackendAutonomousRunControl({ silent: true, projectId: payload.project?.id || activeProject.id }), 0);
         setTimeout(() => syncBackendTimelineAndEvents({ silent: true, projectId: payload.project?.id || activeProject.id }), 0);
         setTimeout(() => syncBackendReadyPackageSubmodels({ silent: true, projectId: payload.project?.id || activeProject.id }), 0);
@@ -12739,6 +16216,63 @@ export default function EngineWorkspace() {
           loading: false,
           lastAction: 'Autopilot session pause failed',
           error: error.name === 'AbortError' ? 'Autopilot session pause timed out.' : error.message || String(error),
+        }));
+        return null;
+      }
+    };
+    const runMvpReadinessOperatorAction = async (action) => {
+      if (!activeProject || !backendCommandAvailable || !action?.id) return null;
+      const now = new Date().toISOString();
+      const runApiPath = `/projects/${encodeURIComponent(activeProject.id)}/mvp-readiness/operator-actions/${encodeURIComponent(action.id)}/run`;
+      setBackendStation(prev => ({ ...prev, loading: true }));
+      try {
+        await ensureBackendProjectSeed();
+        const payload = await requestAgentBackend(runApiPath, {
+          method: 'POST',
+          body: {
+            now,
+            actor: 'Manager',
+            source: 'manager-ready-package-ui',
+            includeReadModels: false,
+          },
+          timeoutMs: 3000,
+        });
+        if (payload.project) {
+          applyBackendProjectSnapshot(payload);
+        }
+        const appliedManagerPayload = applyBackendManagerDashboardPayload(payload);
+        const projectId = payload.project?.id || activeProject.id;
+        setBackendStation(prev => ({
+          ...prev,
+          connectionStatus: 'online',
+          loading: false,
+          mvpReadinessOperatorActionRun: payload.mvpReadinessOperatorActionRun || prev.mvpReadinessOperatorActionRun,
+          readyPackageSubmodels: {
+            ...(String(prev.readyPackageSubmodelsProjectId || '').toLowerCase() === String(projectId).toLowerCase() ? (prev.readyPackageSubmodels || {}) : {}),
+            ...(payload.mvpReadiness ? { mvpReadiness: payload.mvpReadiness } : {}),
+          },
+          readyPackageSubmodelsProjectId: projectId,
+          lastReadyPackageSubmodelSyncAt: payload.mvpReadiness ? new Date().toISOString() : prev.lastReadyPackageSubmodelSyncAt,
+          readyPackageSubmodelSyncCount: payload.mvpReadiness ? (prev.readyPackageSubmodelSyncCount || 0) + 1 : prev.readyPackageSubmodelSyncCount,
+          lastAction: `MVP readiness action recorded: ${payload.mvpReadinessOperatorActionRun?.actionLabel || action.label || action.id}`,
+          lastProjectSyncAt: new Date().toISOString(),
+          projectSyncCount: payload.project ? (prev.projectSyncCount || 0) + 1 : prev.projectSyncCount,
+          error: null,
+        }));
+        if (!appliedManagerPayload) {
+          setTimeout(() => syncBackendManagerDashboard({ silent: true, projectId }), 0);
+        }
+        setTimeout(() => syncBackendManagerFlowGraph({ silent: true, projectId }), 0);
+        setTimeout(() => syncBackendTimelineAndEvents({ silent: true, projectId }), 0);
+        setTimeout(() => syncBackendReadyPackageSubmodels({ silent: true, projectId, includeLaunchControls: true }), 0);
+        return payload;
+      } catch (error) {
+        setBackendStation(prev => ({
+          ...prev,
+          connectionStatus: 'offline',
+          loading: false,
+          lastAction: 'MVP readiness action failed',
+          error: error.name === 'AbortError' ? 'MVP readiness action timed out.' : error.message || String(error),
         }));
         return null;
       }
@@ -12775,6 +16309,23 @@ export default function EngineWorkspace() {
           agentAutonomousActionQueue: payload.agentAutonomousActionQueue || prev.agentAutonomousActionQueue,
           autonomousRunControl: payload.autonomousRunControl || payload.managerDashboard?.autonomousRunControl || payload.managerReadyPackage?.autonomousRunControl || prev.autonomousRunControl,
           agentAutonomousActionRun: payload.agentAutonomousActionRun || prev.agentAutonomousActionRun,
+          autonomousActionDecision: payload.autonomousActionDecision || payload.agentAutonomousActionRun?.autonomousActionDecision || prev.autonomousActionDecision,
+          agentAutonomousActionRunOutput: {
+            schemaVersion: 'agent-autonomous-action-run-output/v1',
+            generatedAt: now,
+            agentId,
+            runId: payload.agentAutonomousActionRun?.id || null,
+            actionLabel: payload.agentAutonomousActionRun?.actionLabel || row.actionLabel || row.selectedAction || null,
+            resultMessageIds: payload.agentAutonomousActionRun?.resultMessageIds || [],
+            workSubmission: payload.workSubmission || payload.submission || null,
+            artifact: payload.artifact || null,
+            evidenceSearch: payload.evidenceSearch || null,
+            autonomousActionDecision: payload.autonomousActionDecision || payload.agentAutonomousActionRun?.autonomousActionDecision || null,
+            review: payload.review || null,
+            reviewedSubmission: payload.reviewedSubmission || null,
+            reviewResponseSubmission: payload.reviewResponseSubmission || null,
+            reviewResponseArtifact: payload.reviewResponseArtifact || null,
+          },
           lastAgentAutonomousActionQueueSyncAt: payload.agentAutonomousActionQueue ? new Date().toISOString() : prev.lastAgentAutonomousActionQueueSyncAt,
           agentAutonomousActionQueueSyncCount: payload.agentAutonomousActionQueue ? (prev.agentAutonomousActionQueueSyncCount || 0) + 1 : prev.agentAutonomousActionQueueSyncCount,
           lastAutonomousRunControlSyncAt: (payload.autonomousRunControl || payload.managerDashboard?.autonomousRunControl || payload.managerReadyPackage?.autonomousRunControl) ? new Date().toISOString() : prev.lastAutonomousRunControlSyncAt,
@@ -12805,6 +16356,91 @@ export default function EngineWorkspace() {
           loading: false,
           lastAction: 'Agent autonomous action failed',
           error: error.name === 'AbortError' ? 'Agent autonomous action timed out.' : error.message || String(error),
+        }));
+        return null;
+      }
+    };
+    const runCollaborationIntentQueueRow = async (row) => {
+      if (!activeProject || !backendCommandAvailable || !row || !row.canRun) return null;
+      const intentId = row.id || 'next';
+      const now = new Date().toISOString();
+      const runApiPath = row.runIntentApiPath || `/projects/${encodeURIComponent(activeProject.id)}/collaboration-intent-queue/${encodeURIComponent(intentId)}/run`;
+      setBackendStation(prev => ({ ...prev, loading: true }));
+      try {
+        await ensureBackendProjectSeed();
+        const payload = await requestAgentBackend(runApiPath, {
+          method: 'POST',
+          body: { now, includeReadModels: false },
+          timeoutMs: String(row.runApiPath || '').includes('/autonomous-run-control/') ? 15000 : 7000,
+        });
+        if (payload.project) {
+          applyBackendProjectSnapshot(payload);
+        }
+        const appliedManagerPayload = applyBackendManagerDashboardPayload(payload);
+        setBackendStation(prev => ({
+          ...prev,
+          connectionStatus: 'online',
+          loading: false,
+          collaborationIntentRun: payload.collaborationIntentRun || prev.collaborationIntentRun,
+          collaborationIntentRunOutput: {
+            schemaVersion: 'collaboration-intent-run-output/v1',
+            generatedAt: now,
+            intentId,
+            runId: payload.collaborationIntentRun?.id || null,
+            delegatedRunKind: payload.collaborationIntentRun?.delegatedRunKind || null,
+            delegatedReceiptId: payload.collaborationIntentRun?.delegatedReceiptId || null,
+            resultMessageIds: payload.collaborationIntentRun?.resultMessageIds || [],
+            workSubmission: payload.workSubmission || payload.submission || null,
+            artifact: payload.artifact || null,
+            evidenceSearch: payload.evidenceSearch || null,
+            autonomousActionDecision: payload.autonomousActionDecision || payload.collaborationIntentRun?.autonomousActionDecision || payload.autonomousRunControlRun?.autonomousActionDecision || payload.agentAutonomousActionRun?.autonomousActionDecision || null,
+            review: payload.review || null,
+            reviewedSubmission: payload.reviewedSubmission || null,
+            reviewResponseSubmission: payload.reviewResponseSubmission || null,
+            reviewResponseArtifact: payload.reviewResponseArtifact || null,
+          },
+          collaborationIntentQueue: payload.collaborationIntentQueue || prev.collaborationIntentQueue,
+          productTeamOperatingLoop: payload.productTeamOperatingLoop || prev.productTeamOperatingLoop,
+          autonomousRunControl: payload.autonomousRunControl || payload.managerDashboard?.autonomousRunControl || payload.managerReadyPackage?.autonomousRunControl || prev.autonomousRunControl,
+          autonomousRunControlRun: payload.autonomousRunControlRun || prev.autonomousRunControlRun,
+          autonomousActionDecision: payload.autonomousActionDecision || payload.collaborationIntentRun?.autonomousActionDecision || payload.autonomousRunControlRun?.autonomousActionDecision || payload.agentAutonomousActionRun?.autonomousActionDecision || prev.autonomousActionDecision,
+          managerActionQueue: payload.managerActionQueue || payload.managerDashboard?.managerActionQueue || prev.managerActionQueue,
+          managerActionRun: payload.managerActionRun || prev.managerActionRun,
+          agentAutonomousActionQueue: payload.agentAutonomousActionQueue || payload.managerDashboard?.agentAutonomousActionQueue || prev.agentAutonomousActionQueue,
+          agentAutonomousActionRun: payload.agentAutonomousActionRun || prev.agentAutonomousActionRun,
+          lastCollaborationIntentQueueSyncAt: payload.collaborationIntentQueue ? new Date().toISOString() : prev.lastCollaborationIntentQueueSyncAt,
+          collaborationIntentQueueSyncCount: payload.collaborationIntentQueue ? (prev.collaborationIntentQueueSyncCount || 0) + 1 : prev.collaborationIntentQueueSyncCount,
+          lastProductTeamOperatingLoopSyncAt: payload.productTeamOperatingLoop ? new Date().toISOString() : prev.lastProductTeamOperatingLoopSyncAt,
+          productTeamOperatingLoopSyncCount: payload.productTeamOperatingLoop ? (prev.productTeamOperatingLoopSyncCount || 0) + 1 : prev.productTeamOperatingLoopSyncCount,
+          lastAutonomousRunControlSyncAt: payload.autonomousRunControl ? new Date().toISOString() : prev.lastAutonomousRunControlSyncAt,
+          autonomousRunControlSyncCount: payload.autonomousRunControl ? (prev.autonomousRunControlSyncCount || 0) + 1 : prev.autonomousRunControlSyncCount,
+          lastAgentAutonomousActionQueueSyncAt: payload.agentAutonomousActionQueue ? new Date().toISOString() : prev.lastAgentAutonomousActionQueueSyncAt,
+          agentAutonomousActionQueueSyncCount: payload.agentAutonomousActionQueue ? (prev.agentAutonomousActionQueueSyncCount || 0) + 1 : prev.agentAutonomousActionQueueSyncCount,
+          lastManagerActionQueueSyncAt: payload.managerActionQueue ? new Date().toISOString() : prev.lastManagerActionQueueSyncAt,
+          managerActionQueueSyncCount: payload.managerActionQueue ? (prev.managerActionQueueSyncCount || 0) + 1 : prev.managerActionQueueSyncCount,
+          lastAction: `Collaboration intent ran: ${row.intent || intentId}`,
+          lastProjectSyncAt: new Date().toISOString(),
+          projectSyncCount: payload.project ? (prev.projectSyncCount || 0) + 1 : prev.projectSyncCount,
+          error: null,
+        }));
+        if (!appliedManagerPayload && (payload.project?.id || activeProject.id)) {
+          await syncBackendManagerDashboard({ silent: true, projectId: payload.project?.id || activeProject.id });
+        }
+        setTimeout(() => syncBackendCollaborationIntentQueue({ silent: true, projectId: payload.project?.id || activeProject.id }), 0);
+        setTimeout(() => syncBackendAutonomousRunControl({ silent: true, projectId: payload.project?.id || activeProject.id }), 0);
+        setTimeout(() => syncBackendAgentAutonomousActionQueue({ silent: true, projectId: payload.project?.id || activeProject.id }), 0);
+        setTimeout(() => syncBackendManagerFlowGraph({ silent: true, projectId: payload.project?.id || activeProject.id }), 0);
+        setTimeout(() => syncBackendProjectTranscripts({ silent: true, projectId: payload.project?.id || activeProject.id }), 0);
+        setTimeout(() => syncBackendTimelineAndEvents({ silent: true, projectId: payload.project?.id || activeProject.id }), 0);
+        setTimeout(() => syncBackendReadyPackageSubmodels({ silent: true, projectId: payload.project?.id || activeProject.id }), 0);
+        return payload;
+      } catch (error) {
+        setBackendStation(prev => ({
+          ...prev,
+          connectionStatus: 'offline',
+          loading: false,
+          lastAction: 'Collaboration intent run failed',
+          error: error.name === 'AbortError' ? 'Collaboration intent run timed out.' : error.message || String(error),
         }));
         return null;
       }
@@ -12863,11 +16499,20 @@ export default function EngineWorkspace() {
         if (!appliedManagerPayload && projectId) {
           syncBackendManagerDashboard({ silent: true, projectId });
         }
+        const refreshedReadModels = await refreshReceiptReadModels({
+          payload,
+          projectId,
+          workflowKey,
+          includeLaunchControls: true,
+          actionLabel: `${label} receipt routes refreshed`,
+        });
         setTimeout(() => syncBackendManagerReadyPackage({ silent: true, projectId }), 0);
-        setTimeout(() => syncBackendReadyPackageSubmodels({ silent: true, projectId, includeLaunchControls: true }), 0);
-        setTimeout(() => syncBackendManagerFlowGraph({ silent: true, projectId }), 0);
-        setTimeout(() => syncBackendProjectTranscripts({ silent: true, projectId }), 0);
-        setTimeout(() => syncBackendTimelineAndEvents({ silent: true, projectId }), 0);
+        if (!refreshedReadModels || !Object.keys(refreshedReadModels).length) {
+          setTimeout(() => syncBackendReadyPackageSubmodels({ silent: true, projectId, includeLaunchControls: true }), 0);
+          setTimeout(() => syncBackendManagerFlowGraph({ silent: true, projectId }), 0);
+          setTimeout(() => syncBackendProjectTranscripts({ silent: true, projectId }), 0);
+          setTimeout(() => syncBackendTimelineAndEvents({ silent: true, projectId }), 0);
+        }
         return payload;
       } catch (error) {
         setBackendStation(prev => ({
@@ -12879,6 +16524,68 @@ export default function EngineWorkspace() {
         }));
         return null;
       }
+    };
+    const buildProductionControlReceiptRows = (workflow, {
+      prefix,
+      evidenceRouteBase,
+      defaultOwnerRole = 'runtime-platform',
+    } = {}) => {
+      const rows = Array.isArray(workflow?.controlRows) ? workflow.controlRows : [];
+      const completedAt = new Date().toISOString();
+      return rows
+        .map(row => row.controlId || row.id)
+        .filter(Boolean)
+        .map(controlId => ({
+          controlId,
+          status: 'verified',
+          evidenceId: `${prefix || 'manager_ui_control'}_${controlId}_rehearsal_receipt`,
+          evidenceRoute: `${evidenceRouteBase || 'https://local-rehearsal.hofs.invalid/controls'}/${controlId}`,
+          evidenceChecksum: `${prefix || 'manager_ui_control'}_${controlId}_${workflow?.checksum || 'local_rehearsal_checksum'}`,
+          completedAt,
+          ownerRole: defaultOwnerRole,
+          detail: `Manager UI recorded local rehearsal evidence for ${controlId}.`,
+          evidenceEnvironment: 'local-rehearsal',
+        }));
+    };
+    const runBackendProductionControlReceipt = async ({
+      label,
+      route,
+      workflow,
+      workflowKey,
+      receiptKey,
+      actorRole,
+      actorId,
+      reason,
+      prefix,
+      evidenceRouteBase,
+      defaultOwnerRole,
+    }) => {
+      const controls = buildProductionControlReceiptRows(workflow, {
+        prefix,
+        evidenceRouteBase,
+        defaultOwnerRole,
+      });
+      if (!controls.length) {
+        setBackendStation(prev => ({
+          ...prev,
+          lastAction: `${label} receipt skipped`,
+          error: `${label} needs backend control rows before a rehearsal receipt can be recorded.`,
+        }));
+        return null;
+      }
+      return runBackendPrivatePilotReceipt({
+        label,
+        route,
+        reason,
+        workflowKey,
+        receiptKey,
+        extraBody: {
+          actorRole,
+          actorId,
+          source: 'manager-ui-production-control-receipt',
+          controls,
+        },
+      });
     };
     const runManagerScenarioWalkthroughRow = async (row) => {
       if (!activeProject || !backendCommandAvailable || !row || !row.primaryAction?.canRun) return null;
@@ -12910,6 +16617,14 @@ export default function EngineWorkspace() {
           connectionStatus: 'online',
           loading: false,
           managerScenarioWalkthrough: payload.managerScenarioWalkthrough || prev.managerScenarioWalkthrough,
+          managerActionQueue: payload.managerActionQueue || payload.managerDashboard?.managerActionQueue || prev.managerActionQueue,
+          managerActionRun: payload.managerActionRun || prev.managerActionRun,
+          managerActionRunOutput: buildManagerActionRunOutput(payload, {
+            ...(row.primaryAction || {}),
+            id: row.primaryAction?.id || row.id,
+            stage: row.stage,
+            actionLabel: row.primaryAction?.label || row.stage || row.id,
+          }, now),
           managerScenarioWalkthroughReceipt: {
             stepId: row.id,
             stage: row.stage,
@@ -12921,6 +16636,8 @@ export default function EngineWorkspace() {
           lastAction: `Walkthrough step ran: ${row.stage || row.id}`,
           lastProjectSyncAt: new Date().toISOString(),
           projectSyncCount: payload.project ? (prev.projectSyncCount || 0) + 1 : prev.projectSyncCount,
+          lastManagerActionQueueSyncAt: payload.managerActionQueue ? new Date().toISOString() : prev.lastManagerActionQueueSyncAt,
+          managerActionQueueSyncCount: payload.managerActionQueue ? (prev.managerActionQueueSyncCount || 0) + 1 : prev.managerActionQueueSyncCount,
           error: null,
         }));
         if (!appliedManagerPayload && (payload.project?.id || activeProject.id)) {
@@ -12934,6 +16651,14 @@ export default function EngineWorkspace() {
           connectionStatus: 'online',
           loading: false,
           managerScenarioWalkthrough: payload.managerScenarioWalkthrough || prev.managerScenarioWalkthrough,
+          managerActionQueue: payload.managerActionQueue || payload.managerDashboard?.managerActionQueue || prev.managerActionQueue,
+          managerActionRun: payload.managerActionRun || prev.managerActionRun,
+          managerActionRunOutput: buildManagerActionRunOutput(payload, {
+            ...(row.primaryAction || {}),
+            id: row.primaryAction?.id || row.id,
+            stage: row.stage,
+            actionLabel: row.primaryAction?.label || row.stage || row.id,
+          }, now),
           managerScenarioWalkthroughReceipt: {
             stepId: row.id,
             stage: row.stage,
@@ -13837,6 +17562,138 @@ export default function EngineWorkspace() {
                     {backendManagerActionRuns?.count || 0} runs
                   </span>
                 </div>
+                {backendStation.managerActionRunOutput && (
+                  <div data-testid="manager-action-run-output" className="mb-4 border border-[#d8c99f] bg-[#efe2bd]/70 px-3 py-3">
+                    <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">{projectText('Manager Action Output Nodes')}</div>
+                    <div className="mt-1 font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] break-words">
+                      {projectText(backendStation.managerActionRunOutput.actionLabel || 'manager action')} / {projectText(backendStation.managerActionRunOutput.resultRoute || 'manager-action-queue-item-run')} / {projectText(backendStation.managerActionRunOutput.runId || 'receipt pending')}
+                    </div>
+                    {(() => {
+                      const output = backendStation.managerActionRunOutput || {};
+                      const rows = [
+                        output.resultMessageIds?.length ? {
+                          id: 'result-messages',
+                          label: 'Result Messages',
+                          title: `${output.resultMessageIds.length} transcript message(s)`,
+                          detail: `${output.requirementId || output.actionId || 'manager-action'} / ${output.resultRoute || 'manager-action-queue-item-run'}`,
+                          proofIds: output.resultMessageIds,
+                          chatProofIds: output.resultMessageIds,
+                          timelineProofIds: output.timelineLogIds || [],
+                        } : null,
+                        output.task ? {
+                          id: 'task',
+                          label: 'Task Node',
+                          title: output.task.text || output.task.title || output.task.id,
+                          detail: `${output.task.ownerName || output.task.ownerId || 'owner'} / ${output.task.status || 'task'}`,
+                          proofIds: [output.task.id, output.task.assignmentMessageId, output.task.acknowledgementMessageId, ...(output.task.timelineLogIds || [])],
+                          chatProofIds: [output.task.assignmentMessageId, output.task.acknowledgementMessageId],
+                          timelineProofIds: output.task.timelineLogIds || [],
+                        } : null,
+                        output.workSubmission ? {
+                          id: 'work-submission',
+                          label: 'Agent Submission',
+                          title: output.workSubmission.title || output.workSubmission.artifactType || output.workSubmission.id,
+                          detail: `${output.workSubmission.artifactType || 'artifact'} / ${output.workSubmission.status || output.workSubmission.reviewStatus || 'submitted'}`,
+                          proofIds: [output.workSubmission.messageId, output.workSubmission.timelineLogId, output.workSubmission.eventId, output.workSubmission.artifactStorageProofChecksum],
+                          chatProofIds: [output.workSubmission.messageId],
+                          timelineProofIds: [output.workSubmission.timelineLogId],
+                        } : null,
+                        output.evidenceSearch ? {
+                          id: 'evidence-search',
+                          label: 'Evidence Search',
+                          title: output.evidenceSearch.query || output.evidenceSearch.purpose || output.evidenceSearch.id,
+                          detail: `${output.evidenceSearch.evidenceJudgement || output.evidenceSearch.confidence || 'evidence'} / score ${output.evidenceSearch.qualityScore ?? output.evidenceSearch.averageQualityScore ?? 'n/a'}`,
+                          proofIds: [output.evidenceSearch.id, output.evidenceSearch.messageId, output.evidenceSearch.logId, output.evidenceSearch.eventId],
+                          chatProofIds: [output.evidenceSearch.messageId],
+                          timelineProofIds: [output.evidenceSearch.logId, output.evidenceSearch.timelineLogId],
+                        } : null,
+                        output.review ? {
+                          id: 'submission-review',
+                          label: 'Submission Review',
+                          title: output.review.verdict || output.review.status || output.review.id,
+                          detail: `${output.review.submissionId || output.reviewedSubmission?.id || 'submission'} / ${output.review.reviewerAgentName || output.review.reviewerAgentId || 'reviewer'}`,
+                          proofIds: [output.review.id, output.review.messageId, output.review.timelineLogId, output.review.eventId],
+                          chatProofIds: [output.review.messageId],
+                          timelineProofIds: [output.review.timelineLogId],
+                        } : null,
+                        output.reviewResponseSubmission ? {
+                          id: 'review-response-submission',
+                          label: 'Review Response',
+                          title: output.reviewResponseSubmission.title || output.reviewResponseSubmission.artifactType || output.reviewResponseSubmission.id,
+                          detail: `${output.reviewResponseSubmission.artifactType || 'artifact'} / review ${output.reviewResponseSubmission.respondsToReviewId || 'linked'}`,
+                          proofIds: [output.reviewResponseSubmission.messageId, output.reviewResponseSubmission.timelineLogId, output.reviewResponseSubmission.eventId, output.reviewResponseSubmission.respondsToReviewId],
+                          chatProofIds: [output.reviewResponseSubmission.messageId],
+                          timelineProofIds: [output.reviewResponseSubmission.timelineLogId],
+                        } : null,
+                        output.cycle ? {
+                          id: 'autonomous-cycle',
+                          label: 'Autonomous Cycle',
+                          title: output.cycle.cadence || output.cycle.id,
+                          detail: `${output.cycle.status || 'cycle'} / ${output.cycle.completedTaskIds?.length || 0} completed`,
+                          proofIds: [output.cycle.id, output.cycle.logId, output.cycle.eventId],
+                          chatProofIds: [],
+                          timelineProofIds: [output.cycle.logId],
+                        } : null,
+                        output.schedulerTick ? {
+                          id: 'scheduler-tick',
+                          label: 'Scheduler Tick',
+                          title: output.schedulerTick.trigger || output.schedulerTick.schemaVersion || 'scheduler tick',
+                          detail: `projects ${output.schedulerTick.projectProcessedCount ?? 0} / agents ${output.schedulerTick.agentProcessedCount ?? 0}`,
+                          proofIds: [output.schedulerTick.trigger, output.schedulerTick.agentTrigger, ...(output.timelineLogIds || [])],
+                          chatProofIds: output.resultMessageIds || [],
+                          timelineProofIds: output.timelineLogIds || [],
+                        } : null,
+                      ].filter(Boolean);
+                      if (!rows.length) {
+                        return (
+                          <div data-testid="manager-action-run-output-empty" className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">
+                            {projectText('No Manager action output returned yet')}
+                          </div>
+                        );
+                      }
+                      return (
+                        <div data-testid="manager-action-run-output-rows" className="mt-2 space-y-1">
+                          {rows.map(row => {
+                            const proofIds = Array.from(new Set((row.proofIds || []).filter(Boolean)));
+                            const chatProofIds = Array.from(new Set((row.chatProofIds || []).filter(Boolean)));
+                            const timelineProofIds = Array.from(new Set((row.timelineProofIds || []).filter(Boolean)));
+                            return (
+                              <div key={`manager-action-output-${row.id}`} data-testid={`manager-action-output-${row.id}`} className="border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                <div className="grid grid-cols-[1fr_auto] gap-2">
+                                  <div className="min-w-0">
+                                    <div className="font-serif text-sm leading-tight truncate">{projectText(row.label)}: {projectText(row.title || 'output')}</div>
+                                    <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] truncate">{projectText(row.detail || 'backend output')}</div>
+                                  </div>
+                                  <span className="node-status-tag bg-[#59684b] text-white">{proofIds.length}</span>
+                                </div>
+                                <div className="mt-1 flex flex-wrap gap-2">
+                                  <button
+                                    type="button"
+                                    data-testid={`manager-action-output-chat-proof-${row.id}`}
+                                    onClick={() => openProjectChatProof(activeProject, chatProofIds, 'main')}
+                                    disabled={!chatProofIds.length}
+                                    className="inline-flex items-center justify-center gap-1 border border-[#7b6542] bg-[#efe2bd] px-2 py-1 font-mono text-[7px] uppercase tracking-widest text-[#251b13] hover:border-[#251b13] disabled:opacity-40 disabled:cursor-not-allowed"
+                                  >
+                                    <MessageSquare size={10} /> Output chat proof
+                                  </button>
+                                  <button
+                                    type="button"
+                                    data-testid={`manager-action-output-timeline-proof-${row.id}`}
+                                    onClick={() => openProjectTimelineProof(timelineProofIds)}
+                                    disabled={!timelineProofIds.length}
+                                    className="inline-flex items-center justify-center gap-1 border border-[#7b6542] bg-[#efe2bd] px-2 py-1 font-mono text-[7px] uppercase tracking-widest text-[#251b13] hover:border-[#251b13] disabled:opacity-40 disabled:cursor-not-allowed"
+                                  >
+                                    <ScrollText size={10} /> Output timeline proof
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      );
+                    })()}
+                  </div>
+                )}
                 <div className="space-y-2">
                   {(backendManagerActionRuns?.rows || []).slice(0, 4).map((run, index) => (
                     <div key={`manager-action-run-${run.id || index}`} data-testid={`manager-action-run-row-${run.requirementId || run.actionId || index}`} className="border border-[#d8c99f] bg-[#efe2bd]/55 p-3">
@@ -14101,7 +17958,7 @@ export default function EngineWorkspace() {
                   <textarea
                     data-testid="manager-assignment-composer-input"
                     value={managerAssignmentDraft.text}
-                    onChange={(event) => setManagerAssignmentDraft(prev => ({ ...prev, text: event.target.value }))}
+                    onChange={(event) => updateManagerAssignmentDraft({ text: event.target.value })}
                     rows={3}
                     className="w-full resize-none border border-[#d8c99f] bg-[#efe2bd] px-3 py-2 font-serif text-base leading-relaxed text-[#251b13] outline-none focus:border-[#8f1e18]"
                   />
@@ -14109,7 +17966,7 @@ export default function EngineWorkspace() {
                     <select
                       data-testid="manager-assignment-composer-target"
                       value={managerAssignmentDraft.targetAgentId}
-                      onChange={(event) => setManagerAssignmentDraft(prev => ({ ...prev, targetAgentId: event.target.value }))}
+                      onChange={(event) => updateManagerAssignmentDraft({ targetAgentId: event.target.value })}
                       className="border border-[#d8c99f] bg-[#efe2bd] px-3 py-2 font-mono text-[9px] uppercase tracking-widest text-[#251b13] outline-none focus:border-[#8f1e18]"
                     >
                       {activeProject.team.filter(agent => !agent.isLeader).map(agent => (
@@ -14147,7 +18004,7 @@ export default function EngineWorkspace() {
                   <textarea
                     data-testid="manager-change-composer-input"
                     value={managerChangeDraft.text}
-                    onChange={(event) => setManagerChangeDraft(prev => ({ ...prev, text: event.target.value }))}
+                    onChange={(event) => updateManagerChangeDraft({ text: event.target.value })}
                     rows={3}
                     className="w-full resize-none border border-[#d8c99f] bg-[#efe2bd] px-3 py-2 font-serif text-base leading-relaxed text-[#251b13] outline-none focus:border-[#8f1e18]"
                   />
@@ -14155,7 +18012,7 @@ export default function EngineWorkspace() {
                     <select
                       data-testid="manager-change-composer-mode"
                       value={managerChangeDraft.mode}
-                      onChange={(event) => setManagerChangeDraft(prev => ({ ...prev, mode: event.target.value }))}
+                      onChange={(event) => updateManagerChangeDraft({ mode: event.target.value })}
                       className="border border-[#d8c99f] bg-[#efe2bd] px-3 py-2 font-mono text-[9px] uppercase tracking-widest text-[#251b13] outline-none focus:border-[#8f1e18]"
                     >
                       <option value="dual">War Room + Google Chat</option>
@@ -14554,7 +18411,13 @@ export default function EngineWorkspace() {
                       Agent autonomous queue sync: {backendStation.lastAgentAutonomousActionQueueSyncAt ? new Date(backendStation.lastAgentAutonomousActionQueueSyncAt).toLocaleString() : 'not synced'} / {backendStation.agentAutonomousActionQueueSyncCount || 0} pulls
                     </div>
                     <div className="font-mono text-[8px] uppercase tracking-widest text-[#9b875c] mt-1">
+                      Collaboration intent queue sync: {backendStation.lastCollaborationIntentQueueSyncAt ? new Date(backendStation.lastCollaborationIntentQueueSyncAt).toLocaleString() : 'not synced'} / {backendStation.collaborationIntentQueueSyncCount || 0} pulls
+                    </div>
+                    <div className="font-mono text-[8px] uppercase tracking-widest text-[#9b875c] mt-1">
                       Autonomous run control sync: {backendStation.lastAutonomousRunControlSyncAt ? new Date(backendStation.lastAutonomousRunControlSyncAt).toLocaleString() : 'not synced'} / {backendStation.autonomousRunControlSyncCount || 0} pulls
+                    </div>
+                    <div data-testid="backend-runtime-autonomy-status-sync" className="font-mono text-[8px] uppercase tracking-widest text-[#9b875c] mt-1">
+                      Runtime autonomy sync: {backendStation.lastRuntimeAutonomyStatusSyncAt ? new Date(backendStation.lastRuntimeAutonomyStatusSyncAt).toLocaleString() : 'not synced'} / {backendStation.runtimeAutonomyStatusSyncCount || 0} pulls
                     </div>
                     {backendStation.lastAction && (
                       <div className="font-mono text-[8px] uppercase tracking-widest text-[#6b5a3d] mt-1">{backendStation.lastAction}</div>
@@ -14577,11 +18440,25 @@ export default function EngineWorkspace() {
                             [projectText('Gateway'), backendProductionInfrastructureRehearsal.summary?.gatewayStatus || 'unknown'],
                             [projectText('Persistence'), backendProductionInfrastructureRehearsal.summary?.persistenceStatus || 'unknown'],
                             [projectText('Queue'), backendProductionInfrastructureRehearsal.summary?.queueStatus || 'unknown'],
+                            [projectText('Managed Cutover'), `${backendProductionInfrastructureRehearsal.managedCutoverSummary?.productionReadyGateCount ?? 0}/${backendProductionInfrastructureRehearsal.managedCutoverSummary?.gateCount ?? 0}`],
                             [projectText('Prod Blockers'), backendProductionInfrastructureRehearsal.summary?.productionBlockedCount ?? 0],
+                            [projectText('Cutover Receipts'), `${backendProductionInfrastructureRehearsal.managedCutoverSummary?.receiptReadyGateCount ?? 0}/${backendProductionInfrastructureRehearsal.managedCutoverSummary?.gateCount ?? 0}`],
+                            [projectText('Next Cutover'), backendProductionInfrastructureRehearsal.managedCutoverSummary?.nextGateId || 'none'],
                           ].map(([label, value]) => (
                             <div key={`standalone-production-infrastructure-rehearsal-${label}`} className="border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
                               <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">{label}</div>
                               <div className="font-serif text-sm leading-tight">{value}</div>
+                            </div>
+                          ))}
+                        </div>
+                        <div className="mt-2 space-y-1">
+                          {(backendProductionInfrastructureRehearsal.managedCutoverGates || []).slice(0, 4).map(gate => (
+                            <div data-testid={`backend-production-infrastructure-cutover-gate-${gate.id}`} key={`standalone-production-infrastructure-cutover-gate-${gate.id}`} className="grid grid-cols-[1fr_auto] gap-2 border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                              <div className="min-w-0">
+                                <div className="font-serif text-sm leading-tight truncate">{projectText(gate.label || gate.id)}</div>
+                                <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] truncate">{gate.evidenceTier || 'production-blocked'} / {gate.receiptReady ? 'receipt-ready' : 'receipt-needed'}</div>
+                              </div>
+                              <span className={`node-status-tag ${gate.productionReady ? 'bg-[#59684b] text-white' : 'bg-[#251b13] text-[#efe2bd]'}`}>{gate.productionReady ? projectText('ready') : projectText('blocked')}</span>
                             </div>
                           ))}
                         </div>
@@ -14621,6 +18498,8 @@ export default function EngineWorkspace() {
                             [projectText('Infra Rehearsal'), backendProductionInfrastructureRehearsal?.status || backendManagerReadyPackage.summary?.productionInfrastructureRehearsalStatus || 'unknown'],
                             [projectText('Infra Ready'), (backendProductionInfrastructureRehearsal?.readyForInfrastructureRehearsal ?? backendManagerReadyPackage.summary?.productionInfrastructureRehearsalReady) ? projectText('ready') : projectText('blocked')],
                             [projectText('Infra Blockers'), backendProductionInfrastructureRehearsal?.summary?.productionBlockedCount ?? backendManagerReadyPackage.summary?.productionInfrastructureRehearsalProductionBlockedCount ?? 0],
+                            [projectText('Managed Cutover'), `${backendProductionInfrastructureRehearsal?.managedCutoverSummary?.productionReadyGateCount ?? backendManagerReadyPackage.summary?.productionInfrastructureManagedCutoverReadyCount ?? 0}/${backendProductionInfrastructureRehearsal?.managedCutoverSummary?.gateCount ?? backendManagerReadyPackage.summary?.productionInfrastructureManagedCutoverGateCount ?? 0}`],
+                            [projectText('Next Cutover'), backendProductionInfrastructureRehearsal?.managedCutoverSummary?.nextGateId || backendManagerReadyPackage.summary?.productionInfrastructureManagedCutoverNextGateId || 'none'],
                             [projectText('Launch Approval'), projectText(backendLaunchApprovalWorkflow?.status || backendManagerReadyPackage.summary?.launchApprovalStatus || 'approval-needed')],
                             [projectText('Pilot Approval'), backendLaunchApprovalWorkflow?.readyForPrivatePilot || backendManagerReadyPackage.summary?.launchApprovalPrivatePilotReady ? projectText('ready') : projectText('blocked')],
                             [projectText('Production Approval'), backendLaunchApprovalWorkflow?.readyForProduction || backendManagerReadyPackage.summary?.launchApprovalProductionReady ? projectText('ready') : projectText('blocked')],
@@ -14673,16 +18552,25 @@ export default function EngineWorkspace() {
                             ['Operating Loop', backendProductTeamOperatingLoop?.status || 'loop-missing'],
                             ['Loop Ready', backendProductTeamOperatingLoop?.readyForLocalPilotOperatingLoop ? 'ready' : 'blocked'],
                             ['Loop Next', backendProductTeamOperatingLoop?.summary?.nextActionLane || 'none'],
+                            ['Handoff Exec', backendProductTeamOperatingLoop?.customerSide?.handoffExecution?.status || backendProductTeamOperatingLoop?.summary?.customerAgentHandoffExecutionStatus || 'pending'],
+                            ['Handoff Runs', backendProductTeamOperatingLoop?.customerSide?.handoffExecution?.runReceiptIds?.length ?? backendProductTeamOperatingLoop?.summary?.customerAgentHandoffExecutionRunReceiptCount ?? 0],
+                            ['Handoff Outputs', backendProductTeamOperatingLoop?.customerSide?.handoffExecution?.submissionIds?.length ?? backendProductTeamOperatingLoop?.summary?.customerAgentHandoffExecutionSubmissionCount ?? 0],
                             ['Agent Strategy', backendProductTeamOperatingLoop?.agentSide?.selectedActions?.length ?? backendProductTeamOperatingLoop?.summary?.selectedAgentActions?.length ?? 0],
                             ['Collab Diagnostics', backendTeamCollaborationDiagnostics?.status || backendManagerReadyPackage.summary?.teamCollaborationDiagnosticsStatus || 'diagnostics-missing'],
                             ['Collab Ready', (backendTeamCollaborationDiagnostics?.readyForLocalPilotCollaboration ?? backendManagerReadyPackage.summary?.teamCollaborationDiagnosticsReady) ? 'ready' : 'blocked'],
                             ['Handoff Breaks', backendTeamCollaborationDiagnostics?.summary?.failedLocalRowCount ?? backendManagerReadyPackage.summary?.teamCollaborationDiagnosticsFailedLocalRowCount ?? 0],
+                            ['Intent Queue', backendCollaborationIntentQueue?.status || backendManagerReadyPackage.summary?.collaborationIntentQueueStatus || 'intent-queue-missing'],
+                            ['Intent Ready', (backendCollaborationIntentQueue?.readyForLocalPilotIntentQueue ?? backendManagerReadyPackage.summary?.collaborationIntentQueueReady) ? 'ready' : 'blocked'],
+                            ['Intent Rows', `${backendCollaborationIntentQueue?.summary?.runnableCount ?? backendManagerReadyPackage.summary?.collaborationIntentQueueRunnableCount ?? 0}/${backendCollaborationIntentQueue?.summary?.rowCount ?? backendManagerReadyPackage.summary?.collaborationIntentQueueRowCount ?? 0}`],
                             ['Runtime Contracts', backendRuntimeContracts?.status || backendManagerReadyPackage.summary?.runtimeContractsStatus || 'contracts-missing'],
                             ['Contracts Ready', (backendRuntimeContracts?.readyForLocalPilotContractFreeze ?? backendManagerReadyPackage.summary?.runtimeContractsReady) ? 'ready' : 'blocked'],
                             ['Frozen Contracts', `${backendRuntimeContracts?.summary?.frozenLocalContractCount ?? backendManagerReadyPackage.summary?.runtimeContractsFrozenLocalCount ?? 0}/${backendRuntimeContracts?.summary?.localContractCount ?? backendManagerReadyPackage.summary?.runtimeContractsLocalCount ?? 0}`],
                             ['Cycle Consistency', backendAutonomousCycleConsistency?.status || backendManagerReadyPackage.summary?.autonomousCycleConsistencyStatus || 'cycle-missing'],
                             ['Cycle Ready', (backendAutonomousCycleConsistency?.readyForLocalPilotCycleConsistency ?? backendManagerReadyPackage.summary?.autonomousCycleConsistencyReady) ? 'ready' : 'blocked'],
                             ['Cycle Steps', `${backendAutonomousCycleConsistency?.summary?.observedStepCount ?? backendManagerReadyPackage.summary?.autonomousCycleConsistencyObservedStepCount ?? 0}/${backendAutonomousCycleConsistency?.summary?.requiredStepCount ?? backendManagerReadyPackage.summary?.autonomousCycleConsistencyRequiredStepCount ?? 3}`],
+                            ['Runtime Autonomy', backendRuntimeAutonomyStatus?.status || backendManagerReadyPackage.summary?.runtimeAutonomyStatus || 'runtime-missing'],
+                            ['Local Autonomy', (backendRuntimeAutonomyStatus?.readyForLocalAutonomy ?? backendManagerReadyPackage.summary?.runtimeAutonomyReady) ? 'ready' : 'blocked'],
+                            ['Production Auto', (backendRuntimeAutonomyStatus?.readyForUnattendedProduction ?? backendManagerReadyPackage.summary?.runtimeAutonomyProductionReady) ? 'ready' : 'blocked'],
                             ['Evidence Audit', backendEvidenceQualityAudit?.status || backendManagerReadyPackage.summary?.evidenceQualityAuditStatus || 'unknown'],
                             ['Evidence Ready', (backendEvidenceQualityAudit?.readyForDecision ?? backendManagerReadyPackage.summary?.evidenceQualityDecisionReady) ? 'ready' : 'review'],
                             ['Evidence Quality', backendEvidenceQualityAudit?.summary?.averageQualityScore ?? backendManagerReadyPackage.summary?.evidenceQualityAverageScore ?? 0],
@@ -14767,6 +18655,10 @@ export default function EngineWorkspace() {
                               {[
                                 [projectText('Manager Next'), backendProductTeamOperatingLoop.customerSide?.nextAction?.id || backendProductTeamOperatingLoop.summary?.nextActionId || 'none'],
                                 [projectText('Next Lane'), backendProductTeamOperatingLoop.summary?.nextActionLane || backendProductTeamOperatingLoop.customerSide?.nextAction?.lane || 'none'],
+                                [projectText('Handoff Exec'), backendProductTeamOperatingLoop.customerSide?.handoffExecution?.status || backendProductTeamOperatingLoop.summary?.customerAgentHandoffExecutionStatus || 'pending'],
+                                [projectText('Handoff Runs'), backendProductTeamOperatingLoop.customerSide?.handoffExecution?.runReceiptIds?.length ?? backendProductTeamOperatingLoop.summary?.customerAgentHandoffExecutionRunReceiptCount ?? 0],
+                                [projectText('Handoff Outputs'), backendProductTeamOperatingLoop.customerSide?.handoffExecution?.submissionIds?.length ?? backendProductTeamOperatingLoop.summary?.customerAgentHandoffExecutionSubmissionCount ?? 0],
+                                [projectText('Handoff Proof'), backendProductTeamOperatingLoop.customerSide?.handoffExecution?.proofIds?.length ?? backendProductTeamOperatingLoop.summary?.customerAgentHandoffExecutionResultMessageCount ?? 0],
                                 [projectText('Agent Ready'), backendProductTeamOperatingLoop.agentSide?.readyCount ?? backendProductTeamOperatingLoop.summary?.agentReadyCount ?? 0],
                                 [projectText('Agent Strategy'), (backendProductTeamOperatingLoop.agentSide?.selectedActions || backendProductTeamOperatingLoop.summary?.selectedAgentActions || []).length],
                                 [projectText('Agent Initiative'), backendProductTeamOperatingLoop.agentSide?.initiativeCount ?? backendProductTeamOperatingLoop.summary?.agentInitiativeCount ?? 0],
@@ -14868,6 +18760,240 @@ export default function EngineWorkspace() {
                             </div>
                             <div data-testid="backend-team-collaboration-diagnostics-route" className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#9b875c] break-words">
                               Collaboration diagnostics route: {backendTeamCollaborationDiagnostics.backendRoutes?.teamCollaborationDiagnostics || backendManagerReadyPackage.backendRoutes?.teamCollaborationDiagnostics || `/projects/${activeProject.id}/team-collaboration-diagnostics`}
+                            </div>
+                          </div>
+                        )}
+                        {backendCollaborationIntentQueue && (
+                          <div data-testid="backend-collaboration-intent-queue-snapshot" className="mt-3 border border-[#7b6542] bg-[#f7edcf] p-2">
+                            <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                              <div className="min-w-0">
+                                <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">{projectText('Collaboration Intent Queue')}</div>
+                                <div className="font-serif text-base leading-tight">{projectText(backendCollaborationIntentQueue.status || 'backend-model-missing')}</div>
+                              </div>
+                              <div className="flex flex-wrap gap-1 md:justify-end">
+                                <span data-testid="backend-collaboration-intent-queue-source" className={`node-status-tag ${managerReadModelSourceClass(backendCollaborationIntentQueue)}`}>
+                                  {managerReadModelSourceLabel(backendCollaborationIntentQueue)}
+                                </span>
+                                <span className={`node-status-tag ${backendCollaborationIntentQueue.readyForLocalPilotIntentQueue ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
+                                  {backendCollaborationIntentQueue.readyForLocalPilotIntentQueue ? projectText('intent routing ready') : projectText('backend required')}
+                                </span>
+                              </div>
+                            </div>
+                            <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2">
+                              {[
+                                [projectText('Rows'), backendCollaborationIntentQueue.summary?.rowCount ?? backendCollaborationIntentQueue.rows?.length ?? 0],
+                                [projectText('Runnable'), backendCollaborationIntentQueue.summary?.runnableCount ?? 0],
+                                [projectText('Meetings'), backendCollaborationIntentQueue.summary?.meetingIntentCount ?? 0],
+                                [projectText('Group Chat'), backendCollaborationIntentQueue.summary?.chatIntentCount ?? 0],
+                                [projectText('Mission Handoff'), backendCollaborationIntentQueue.summary?.customerAgentHandoffIntentCount ?? 0],
+                                [projectText('Intent Runs'), backendCollaborationIntentQueue.summary?.collaborationIntentRunCount ?? backendCollaborationIntentQueue.recentRuns?.length ?? 0],
+                                [projectText('Agent Intent'), backendCollaborationIntentQueue.summary?.agentInitiativeIntentCount ?? 0],
+                                [projectText('Review Intent'), backendCollaborationIntentQueue.summary?.reviewIntentCount ?? 0],
+                                [projectText('Proof IDs'), backendCollaborationIntentQueue.summary?.proofIdCount ?? backendCollaborationIntentQueue.proofIds?.length ?? 0],
+                                [projectText('Events'), backendCollaborationIntentQueue.summary?.eventIdCount ?? backendCollaborationIntentQueue.eventIds?.length ?? 0],
+                              ].map(([label, value]) => (
+                                <div key={`collaboration-intent-queue-${label}`} className="border border-[#d8c99f] bg-[#efe2bd]/70 px-2 py-1">
+                                  <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">{label}</div>
+                                  <div className="font-serif text-sm leading-tight break-words">{value}</div>
+                                </div>
+                              ))}
+                            </div>
+                            {backendCollaborationIntentQueue.nextRunnableIntent && (
+                              <div data-testid="backend-collaboration-intent-queue-next" className="mt-2 border border-[#d8c99f] bg-[#efe2bd]/70 px-2 py-2">
+                                <div className="grid grid-cols-[1fr_auto] gap-2">
+                                  <div className="min-w-0">
+                                    <div className="font-serif text-sm leading-tight truncate">{projectText(backendCollaborationIntentQueue.nextRunnableIntent.intent || backendCollaborationIntentQueue.nextRunnableIntent.id || 'Next intent')}</div>
+                                    <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] truncate">
+                                      {projectText(backendCollaborationIntentQueue.nextRunnableIntent.actorName || backendCollaborationIntentQueue.nextRunnableIntent.agentName || backendCollaborationIntentQueue.nextRunnableIntent.actorType || 'agent')} / {projectText(backendCollaborationIntentQueue.nextRunnableIntent.lane || 'intent')} / {projectText(backendCollaborationIntentQueue.nextRunnableIntent.runApiPath || backendCollaborationIntentQueue.nextRunnableIntent.apiPath || 'route pending')}
+                                    </div>
+                                  </div>
+                                  <span className="node-status-tag bg-[#59684b] text-white">{projectText('next')}</span>
+                                </div>
+                              </div>
+                            )}
+                            <div data-testid="backend-collaboration-intent-queue-rows" className="mt-2 space-y-1">
+                              {(backendCollaborationIntentQueue.rows || []).slice(0, 8).map(row => {
+                                const rowChatProofIds = chatProofIdsFromRow(row);
+                                const rowTimelineProofIds = Array.from(new Set([
+                                  row.timelineLogId,
+                                  ...(row.timelineLogIds || []),
+                                ].filter(Boolean)));
+                                return (
+                                  <div key={`collaboration-intent-queue-row-${row.id}`} className="border border-[#d8c99f] bg-[#efe2bd]/60 px-2 py-1">
+                                    <div className="grid grid-cols-[1fr_auto] gap-2">
+                                      <div className="min-w-0">
+                                        <div className="font-serif text-sm leading-tight truncate">
+                                          {row.queuePosition ? `#${row.queuePosition} ` : ''}{projectText(row.intent || row.id)}
+                                        </div>
+                                        <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] truncate">
+                                          {projectText(row.actorName || row.agentName || row.actorType || 'agent')} / {projectText(row.lane || row.stage || 'intent')} / {projectText(row.status || 'pending')}
+                                        </div>
+                                        <div className="font-mono text-[7px] uppercase tracking-widest text-[#9b875c] truncate">
+                                          {projectText(row.rationale || row.runApiPath || row.apiPath || 'proof-backed intent')}
+                                        </div>
+                                        {(row.latestRunId || row.latestDelegatedReceiptId) && (
+                                          <div className="font-mono text-[7px] uppercase tracking-widest text-[#59684b] truncate">
+                                            {projectText('Last run')}: {projectText(row.latestRunId || row.latestDelegatedReceiptId)} / {projectText(row.latestDelegatedRunKind || row.latestRunStatus || 'executed')}
+                                          </div>
+                                        )}
+                                      </div>
+                                      <span className={`node-status-tag ${row.canRun ? 'bg-[#59684b] text-white' : row.requiresManager ? 'bg-[#251b13] text-[#efe2bd]' : 'bg-[#8f1e18] text-white'}`}>
+                                        {projectText(row.canRun ? 'runnable' : row.requiresManager ? 'manager' : row.status || 'wait')}
+                                      </span>
+                                    </div>
+                                    <div className="mt-2 flex flex-wrap gap-2">
+                                      <button
+                                        type="button"
+                                        data-testid={`collaboration-intent-chat-proof-${row.id}`}
+                                        onClick={() => openProjectChatProof(activeProject, rowChatProofIds, row.channelId || 'main')}
+                                        disabled={!rowChatProofIds.length}
+                                        className="inline-flex items-center justify-center gap-1 border border-[#7b6542] bg-[#efe2bd] px-2 py-1 font-mono text-[7px] uppercase tracking-widest text-[#251b13] hover:border-[#251b13] disabled:opacity-40 disabled:cursor-not-allowed"
+                                      >
+                                        <MessageSquare size={10} /> Intent chat proof
+                                      </button>
+                                      <button
+                                        type="button"
+                                        data-testid={`collaboration-intent-timeline-proof-${row.id}`}
+                                        onClick={() => openProjectTimelineProof(rowTimelineProofIds)}
+                                        disabled={!rowTimelineProofIds.length}
+                                        className="inline-flex items-center justify-center gap-1 border border-[#7b6542] bg-[#efe2bd] px-2 py-1 font-mono text-[7px] uppercase tracking-widest text-[#251b13] hover:border-[#251b13] disabled:opacity-40 disabled:cursor-not-allowed"
+                                      >
+                                        <ScrollText size={10} /> Intent timeline proof
+                                      </button>
+                                      <button
+                                        type="button"
+                                        data-testid={`collaboration-intent-run-${row.id}`}
+                                        onClick={() => runCollaborationIntentQueueRow(row)}
+                                        disabled={!backendCommandAvailable || backendStation.loading || !row.canRun || !row.runIntentApiPath}
+                                        className="inline-flex items-center justify-center gap-1 border border-[#7b6542] bg-[#251b13] px-2 py-1 font-mono text-[7px] uppercase tracking-widest text-[#efe2bd] hover:bg-[#8f1e18] disabled:opacity-40 disabled:cursor-not-allowed"
+                                      >
+                                        <Play size={10} /> Run intent
+                                      </button>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                            {backendStation.collaborationIntentRun && (
+                              <div data-testid="backend-collaboration-intent-run-receipt" className="mt-2 border border-[#d8c99f] bg-[#efe2bd]/70 px-2 py-1 font-mono text-[8px] uppercase tracking-widest text-[#59684b] break-words">
+                                Intent run receipt: {backendStation.collaborationIntentRun.intentId || backendStation.collaborationIntentRun.id} / {backendStation.collaborationIntentRun.delegatedRunKind || 'delegated'} / {backendStation.collaborationIntentRun.delegatedReceiptId || 'receipt pending'}
+                              </div>
+                            )}
+                            {backendStation.collaborationIntentRunOutput && (
+                              <div data-testid="backend-collaboration-intent-run-output" className="mt-2 border border-[#d8c99f] bg-[#efe2bd]/70 px-2 py-2">
+                                <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">{projectText('Intent Output Nodes')}</div>
+                                <div className="mt-1 font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] break-words">
+                                  {projectText(backendStation.collaborationIntentRunOutput.delegatedRunKind || 'delegated')} / {projectText(backendStation.collaborationIntentRunOutput.delegatedReceiptId || backendStation.collaborationIntentRunOutput.runId || 'receipt pending')}
+                                </div>
+                                {renderAutonomousActionDecision(backendStation.collaborationIntentRunOutput.autonomousActionDecision, {
+                                  testId: 'backend-collaboration-intent-action-decision',
+                                })}
+                                {(() => {
+                                  const output = backendStation.collaborationIntentRunOutput || {};
+                                  const outputRows = [
+                                    output.workSubmission ? {
+                                      id: 'work-submission',
+                                      label: 'Agent Submission',
+                                      title: output.workSubmission.title || output.workSubmission.artifactType || output.workSubmission.id,
+                                      detail: `${output.workSubmission.artifactType || 'artifact'} / ${output.workSubmission.status || output.workSubmission.reviewStatus || 'submitted'}`,
+                                      entityId: output.workSubmission.id,
+                                      proofIds: [output.workSubmission.messageId, output.workSubmission.timelineLogId, output.workSubmission.eventId, output.workSubmission.artifactStorageProofChecksum],
+                                      chatProofIds: [output.workSubmission.messageId],
+                                      timelineProofIds: [output.workSubmission.timelineLogId],
+                                    } : null,
+                                    output.evidenceSearch ? {
+                                      id: 'evidence-search',
+                                      label: 'Evidence Search',
+                                      title: output.evidenceSearch.query || output.evidenceSearch.purpose || output.evidenceSearch.id,
+                                      detail: `${output.evidenceSearch.evidenceJudgement || output.evidenceSearch.confidence || 'evidence'} / score ${output.evidenceSearch.qualityScore ?? output.evidenceSearch.averageQualityScore ?? 'n/a'}`,
+                                      entityId: output.evidenceSearch.id,
+                                      proofIds: [output.evidenceSearch.id, output.evidenceSearch.logId, output.evidenceSearch.eventId, output.evidenceSearch.providerReceiptId],
+                                      chatProofIds: [output.evidenceSearch.messageId],
+                                      timelineProofIds: [output.evidenceSearch.logId, output.evidenceSearch.timelineLogId],
+                                    } : null,
+                                    output.review ? {
+                                      id: 'submission-review',
+                                      label: 'Submission Review',
+                                      title: output.review.verdict || output.review.status || output.review.id,
+                                      detail: `${output.review.submissionId || 'submission'} / ${output.review.reviewerAgentName || output.review.reviewerAgentId || 'reviewer'}`,
+                                      entityId: output.review.id,
+                                      proofIds: [output.review.id, output.review.messageId, output.review.timelineLogId, output.review.eventId],
+                                      chatProofIds: [output.review.messageId],
+                                      timelineProofIds: [output.review.timelineLogId],
+                                    } : null,
+                                    output.reviewResponseSubmission ? {
+                                      id: 'review-response-submission',
+                                      label: 'Review Response',
+                                      title: output.reviewResponseSubmission.title || output.reviewResponseSubmission.artifactType || output.reviewResponseSubmission.id,
+                                      detail: `${output.reviewResponseSubmission.artifactType || 'artifact'} / review ${output.reviewResponseSubmission.respondsToReviewId || 'linked'}`,
+                                      entityId: output.reviewResponseSubmission.id,
+                                      proofIds: [output.reviewResponseSubmission.messageId, output.reviewResponseSubmission.timelineLogId, output.reviewResponseSubmission.eventId, output.reviewResponseSubmission.respondsToReviewId],
+                                      chatProofIds: [output.reviewResponseSubmission.messageId],
+                                      timelineProofIds: [output.reviewResponseSubmission.timelineLogId],
+                                    } : null,
+                                    output.resultMessageIds?.length ? {
+                                      id: 'result-messages',
+                                      label: 'Result Messages',
+                                      title: `${output.resultMessageIds.length} message(s)`,
+                                      detail: output.resultMessageIds.slice(0, 3).join(' / '),
+                                      entityId: output.runId,
+                                      proofIds: output.resultMessageIds,
+                                      chatProofIds: output.resultMessageIds,
+                                      timelineProofIds: [],
+                                    } : null,
+                                  ].filter(Boolean);
+                                  if (!outputRows.length) {
+                                    return (
+                                      <div data-testid="backend-collaboration-intent-run-output-empty" className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">
+                                        {projectText('No delegated output returned yet')}
+                                      </div>
+                                    );
+                                  }
+                                  return (
+                                    <div data-testid="backend-collaboration-intent-run-output-rows" className="mt-2 space-y-1">
+                                      {outputRows.map(row => {
+                                        const proofIds = Array.from(new Set((row.proofIds || []).filter(Boolean)));
+                                        const chatProofIds = Array.from(new Set((row.chatProofIds || []).filter(Boolean)));
+                                        const timelineProofIds = Array.from(new Set((row.timelineProofIds || []).filter(Boolean)));
+                                        return (
+                                          <div key={`collaboration-intent-run-output-${row.id}`} data-testid={`backend-collaboration-intent-output-${row.id}`} className="border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                            <div className="grid grid-cols-[1fr_auto] gap-2">
+                                              <div className="min-w-0">
+                                                <div className="font-serif text-sm leading-tight truncate">{projectText(row.label)}: {projectText(row.title || row.entityId || 'output')}</div>
+                                                <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] truncate">{projectText(row.detail || row.entityId || 'backend output')}</div>
+                                              </div>
+                                              <span className="node-status-tag bg-[#59684b] text-white">{proofIds.length}</span>
+                                            </div>
+                                            <div className="mt-1 flex flex-wrap gap-2">
+                                              <button
+                                                type="button"
+                                                data-testid={`collaboration-intent-output-chat-proof-${row.id}`}
+                                                onClick={() => openProjectChatProof(activeProject, chatProofIds, 'main')}
+                                                disabled={!chatProofIds.length}
+                                                className="inline-flex items-center justify-center gap-1 border border-[#7b6542] bg-[#efe2bd] px-2 py-1 font-mono text-[7px] uppercase tracking-widest text-[#251b13] hover:border-[#251b13] disabled:opacity-40 disabled:cursor-not-allowed"
+                                              >
+                                                <MessageSquare size={10} /> Output chat proof
+                                              </button>
+                                              <button
+                                                type="button"
+                                                data-testid={`collaboration-intent-output-timeline-proof-${row.id}`}
+                                                onClick={() => openProjectTimelineProof(timelineProofIds)}
+                                                disabled={!timelineProofIds.length}
+                                                className="inline-flex items-center justify-center gap-1 border border-[#7b6542] bg-[#efe2bd] px-2 py-1 font-mono text-[7px] uppercase tracking-widest text-[#251b13] hover:border-[#251b13] disabled:opacity-40 disabled:cursor-not-allowed"
+                                              >
+                                                <ScrollText size={10} /> Output timeline proof
+                                              </button>
+                                            </div>
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                  );
+                                })()}
+                              </div>
+                            )}
+                            <div data-testid="backend-collaboration-intent-queue-route" className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#9b875c] break-words">
+                              Collaboration intent route: {backendCollaborationIntentQueue.backendRoutes?.collaborationIntentQueue || backendManagerReadyPackage.backendRoutes?.collaborationIntentQueue || `/projects/${activeProject.id}/collaboration-intent-queue`}
                             </div>
                           </div>
                         )}
@@ -14973,6 +19099,106 @@ export default function EngineWorkspace() {
                             </div>
                           </div>
                         )}
+                        {backendRuntimeAutonomyStatus && (
+                          <div data-testid="backend-runtime-autonomy-status-snapshot" className="mt-3 border border-[#7b6542] bg-[#f7edcf] p-2">
+                            <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                              <div className="min-w-0">
+                                <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">{projectText('Runtime Autonomy Status')}</div>
+                                <div className="font-serif text-base leading-tight">{projectText(backendRuntimeAutonomyStatus.status || 'backend-model-missing')}</div>
+                                <div className="mt-1 font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] leading-relaxed break-words">
+                                  {projectText('C-side')} {backendRuntimeAutonomyStatus.cSide?.missionRunId || 'mission pending'} / {projectText('A-side')} {backendRuntimeAutonomyStatus.aSide?.sessionCount ?? 0} {projectText('session(s)')} / {projectText('B-side proof')} {backendRuntimeAutonomyStatus.bSide?.proofIdCount ?? backendRuntimeAutonomyStatus.summary?.proofIdCount ?? 0}
+                                </div>
+                              </div>
+                              <div className="flex flex-wrap gap-1 md:justify-end">
+                                <span data-testid="backend-runtime-autonomy-status-source" className={`node-status-tag ${managerReadModelSourceClass(backendRuntimeAutonomyStatus)}`}>
+                                  {managerReadModelSourceLabel(backendRuntimeAutonomyStatus)}
+                                </span>
+                                <span className={`node-status-tag ${backendRuntimeAutonomyStatus.readyForLocalAutonomy ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
+                                  {backendRuntimeAutonomyStatus.readyForLocalAutonomy ? projectText('local autonomy ready') : projectText('backend required')}
+                                </span>
+                                <span className={`node-status-tag ${backendRuntimeAutonomyStatus.readyForUnattendedProduction ? 'bg-[#59684b] text-white' : 'bg-[#251b13] text-[#efe2bd]'}`}>
+                                  {backendRuntimeAutonomyStatus.readyForUnattendedProduction ? projectText('production ready') : projectText('production blocked')}
+                                </span>
+                              </div>
+                            </div>
+                            <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2">
+                              {[
+                                [projectText('Local Gates'), `${backendRuntimeAutonomyStatus.summary?.readyLocalGateCount ?? 0}/${backendRuntimeAutonomyStatus.summary?.localGateCount ?? (backendRuntimeAutonomyStatus.gates || []).filter(row => !row.productionBlocker).length}`],
+                                [projectText('Failed Gates'), backendRuntimeAutonomyStatus.summary?.failedLocalGateCount ?? backendRuntimeAutonomyStatus.failedLocalGates?.length ?? 0],
+                                [projectText('Mission Runner'), backendRuntimeAutonomyStatus.cSide?.missionRunId || (backendRuntimeAutonomyStatus.summary?.missionRunCount ? 'started' : 'pending')],
+                                [projectText('Mission Runs'), backendRuntimeAutonomyStatus.summary?.missionRunCount ?? 0],
+                                [projectText('Sessions'), `${backendRuntimeAutonomyStatus.summary?.activeSessionCount ?? backendRuntimeAutonomyStatus.aSide?.activeSessionCount ?? 0}/${backendRuntimeAutonomyStatus.summary?.sessionCount ?? backendRuntimeAutonomyStatus.aSide?.sessionCount ?? 0}`],
+                                [projectText('Ticks'), backendRuntimeAutonomyStatus.summary?.sessionTickCount ?? backendRuntimeAutonomyStatus.aSide?.sessionTickCount ?? 0],
+                                [projectText('Action Runs'), backendRuntimeAutonomyStatus.summary?.actionRunCount ?? backendRuntimeAutonomyStatus.aSide?.actionRunCount ?? 0],
+                                [projectText('Queued Workers'), backendRuntimeAutonomyStatus.summary?.queuedWorkerCount ?? backendRuntimeAutonomyStatus.workerQueue?.queuedWorkerCount ?? 0],
+                                [projectText('Dead Letters'), backendRuntimeAutonomyStatus.summary?.deadLetterCount ?? backendRuntimeAutonomyStatus.workerQueue?.deadLetterCount ?? 0],
+                                [projectText('Recoverable Queue'), backendRuntimeAutonomyStatus.summary?.recoverableAutopilotQueueCount ?? backendRuntimeAutonomyStatus.aSide?.recoverableAutopilotQueueCount ?? 0],
+                                [projectText('Adapter'), backendRuntimeAutonomyStatus.adapter?.dryRunStatus || backendRuntimeAutonomyStatus.adapter?.planStatus || 'unknown'],
+                                [projectText('Persistence'), backendRuntimeAutonomyStatus.persistence?.status || 'unknown'],
+                                [projectText('Proof IDs'), backendRuntimeAutonomyStatus.summary?.proofIdCount ?? backendRuntimeAutonomyStatus.proofIds?.length ?? 0],
+                              ].map(([label, value]) => (
+                                <div key={`runtime-autonomy-status-${label}`} className="border border-[#d8c99f] bg-[#efe2bd]/70 px-2 py-1">
+                                  <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">{label}</div>
+                                  <div className="font-serif text-sm leading-tight break-words">{value}</div>
+                                </div>
+                              ))}
+                            </div>
+                            <div data-testid="backend-runtime-autonomy-status-gates" className="mt-2 space-y-1">
+                              {(backendRuntimeAutonomyStatus.gates || []).slice(0, 8).map(row => (
+                                <div key={`runtime-autonomy-status-gate-${row.id}`} className="grid grid-cols-[1fr_auto] gap-2 border border-[#d8c99f] bg-[#efe2bd]/60 px-2 py-1">
+                                  <div className="min-w-0">
+                                    <div className="font-serif text-sm leading-tight truncate">{projectText(row.label || row.id)}</div>
+                                    <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] truncate">{projectText(row.detail || row.apiPath || 'runtime autonomy gate')}</div>
+                                  </div>
+                                  <span className={`node-status-tag ${row.ready ? 'bg-[#59684b] text-white' : row.productionBlocker ? 'bg-[#251b13] text-[#efe2bd]' : 'bg-[#8f1e18] text-white'}`}>
+                                    {projectText(row.ready ? 'ready' : row.productionBlocker ? 'prod blocked' : 'missing')}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                            <div data-testid="backend-runtime-autonomy-status-route" className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#9b875c] leading-relaxed break-words">
+                              Runtime autonomy route: {backendRuntimeAutonomyStatus.backendRoutes?.runtimeAutonomyStatus || backendManagerReadyPackage.backendRoutes?.runtimeAutonomyStatus || `/projects/${activeProject.id}/runtime-autonomy-status`}
+                              {' '} / Worker queue: {backendRuntimeAutonomyStatus.backendRoutes?.workerQueue || backendManagerReadyPackage.backendRoutes?.workerQueue || `/projects/${activeProject.id}/worker-queue`}
+                              {' '} / Scheduler: {backendRuntimeAutonomyStatus.backendRoutes?.schedulerStatus || '/workers/autonomous/status'}
+                              {' '} / Autopilot due: {backendRuntimeAutonomyStatus.backendRoutes?.autopilotDueWorker || '/workers/autopilot/due'}
+                            </div>
+                            <div data-testid="backend-runtime-autonomy-status-production-boundary" className="mt-2 border border-[#251b13] bg-[#0d0c0b] px-2 py-1 font-mono text-[7px] uppercase tracking-widest text-[#efe2bd] leading-relaxed">
+                              {projectText('Private/local autonomy can be proven here; unattended public production stays blocked until managed queue, managed database, BYOK/provider policy, observability, cost controls, incident recovery, and immutable audit are proven.')}
+                            </div>
+                            <div className="mt-2 flex flex-wrap gap-2">
+                              <button
+                                type="button"
+                                data-testid="backend-runtime-autonomy-status-chat-proof"
+                                onClick={() => openProjectChatProof(activeProject, backendRuntimeAutonomyStatusChatProofIds, 'main')}
+                                disabled={!backendRuntimeAutonomyStatusChatProofIds.length}
+                                className="inline-flex items-center justify-center gap-1 border border-[#7b6542] bg-[#efe2bd] px-2 py-1 font-mono text-[7px] uppercase tracking-widest text-[#251b13] hover:border-[#251b13] disabled:opacity-40 disabled:cursor-not-allowed"
+                              >
+                                <MessageSquare size={10} /> Runtime chat proof
+                              </button>
+                              <button
+                                type="button"
+                                data-testid="backend-runtime-autonomy-status-timeline-proof"
+                                onClick={() => openProjectTimelineProof(backendRuntimeAutonomyStatusTimelineIds)}
+                                disabled={!backendRuntimeAutonomyStatusTimelineIds.length}
+                                className="inline-flex items-center justify-center gap-1 border border-[#7b6542] bg-[#efe2bd] px-2 py-1 font-mono text-[7px] uppercase tracking-widest text-[#251b13] hover:border-[#251b13] disabled:opacity-40 disabled:cursor-not-allowed"
+                              >
+                                <ScrollText size={10} /> Runtime timeline proof
+                              </button>
+                              <button
+                                type="button"
+                                data-testid="backend-runtime-autonomy-status-flow-node"
+                                onClick={() => openManagerFlowNode(backendRuntimeAutonomyStatusFlowNodeId, {
+                                  chatProofIds: backendRuntimeAutonomyStatusChatProofIds,
+                                  timelineLogIds: backendRuntimeAutonomyStatusTimelineIds,
+                                })}
+                                disabled={!backendRuntimeAutonomyStatusFlowNodeId}
+                                className="inline-flex items-center justify-center gap-1 border border-[#7b6542] bg-[#251b13] px-2 py-1 font-mono text-[7px] uppercase tracking-widest text-[#efe2bd] hover:bg-[#8f1e18] disabled:opacity-40 disabled:cursor-not-allowed"
+                              >
+                                <Network size={10} /> Runtime Flow node
+                              </button>
+                            </div>
+                          </div>
+                        )}
                         {backendProductTeamDeliveryTrace && (
                           <div data-testid="backend-product-team-delivery-trace-snapshot" className="mt-3 border border-[#d8c99f] bg-[#efe2bd]/55 p-2">
                             <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
@@ -15033,9 +19259,14 @@ export default function EngineWorkspace() {
                                 <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">{projectText('Project Evidence Archive')}</div>
                                 <div className="font-serif text-base leading-tight">{projectText(backendProjectEvidenceArchive.status || 'unknown')}</div>
                               </div>
-                              <span className={`node-status-tag ${backendProjectEvidenceArchive.readyForManagerHandoff ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
-                                {backendProjectEvidenceArchive.readyForManagerHandoff ? projectText('ready') : projectText('blocked')}
-                              </span>
+                              <div className="flex flex-wrap gap-1 md:justify-end">
+                                <span data-testid="backend-project-evidence-archive-source" className={`node-status-tag ${managerReadModelSourceClass(backendProjectEvidenceArchive)}`}>
+                                  {managerReadModelSourceLabel(backendProjectEvidenceArchive)}
+                                </span>
+                                <span className={`node-status-tag ${backendProjectEvidenceArchive.readyForManagerHandoff ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
+                                  {backendProjectEvidenceArchive.readyForManagerHandoff ? projectText('ready') : projectText('blocked')}
+                                </span>
+                              </div>
                             </div>
                             <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2">
                               {[
@@ -15144,6 +19375,19 @@ export default function EngineWorkspace() {
                                   <div className="font-serif text-sm leading-tight break-words">{value}</div>
                                 </div>
                               ))}
+                            </div>
+                            <div data-testid="backend-artifact-quality-audit-types" className="mt-2 grid grid-cols-1 md:grid-cols-3 gap-1">
+                              {(backendArtifactQualityAudit.requiredArtifactTypes || []).map(type => {
+                                const missing = (backendArtifactQualityAudit.missingRequiredArtifactTypes || []).includes(type);
+                                return (
+                                  <div key={`artifact-quality-type-${type}`} className="grid grid-cols-[1fr_auto] gap-2 border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                    <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] truncate">{type}</div>
+                                    <span className={`node-status-tag ${missing ? 'bg-[#8f1e18] text-white' : 'bg-[#59684b] text-white'}`}>
+                                      {missing ? projectText('missing') : projectText('present')}
+                                    </span>
+                                  </div>
+                                );
+                              })}
                             </div>
                             <div className="mt-2 space-y-1">
                               {(backendArtifactQualityAudit.failedLocalDecisionGates?.length ? backendArtifactQualityAudit.failedLocalDecisionGates : backendArtifactQualityAudit.requiredProductionControls || []).slice(0, 3).map(row => (
@@ -15329,9 +19573,12 @@ export default function EngineWorkspace() {
                                 <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">{projectText('Project Evidence Export Workflow')}</div>
                                 <div className="font-serif text-base leading-tight">{projectText(backendProjectEvidenceExportWorkflow.status || 'export-request-needed')}</div>
                               </div>
-                              <span className={`node-status-tag ${backendProjectEvidenceExportWorkflow.readyForPrivatePilotHandoff ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
-                                {backendProjectEvidenceExportWorkflow.readyForPrivatePilotHandoff ? projectText('handoff ready') : projectText('approval needed')}
-                              </span>
+                              <div className="flex flex-wrap gap-1 md:justify-end">
+                                {managerReadModelSourceBadge(backendProjectEvidenceExportWorkflow, 'backend-project-evidence-export-workflow-source')}
+                                <span className={`node-status-tag ${backendProjectEvidenceExportWorkflow.readyForPrivatePilotHandoff ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
+                                  {backendProjectEvidenceExportWorkflow.readyForPrivatePilotHandoff ? projectText('handoff ready') : projectText('approval needed')}
+                                </span>
+                              </div>
                             </div>
                             <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2">
                               {[
@@ -15459,9 +19706,12 @@ export default function EngineWorkspace() {
                                 <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">{projectText('Private Pilot Go-Live Readiness')}</div>
                                 <div className="font-serif text-base leading-tight">{projectText(backendPrivatePilotGoLiveReadiness.status || 'go-live-needed')}</div>
                               </div>
-                              <span className={`node-status-tag ${backendPrivatePilotGoLiveReadiness.readyForPrivatePilotGoLive ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
-                                {backendPrivatePilotGoLiveReadiness.readyForPrivatePilotAcceptance ? projectText('accepted') : backendPrivatePilotGoLiveReadiness.readyForPrivatePilotGoLive ? projectText('go-live ready') : projectText('blocked')}
-                              </span>
+                              <div className="flex flex-wrap gap-1 md:justify-end">
+                                {managerReadModelSourceBadge(backendPrivatePilotGoLiveReadiness, 'backend-private-pilot-go-live-readiness-source')}
+                                <span className={`node-status-tag ${backendPrivatePilotGoLiveReadiness.readyForPrivatePilotGoLive ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
+                                  {backendPrivatePilotGoLiveReadiness.readyForPrivatePilotAcceptance ? projectText('accepted') : backendPrivatePilotGoLiveReadiness.readyForPrivatePilotGoLive ? projectText('go-live ready') : projectText('blocked')}
+                                </span>
+                              </div>
                             </div>
                             <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2">
                               {[
@@ -15510,9 +19760,14 @@ export default function EngineWorkspace() {
                                 <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">{projectText('Production Infrastructure Rehearsal')}</div>
                                 <div className="font-serif text-base leading-tight">{projectText(backendProductionInfrastructureRehearsal.status || 'infrastructure-rehearsal-needs-work')}</div>
                               </div>
-                              <span className={`node-status-tag ${backendProductionInfrastructureRehearsal.readyForInfrastructureRehearsal ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
-                                {backendProductionInfrastructureRehearsal.readyForInfrastructureRehearsal ? projectText('rehearsal ready') : projectText('rehearsal blocked')}
-                              </span>
+                              <div className="flex flex-wrap gap-1 md:justify-end">
+                                <span data-testid="backend-production-infrastructure-rehearsal-source" className={`node-status-tag ${managerReadModelSourceClass(backendProductionInfrastructureRehearsal)}`}>
+                                  {managerReadModelSourceLabel(backendProductionInfrastructureRehearsal)}
+                                </span>
+                                <span className={`node-status-tag ${backendProductionInfrastructureRehearsal.readyForInfrastructureRehearsal ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
+                                  {backendProductionInfrastructureRehearsal.readyForInfrastructureRehearsal ? projectText('rehearsal ready') : projectText('rehearsal blocked')}
+                                </span>
+                              </div>
                             </div>
                             <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2">
                               {[
@@ -15520,6 +19775,9 @@ export default function EngineWorkspace() {
                                 [projectText('Rehearsal Ready'), `${backendProductionInfrastructureRehearsal.summary?.rehearsalReadyCount ?? 0}/${backendProductionInfrastructureRehearsal.summary?.domainCount ?? 0}`],
                                 [projectText('Production Ready'), `${backendProductionInfrastructureRehearsal.summary?.productionReadyCount ?? 0}/${backendProductionInfrastructureRehearsal.summary?.domainCount ?? 0}`],
                                 [projectText('Production Blocked'), backendProductionInfrastructureRehearsal.summary?.productionBlockedCount ?? 0],
+                                [projectText('Managed Cutover'), `${backendProductionInfrastructureRehearsal.managedCutoverSummary?.productionReadyGateCount ?? 0}/${backendProductionInfrastructureRehearsal.managedCutoverSummary?.gateCount ?? 0}`],
+                                [projectText('Cutover Receipts'), `${backendProductionInfrastructureRehearsal.managedCutoverSummary?.receiptReadyGateCount ?? 0}/${backendProductionInfrastructureRehearsal.managedCutoverSummary?.gateCount ?? 0}`],
+                                [projectText('Next Cutover'), backendProductionInfrastructureRehearsal.managedCutoverSummary?.nextGateId || 'none'],
                                 [projectText('Gateway'), backendProductionInfrastructureRehearsal.summary?.adapterGatewayReady ? projectText('ready') : projectText('blocked')],
                                 [projectText('Persistence'), backendProductionInfrastructureRehearsal.summary?.persistenceRehearsalReady ? projectText('ready') : projectText('blocked')],
                                 [projectText('Queue'), backendProductionInfrastructureRehearsal.summary?.queueRehearsalReady ? projectText('ready') : projectText('blocked')],
@@ -15528,6 +19786,20 @@ export default function EngineWorkspace() {
                                 <div key={`production-infrastructure-rehearsal-${label}`} className="border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
                                   <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">{label}</div>
                                   <div className="font-serif text-sm leading-tight break-words">{value}</div>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="mt-2 space-y-1">
+                              {(backendProductionInfrastructureRehearsal.managedCutoverGates || []).slice(0, 6).map(gate => (
+                                <div data-testid={`backend-production-infrastructure-cutover-gate-${gate.id}`} key={`production-infrastructure-cutover-gate-${gate.id}`} className="grid grid-cols-[1fr_auto] gap-2 border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                  <div className="min-w-0">
+                                    <div className="font-serif text-sm leading-tight truncate">{projectText(gate.label || gate.id)}</div>
+                                    <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] truncate">{gate.evidenceTier || 'production-blocked'} / {gate.receiptReady ? 'receipt-ready' : 'receipt-needed'}</div>
+                                    {gate.route && (
+                                      <div className="font-mono text-[7px] uppercase tracking-widest text-[#9b875c] truncate">Route: {gate.route}</div>
+                                    )}
+                                  </div>
+                                  <span className={`node-status-tag ${gate.productionReady ? 'bg-[#59684b] text-white' : 'bg-[#251b13] text-[#efe2bd]'}`}>{gate.productionReady ? projectText('ready') : projectText('blocked')}</span>
                                 </div>
                               ))}
                             </div>
@@ -15557,9 +19829,14 @@ export default function EngineWorkspace() {
                                 <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">{projectText('Production Launch Gap Register')}</div>
                                 <div className="font-serif text-base leading-tight">{projectText(backendProductionLaunchGapRegister.status || 'production-gaps-open')}</div>
                               </div>
-                              <span className="node-status-tag bg-[#8f1e18] text-white">
-                                {backendProductionLaunchGapRegister.readyForProduction ? projectText('production ready') : projectText('production blocked')}
-                              </span>
+                              <div className="flex flex-wrap gap-1 md:justify-end">
+                                <span data-testid="backend-production-launch-gap-register-source" className={`node-status-tag ${managerReadModelSourceClass(backendProductionLaunchGapRegister)}`}>
+                                  {managerReadModelSourceLabel(backendProductionLaunchGapRegister)}
+                                </span>
+                                <span className="node-status-tag bg-[#8f1e18] text-white">
+                                  {backendProductionLaunchGapRegister.readyForProduction ? projectText('production ready') : projectText('production blocked')}
+                                </span>
+                              </div>
                             </div>
                             <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2">
                               {[
@@ -15609,9 +19886,14 @@ export default function EngineWorkspace() {
                                 <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">{projectText('Production Launch Control Center')}</div>
                                 <div className="font-serif text-base leading-tight">{projectText(backendProductionLaunchControlCenter.status || 'production-launch-controls-blocked')}</div>
                               </div>
-                              <span className="node-status-tag bg-[#8f1e18] text-white">
-                                {backendProductionLaunchControlCenter.readyForProduction ? projectText('production ready') : projectText('no-go')}
-                              </span>
+                              <div className="flex flex-wrap gap-1 md:justify-end">
+                                <span data-testid="backend-production-launch-control-center-source" className={`node-status-tag ${managerReadModelSourceClass(backendProductionLaunchControlCenter)}`}>
+                                  {managerReadModelSourceLabel(backendProductionLaunchControlCenter)}
+                                </span>
+                                <span className="node-status-tag bg-[#8f1e18] text-white">
+                                  {backendProductionLaunchControlCenter.readyForProduction ? projectText('production ready') : projectText('no-go')}
+                                </span>
+                              </div>
                             </div>
                             <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2">
                               {[
@@ -15657,9 +19939,14 @@ export default function EngineWorkspace() {
                                 <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">{projectText('Production Launch Evidence Dossier')}</div>
                                 <div className="font-serif text-base leading-tight">{projectText(backendProductionLaunchEvidenceDossier.status || 'production-evidence-dossier-building')}</div>
                               </div>
-                              <span className={`node-status-tag ${backendProductionLaunchEvidenceDossier.readyForProduction ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
-                                {backendProductionLaunchEvidenceDossier.readyForProduction ? projectText('production ready') : projectText('production no-go')}
-                              </span>
+                              <div className="flex flex-wrap gap-1 md:justify-end">
+                                <span data-testid="backend-production-launch-evidence-dossier-source" className={`node-status-tag ${managerReadModelSourceClass(backendProductionLaunchEvidenceDossier)}`}>
+                                  {managerReadModelSourceLabel(backendProductionLaunchEvidenceDossier)}
+                                </span>
+                                <span className={`node-status-tag ${backendProductionLaunchEvidenceDossier.readyForProduction ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
+                                  {backendProductionLaunchEvidenceDossier.readyForProduction ? projectText('production ready') : projectText('production no-go')}
+                                </span>
+                              </div>
                             </div>
                             <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2">
                               {[
@@ -15754,9 +20041,12 @@ export default function EngineWorkspace() {
                                 <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">{projectText('Private Pilot Release Candidate')}</div>
                                 <div className="font-serif text-base leading-tight">{projectText(backendPrivatePilotReleaseCandidateWorkflow.status || 'record-needed')}</div>
                               </div>
-                              <span className={`node-status-tag ${backendPrivatePilotReleaseCandidateWorkflow.readyForPrivatePilotRelease ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
-                                {backendPrivatePilotReleaseCandidateWorkflow.readyForPrivatePilotRelease ? projectText('candidate ready') : backendPrivatePilotReleaseCandidateWorkflow.readyToRecord ? projectText('record needed') : projectText('blocked')}
-                              </span>
+                              <div className="flex flex-wrap gap-1 md:justify-end">
+                                {managerReadModelSourceBadge(backendPrivatePilotReleaseCandidateWorkflow, 'backend-private-pilot-release-candidate-workflow-source')}
+                                <span className={`node-status-tag ${backendPrivatePilotReleaseCandidateWorkflow.readyForPrivatePilotRelease ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
+                                  {backendPrivatePilotReleaseCandidateWorkflow.readyForPrivatePilotRelease ? projectText('candidate ready') : backendPrivatePilotReleaseCandidateWorkflow.readyToRecord ? projectText('record needed') : projectText('blocked')}
+                                </span>
+                              </div>
                             </div>
                             <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2">
                               {[
@@ -15820,9 +20110,12 @@ export default function EngineWorkspace() {
                                 <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">{projectText('Private Pilot Launch Run')}</div>
                                 <div className="font-serif text-base leading-tight">{projectText(backendPrivatePilotLaunchRunWorkflow.status || 'launch-needed')}</div>
                               </div>
-                              <span className={`node-status-tag ${backendPrivatePilotLaunchRunWorkflow.readyForPrivatePilotLaunch ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
-                                {backendPrivatePilotLaunchRunWorkflow.readyForPrivatePilotLaunch ? projectText('launch ready') : backendPrivatePilotLaunchRunWorkflow.readyToLaunch ? projectText('record needed') : projectText('blocked')}
-                              </span>
+                              <div className="flex flex-wrap gap-1 md:justify-end">
+                                {managerReadModelSourceBadge(backendPrivatePilotLaunchRunWorkflow, 'backend-private-pilot-launch-run-workflow-source')}
+                                <span className={`node-status-tag ${backendPrivatePilotLaunchRunWorkflow.readyForPrivatePilotLaunch ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
+                                  {backendPrivatePilotLaunchRunWorkflow.readyForPrivatePilotLaunch ? projectText('launch ready') : backendPrivatePilotLaunchRunWorkflow.readyToLaunch ? projectText('record needed') : projectText('blocked')}
+                                </span>
+                              </div>
                             </div>
                             <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2">
                               {[
@@ -15887,9 +20180,12 @@ export default function EngineWorkspace() {
                                 <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">{projectText('Private Pilot Launch Health')}</div>
                                 <div className="font-serif text-base leading-tight">{projectText(backendPrivatePilotLaunchHealthCheckWorkflow.status || 'check-needed')}</div>
                               </div>
-                              <span className={`node-status-tag ${backendPrivatePilotLaunchHealthCheckWorkflow.readyForPrivatePilotMonitoring ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
-                                {backendPrivatePilotLaunchHealthCheckWorkflow.readyForPrivatePilotMonitoring ? projectText('health ready') : backendPrivatePilotLaunchHealthCheckWorkflow.readyToCheck ? projectText('record needed') : projectText('blocked')}
-                              </span>
+                              <div className="flex flex-wrap gap-1 md:justify-end">
+                                {managerReadModelSourceBadge(backendPrivatePilotLaunchHealthCheckWorkflow, 'backend-private-pilot-launch-health-check-workflow-source')}
+                                <span className={`node-status-tag ${backendPrivatePilotLaunchHealthCheckWorkflow.readyForPrivatePilotMonitoring ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
+                                  {backendPrivatePilotLaunchHealthCheckWorkflow.readyForPrivatePilotMonitoring ? projectText('health ready') : backendPrivatePilotLaunchHealthCheckWorkflow.readyToCheck ? projectText('record needed') : projectText('blocked')}
+                                </span>
+                              </div>
                             </div>
                             <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2">
                               {[
@@ -15953,9 +20249,12 @@ export default function EngineWorkspace() {
                                 <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">{projectText('Private Pilot Acceptance Report')}</div>
                                 <div className="font-serif text-base leading-tight">{projectText(backendPrivatePilotAcceptanceReportWorkflow.status || 'report-needed')}</div>
                               </div>
-                              <span className={`node-status-tag ${backendPrivatePilotAcceptanceReportWorkflow.readyForPrivatePilotAcceptance ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
-                                {backendPrivatePilotAcceptanceReportWorkflow.readyForPrivatePilotAcceptance ? projectText('acceptance ready') : backendPrivatePilotAcceptanceReportWorkflow.readyToReport ? projectText('record needed') : projectText('blocked')}
-                              </span>
+                              <div className="flex flex-wrap gap-1 md:justify-end">
+                                {managerReadModelSourceBadge(backendPrivatePilotAcceptanceReportWorkflow, 'backend-private-pilot-acceptance-report-workflow-source')}
+                                <span className={`node-status-tag ${backendPrivatePilotAcceptanceReportWorkflow.readyForPrivatePilotAcceptance ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
+                                  {backendPrivatePilotAcceptanceReportWorkflow.readyForPrivatePilotAcceptance ? projectText('acceptance ready') : backendPrivatePilotAcceptanceReportWorkflow.readyToReport ? projectText('record needed') : projectText('blocked')}
+                                </span>
+                              </div>
                             </div>
                             <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2">
                               {[
@@ -16070,9 +20369,32 @@ export default function EngineWorkspace() {
                                 <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">{projectText('Production Operations Control Receipts')}</div>
                                 <div className="font-serif text-base leading-tight">{projectText(backendProductionOperationsControlReceiptWorkflow.status || 'receipts-needed')}</div>
                               </div>
-                              <span className={`node-status-tag ${backendProductionOperationsControlReceiptWorkflow.readyForProductionOperations ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
-                                {backendProductionOperationsControlReceiptWorkflow.readyForProductionOperations ? projectText('ops ready') : projectText('receipts needed')}
-                              </span>
+                              <div className="flex flex-wrap items-center gap-2 md:justify-end">
+                                <span className={`node-status-tag ${backendProductionOperationsControlReceiptWorkflow.readyForProductionOperations ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
+                                  {backendProductionOperationsControlReceiptWorkflow.readyForProductionOperations ? projectText('ops ready') : projectText('receipts needed')}
+                                </span>
+                                <button
+                                  type="button"
+                                  data-testid="backend-production-operations-record-controls"
+                                  onClick={() => runBackendProductionControlReceipt({
+                                    label: 'Production operations control rehearsal',
+                                    route: backendProductionOperationsControlReceiptWorkflow.backendRoutes?.productionOperationsControlReceipts || backendProductionOperationsReadiness?.backendRoutes?.productionOperationsControlReceipts || `/projects/${activeProject.id}/production-operations-control-receipts`,
+                                    workflow: backendProductionOperationsControlReceiptWorkflow,
+                                    workflowKey: 'productionOperationsControlReceiptWorkflow',
+                                    receiptKey: 'productionOperationsControlReceipt',
+                                    actorRole: 'security-admin',
+                                    actorId: 'security-lead',
+                                    reason: 'Record local rehearsal evidence for production operations controls from the Manager UI.',
+                                    prefix: 'manager_ui_prod_ops',
+                                    evidenceRouteBase: 'https://local-rehearsal.hofs.invalid/production-operations',
+                                    defaultOwnerRole: 'operations-owner',
+                                  })}
+                                  disabled={!backendCommandAvailable || backendStation.loading || backendProductionOperationsControlReceiptWorkflow.readyForProductionOperations || !backendProductionOperationsControlReceiptWorkflow.readyForPrivatePilotOperations}
+                                  className="inline-flex items-center justify-center gap-1 border border-[#7b6542] bg-[#efe2bd] px-3 py-1 font-mono text-[7px] uppercase tracking-widest text-[#251b13] hover:border-[#251b13] disabled:opacity-40 disabled:cursor-not-allowed"
+                                >
+                                  {projectText('Record Rehearsal')}
+                                </button>
+                              </div>
                             </div>
                             <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2">
                               {[
@@ -16114,9 +20436,32 @@ export default function EngineWorkspace() {
                                 <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">{projectText('Production Deployment Control Receipts')}</div>
                                 <div className="font-serif text-base leading-tight">{projectText(backendProductionDeploymentControlReceiptWorkflow.status || 'receipts-needed')}</div>
                               </div>
-                              <span className={`node-status-tag ${backendProductionDeploymentControlReceiptWorkflow.readyForProductionDeployment ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
-                                {backendProductionDeploymentControlReceiptWorkflow.readyForProductionDeployment ? projectText('deployment ready') : projectText('receipts needed')}
-                              </span>
+                              <div className="flex flex-wrap items-center gap-2 md:justify-end">
+                                <span className={`node-status-tag ${backendProductionDeploymentControlReceiptWorkflow.readyForProductionDeployment ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
+                                  {backendProductionDeploymentControlReceiptWorkflow.readyForProductionDeployment ? projectText('deployment ready') : projectText('receipts needed')}
+                                </span>
+                                <button
+                                  type="button"
+                                  data-testid="backend-production-deployment-record-controls"
+                                  onClick={() => runBackendProductionControlReceipt({
+                                    label: 'Production deployment control rehearsal',
+                                    route: backendProductionDeploymentControlReceiptWorkflow.backendRoutes?.productionDeploymentControlReceipts || `/projects/${activeProject.id}/production-deployment-control-receipts`,
+                                    workflow: backendProductionDeploymentControlReceiptWorkflow,
+                                    workflowKey: 'productionDeploymentControlReceiptWorkflow',
+                                    receiptKey: 'productionDeploymentControlReceipt',
+                                    actorRole: 'runtime-platform',
+                                    actorId: 'runtime-ops',
+                                    reason: 'Record local rehearsal evidence for production deployment controls from the Manager UI.',
+                                    prefix: 'manager_ui_prod_deploy',
+                                    evidenceRouteBase: 'https://local-rehearsal.hofs.invalid/production-deployment',
+                                    defaultOwnerRole: 'runtime-platform',
+                                  })}
+                                  disabled={!backendCommandAvailable || backendStation.loading || backendProductionDeploymentControlReceiptWorkflow.readyForProductionDeployment || !backendProductionDeploymentControlReceiptWorkflow.readyForPrivatePilotDeployment}
+                                  className="inline-flex items-center justify-center gap-1 border border-[#7b6542] bg-[#efe2bd] px-3 py-1 font-mono text-[7px] uppercase tracking-widest text-[#251b13] hover:border-[#251b13] disabled:opacity-40 disabled:cursor-not-allowed"
+                                >
+                                  {projectText('Record Rehearsal')}
+                                </button>
+                              </div>
                             </div>
                             <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2">
                               {[
@@ -16158,9 +20503,32 @@ export default function EngineWorkspace() {
                                 <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">{projectText('Production Security Control Receipts')}</div>
                                 <div className="font-serif text-base leading-tight">{projectText(backendProductionSecurityControlReceiptWorkflow.status || 'receipts-needed')}</div>
                               </div>
-                              <span className={`node-status-tag ${backendProductionSecurityControlReceiptWorkflow.readyForProductionSecurity ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
-                                {backendProductionSecurityControlReceiptWorkflow.readyForProductionSecurity ? projectText('security ready') : projectText('receipts needed')}
-                              </span>
+                              <div className="flex flex-wrap items-center gap-2 md:justify-end">
+                                <span className={`node-status-tag ${backendProductionSecurityControlReceiptWorkflow.readyForProductionSecurity ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
+                                  {backendProductionSecurityControlReceiptWorkflow.readyForProductionSecurity ? projectText('security ready') : projectText('receipts needed')}
+                                </span>
+                                <button
+                                  type="button"
+                                  data-testid="backend-production-security-record-controls"
+                                  onClick={() => runBackendProductionControlReceipt({
+                                    label: 'Production security control rehearsal',
+                                    route: backendProductionSecurityControlReceiptWorkflow.backendRoutes?.productionSecurityControlReceipts || `/projects/${activeProject.id}/production-security-control-receipts`,
+                                    workflow: backendProductionSecurityControlReceiptWorkflow,
+                                    workflowKey: 'productionSecurityControlReceiptWorkflow',
+                                    receiptKey: 'productionSecurityControlReceipt',
+                                    actorRole: 'security-admin',
+                                    actorId: 'security-lead',
+                                    reason: 'Record local rehearsal evidence for production security controls from the Manager UI.',
+                                    prefix: 'manager_ui_prod_security',
+                                    evidenceRouteBase: 'https://local-rehearsal.hofs.invalid/production-security',
+                                    defaultOwnerRole: 'security-admin',
+                                  })}
+                                  disabled={!backendCommandAvailable || backendStation.loading || backendProductionSecurityControlReceiptWorkflow.readyForProductionSecurity || !backendProductionSecurityControlReceiptWorkflow.readyForLocalSecurityBoundary}
+                                  className="inline-flex items-center justify-center gap-1 border border-[#7b6542] bg-[#efe2bd] px-3 py-1 font-mono text-[7px] uppercase tracking-widest text-[#251b13] hover:border-[#251b13] disabled:opacity-40 disabled:cursor-not-allowed"
+                                >
+                                  {projectText('Record Rehearsal')}
+                                </button>
+                              </div>
                             </div>
                             <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2">
                               {[
@@ -16202,9 +20570,38 @@ export default function EngineWorkspace() {
                                 <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">{projectText('Production Provider Control Receipts')}</div>
                                 <div className="font-serif text-base leading-tight">{projectText(backendProductionProviderControlReceiptWorkflow.status || 'receipts-needed')}</div>
                               </div>
-                              <span className={`node-status-tag ${backendProductionProviderControlReceiptWorkflow.readyForProductionProvider ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
-                                {backendProductionProviderControlReceiptWorkflow.readyForProductionProvider ? projectText('provider ready') : projectText('receipts needed')}
-                              </span>
+                              <div className="flex flex-wrap items-center gap-2 md:justify-end">
+                                <span className={`node-status-tag ${backendProductionProviderControlReceiptWorkflow.readyForProductionProvider ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
+                                  {backendProductionProviderControlReceiptWorkflow.readyForProductionProvider ? projectText('provider ready') : projectText('receipts needed')}
+                                </span>
+                                <button
+                                  type="button"
+                                  data-testid="backend-production-provider-record-controls"
+                                  onClick={() => runBackendProductionControlReceipt({
+                                    label: 'Production provider control rehearsal',
+                                    route: backendProductionProviderControlReceiptWorkflow.backendRoutes?.productionProviderControlReceipts || `/projects/${activeProject.id}/production-provider-control-receipts`,
+                                    workflow: backendProductionProviderControlReceiptWorkflow,
+                                    workflowKey: 'productionProviderControlReceiptWorkflow',
+                                    receiptKey: 'productionProviderControlReceipt',
+                                    actorRole: 'runtime-platform',
+                                    actorId: 'runtime-ops',
+                                    reason: 'Record local rehearsal evidence for production provider controls from the Manager UI.',
+                                    prefix: 'manager_ui_prod_provider',
+                                    evidenceRouteBase: 'https://local-rehearsal.hofs.invalid/production-provider',
+                                    defaultOwnerRole: 'runtime-platform',
+                                  })}
+                                  disabled={
+                                    !backendCommandAvailable
+                                    || backendStation.loading
+                                    || backendProductionProviderControlReceiptWorkflow.readyForProductionProvider
+                                    || !backendProductionProviderControlReceiptWorkflow.readyForLocalProviderContract
+                                    || !backendProviderEvalRunWorkflow?.readyForPrivatePilotProviderEval
+                                  }
+                                  className="inline-flex items-center justify-center gap-1 border border-[#7b6542] bg-[#efe2bd] px-3 py-1 font-mono text-[7px] uppercase tracking-widest text-[#251b13] hover:border-[#251b13] disabled:opacity-40 disabled:cursor-not-allowed"
+                                >
+                                  {projectText('Record Rehearsal')}
+                                </button>
+                              </div>
                             </div>
                             <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2">
                               {[
@@ -16298,9 +20695,12 @@ export default function EngineWorkspace() {
                                 <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">{projectText('Launch Approval Workflow')}</div>
                                 <div className="font-serif text-base leading-tight">{projectText(backendLaunchApprovalWorkflow.status || 'approval-needed')}</div>
                               </div>
-                              <span className={`node-status-tag ${backendLaunchApprovalWorkflow.readyForPrivatePilot ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
-                                {projectText('Pilot Approval')} {backendLaunchApprovalWorkflow.readyForPrivatePilot ? projectText('ready') : projectText('blocked')}
-                              </span>
+                              <div className="flex flex-wrap gap-1 md:justify-end">
+                                {managerReadModelSourceBadge(backendLaunchApprovalWorkflow, 'backend-launch-approval-workflow-source')}
+                                <span className={`node-status-tag ${backendLaunchApprovalWorkflow.readyForPrivatePilot ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
+                                  {projectText('Pilot Approval')} {backendLaunchApprovalWorkflow.readyForPrivatePilot ? projectText('ready') : projectText('blocked')}
+                                </span>
+                              </div>
                             </div>
                             <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2">
                               {[
@@ -16501,7 +20901,7 @@ export default function EngineWorkspace() {
                                 ['Core', `${backendMvpReadiness.localPilot?.passedCount ?? 0}/${backendMvpReadiness.localPilot?.totalCount ?? 0}`],
                                 ['Core Blockers', backendMvpReadiness.localPilot?.blockerCount ?? 0],
                                 ['Production Blockers', backendMvpReadiness.production?.blockerCount ?? 0],
-                                ['Next Gap', backendMvpReadiness.nextShortestPath?.id || 'none'],
+                                ['Next Action', backendMvpReadiness.nextShortestPath?.id || 'none'],
                               ].map(([label, value]) => (
                                 <div key={`mvp-readiness-${label}`} className="border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
                                   <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">{label}</div>
@@ -16509,6 +20909,39 @@ export default function EngineWorkspace() {
                                 </div>
                               ))}
                             </div>
+                            {backendMvpReadiness.operatorActions?.length > 0 && (
+                              <div data-testid="mvp-readiness-operator-actions" className="mt-2 space-y-1">
+                                {backendMvpReadiness.operatorActions.slice(0, 3).map(action => (
+                                  <div key={`mvp-operator-action-${action.id}`} className="grid grid-cols-[1fr_auto] gap-2 border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                    <div className="min-w-0">
+                                      <div className="font-serif text-sm leading-tight truncate">{action.label || action.id}</div>
+                                      <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] truncate">{action.scope || 'mvp'} / {action.owner || 'manager'} / {action.method || 'GET'}</div>
+                                      {action.apiPath && (
+                                        <div className="font-mono text-[7px] uppercase tracking-widest text-[#9b875c] truncate">Route: {action.apiPath}</div>
+                                      )}
+                                    </div>
+                                    <div className="flex flex-col items-end gap-1">
+                                      <span className={`node-status-tag ${action.productionBlocker ? 'bg-[#8f1e18] text-white' : 'bg-[#251b13] text-[#efe2bd]'}`}>{action.status || 'queued'}</span>
+                                      <button
+                                        type="button"
+                                        data-testid={`mvp-readiness-operator-action-run-${action.id}`}
+                                        onClick={() => runMvpReadinessOperatorAction(action)}
+                                        disabled={!backendCommandAvailable || backendStation.loading}
+                                        className="border border-[#251b13] bg-[#251b13] px-2 py-1 font-mono text-[7px] uppercase tracking-widest text-[#efe2bd] disabled:opacity-40"
+                                      >
+                                        Record
+                                      </button>
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                            {backendStation.mvpReadinessOperatorActionRun && (
+                              <div data-testid="mvp-readiness-operator-action-receipt" className="mt-2 border border-[#d8c99f] bg-[#fff8df] px-2 py-1 font-mono text-[8px] uppercase tracking-widest text-[#6b5a3d]">
+                                Receipt: {backendStation.mvpReadinessOperatorActionRun.actionLabel || backendStation.mvpReadinessOperatorActionRun.actionId} / {backendStation.mvpReadinessOperatorActionRun.status || 'recorded'} / {backendStation.mvpReadinessOperatorActionRun.runApiPath || 'run route pending'}
+                                {' '} / target {backendStation.mvpReadinessOperatorActionRun.targetStageId || 'manual'}
+                              </div>
+                            )}
                             <div className="mt-2 space-y-1">
                               {(backendMvpReadiness.blockerRows?.length ? backendMvpReadiness.blockerRows : backendMvpReadiness.production?.rows || []).slice(0, 3).map(row => (
                                 <div key={`mvp-gap-${row.id}`} className="grid grid-cols-[1fr_auto] gap-2 border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
@@ -16535,9 +20968,12 @@ export default function EngineWorkspace() {
                                 <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">Operations Readiness</div>
                                 <div className="font-serif text-base leading-tight">{backendOperationsReadiness.status || 'unknown'} / production blocked</div>
                               </div>
-                              <span className={`node-status-tag ${backendOperationsReadiness.readyForLocalPilot ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
-                                {backendOperationsReadiness.readyForLocalPilot ? 'Local Ops Ready' : 'Needs Ops Work'}
-                              </span>
+                              <div className="flex flex-wrap gap-1 md:justify-end">
+                                {managerReadModelSourceBadge(backendOperationsReadiness, 'backend-operations-readiness-source')}
+                                <span className={`node-status-tag ${backendOperationsReadiness.readyForLocalPilot ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
+                                  {backendOperationsReadiness.readyForLocalPilot ? 'Local Ops Ready' : 'Needs Ops Work'}
+                                </span>
+                              </div>
                             </div>
                             <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2">
                               {[
@@ -16605,9 +21041,12 @@ export default function EngineWorkspace() {
                                 <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">Provider Readiness</div>
                                 <div className="font-serif text-base leading-tight">{backendProviderReadiness.status || 'unknown'} / {backendProviderReadiness.rollout?.production || 'blocked'}</div>
                               </div>
-                              <span className={`node-status-tag ${backendProviderReadiness.readyForLocalPilot ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
-                                {backendProviderReadiness.readyForLocalPilot ? 'Local Contract Ready' : 'Needs Provider Work'}
-                              </span>
+                              <div className="flex flex-wrap gap-1 md:justify-end">
+                                {managerReadModelSourceBadge(backendProviderReadiness, 'backend-provider-readiness-source')}
+                                <span className={`node-status-tag ${backendProviderReadiness.readyForLocalPilot ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
+                                  {backendProviderReadiness.readyForLocalPilot ? 'Local Contract Ready' : 'Needs Provider Work'}
+                                </span>
+                              </div>
                             </div>
                             <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2">
                               {[
@@ -16668,9 +21107,12 @@ export default function EngineWorkspace() {
                                 <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">Provider Controlled Run</div>
                                 <div className="font-serif text-base leading-tight">{backendProviderControlledRun.status || 'unknown'} / {backendProviderControlledRun.runMode || 'policy dry-run'}</div>
                               </div>
-                              <span className={`node-status-tag ${backendProviderControlledRun.readyForPrivatePilotRun ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
-                                {backendProviderControlledRun.readyForPrivatePilotRun ? 'Controlled Run Ready' : 'Run Blocked'}
-                              </span>
+                              <div className="flex flex-wrap gap-1 md:justify-end">
+                                {managerReadModelSourceBadge(backendProviderControlledRun, 'backend-provider-controlled-run-source')}
+                                <span className={`node-status-tag ${backendProviderControlledRun.readyForPrivatePilotRun ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
+                                  {backendProviderControlledRun.readyForPrivatePilotRun ? 'Controlled Run Ready' : 'Run Blocked'}
+                                </span>
+                              </div>
                             </div>
                             <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2">
                               {[
@@ -16719,9 +21161,38 @@ export default function EngineWorkspace() {
                                 <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">Provider Eval Runs</div>
                                 <div className="font-serif text-base leading-tight">{backendProviderEvalRunWorkflow.status || 'unknown'} / {backendProviderEvalRunWorkflow.latestRun?.mode || 'shadow replay'}</div>
                               </div>
-                              <span className={`node-status-tag ${backendProviderEvalRunWorkflow.readyForPrivatePilotProviderEval ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
-                                {backendProviderEvalRunWorkflow.readyForPrivatePilotProviderEval ? 'Eval Ready' : 'Eval Record Needed'}
-                              </span>
+                              <div className="flex flex-wrap items-center gap-2 md:justify-end">
+                                {managerReadModelSourceBadge(backendProviderEvalRunWorkflow, 'backend-provider-eval-run-workflow-source')}
+                                <span className={`node-status-tag ${backendProviderEvalRunWorkflow.readyForPrivatePilotProviderEval ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
+                                  {backendProviderEvalRunWorkflow.readyForPrivatePilotProviderEval ? 'Eval Ready' : 'Eval Record Needed'}
+                                </span>
+                                <button
+                                  type="button"
+                                  data-testid="backend-provider-eval-record-shadow-replay"
+                                  onClick={() => runBackendPrivatePilotReceipt({
+                                    label: 'Provider eval shadow replay',
+                                    route: backendProviderEvalRunWorkflow.backendRoutes?.providerEvalRuns || backendManagerReadyPackage.backendRoutes?.providerEvalRuns || `/projects/${activeProject.id}/provider-eval-runs`,
+                                    reason: 'Record controlled provider run shadow replay from the Manager Ready Package.',
+                                    workflowKey: 'providerEvalRunWorkflow',
+                                    receiptKey: 'providerEvalRun',
+                                    extraBody: {
+                                      mode: 'shadow-replay',
+                                      actorRole: 'runtime-platform',
+                                      actorId: 'manager-ui-provider-eval',
+                                      source: 'manager-ui-provider-eval-receipt',
+                                    },
+                                  })}
+                                  disabled={
+                                    !backendCommandAvailable
+                                    || backendStation.loading
+                                    || backendProviderEvalRunWorkflow.readyForPrivatePilotProviderEval
+                                    || !(backendProviderControlledRun?.readyForPrivatePilotRun ?? backendManagerReadyPackage.summary?.providerControlledRunReady)
+                                  }
+                                  className="inline-flex items-center justify-center gap-1 border border-[#7b6542] bg-[#efe2bd] px-3 py-1 font-mono text-[7px] uppercase tracking-widest text-[#251b13] hover:border-[#251b13] disabled:opacity-40 disabled:cursor-not-allowed"
+                                >
+                                  Record Eval
+                                </button>
+                              </div>
                             </div>
                             <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2">
                               {[
@@ -16818,9 +21289,12 @@ export default function EngineWorkspace() {
                                 <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">Security Boundary</div>
                                 <div className="font-serif text-base leading-tight">{backendSecurityBoundary.status || 'unknown'} / {backendSecurityBoundary.production?.status || 'production-blocked'}</div>
                               </div>
-                              <span className={`node-status-tag ${backendSecurityBoundary.readyForLocalPilot ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
-                                {backendSecurityBoundary.readyForLocalPilot ? 'Local Safe' : 'Needs Attention'}
-                              </span>
+                              <div className="flex flex-wrap gap-1 md:justify-end">
+                                {managerReadModelSourceBadge(backendSecurityBoundary, 'backend-security-boundary-source')}
+                                <span className={`node-status-tag ${backendSecurityBoundary.readyForLocalPilot ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
+                                  {backendSecurityBoundary.readyForLocalPilot ? 'Local Safe' : 'Needs Attention'}
+                                </span>
+                              </div>
                             </div>
                             <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2">
                               {[
@@ -16858,7 +21332,10 @@ export default function EngineWorkspace() {
                     )}
                     {backendManagerDashboard && (
                       <div data-testid="backend-manager-dashboard-snapshot" className="mt-3 border-t border-[#d8c99f] pt-3">
-                        <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18] mb-2">Backend Manager Snapshot</div>
+                        <div className="mb-2 flex flex-wrap items-start justify-between gap-2">
+                          <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">Backend Manager Snapshot</div>
+                          {managerReadModelSourceBadge(backendManagerDashboard, 'backend-manager-dashboard-source')}
+                        </div>
                         <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
                           {[
                             ['Readiness', backendManagerDashboard.readiness?.score ?? 0],
@@ -16869,6 +21346,8 @@ export default function EngineWorkspace() {
                             ['Action Queue', `${backendManagerActionQueue?.completedCount ?? backendManagerDashboard.managerActionQueue?.completedCount ?? 0}/${backendManagerActionQueue?.count ?? backendManagerDashboard.managerActionQueue?.count ?? 0}`],
                             ['Agent Queue', `${backendAgentAutonomousActionQueue?.readyCount ?? backendManagerDashboard.agentAutonomousActionQueue?.readyCount ?? 0}/${backendAgentAutonomousActionQueue?.count ?? backendManagerDashboard.agentAutonomousActionQueue?.count ?? 0}`],
                             ['Run Control', `${backendAutonomousRunControl?.summary?.runnableActionCount ?? 0} runnable`],
+                            ['Mission Runs', backendProductTeamMissionRuns?.count ?? backendProductTeamMissionRows.length ?? 0],
+                            ['Mission Sessions', backendProductTeamMissionRuns?.autonomousSessionCount ?? backendProductTeamMissionRows.filter(row => row.autonomousSessionId).length ?? 0],
                             ['Control Runs', backendManagerDashboard.autonomousRunControlRuns?.count ?? 0],
                             ['Control Loops', backendManagerDashboard.autonomousRunControlLoops?.count ?? 0],
                             ['Transcript Proofs', backendManagerDashboard.transcriptIndex?.recoverableProofCount ?? 0],
@@ -16908,6 +21387,100 @@ export default function EngineWorkspace() {
                         <div className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#9b875c]">
                           Backend route: {backendManagerDashboard.backendRoutes?.readinessProofMap || 'not available'}
                         </div>
+                        {backendLatestProductTeamMissionRun && (
+                          <div data-testid="backend-product-team-mission-runs-snapshot" className="mt-3 border border-[#d8c99f] bg-[#efe2bd]/55 p-2">
+                            <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                              <div className="min-w-0">
+                                <div className="font-mono text-[8px] uppercase text-[#8f1e18]">Product Team Mission Runner</div>
+                                <div className="font-serif text-base leading-tight break-words">
+                                  {backendLatestProductTeamMissionRun.missionName || backendLatestProductTeamMissionRun.id}
+                                </div>
+                                <div className="mt-1 font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] break-words">
+                                  {backendLatestProductTeamMissionRun.status || 'started'} / Leader {backendLatestProductTeamMissionRun.selectedLeaderId || 'pending'} / Reviewer {backendLatestProductTeamMissionRun.reviewerId || 'pending'}
+                                </div>
+                              </div>
+                              <div className="flex shrink-0 flex-wrap justify-end gap-1">
+                                <span className={`node-status-tag ${backendLatestProductTeamMissionRun.researchOnly ? 'bg-[#8f1e18] text-white' : 'bg-[#59684b] text-white'}`}>
+                                  {backendLatestProductTeamMissionRun.researchOnly ? 'Research Only' : 'Generic Product Team'}
+                                </span>
+                                <span className={`node-status-tag ${backendLatestProductTeamMissionRun.reusedKickoffMeeting ? 'bg-[#59684b] text-white' : 'bg-[#251b13] text-[#efe2bd]'}`}>
+                                  {backendLatestProductTeamMissionRun.reusedKickoffMeeting ? 'Reused Kickoff' : 'New Kickoff'}
+                                </span>
+                              </div>
+                            </div>
+                            <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2">
+                              {[
+                                ['Runs', backendProductTeamMissionRuns?.count ?? backendProductTeamMissionRows.length ?? 0],
+                                ['Agents', backendLatestProductTeamMissionRun.agentIds?.length ?? 0],
+                                ['Tasks', backendLatestProductTeamMissionRun.taskIds?.length ?? 0],
+                                ['Autopilot', backendLatestProductTeamMissionRun.autonomousSessionId ? 'started' : 'not started'],
+                                ['Tick', backendLatestProductTeamMissionRun.autonomousSessionTickId ? 'recorded' : 'pending'],
+                                ['C/A Handoff', backendLatestProductTeamMissionRun.customerAgentHandoff?.status || 'pending'],
+                                ['Handoff Tick', backendLatestProductTeamMissionRun.customerAgentHandoff?.firstTickRecorded ? 'recorded' : 'pending'],
+                                ['Handoff Stage', backendLatestProductTeamMissionRun.customerAgentHandoff?.targetStageId || backendLatestProductTeamMissionRun.targetNextMissingStageId || 'delivery trace'],
+                                ['Run Receipts', backendLatestProductTeamMissionRun.runReceiptIds?.length ?? 0],
+                                ['Loop Receipts', backendLatestProductTeamMissionRun.loopReceiptIds?.length ?? 0],
+                                ['Next Stage', backendLatestProductTeamMissionRun.targetNextMissingStageId || backendLatestProductTeamMissionRun.targetStatus || 'delivery trace'],
+                              ].map(([label, value]) => (
+                                <div key={`product-team-mission-${label}`} className="border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                  <div className="font-mono text-[7px] uppercase text-[#7d6a49]">{label}</div>
+                                  <div className="font-serif text-sm leading-tight break-words">{value}</div>
+                                </div>
+                              ))}
+                            </div>
+                            <div data-testid="backend-product-team-mission-runs-route" className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#9b875c] leading-relaxed break-words">
+                              Mission route: {backendLatestProductTeamMissionRun.routeLabel || `/projects/${activeProject.id}/product-team-missions/${backendLatestProductTeamMissionRun.id}`}
+                              {' '} / Operating loop: {backendLatestProductTeamMissionRun.readRoutes?.productTeamOperatingLoop || `/projects/${activeProject.id}/product-team-operating-loop`}
+                              {' '} / Autonomy: {backendLatestProductTeamMissionRun.readRoutes?.autonomousRunControl || `/projects/${activeProject.id}/autonomous-run-control`}
+                              {' '} / C/A handoff: {backendLatestProductTeamMissionRun.customerAgentHandoff?.nextRoutes?.autonomousRunControl || backendLatestProductTeamMissionRun.readRoutes?.autonomousRunControl || `/projects/${activeProject.id}/autonomous-run-control`}
+                            </div>
+                            <div className="mt-2 flex flex-wrap gap-2">
+                              <button
+                                type="button"
+                                data-testid="backend-product-team-mission-chat-proof"
+                                onClick={() => openProjectChatProof(activeProject, backendProductTeamMissionChatProofIds, 'main')}
+                                disabled={!backendProductTeamMissionChatProofIds.length}
+                                className="inline-flex items-center justify-center gap-1 border border-[#7b6542] bg-[#efe2bd] px-2 py-1 font-mono text-[7px] uppercase tracking-widest text-[#251b13] hover:border-[#251b13] disabled:opacity-40 disabled:cursor-not-allowed"
+                              >
+                                <MessageSquare size={10} /> Mission chat proof
+                              </button>
+                              <button
+                                type="button"
+                                data-testid="backend-product-team-mission-timeline-proof"
+                                onClick={() => openProjectTimelineProof(backendProductTeamMissionTimelineIds)}
+                                disabled={!backendProductTeamMissionTimelineIds.length}
+                                className="inline-flex items-center justify-center gap-1 border border-[#7b6542] bg-[#efe2bd] px-2 py-1 font-mono text-[7px] uppercase tracking-widest text-[#251b13] hover:border-[#251b13] disabled:opacity-40 disabled:cursor-not-allowed"
+                              >
+                                <ScrollText size={10} /> Mission timeline proof
+                              </button>
+                              <button
+                                type="button"
+                                data-testid="backend-product-team-mission-flow-node"
+                                onClick={() => openManagerFlowNode(backendProductTeamMissionFlowNodeId, {
+                                  chatProofIds: backendProductTeamMissionChatProofIds,
+                                  timelineLogIds: backendProductTeamMissionTimelineIds,
+                                })}
+                                disabled={!backendProductTeamMissionFlowNodeId}
+                                className="inline-flex items-center justify-center gap-1 border border-[#7b6542] bg-[#251b13] px-2 py-1 font-mono text-[7px] uppercase tracking-widest text-[#efe2bd] hover:bg-[#8f1e18] disabled:opacity-40 disabled:cursor-not-allowed"
+                              >
+                                <Network size={10} /> Flow node
+                              </button>
+                            </div>
+                            {backendProductTeamMissionRows.length > 1 && (
+                              <div className="mt-2 space-y-1">
+                                {backendProductTeamMissionRows.slice(1, 4).map(row => (
+                                  <div key={row.id} className="grid grid-cols-[1fr_auto] gap-2 border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                    <div className="min-w-0">
+                                      <div className="font-serif text-sm leading-tight truncate">{row.missionName || row.id}</div>
+                                      <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] truncate">{row.status || 'started'} / {row.missionType || 'generic-product-team'}</div>
+                                    </div>
+                                    <span className="node-status-tag bg-[#251b13] text-[#efe2bd]">{row.autonomousSessionId ? 'Autopilot' : 'Kickoff'}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        )}
                         {backendTranscriptProofCoverageSummary && (
                           <div data-testid="backend-transcript-proof-coverage-snapshot" className="mt-3 border border-[#d8c99f] bg-[#efe2bd]/55 p-2">
                             <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
@@ -16980,8 +21553,14 @@ export default function EngineWorkspace() {
                           <div data-testid="backend-manager-submissions-snapshot" className="mt-3 border border-[#d8c99f] bg-[#efe2bd]/55 p-2">
                             <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">Agent Submissions</div>
                             <div className="mt-2 space-y-1">
-                              {backendManagerDashboard.submissions.rows.slice(0, 4).map(row => {
-                                const reviewDraft = submissionReviewDrafts[row.id] || {};
+                              {backendManagerDashboard.submissions.rows.slice(0, 40).map(row => {
+                                const reviewDraft = submissionReviewDraftFor(row.id, activeProject?.id);
+                                const backendReviewReceipt = (backendManagerDashboard.submissionReviews?.rows || [])
+                                  .find(review => review.submissionId === row.id);
+                                const reviewReceipt = reviewDraft.lastReceipt || (backendReviewReceipt ? {
+                                  reviewId: backendReviewReceipt.id,
+                                  readModels: { managerFlowGraphRoute: backendReviewReceipt.proofRoute || backendReviewReceipt.submissionRoute || null },
+                                } : null);
                                 const rowReviewerId = reviewDraft.reviewerAgentId || defaultSubmissionReviewerId(row);
                                 const rowVerdict = reviewDraft.verdict || (row.artifactType === 'final-deliverable' ? 'accepted' : 'changes-requested');
                                 const submissionChatProofIds = chatProofIdsFromRow(row);
@@ -17072,9 +21651,9 @@ export default function EngineWorkspace() {
                                         placeholder="Requested changes, one per line"
                                         className="mt-2 w-full resize-none border border-[#d8c99f] bg-[#efe2bd] px-2 py-1 font-mono text-[7px] leading-relaxed text-[#251b13] placeholder:text-[#9b875c] disabled:opacity-50"
                                       />
-                                      {reviewDraft.lastReceipt && (
+                                      {reviewReceipt && (
                                         <div data-testid={`submission-review-receipt-${row.id}`} className="mt-2 font-mono text-[7px] uppercase tracking-widest text-[#8f1e18] leading-relaxed break-words">
-                                          Review receipt: {reviewDraft.lastReceipt.reviewId || 'recorded'} / {reviewDraft.lastReceipt.readModels?.managerFlowGraphRoute || `/projects/${activeProject.id}/manager-flow-graph`}
+                                          Review receipt: {reviewReceipt.reviewId || 'recorded'} / {reviewReceipt.readModels?.managerFlowGraphRoute || `/projects/${activeProject.id}/manager-flow-graph`}
                                         </div>
                                       )}
                                     </div>
@@ -17100,11 +21679,11 @@ export default function EngineWorkspace() {
                             </div>
                           </div>
                         )}
-                        {backendManagerDashboard.submissionReviews?.rows?.length > 0 && (
+                        {managerSubmissionReviewRows.length > 0 && (
                           <div data-testid="backend-manager-submission-reviews-snapshot" className="mt-3 border border-[#d8c99f] bg-[#efe2bd]/55 p-2">
                             <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">Submission Reviews</div>
                             <div className="mt-2 space-y-1">
-                              {backendManagerDashboard.submissionReviews.rows.slice(0, 4).map(row => (
+                              {managerSubmissionReviewRows.slice(0, 4).map(row => (
                                 <div key={row.id} className="grid grid-cols-[1fr_auto] gap-2 border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
                                   <div className="min-w-0">
                                     <div className="font-serif text-sm leading-tight truncate">{row.comments}</div>
@@ -17141,7 +21720,10 @@ export default function EngineWorkspace() {
                     )}
                     {backendManagerCommandCenter && (
                       <div data-testid="backend-manager-command-center-snapshot" className="mt-3 border-t border-[#d8c99f] pt-3">
-                        <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18] mb-2">Manager Command Center</div>
+                        <div className="mb-2 flex flex-wrap items-start justify-between gap-2">
+                          <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">Manager Command Center</div>
+                          {managerReadModelSourceBadge(backendManagerCommandCenter, 'backend-manager-command-center-source')}
+                        </div>
                         <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
                           {[
                             ['Status', backendManagerCommandCenter.status || 'unknown'],
@@ -17165,7 +21747,10 @@ export default function EngineWorkspace() {
                     )}
                     {backendManagerScenarioWalkthrough && (
                       <div data-testid="backend-manager-scenario-walkthrough-snapshot" className="mt-3 border-t border-[#d8c99f] pt-3">
-                        <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18] mb-2">Manager Scenario Walkthrough</div>
+                        <div className="mb-2 flex flex-wrap items-start justify-between gap-2">
+                          <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">Manager Scenario Walkthrough</div>
+                          {managerReadModelSourceBadge(backendManagerScenarioWalkthrough, 'backend-manager-scenario-walkthrough-source')}
+                        </div>
                         <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
                           {[
                             ['Status', backendManagerScenarioWalkthrough.status || 'unknown'],
@@ -17189,7 +21774,10 @@ export default function EngineWorkspace() {
                     )}
                     {backendManagerScenarioTrail && (
                       <div data-testid="backend-manager-scenario-trail-snapshot" className="mt-3 border-t border-[#d8c99f] pt-3">
-                        <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18] mb-2">Standalone Trail</div>
+                        <div className="mb-2 flex flex-wrap items-start justify-between gap-2">
+                          <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">Standalone Trail</div>
+                          {managerReadModelSourceBadge(backendManagerScenarioTrail, 'backend-manager-scenario-trail-source')}
+                        </div>
                         <div className="grid grid-cols-2 gap-2">
                           <div className="border border-[#d8c99f] bg-[#efe2bd]/50 px-2 py-1">
                             <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">Ready Rows</div>
@@ -17206,7 +21794,10 @@ export default function EngineWorkspace() {
                     )}
                     {backendManagerRequirementMatrix && (
                       <div data-testid="backend-manager-requirement-matrix-snapshot" className="mt-3 border-t border-[#d8c99f] pt-3">
-                        <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18] mb-2">Manager Requirement Matrix</div>
+                        <div className="mb-2 flex flex-wrap items-start justify-between gap-2">
+                          <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">Manager Requirement Matrix</div>
+                          {managerReadModelSourceBadge(backendManagerRequirementMatrix, 'backend-manager-requirement-matrix-source')}
+                        </div>
                         <div className="grid grid-cols-2 gap-2">
                           <div className="border border-[#d8c99f] bg-[#efe2bd]/50 px-2 py-1">
                             <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">Ready Rows</div>
@@ -17223,7 +21814,10 @@ export default function EngineWorkspace() {
                     )}
                     {backendSyncProtocolAudit && (
                       <div data-testid="backend-sync-protocol-audit-snapshot" className="mt-3 border-t border-[#d8c99f] pt-3">
-                        <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18] mb-2">Sync Protocol Audit</div>
+                        <div className="mb-2 flex flex-wrap items-start justify-between gap-2">
+                          <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">Sync Protocol Audit</div>
+                          {managerReadModelSourceBadge(backendSyncProtocolAudit, 'backend-sync-protocol-audit-source')}
+                        </div>
                         <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
                           {[
                             ['Status', backendSyncProtocolAudit.status || 'unknown'],
@@ -17247,7 +21841,10 @@ export default function EngineWorkspace() {
                     )}
                     {backendManagerUseCaseAudit && (
                       <div data-testid="backend-manager-use-case-audit-snapshot" className="mt-3 border-t border-[#d8c99f] pt-3">
-                        <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18] mb-2">Manager Use Case Audit</div>
+                        <div className="mb-2 flex flex-wrap items-start justify-between gap-2">
+                          <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">Manager Use Case Audit</div>
+                          {managerReadModelSourceBadge(backendManagerUseCaseAudit, 'backend-manager-use-case-audit-source')}
+                        </div>
                         <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
                           {[
                             ['Status', backendManagerUseCaseAudit.status || 'unknown'],
@@ -17271,7 +21868,10 @@ export default function EngineWorkspace() {
                     )}
                     {backendManagerActionQueue && (
                       <div data-testid="backend-manager-action-queue-snapshot" className="mt-3 border-t border-[#d8c99f] pt-3">
-                        <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18] mb-2">{projectText('Manager Action Queue')}</div>
+                        <div className="mb-2 flex flex-wrap items-start justify-between gap-2">
+                          <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">{projectText('Manager Action Queue')}</div>
+                          {managerReadModelSourceBadge(backendManagerActionQueue, 'backend-manager-action-queue-source')}
+                        </div>
                         <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
                           {[
                             ['Complete', `${backendManagerActionQueue.completedCount ?? 0}/${backendManagerActionQueue.count ?? 0}`],
@@ -17308,6 +21908,7 @@ export default function EngineWorkspace() {
                             </div>
                           </div>
                           <div className="flex shrink-0 flex-col items-end gap-2">
+                            {managerReadModelSourceBadge(backendAutonomousRunControl, 'backend-autonomous-run-control-source')}
                             <span className={`node-status-tag ${backendAutonomousRunControl.readyForLocalPilotAutonomy ? 'bg-[#59684b] text-white' : 'bg-[#251b13] text-[#efe2bd]'}`}>
                               {backendAutonomousRunControl.summary?.runnableActionCount ?? 0} runnable
                             </span>
@@ -17381,6 +21982,123 @@ export default function EngineWorkspace() {
                             Run receipt: {backendLatestAutonomousRunControlRun.actionLabel || backendLatestAutonomousRunControlRun.actionId} / {backendLatestAutonomousRunControlRun.actionLane || 'lane'} / {backendLatestAutonomousRunControlRun.delegatedRunKind || 'delegated'}
                           </div>
                         )}
+                        {backendStation.autonomousRunControlRunOutput && (
+                          <div data-testid="backend-autonomous-run-control-run-output" className="mt-2 border border-[#d8c99f] bg-[#efe2bd]/70 px-2 py-2">
+                            <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">{projectText('Run Control Output Nodes')}</div>
+                            <div className="mt-1 font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] break-words">
+                              {projectText(backendStation.autonomousRunControlRunOutput.actionLabel || 'run control action')} / {projectText(backendStation.autonomousRunControlRunOutput.delegatedRunKind || 'delegated')} / {projectText(backendStation.autonomousRunControlRunOutput.runId || 'receipt pending')}
+                            </div>
+                            {renderAutonomousActionDecision(backendStation.autonomousRunControlRunOutput.autonomousActionDecision, {
+                              testId: 'backend-run-control-action-decision',
+                            })}
+                            {(() => {
+                              const output = backendStation.autonomousRunControlRunOutput || {};
+                              const rows = [
+                                output.workSubmission ? {
+                                  id: 'work-submission',
+                                  label: 'Agent Submission',
+                                  title: output.workSubmission.title || output.workSubmission.artifactType || output.workSubmission.id,
+                                  detail: `${output.workSubmission.artifactType || 'artifact'} / ${output.workSubmission.status || output.workSubmission.reviewStatus || 'submitted'}`,
+                                  proofIds: [output.workSubmission.messageId, output.workSubmission.timelineLogId, output.workSubmission.eventId, output.workSubmission.artifactStorageProofChecksum],
+                                  chatProofIds: [output.workSubmission.messageId],
+                                  timelineProofIds: [output.workSubmission.timelineLogId],
+                                } : null,
+                                output.artifact && !output.workSubmission ? {
+                                  id: 'artifact',
+                                  label: 'Artifact',
+                                  title: output.artifact.title || output.artifact.artifactType || output.artifact.id,
+                                  detail: `${output.artifact.artifactType || output.artifact.type || 'artifact'} / ${output.artifact.status || 'stored'}`,
+                                  proofIds: [output.artifact.id, output.artifact.storageProofChecksum, output.artifact.eventId],
+                                  chatProofIds: [],
+                                  timelineProofIds: [output.artifact.timelineLogId],
+                                } : null,
+                                output.evidenceSearch ? {
+                                  id: 'evidence-search',
+                                  label: 'Evidence Search',
+                                  title: output.evidenceSearch.query || output.evidenceSearch.purpose || output.evidenceSearch.id,
+                                  detail: `${output.evidenceSearch.evidenceJudgement || output.evidenceSearch.confidence || 'evidence'} / score ${output.evidenceSearch.qualityScore ?? output.evidenceSearch.averageQualityScore ?? 'n/a'}`,
+                                  proofIds: [output.evidenceSearch.id, output.evidenceSearch.messageId, output.evidenceSearch.logId, output.evidenceSearch.eventId],
+                                  chatProofIds: [output.evidenceSearch.messageId],
+                                  timelineProofIds: [output.evidenceSearch.logId, output.evidenceSearch.timelineLogId],
+                                } : null,
+                                output.review ? {
+                                  id: 'submission-review',
+                                  label: 'Submission Review',
+                                  title: output.review.verdict || output.review.status || output.review.id,
+                                  detail: `${output.review.submissionId || output.reviewedSubmission?.id || 'submission'} / ${output.review.reviewerAgentName || output.review.reviewerAgentId || 'reviewer'}`,
+                                  proofIds: [output.review.id, output.review.messageId, output.review.timelineLogId, output.review.eventId],
+                                  chatProofIds: [output.review.messageId],
+                                  timelineProofIds: [output.review.timelineLogId],
+                                } : null,
+                                output.reviewResponseSubmission ? {
+                                  id: 'review-response-submission',
+                                  label: 'Review Response',
+                                  title: output.reviewResponseSubmission.title || output.reviewResponseSubmission.artifactType || output.reviewResponseSubmission.id,
+                                  detail: `${output.reviewResponseSubmission.artifactType || 'artifact'} / review ${output.reviewResponseSubmission.respondsToReviewId || 'linked'}`,
+                                  proofIds: [output.reviewResponseSubmission.messageId, output.reviewResponseSubmission.timelineLogId, output.reviewResponseSubmission.eventId, output.reviewResponseSubmission.respondsToReviewId],
+                                  chatProofIds: [output.reviewResponseSubmission.messageId],
+                                  timelineProofIds: [output.reviewResponseSubmission.timelineLogId],
+                                } : null,
+                                output.resultMessageIds?.length ? {
+                                  id: 'result-messages',
+                                  label: 'Result Messages',
+                                  title: `${output.resultMessageIds.length} transcript message(s)`,
+                                  detail: `${output.actionLane || 'lane'} / ${output.delegatedRunKind || 'delegated'}`,
+                                  proofIds: output.resultMessageIds,
+                                  chatProofIds: output.resultMessageIds,
+                                  timelineProofIds: output.timelineLogIds || [],
+                                } : null,
+                              ].filter(Boolean);
+                              if (!rows.length) {
+                                return (
+                                  <div data-testid="backend-autonomous-run-control-run-output-empty" className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">
+                                    {projectText('No run output returned yet')}
+                                  </div>
+                                );
+                              }
+                              return (
+                                <div data-testid="backend-autonomous-run-control-run-output-rows" className="mt-2 space-y-1">
+                                  {rows.map(row => {
+                                    const proofIds = Array.from(new Set((row.proofIds || []).filter(Boolean)));
+                                    const chatProofIds = Array.from(new Set((row.chatProofIds || []).filter(Boolean)));
+                                    const timelineProofIds = Array.from(new Set((row.timelineProofIds || []).filter(Boolean)));
+                                    return (
+                                      <div key={`autonomous-run-control-output-${row.id}`} data-testid={`backend-autonomous-run-control-output-${row.id}`} className="border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                        <div className="grid grid-cols-[1fr_auto] gap-2">
+                                          <div className="min-w-0">
+                                            <div className="font-serif text-sm leading-tight truncate">{projectText(row.label)}: {projectText(row.title || 'output')}</div>
+                                            <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] truncate">{projectText(row.detail || 'backend output')}</div>
+                                          </div>
+                                          <span className="node-status-tag bg-[#59684b] text-white">{proofIds.length}</span>
+                                        </div>
+                                        <div className="mt-1 flex flex-wrap gap-2">
+                                          <button
+                                            type="button"
+                                            data-testid={`autonomous-run-control-output-chat-proof-${row.id}`}
+                                            onClick={() => openProjectChatProof(activeProject, chatProofIds, 'main')}
+                                            disabled={!chatProofIds.length}
+                                            className="inline-flex items-center justify-center gap-1 border border-[#7b6542] bg-[#efe2bd] px-2 py-1 font-mono text-[7px] uppercase tracking-widest text-[#251b13] hover:border-[#251b13] disabled:opacity-40 disabled:cursor-not-allowed"
+                                          >
+                                            <MessageSquare size={10} /> Output chat proof
+                                          </button>
+                                          <button
+                                            type="button"
+                                            data-testid={`autonomous-run-control-output-timeline-proof-${row.id}`}
+                                            onClick={() => openProjectTimelineProof(timelineProofIds)}
+                                            disabled={!timelineProofIds.length}
+                                            className="inline-flex items-center justify-center gap-1 border border-[#7b6542] bg-[#efe2bd] px-2 py-1 font-mono text-[7px] uppercase tracking-widest text-[#251b13] hover:border-[#251b13] disabled:opacity-40 disabled:cursor-not-allowed"
+                                          >
+                                            <ScrollText size={10} /> Output timeline proof
+                                          </button>
+                                        </div>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              );
+                            })()}
+                          </div>
+                        )}
                         {backendLatestAutonomousRunControlLoop && (
                           <div data-testid="backend-autonomous-run-control-loop-receipt" className="mt-2 border border-[#7b6542] bg-[#f7edcf] px-2 py-1 font-mono text-[8px] uppercase tracking-widest text-[#6b5a3d] leading-relaxed break-words">
                             Loop receipt: {backendLatestAutonomousRunControlLoop.stepCount ?? 0}/{backendLatestAutonomousRunControlLoop.maxSteps ?? 0} steps / {backendLatestAutonomousRunControlLoop.stoppedReason || 'complete'} / receipts {(backendLatestAutonomousRunControlLoop.runReceiptIds || []).length}
@@ -17399,6 +22117,11 @@ export default function EngineWorkspace() {
                         {backendStation.autonomousRunControlSessionWorker && (
                           <div data-testid="backend-autonomous-run-control-session-worker-receipt" className="mt-2 border border-[#59684b] bg-[#eef5df] px-2 py-1 font-mono text-[8px] uppercase tracking-widest text-[#3f5136] leading-relaxed break-words">
                             {'Autopilot worker: /workers/autonomous/tick -> /workers/autopilot/due / session '} {backendStation.autonomousRunControlSessionWorker.sessionId || 'active'} / tick {backendStation.autonomousRunControlSessionWorker.tickId || backendStation.autonomousRunControlSessionTick?.id || 'pending'} / stage {backendStation.autonomousRunControlSessionWorker.targetStageId || backendStation.autonomousRunControlSessionTick?.targetControl?.targetStageId || 'none'} / lanes {(backendStation.autonomousRunControlSessionWorker.actionLanes || []).join(', ') || 'none'}
+                          </div>
+                        )}
+                        {backendAutopilotProviderEvidenceReceipt?.providerEvidenceSearch && (
+                          <div data-testid="backend-autopilot-provider-evidence-receipt" className="mt-2 border border-[#59684b] bg-[#eef5df] px-2 py-1 font-mono text-[8px] uppercase tracking-widest text-[#3f5136] leading-relaxed break-words">
+                            Provider evidence: {backendAutopilotProviderEvidenceReceipt.status || backendAutopilotProviderEvidenceReceipt.providerEvidenceSearch.status || 'recorded'} / {backendAutopilotProviderEvidenceReceipt.provider || backendAutopilotProviderEvidenceReceipt.providerEvidenceSearch.provider || 'provider'} / evidence {backendAutopilotProviderEvidenceReceipt.evidenceSearchId || 'pending'} / usage {backendAutopilotProviderEvidenceReceipt.providerUsageId || 'pending'} / receipt {backendAutopilotProviderEvidenceReceipt.providerReceiptId || 'pending'} / sources {backendAutopilotProviderEvidenceReceipt.sourceCount ?? 0}
                           </div>
                         )}
                         <div className="mt-2 space-y-2">
@@ -17455,9 +22178,12 @@ export default function EngineWorkspace() {
                             <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">{projectText('Agent Autonomous Queue')}</div>
                             <div className="font-serif text-base leading-tight">Backend-selected Agent next moves, ready to run through the worker contract.</div>
                           </div>
-                          <span className="node-status-tag bg-[#251b13] text-[#efe2bd]">
-                            {backendAgentAutonomousActionQueue.readyCount ?? 0}/{backendAgentAutonomousActionQueue.count ?? 0} ready
-                          </span>
+                          <div className="flex shrink-0 flex-col items-end gap-2">
+                            {managerReadModelSourceBadge(backendAgentAutonomousActionQueue, 'backend-agent-autonomous-action-queue-source')}
+                            <span className="node-status-tag bg-[#251b13] text-[#efe2bd]">
+                              {backendAgentAutonomousActionQueue.readyCount ?? 0}/{backendAgentAutonomousActionQueue.count ?? 0} ready
+                            </span>
+                          </div>
                         </div>
                         <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
                           {[
@@ -17478,6 +22204,114 @@ export default function EngineWorkspace() {
                         {backendStation.agentAutonomousActionRun && (
                           <div data-testid="backend-agent-autonomous-action-run-receipt" className="mt-2 border border-[#7b6542] bg-[#efe2bd]/70 px-2 py-1 font-mono text-[8px] uppercase tracking-widest text-[#6b5a3d] leading-relaxed break-words">
                             Run receipt: {backendStation.agentAutonomousActionRun.actionLabel || backendStation.agentAutonomousActionRun.selectedAction} / {backendStation.agentAutonomousActionRun.agentId} / strategy {backendStation.agentAutonomousActionRun.strategyDecisionId || 'recorded'}
+                          </div>
+                        )}
+                        {backendStation.agentAutonomousActionRunOutput && (
+                          <div data-testid="backend-agent-autonomous-action-run-output" className="mt-2 border border-[#d8c99f] bg-[#efe2bd]/70 px-2 py-2">
+                            <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">{projectText('Agent Action Output Nodes')}</div>
+                            <div className="mt-1 font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] break-words">
+                              {projectText(backendStation.agentAutonomousActionRunOutput.actionLabel || 'agent action')} / {projectText(backendStation.agentAutonomousActionRunOutput.runId || 'receipt pending')}
+                            </div>
+                            {renderAutonomousActionDecision(backendStation.agentAutonomousActionRunOutput.autonomousActionDecision, {
+                              testId: 'backend-agent-autonomous-action-decision',
+                            })}
+                            {(() => {
+                              const output = backendStation.agentAutonomousActionRunOutput || {};
+                              const rows = [
+                                output.workSubmission ? {
+                                  id: 'work-submission',
+                                  label: 'Agent Submission',
+                                  title: output.workSubmission.title || output.workSubmission.artifactType || output.workSubmission.id,
+                                  detail: `${output.workSubmission.artifactType || 'artifact'} / ${output.workSubmission.status || output.workSubmission.reviewStatus || 'submitted'}`,
+                                  proofIds: [output.workSubmission.messageId, output.workSubmission.timelineLogId, output.workSubmission.eventId, output.workSubmission.artifactStorageProofChecksum],
+                                  chatProofIds: [output.workSubmission.messageId],
+                                  timelineProofIds: [output.workSubmission.timelineLogId],
+                                } : null,
+                                output.evidenceSearch ? {
+                                  id: 'evidence-search',
+                                  label: 'Evidence Search',
+                                  title: output.evidenceSearch.query || output.evidenceSearch.purpose || output.evidenceSearch.id,
+                                  detail: `${output.evidenceSearch.evidenceJudgement || output.evidenceSearch.confidence || 'evidence'} / score ${output.evidenceSearch.qualityScore ?? output.evidenceSearch.averageQualityScore ?? 'n/a'}`,
+                                  proofIds: [output.evidenceSearch.id, output.evidenceSearch.messageId, output.evidenceSearch.logId, output.evidenceSearch.eventId],
+                                  chatProofIds: [output.evidenceSearch.messageId],
+                                  timelineProofIds: [output.evidenceSearch.logId, output.evidenceSearch.timelineLogId],
+                                } : null,
+                                output.review ? {
+                                  id: 'submission-review',
+                                  label: 'Submission Review',
+                                  title: output.review.verdict || output.review.status || output.review.id,
+                                  detail: `${output.review.submissionId || 'submission'} / ${output.review.reviewerAgentName || output.review.reviewerAgentId || 'reviewer'}`,
+                                  proofIds: [output.review.id, output.review.messageId, output.review.timelineLogId, output.review.eventId],
+                                  chatProofIds: [output.review.messageId],
+                                  timelineProofIds: [output.review.timelineLogId],
+                                } : null,
+                                output.reviewResponseSubmission ? {
+                                  id: 'review-response-submission',
+                                  label: 'Review Response',
+                                  title: output.reviewResponseSubmission.title || output.reviewResponseSubmission.artifactType || output.reviewResponseSubmission.id,
+                                  detail: `${output.reviewResponseSubmission.artifactType || 'artifact'} / review ${output.reviewResponseSubmission.respondsToReviewId || 'linked'}`,
+                                  proofIds: [output.reviewResponseSubmission.messageId, output.reviewResponseSubmission.timelineLogId, output.reviewResponseSubmission.eventId, output.reviewResponseSubmission.respondsToReviewId],
+                                  chatProofIds: [output.reviewResponseSubmission.messageId],
+                                  timelineProofIds: [output.reviewResponseSubmission.timelineLogId],
+                                } : null,
+                                output.resultMessageIds?.length ? {
+                                  id: 'result-messages',
+                                  label: 'Result Messages',
+                                  title: `${output.resultMessageIds.length} transcript message(s)`,
+                                  detail: `${output.agentId || 'agent'} / ${output.actionLabel || 'agent action'}`,
+                                  proofIds: output.resultMessageIds,
+                                  chatProofIds: output.resultMessageIds,
+                                  timelineProofIds: [],
+                                } : null,
+                              ].filter(Boolean);
+                              if (!rows.length) {
+                                return (
+                                  <div data-testid="backend-agent-autonomous-action-run-output-empty" className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">
+                                    {projectText('No Agent output returned yet')}
+                                  </div>
+                                );
+                              }
+                              return (
+                                <div data-testid="backend-agent-autonomous-action-run-output-rows" className="mt-2 space-y-1">
+                                  {rows.map(row => {
+                                    const proofIds = Array.from(new Set((row.proofIds || []).filter(Boolean)));
+                                    const chatProofIds = Array.from(new Set((row.chatProofIds || []).filter(Boolean)));
+                                    const timelineProofIds = Array.from(new Set((row.timelineProofIds || []).filter(Boolean)));
+                                    return (
+                                      <div key={`agent-autonomous-output-${row.id}`} data-testid={`backend-agent-autonomous-action-output-${row.id}`} className="border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                        <div className="grid grid-cols-[1fr_auto] gap-2">
+                                          <div className="min-w-0">
+                                            <div className="font-serif text-sm leading-tight truncate">{projectText(row.label)}: {projectText(row.title || 'output')}</div>
+                                            <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] truncate">{projectText(row.detail || 'backend output')}</div>
+                                          </div>
+                                          <span className="node-status-tag bg-[#59684b] text-white">{proofIds.length}</span>
+                                        </div>
+                                        <div className="mt-1 flex flex-wrap gap-2">
+                                          <button
+                                            type="button"
+                                            data-testid={`agent-autonomous-action-output-chat-proof-${row.id}`}
+                                            onClick={() => openProjectChatProof(activeProject, chatProofIds, 'main')}
+                                            disabled={!chatProofIds.length}
+                                            className="inline-flex items-center justify-center gap-1 border border-[#7b6542] bg-[#efe2bd] px-2 py-1 font-mono text-[7px] uppercase tracking-widest text-[#251b13] hover:border-[#251b13] disabled:opacity-40 disabled:cursor-not-allowed"
+                                          >
+                                            <MessageSquare size={10} /> Output chat proof
+                                          </button>
+                                          <button
+                                            type="button"
+                                            data-testid={`agent-autonomous-action-output-timeline-proof-${row.id}`}
+                                            onClick={() => openProjectTimelineProof(timelineProofIds)}
+                                            disabled={!timelineProofIds.length}
+                                            className="inline-flex items-center justify-center gap-1 border border-[#7b6542] bg-[#efe2bd] px-2 py-1 font-mono text-[7px] uppercase tracking-widest text-[#251b13] hover:border-[#251b13] disabled:opacity-40 disabled:cursor-not-allowed"
+                                          >
+                                            <ScrollText size={10} /> Output timeline proof
+                                          </button>
+                                        </div>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              );
+                            })()}
                           </div>
                         )}
                         <div className="mt-2 space-y-2">
@@ -17532,7 +22366,7 @@ export default function EngineWorkspace() {
                           <div className="border border-[#d8c99f] bg-[#efe2bd]/50 px-2 py-1">
                             <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">{projectText('Autopilot')}</div>
                             <div className="font-serif text-base leading-tight">
-                              {projectText(backendLatestAutopilotProcessed.map(item => [item.sessionId, item.tickId || item.autonomousRunControlSessionTick?.id, item.targetStageId || item.autonomousRunControlSessionTick?.targetControl?.targetStageId].filter(Boolean).join(' / ')).slice(0, 2).join(' / ') || 'none due')}
+                              {projectText(backendLatestAutopilotProcessed.map(item => [item.sessionId, item.tickId || item.autonomousRunControlSessionTick?.id, item.targetStageId || item.autonomousRunControlSessionTick?.targetControl?.targetStageId, item.providerEvidenceSearch?.status || item.autonomousRunControlSessionTick?.providerEvidenceSearch?.status].filter(Boolean).join(' / ')).slice(0, 2).join(' / ') || 'none due')}
                             </div>
                           </div>
                           <div className="border border-[#d8c99f] bg-[#efe2bd]/50 px-2 py-1">
@@ -17603,6 +22437,7 @@ export default function EngineWorkspace() {
                     </button>
                     <button
                       type="button"
+                      data-testid="backend-sync-manager-view"
                       onClick={refreshBackendManagerView}
                       disabled={backendStation.loading}
                       className="inline-flex items-center justify-center gap-2 border border-[#7b6542] bg-[#efe2bd] px-3 py-2 font-mono text-[8px] uppercase tracking-widest text-[#251b13] hover:border-[#251b13] disabled:opacity-50"
@@ -17698,6 +22533,15 @@ export default function EngineWorkspace() {
                       className="inline-flex items-center justify-center gap-2 border border-[#7b6542] bg-[#efe2bd] px-3 py-2 font-mono text-[8px] uppercase tracking-widest text-[#251b13] hover:border-[#251b13] disabled:opacity-50"
                     >
                       <ClipboardList size={13} /> Sync Agent Queue
+                    </button>
+                    <button
+                      type="button"
+                      data-testid="backend-sync-collaboration-intent-queue"
+                      onClick={() => syncBackendCollaborationIntentQueue({ silent: false })}
+                      disabled={backendStation.loading}
+                      className="inline-flex items-center justify-center gap-2 border border-[#7b6542] bg-[#efe2bd] px-3 py-2 font-mono text-[8px] uppercase tracking-widest text-[#251b13] hover:border-[#251b13] disabled:opacity-50"
+                    >
+                      <ClipboardList size={13} /> Sync Intent Queue
                     </button>
                     <button
                       type="button"
@@ -18372,6 +23216,64 @@ export default function EngineWorkspace() {
                     </div>
                   ))}
                 </div>
+                {collaborationProofRows.length > 0 && (
+                  <div data-testid="group-chat-collaboration-proof-rows" className="mt-4 border border-[#d8c99f] bg-[#efe2bd]/45 p-3">
+                    <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                      <div>
+                        <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">Collaboration Proof Rows</div>
+                        <div className="font-serif text-lg leading-tight">Submissions, evidence searches, reviews, revisions, and final delivery traced back to transcript proof.</div>
+                      </div>
+                      <span className={`node-status-tag ${
+                        collaborationProofSourceLabel === 'backend-backed'
+                          ? 'bg-[#59684b] text-white'
+                          : collaborationProofSourceLabel === 'backend-required'
+                            ? 'bg-[#8f1e18] text-white'
+                            : 'bg-[#251b13] text-[#efe2bd]'
+                      }`}>
+                        {collaborationProofSourceLabel}
+                      </span>
+                    </div>
+                    <div className="mt-3 space-y-2">
+                      {collaborationProofRows.map(row => (
+                        <div key={row.id} data-testid={`transcript-collaboration-proof-row-${row.safeId}`} className="grid grid-cols-[1fr_auto] gap-2 border border-[#d8c99f] bg-[#f7edcf] px-2 py-2">
+                          <div className="min-w-0">
+                            <div className="flex min-w-0 flex-wrap items-center gap-1">
+                              <span className="node-status-tag bg-[#251b13] text-[#efe2bd]">{row.typeLabel}</span>
+                              <span className="node-status-tag bg-[#d8c99f] text-[#251b13]">{row.status}</span>
+                            </div>
+                            <div className="mt-1 font-serif text-sm leading-tight truncate">{row.title}</div>
+                            <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] truncate">
+                              {row.actor} / {row.stageLabel} / {row.route || 'route pending'}
+                            </div>
+                            <div className="font-mono text-[7px] uppercase tracking-widest text-[#9b875c] truncate">
+                              {String(row.detail || '')}
+                            </div>
+                          </div>
+                          <div className="flex shrink-0 flex-col gap-1">
+                            <button
+                              type="button"
+                              data-testid={`transcript-collaboration-proof-chat-${row.safeId}`}
+                              onClick={() => openProjectChatProof(activeProject, row.chatProofIds, row.channelId || 'main')}
+                              disabled={!row.chatProofIds.length}
+                              className="inline-flex items-center justify-center gap-1 border border-[#7b6542] bg-[#efe2bd] px-2 py-1 font-mono text-[7px] uppercase tracking-widest text-[#251b13] hover:border-[#251b13] disabled:opacity-40 disabled:cursor-not-allowed"
+                            >
+                              <MessageSquare size={10} /> Chat proof
+                            </button>
+                            <button
+                              type="button"
+                              data-testid={`transcript-collaboration-proof-timeline-${row.safeId}`}
+                              onClick={() => openProjectTimelineProof(row.timelineLogIds)}
+                              disabled={!row.timelineLogIds.length}
+                              className="inline-flex items-center justify-center gap-1 border border-[#7b6542] bg-[#efe2bd] px-2 py-1 font-mono text-[7px] uppercase tracking-widest text-[#251b13] hover:border-[#251b13] disabled:opacity-40 disabled:cursor-not-allowed"
+                            >
+                              <ScrollText size={10} /> Timeline proof
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
 
               {changeLedger.length > 0 && (
@@ -18921,6 +23823,264 @@ export default function EngineWorkspace() {
                       </div>
                     </div>
                   )}
+                  {backendTranscriptChannelSummary && (
+                    <div data-testid="proof-map-transcript-channel-routes" className="border border-[#d8c99f] bg-[#efe2bd]/55 p-3">
+                      <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <CheckCircle2 size={14} className={backendTranscriptChannelSummary.readyForBackendTranscriptChannels ? 'text-green-700' : 'text-[#8f1e18]'} />
+                            <div className="font-serif text-base leading-tight">Backend transcript channel routes</div>
+                            <span className={`node-status-tag ${backendTranscriptChannelSummary.readyForBackendTranscriptChannels ? 'bg-green-700 text-white' : 'bg-[#8f1e18] text-white'}`}>
+                              {backendTranscriptChannelSummary.readyForBackendTranscriptChannels ? 'Ready' : 'Needs proof'}
+                            </span>
+                          </div>
+                          <div className="mt-1 font-mono text-[8px] uppercase text-[#7d6a49] leading-relaxed">
+                            Channel creation / {backendTranscriptChannelSummary.readyCount ?? 0} ready of {backendTranscriptChannelSummary.count ?? 0} routes / latest #{backendTranscriptChannelSummary.latestChannelId || 'none'}
+                          </div>
+                          <div className="mt-1 font-mono text-[8px] uppercase text-[#9b875c] leading-relaxed break-words">
+                            Route: {backendLatestTranscriptChannelRoute?.apiPath || `/projects/${activeProject.id}/transcripts`}
+                          </div>
+                        </div>
+                        <div className="flex shrink-0 flex-wrap gap-2 md:justify-end">
+                          <button
+                            type="button"
+                            data-testid="proof-map-transcript-channel-chat-open"
+                            onClick={() => openProjectChatProof(activeProject, backendTranscriptChannelChatProofIds, backendLatestTranscriptChannelRoute?.channelId || 'main')}
+                            disabled={!backendTranscriptChannelChatProofIds.length}
+                            className="inline-flex items-center gap-1 border border-[#d8c99f] px-2 py-1 font-mono text-[8px] uppercase text-[#6b5a3d] hover:border-[#8f1e18] hover:text-[#8f1e18] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                          >
+                            <MessageSquare size={10} />
+                            Channel chat proof
+                          </button>
+                          <button
+                            type="button"
+                            data-testid="proof-map-transcript-channel-timeline-open"
+                            onClick={() => openProjectTimelineProof(backendTranscriptChannelTimelineIds)}
+                            disabled={!backendTranscriptChannelTimelineIds.length}
+                            className="inline-flex items-center gap-1 border border-[#d8c99f] px-2 py-1 font-mono text-[8px] uppercase text-[#6b5a3d] hover:border-[#8f1e18] hover:text-[#8f1e18] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                          >
+                            <ScrollText size={10} />
+                            Channel timeline proof
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                  {backendAgentMessageSummary && (
+                    <div data-testid="proof-map-agent-message-routes" className="border border-[#d8c99f] bg-[#efe2bd]/55 p-3">
+                      <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <CheckCircle2 size={14} className={backendAgentMessageSummary.readyForAgentMessageDelivery ? 'text-green-700' : 'text-[#8f1e18]'} />
+                            <div className="font-serif text-base leading-tight">Agent-to-Agent message routes</div>
+                            <span className={`node-status-tag ${backendAgentMessageSummary.readyForAgentMessageDelivery ? 'bg-green-700 text-white' : 'bg-[#8f1e18] text-white'}`}>
+                              {backendAgentMessageSummary.readyForAgentMessageDelivery ? 'Ready' : 'Needs proof'}
+                            </span>
+                          </div>
+                          <div className="mt-1 font-mono text-[8px] uppercase text-[#7d6a49] leading-relaxed">
+                            Agent messages / {backendAgentMessageSummary.readyCount ?? 0} ready of {backendAgentMessageSummary.count ?? 0} routes / {backendAgentMessageSummary.deliveredCount ?? 0} delivered / {backendAgentMessageSummary.senderWorklogCount ?? 0} sender worklogs
+                          </div>
+                          <div className="mt-1 font-mono text-[8px] uppercase text-[#9b875c] leading-relaxed break-words">
+                            Route: {backendLatestAgentMessageRoute?.apiPath || `/projects/${activeProject.id}/transcripts/main`}
+                          </div>
+                        </div>
+                        <div className="flex shrink-0 flex-wrap gap-2 md:justify-end">
+                          <button
+                            type="button"
+                            data-testid="proof-map-agent-message-chat-open"
+                            onClick={() => openProjectChatProof(activeProject, backendAgentMessageChatProofIds, backendLatestAgentMessageRoute?.channelId || 'main')}
+                            disabled={!backendAgentMessageChatProofIds.length}
+                            className="inline-flex items-center gap-1 border border-[#d8c99f] px-2 py-1 font-mono text-[8px] uppercase text-[#6b5a3d] hover:border-[#8f1e18] hover:text-[#8f1e18] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                          >
+                            <MessageSquare size={10} />
+                            Agent message chat proof
+                          </button>
+                          <button
+                            type="button"
+                            data-testid="proof-map-agent-message-timeline-open"
+                            onClick={() => openProjectTimelineProof(backendAgentMessageTimelineProofIds)}
+                            disabled={!backendAgentMessageTimelineProofIds.length}
+                            className="inline-flex items-center gap-1 border border-[#d8c99f] px-2 py-1 font-mono text-[8px] uppercase text-[#6b5a3d] hover:border-[#8f1e18] hover:text-[#8f1e18] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                          >
+                            <ScrollText size={10} />
+                            Agent message timeline proof
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                  {backendCollaborationIntentQueue && (
+                    <div data-testid="proof-map-collaboration-intent-queue" className="border border-[#d8c99f] bg-[#efe2bd]/55 p-3">
+                      <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <CheckCircle2 size={14} className={backendCollaborationIntentQueue.readyForLocalPilotIntentQueue ? 'text-green-700' : 'text-[#8f1e18]'} />
+                            <div className="font-serif text-base leading-tight">Collaboration Intent Queue</div>
+                            <span className={`node-status-tag ${backendCollaborationIntentQueue.readyForLocalPilotIntentQueue ? 'bg-green-700 text-white' : 'bg-[#8f1e18] text-white'}`}>
+                              {backendCollaborationIntentQueue.readyForLocalPilotIntentQueue ? 'Ready' : 'Needs proof'}
+                            </span>
+                          </div>
+                          <div className="mt-1 font-mono text-[8px] uppercase text-[#7d6a49] leading-relaxed">
+                            Intent routing / {backendCollaborationIntentQueue.summary?.runnableCount ?? 0} runnable of {backendCollaborationIntentQueue.summary?.rowCount ?? backendCollaborationIntentQueue.rows?.length ?? 0} rows / {backendCollaborationIntentQueue.summary?.agentInitiativeIntentCount ?? 0} Agent initiatives
+                          </div>
+                          <div className="mt-1 font-mono text-[8px] uppercase text-[#9b875c] leading-relaxed break-words">
+                            Route: {backendCollaborationIntentQueueRoute?.apiPath || backendCollaborationIntentQueue.backendRoutes?.collaborationIntentQueue || `/projects/${activeProject.id}/collaboration-intent-queue`}
+                          </div>
+                        </div>
+                        <div className="flex shrink-0 flex-wrap gap-2 md:justify-end">
+                          <button
+                            type="button"
+                            data-testid="proof-map-collaboration-intent-chat-open"
+                            onClick={() => openProjectChatProof(activeProject, backendCollaborationIntentQueueChatProofIds, backendCollaborationIntentQueueRoute?.channelId || 'main')}
+                            disabled={!backendCollaborationIntentQueueChatProofIds.length}
+                            className="inline-flex items-center gap-1 border border-[#d8c99f] px-2 py-1 font-mono text-[8px] uppercase text-[#6b5a3d] hover:border-[#8f1e18] hover:text-[#8f1e18] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                          >
+                            <MessageSquare size={10} />
+                            Intent chat proof
+                          </button>
+                          <button
+                            type="button"
+                            data-testid="proof-map-collaboration-intent-timeline-open"
+                            onClick={() => openProjectTimelineProof(backendCollaborationIntentQueueTimelineIds)}
+                            disabled={!backendCollaborationIntentQueueTimelineIds.length}
+                            className="inline-flex items-center gap-1 border border-[#d8c99f] px-2 py-1 font-mono text-[8px] uppercase text-[#6b5a3d] hover:border-[#8f1e18] hover:text-[#8f1e18] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                          >
+                            <ScrollText size={10} />
+                            Intent timeline proof
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                  {backendSubmissionReviewWorkflow && (
+                    <div data-testid="proof-map-submission-review-workflow" className="border border-[#d8c99f] bg-[#efe2bd]/55 p-3">
+                      <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <CheckCircle2 size={14} className={backendSubmissionReviewWorkflow.readyForPrivatePilotReview ? 'text-green-700' : 'text-[#8f1e18]'} />
+                            <div className="font-serif text-base leading-tight">Submission Review Workflow</div>
+                            <span className={`node-status-tag ${backendSubmissionReviewWorkflow.readyForPrivatePilotReview ? 'bg-green-700 text-white' : 'bg-[#8f1e18] text-white'}`}>
+                              {backendSubmissionReviewWorkflow.readyForPrivatePilotReview ? 'Ready' : 'Needs review'}
+                            </span>
+                          </div>
+                          <div className="mt-1 font-mono text-[8px] uppercase text-[#7d6a49] leading-relaxed">
+                            Review closure / {backendSubmissionReviewWorkflow.summary?.reviewCount ?? backendSubmissionReviewWorkflowRoute?.reviewCount ?? 0} reviews / {backendSubmissionReviewWorkflow.summary?.revisionResponseCount ?? backendSubmissionReviewWorkflowRoute?.revisionCount ?? 0} revisions / {backendSubmissionReviewWorkflow.summary?.acceptedFinalDeliverableCount ?? backendSubmissionReviewWorkflowRoute?.acceptedCount ?? 0} final accepted
+                          </div>
+                          <div className="mt-1 font-mono text-[8px] uppercase text-[#9b875c] leading-relaxed break-words">
+                            Route: {backendSubmissionReviewWorkflowRoute?.apiPath || backendSubmissionReviewWorkflow.backendRoutes?.submissionReviewWorkflow || `/projects/${activeProject.id}/submission-review-workflow`}
+                          </div>
+                        </div>
+                        <div className="flex shrink-0 flex-wrap gap-2 md:justify-end">
+                          <button
+                            type="button"
+                            data-testid="proof-map-submission-review-chat-open"
+                            onClick={() => openProjectChatProof(activeProject, backendSubmissionReviewWorkflowChatProofIds, backendSubmissionReviewWorkflowRoute?.channelId || 'main')}
+                            disabled={!backendSubmissionReviewWorkflowChatProofIds.length}
+                            className="inline-flex items-center gap-1 border border-[#d8c99f] px-2 py-1 font-mono text-[8px] uppercase text-[#6b5a3d] hover:border-[#8f1e18] hover:text-[#8f1e18] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                          >
+                            <MessageSquare size={10} />
+                            Review chat proof
+                          </button>
+                          <button
+                            type="button"
+                            data-testid="proof-map-submission-review-timeline-open"
+                            onClick={() => openProjectTimelineProof(backendSubmissionReviewWorkflowTimelineIds)}
+                            disabled={!backendSubmissionReviewWorkflowTimelineIds.length}
+                            className="inline-flex items-center gap-1 border border-[#d8c99f] px-2 py-1 font-mono text-[8px] uppercase text-[#6b5a3d] hover:border-[#8f1e18] hover:text-[#8f1e18] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                          >
+                            <ScrollText size={10} />
+                            Review timeline proof
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                  {backendProductTeamAcceptanceChainRoute && (
+                    <div data-testid="proof-map-product-team-acceptance-chain" className="border border-[#d8c99f] bg-[#efe2bd]/55 p-3">
+                      <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <CheckCircle2 size={14} className={backendProductTeamAcceptanceChainReady ? 'text-green-700' : 'text-[#8f1e18]'} />
+                            <div className="font-serif text-base leading-tight">Generic Product-Team Acceptance Chain</div>
+                            <span className={`node-status-tag ${backendProductTeamAcceptanceChainReady ? 'bg-green-700 text-white' : 'bg-[#8f1e18] text-white'}`}>
+                              {backendProductTeamAcceptanceChainReady ? 'Ready' : 'Chain open'}
+                            </span>
+                          </div>
+                          <div className="mt-1 font-mono text-[8px] uppercase text-[#7d6a49] leading-relaxed">
+                            C/A acceptance / {backendProductTeamAcceptanceChainSummary?.readyCount ?? backendProductTeamAcceptanceChainRoute.readyStageIds?.length ?? 0} ready of {backendProductTeamAcceptanceChainSummary?.rowCount ?? backendProductTeamAcceptanceChainRoute.stageRows?.length ?? 0} stages / {backendProductTeamAcceptanceChainRoute.readyForBsideProductTeamRun ? 'B-side loop ready' : 'B-side loop open'}
+                          </div>
+                          <div className="mt-1 font-mono text-[8px] uppercase text-[#9b875c] leading-relaxed break-words">
+                            Route: {backendProductTeamAcceptanceChainRoute.apiPath || `/projects/${activeProject.id}/product-team-delivery-trace`}
+                          </div>
+                        </div>
+                        <div className="flex shrink-0 flex-wrap gap-2 md:justify-end">
+                          <button
+                            type="button"
+                            data-testid="proof-map-acceptance-chain-chat-open"
+                            onClick={() => openProjectChatProof(activeProject, backendProductTeamAcceptanceChainChatProofIds, backendProductTeamAcceptanceChainRoute.channelId || 'main')}
+                            disabled={!backendProductTeamAcceptanceChainChatProofIds.length}
+                            className="inline-flex items-center gap-1 border border-[#d8c99f] px-2 py-1 font-mono text-[8px] uppercase text-[#6b5a3d] hover:border-[#8f1e18] hover:text-[#8f1e18] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                          >
+                            <MessageSquare size={10} />
+                            Chain chat proof
+                          </button>
+                          <button
+                            type="button"
+                            data-testid="proof-map-acceptance-chain-timeline-open"
+                            onClick={() => openProjectTimelineProof(backendProductTeamAcceptanceChainTimelineIds)}
+                            disabled={!backendProductTeamAcceptanceChainTimelineIds.length}
+                            className="inline-flex items-center gap-1 border border-[#d8c99f] px-2 py-1 font-mono text-[8px] uppercase text-[#6b5a3d] hover:border-[#8f1e18] hover:text-[#8f1e18] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                          >
+                            <ScrollText size={10} />
+                            Chain timeline proof
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                  {backendProductTeamDeliveryTrace && (
+                    <div data-testid="proof-map-product-team-delivery-trace" className="border border-[#d8c99f] bg-[#efe2bd]/55 p-3">
+                      <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <CheckCircle2 size={14} className={backendProductTeamDeliveryTrace.readyForPrivatePilotDelivery ? 'text-green-700' : 'text-[#8f1e18]'} />
+                            <div className="font-serif text-base leading-tight">Product Team Delivery Trace</div>
+                            <span className={`node-status-tag ${backendProductTeamDeliveryTrace.readyForPrivatePilotDelivery ? 'bg-green-700 text-white' : 'bg-[#8f1e18] text-white'}`}>
+                              {backendProductTeamDeliveryTrace.readyForPrivatePilotDelivery ? 'Ready' : 'Trace open'}
+                            </span>
+                          </div>
+                          <div className="mt-1 font-mono text-[8px] uppercase text-[#7d6a49] leading-relaxed">
+                            Delivery trace / {backendProductTeamDeliveryTrace.summary?.readyCount ?? 0} ready of {backendProductTeamDeliveryTrace.summary?.rowCount ?? backendProductTeamDeliveryTraceRoute?.stageCount ?? 0} stages / {backendProductTeamDeliveryTrace.summary?.acceptedFinalDeliverableCount ?? backendProductTeamDeliveryTraceRoute?.acceptedFinalDeliverableCount ?? 0} final accepted
+                          </div>
+                          <div className="mt-1 font-mono text-[8px] uppercase text-[#9b875c] leading-relaxed break-words">
+                            Route: {backendProductTeamDeliveryTraceRoute?.apiPath || backendProductTeamDeliveryTrace.backendRoutes?.productTeamDeliveryTrace || `/projects/${activeProject.id}/product-team-delivery-trace`}
+                          </div>
+                        </div>
+                        <div className="flex shrink-0 flex-wrap gap-2 md:justify-end">
+                          <button
+                            type="button"
+                            data-testid="proof-map-delivery-trace-chat-open"
+                            onClick={() => openProjectChatProof(activeProject, backendProductTeamDeliveryTraceChatProofIds, backendProductTeamDeliveryTraceRoute?.channelId || 'main')}
+                            disabled={!backendProductTeamDeliveryTraceChatProofIds.length}
+                            className="inline-flex items-center gap-1 border border-[#d8c99f] px-2 py-1 font-mono text-[8px] uppercase text-[#6b5a3d] hover:border-[#8f1e18] hover:text-[#8f1e18] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                          >
+                            <MessageSquare size={10} />
+                            Delivery chat proof
+                          </button>
+                          <button
+                            type="button"
+                            data-testid="proof-map-delivery-trace-timeline-open"
+                            onClick={() => openProjectTimelineProof(backendProductTeamDeliveryTraceTimelineIds)}
+                            disabled={!backendProductTeamDeliveryTraceTimelineIds.length}
+                            className="inline-flex items-center gap-1 border border-[#d8c99f] px-2 py-1 font-mono text-[8px] uppercase text-[#6b5a3d] hover:border-[#8f1e18] hover:text-[#8f1e18] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                          >
+                            <ScrollText size={10} />
+                            Delivery timeline proof
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
                   {managerProofMapRows.map(row => (
                     <div key={`proof-map-${row.check.id}`} data-testid={`proof-map-${row.check.id}`} className="border border-[#d8c99f] bg-[#efe2bd]/55 p-3">
                       <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
@@ -19292,8 +24452,8 @@ export default function EngineWorkspace() {
                       ].filter(Boolean);
                       const worklogProofChannel = latestWorklog?.channelId || worklogTask?.sourceChannelId || latestAgentWorker?.channelId || 'main';
                       const messageTargetOptions = activeProject.team.filter(member => member.id !== agent.id);
-                      const agentMessageDraft = agentMessageDrafts[agent.id] || {};
-                      const agentWorkDraft = agentWorkDrafts[agent.id] || {};
+                      const agentMessageDraft = agentMessageDraftFor(agent.id, activeProject?.id);
+                      const agentWorkDraft = agentWorkDraftFor(agent.id, activeProject?.id);
                       const selectedMessageTarget = agentMessageDraft.targetAgentId || messageTargetOptions[0]?.id || '';
                       const agentOwnedTasks = activeProject.tasks.filter(task => (
                         task.ownerId === agent.id
@@ -19314,7 +24474,7 @@ export default function EngineWorkspace() {
                         ...agentOwnedTasks.flatMap(task => taskEvidence(task).timelineIds),
                       ].filter(Boolean);
                       const agentFocusOpen = selectedAgentFocusId === agent.id;
-                      const agentBackendDashboard = agentDashboardSnapshots[agent.id] || null;
+                      const agentBackendDashboard = agentDashboardSnapshotFor(agent.id, activeProject?.id);
                       const backendAgentDashboardRequired = shouldRequireBackendAgentDashboard(activeProject);
                       const backendAgentDashboardMissing = backendAgentDashboardRequired && !agentBackendDashboard;
                       const agentDashboardSourceLabel = backendAgentDashboardMissing
@@ -19384,7 +24544,7 @@ export default function EngineWorkspace() {
                               )}
                               {latestAgentWorker && (
                                 <div data-testid={`agent-priority-${agent.id}`} className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18] leading-relaxed">
-                                  Priority {latestAgentWorker.managementPriority || 0} / {latestAgentWorker.trigger || 'agent-worker'}{priorityReasons.length ? ` / ${priorityReasons.slice(0, 2).join(' / ')}` : ' / routine cadence'}{latestAgentWorker.managementResponseCount ? ` / responded to ${(latestAgentWorker.managementResponseTargetIds || []).map(id => agentNameById[id] || id).filter(Boolean).join(' / ') || 'manager'}` : ''}
+                                  Priority {latestAgentWorker.managementPriority || 0} / {latestAgentWorker.trigger || 'agent-worker'}{priorityReasons.length ? ` / ${priorityReasons.slice(0, 2).join(' / ')}` : ' / routine cadence'}{latestAgentWorker.managementResponseCount ? ` / RESPONDED TO ${(latestAgentWorker.managementResponseTargetIds || []).map(id => agentNameById[id] || id).filter(Boolean).join(' / ') || 'manager'}` : ''}
                                 </div>
                               )}
                               <div data-testid={`agent-state-detail-${agent.id}`} className="grid grid-cols-1 md:grid-cols-3 gap-2 pt-2">
@@ -20461,10 +25621,14 @@ export default function EngineWorkspace() {
       decisions: chatChannels.filter(c => c.category === 'decisions'),
       voice: chatChannels.filter(c => c.category === 'voice'),
     };
+    const canCreateLocalChannel = allowLocalRuntimeFallbackForActiveProject(activeProject);
+    const canCreateChannel = Boolean(activeProject) && (canCreateLocalChannel || shouldAttemptBackendProjectWrite(activeProject));
 
     const shouldMerge = (prev, curr) => {
       if (!prev || prev.author !== curr.author) return false;
       if (prev.type === 'system' || curr.type === 'system') return false;
+      if (['submission', 'submission-review', 'evidence-search', 'evidence-source-review'].includes(prev.type)) return false;
+      if (['submission', 'submission-review', 'evidence-search', 'evidence-source-review'].includes(curr.type)) return false;
       return true;
     };
   const receiptSummary = (message = {}) => {
@@ -20480,6 +25644,83 @@ export default function EngineWorkspace() {
         directText: directNames.slice(0, 4).join(' / ') || 'none',
         heardOverflow: Math.max(0, heardNames.length - 4),
         directOverflow: Math.max(0, directNames.length - 4),
+      };
+    };
+    const safeMessageNodeId = (value = '') => String(value || '')
+      .replace(/[^a-zA-Z0-9_-]+/g, '-')
+      .slice(0, 90);
+    const collaborationMessageMeta = (message = {}) => {
+      if (!['submission', 'submission-review', 'evidence-search', 'evidence-source-review'].includes(message.type)) return null;
+      const projectId = activeProject.id;
+      if (message.type === 'submission') {
+        const submission = (activeProject.agentSubmissions || []).find(item => String(item.id || '') === String(message.submissionId || '')) || {};
+        const artifactType = submission.artifactType || message.artifactType || 'artifact';
+        const isRevision = artifactType === 'revision-note' || submission.respondsToReviewId || submission.revisesSubmissionId;
+        const isFinal = artifactType === 'final-deliverable' || submission.status === 'final';
+        return {
+          kind: isFinal ? 'final-deliverable' : isRevision ? 'revision' : 'submission',
+          label: isFinal ? 'Final Deliverable' : isRevision ? 'Revision Submission' : 'Agent Submission',
+          title: submission.title || message.text || artifactType.replace(/-/g, ' '),
+          detail: submission.summary || submission.reviewStatus || submission.status || 'Submitted for review',
+          status: submission.reviewStatus || submission.status || 'submitted',
+          route: projectId && message.submissionId ? `/projects/${projectId}/submissions/${message.submissionId}` : null,
+          flowNodeId: message.submissionId ? `agent-submission-${message.submissionId}` : null,
+          timelineLogIds: Array.from(new Set([submission.timelineLogId, ...(submission.timelineLogIds || [])].filter(Boolean))),
+          eventIds: Array.from(new Set([submission.eventId, ...(submission.eventIds || [])].filter(Boolean))),
+          proofIds: [message.id].filter(Boolean),
+          entityId: message.submissionId || message.id,
+          subject: artifactType,
+        };
+      }
+      if (message.type === 'submission-review') {
+        const review = (activeProject.submissionReviews || []).find(item => String(item.id || '') === String(message.reviewId || '')) || {};
+        const submission = (activeProject.agentSubmissions || []).find(item => String(item.id || '') === String(message.submissionId || review.submissionId || '')) || {};
+        return {
+          kind: 'submission-review',
+          label: 'Submission Review',
+          title: submission.title ? `Review: ${submission.title}` : message.text || 'Submission review',
+          detail: review.comments || (review.requestedChanges || []).join(' / ') || message.text || 'Review recorded',
+          status: review.verdict || review.status || 'reviewed',
+          route: projectId && message.reviewId ? `/projects/${projectId}/submission-reviews/${message.reviewId}` : null,
+          flowNodeId: message.reviewId ? `submission-review-${message.reviewId}` : null,
+          timelineLogIds: Array.from(new Set([review.timelineLogId, ...(review.timelineLogIds || [])].filter(Boolean))),
+          eventIds: Array.from(new Set([review.eventId, ...(review.eventIds || [])].filter(Boolean))),
+          proofIds: [message.id].filter(Boolean),
+          entityId: message.reviewId || message.id,
+          subject: review.verdict || review.status || 'review',
+        };
+      }
+      if (message.type === 'evidence-source-review') {
+        const review = (activeProject.evidenceSourceReviews || []).find(item => String(item.id || '') === String(message.reviewId || '')) || {};
+        return {
+          kind: 'evidence-source-review',
+          label: 'Source Review',
+          title: review.sourceTitle || message.text || 'Evidence source review',
+          detail: review.comments || review.decision || 'Source review recorded',
+          status: review.decision || review.status || 'reviewed',
+          route: projectId ? `/projects/${projectId}/evidence-source-review-workflow#${message.reviewId || ''}` : null,
+          flowNodeId: 'evidence-source-review-workflow',
+          timelineLogIds: Array.from(new Set([review.timelineLogId, ...(review.timelineLogIds || [])].filter(Boolean))),
+          eventIds: Array.from(new Set([review.eventId, ...(review.eventIds || [])].filter(Boolean))),
+          proofIds: [message.id].filter(Boolean),
+          entityId: message.reviewId || message.id,
+          subject: review.sourceKey || 'source',
+        };
+      }
+      const evidenceSearch = (activeProject.evidenceSearches || []).find(item => String(item.id || '') === String(message.evidenceSearchId || '')) || {};
+      return {
+        kind: 'evidence-search',
+        label: 'Evidence Search',
+        title: evidenceSearch.query || message.text || 'Evidence search',
+        detail: evidenceSearch.evidenceJudgement?.summary || evidenceSearch.qualitySummary?.status || evidenceSearch.purpose || 'Evidence search recorded',
+        status: evidenceSearch.evidenceJudgement?.status || evidenceSearch.status || 'recorded',
+        route: projectId && message.evidenceSearchId ? `/projects/${projectId}/evidence-searches/${message.evidenceSearchId}` : null,
+        flowNodeId: message.evidenceSearchId ? `evidence-search-${message.evidenceSearchId}` : null,
+        timelineLogIds: Array.from(new Set([evidenceSearch.timelineLogId, ...(evidenceSearch.timelineLogIds || [])].filter(Boolean))),
+        eventIds: Array.from(new Set([evidenceSearch.eventId, ...(evidenceSearch.eventIds || [])].filter(Boolean))),
+        proofIds: [message.id].filter(Boolean),
+        entityId: message.evidenceSearchId || message.id,
+        subject: `${evidenceSearch.sourceCount || evidenceSearch.sources?.length || 0} source(s)`,
       };
     };
 
@@ -20524,8 +25765,22 @@ export default function EngineWorkspace() {
                 <button data-testid="project-scene-back" onClick={exitProjectScene} className="text-[#bcae86] hover:text-[#efe2bd] transition-colors"><ChevronLeft size={16} /></button>
                 <span className="font-serif text-lg truncate">{activeProject.name}</span>
               </div>
-              <button onClick={createMockChannel} className="text-[#7d6a49] hover:text-[#efe2bd] transition-colors"><Plus size={15} /></button>
+              <button
+                type="button"
+                data-testid="project-chat-create-transcript-channel"
+                onClick={createProjectTranscriptChannel}
+                disabled={!canCreateChannel}
+                title={canCreateLocalChannel ? 'Create offline channel' : 'Create backend transcript channel'}
+                className="text-[#7d6a49] hover:text-[#efe2bd] transition-colors disabled:opacity-35 disabled:cursor-not-allowed"
+              >
+                <Plus size={15} />
+              </button>
             </div>
+            {!canCreateChannel && (
+              <div data-testid="backend-channel-create-required" className="border-b border-[#3a2a1c] bg-[#251b13] px-4 py-2 font-mono text-[8px] uppercase tracking-widest text-[#bcae86] leading-relaxed">
+                Backend channel contract unavailable; local-only rooms are disabled for this project.
+              </div>
+            )}
 
             <div className="flex-1 overflow-y-auto p-2 space-y-4">
               {Object.entries(channelsByCategory).map(([cat, channels]) => channels.length > 0 && (
@@ -20639,6 +25894,90 @@ export default function EngineWorkspace() {
                       {message.visibility?.receiptCount > 0 && (
                         <div className="mt-1 font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">
                           {chatText('Heard by')} {receipts.heardText}{receipts.heardOverflow ? ` +${receipts.heardOverflow}` : ''} / {chatText('Direct target')} {receipts.directText}{receipts.directOverflow ? ` +${receipts.directOverflow}` : ''}
+                        </div>
+                      )}
+                    </div>
+                  );
+                }
+
+                const collaborationMeta = collaborationMessageMeta(message);
+                if (collaborationMeta) {
+                  const receipts = receiptSummary(message);
+                  const nodeTestId = `chat-collaboration-node-${collaborationMeta.kind}-${safeMessageNodeId(collaborationMeta.entityId)}`;
+                  return (
+                    <div
+                      key={message.id}
+                      data-testid={nodeTestId}
+                      data-chat-proof-id={message.id}
+                      className={`node-card--dark my-3 p-4 border-l-4 chat-msg-enter ${isFocusedProof ? 'border-l-[#b9782b] ring-2 ring-[#b9782b] ring-offset-2 ring-offset-[#171411]' : 'border-l-[#d8c99f]'}`}
+                    >
+                      <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-1 mb-2">
+                            <span className="node-status-tag bg-[#d8c99f] text-[#251b13]">{collaborationMeta.label}</span>
+                            <span className="node-status-tag bg-[#251b13] text-[#efe2bd]">{String(collaborationMeta.status || 'recorded')}</span>
+                            <span className="node-status-tag bg-[#59684b] text-white">{String(collaborationMeta.subject || 'proof')}</span>
+                          </div>
+                          <div className="font-serif text-lg leading-tight text-[#efe2bd]">{String(collaborationMeta.title || message.text || 'Collaboration node')}</div>
+                          <p className="mt-1 font-serif text-sm leading-relaxed text-[#d8c99f]">{chatText(message.text)}</p>
+                          <div className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#7d6a49] break-words">
+                            Route: {collaborationMeta.route || 'backend route pending'}
+                          </div>
+                          <div className="mt-1 font-mono text-[8px] uppercase tracking-widest text-[#7d6a49] break-words">
+                            {String(collaborationMeta.detail || '')}
+                          </div>
+                        </div>
+                        <div className="flex shrink-0 flex-wrap gap-1 md:justify-end">
+                          <button
+                            type="button"
+                            data-testid={`${nodeTestId}-chat-proof`}
+                            onClick={() => openProjectChatProof(activeProject, collaborationMeta.proofIds, message.channelId || 'main')}
+                            disabled={!collaborationMeta.proofIds.length}
+                            className="inline-flex items-center justify-center gap-1 border border-[#7b6542] bg-[#efe2bd] px-2 py-1 font-mono text-[7px] uppercase tracking-widest text-[#251b13] hover:border-[#251b13] disabled:opacity-40 disabled:cursor-not-allowed"
+                          >
+                            <MessageSquare size={10} /> Chat proof
+                          </button>
+                          <button
+                            type="button"
+                            data-testid={`${nodeTestId}-timeline-proof`}
+                            onClick={() => openProjectTimelineProof(collaborationMeta.timelineLogIds)}
+                            disabled={!collaborationMeta.timelineLogIds.length}
+                            className="inline-flex items-center justify-center gap-1 border border-[#7b6542] bg-[#efe2bd] px-2 py-1 font-mono text-[7px] uppercase tracking-widest text-[#251b13] hover:border-[#251b13] disabled:opacity-40 disabled:cursor-not-allowed"
+                          >
+                            <ScrollText size={10} /> Timeline proof
+                          </button>
+                          <button
+                            type="button"
+                            data-testid={`${nodeTestId}-flow-node`}
+                            onClick={() => openManagerFlowNode(collaborationMeta.flowNodeId, {
+                              project: activeProject,
+                              chatProofIds: collaborationMeta.proofIds,
+                              timelineLogIds: collaborationMeta.timelineLogIds,
+                            })}
+                            disabled={!collaborationMeta.flowNodeId}
+                            className="inline-flex items-center justify-center gap-1 border border-[#7b6542] bg-[#efe2bd] px-2 py-1 font-mono text-[7px] uppercase tracking-widest text-[#251b13] hover:border-[#251b13] disabled:opacity-40 disabled:cursor-not-allowed"
+                          >
+                            <Network size={10} /> Flow node
+                          </button>
+                        </div>
+                      </div>
+                      <div className="mt-3 grid grid-cols-3 gap-2">
+                        {[
+                          ['Chat Proof', collaborationMeta.proofIds.length],
+                          ['Timeline Proof', collaborationMeta.timelineLogIds.length],
+                          ['Event Proof', collaborationMeta.eventIds.length],
+                        ].map(([label, value]) => (
+                          <div key={`${nodeTestId}-${label}`} className="border border-[#3a2a1c] bg-[#251b13]/75 px-2 py-1">
+                            <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">{label}</div>
+                            <div className="font-serif text-sm leading-tight text-[#efe2bd]">{value}</div>
+                          </div>
+                        ))}
+                      </div>
+                      {message.visibility?.receiptCount > 0 && (
+                        <div data-testid={`${nodeTestId}-receipts`} className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#7d6a49] leading-relaxed">
+                          {chatText('Seen')} {message.visibility.receiptCount} / {chatText('Direct')} {message.visibility.directTargetCount || 0}
+                          <span className="block">{chatText('Heard by')} {receipts.heardText}{receipts.heardOverflow ? ` +${receipts.heardOverflow}` : ''}</span>
+                          <span className="block">{chatText('Direct target')} {receipts.directText}{receipts.directOverflow ? ` +${receipts.directOverflow}` : ''}</span>
                         </div>
                       )}
                     </div>
@@ -21740,6 +27079,10 @@ export default function EngineWorkspace() {
       };
     };
     const backendFlowGraph = backendStation.managerFlowGraph || backendStation.managerReadyPackage?.managerFlowGraph || null;
+    const backendTimelineProofMap = backendStation.managerDashboard?.readinessProofMap
+      || backendStation.managerReadyPackage?.managerDashboard?.readinessProofMap
+      || backendStation.managerReadyPackage?.readinessProofMap
+      || null;
     const graphProjectMatches = !backendFlowGraph?.projectId || backendFlowGraph.projectId === activeProject.id;
     const buildFallbackFlowGraph = () => {
       const agentStatusNodes = activeProject.team.map((agent, index) => {
@@ -22148,6 +27491,63 @@ export default function EngineWorkspace() {
       return `${date} ${time}`;
     };
     const selectedChatProofIds = selectedNode ? chatProofIdsFromNode(selectedNode) : [];
+    const selectedProofRouteCandidates = selectedNode ? [
+      selectedNode.route,
+      selectedNode.proofRoute,
+      selectedNode.apiPath,
+      selectedNode.backendRoutes?.runtimeAutonomyStatus,
+      selectedNode.id === 'runtime-autonomy-status' || selectedNode.source === 'runtimeAutonomyStatus'
+        ? `/projects/${activeProject.id}/runtime-autonomy-status`
+        : null,
+      selectedNode.submission?.route,
+      selectedNode.submission?.proofRoute,
+      selectedNode.submission?.apiPath,
+      ...(selectedNode.attachments || []).map(attachment => attachment.route),
+    ].filter(Boolean).map(value => String(value)) : [];
+    const selectedNodeRawProofRoute = selectedProofRouteCandidates.find(route => route.startsWith('/projects/'))
+      || selectedProofRouteCandidates[0]
+      || null;
+    const routeCollection = (key) => (backendTimelineProofMap?.[key] || []).map(route => ({ ...route, proofMapKey: key }));
+    const selectedNodeProofMapRoutes = (selectedNode ? [
+      ...routeCollection('submissionRoutes'),
+      ...routeCollection('revisionRoutes'),
+      ...routeCollection('evidenceSearchRoutes'),
+      ...routeCollection('submissionReviewRoutes'),
+      ...routeCollection('sourceReviewRoutes'),
+      ...routeCollection('evidenceSourceReviewRoutes'),
+      ...routeCollection('brainstormLayerRoutes'),
+      ...routeCollection('artifactQualityRoutes'),
+      ...routeCollection('evidenceQualityRoutes'),
+      ...routeCollection('submissionReviewWorkflowRoutes'),
+      ...routeCollection('productTeamDeliveryTraceRoutes'),
+      ...routeCollection('productTeamAcceptanceChainRoutes'),
+      ...routeCollection('productTeamMissionRunRoutes'),
+      ...routeCollection('runtimeAutonomyStatusRoutes'),
+      ...(backendTimelineProofMap?.routes || []).map(route => ({ ...route, proofMapKey: 'routes' })),
+    ] : []).filter(route => {
+      const apiPath = route.apiPath || route.route || route.proofRoute;
+      if (selectedNodeRawProofRoute && apiPath === selectedNodeRawProofRoute) return true;
+      const proofOverlap = (route.proofIds || []).some(id => selectedChatProofIds.includes(id) || (selectedNode.proofIds || []).includes(id));
+      const timelineOverlap = (route.timelineLogIds || []).some(id => (selectedNode.timelineLogIds || []).includes(id));
+      const eventOverlap = (route.eventIds || []).some(id => (selectedNode.eventIds || []).includes(id));
+      return proofOverlap || timelineOverlap || eventOverlap;
+    });
+    const selectedNodeExactProofMapRoute = selectedNodeRawProofRoute
+      ? selectedNodeProofMapRoutes.find(route => (route.apiPath || route.route || route.proofRoute) === selectedNodeRawProofRoute)
+      : null;
+    const selectedNodeProofMapRoute = selectedNodeExactProofMapRoute || selectedNodeProofMapRoutes[0] || null;
+    const selectedNodeProofRoute = selectedNodeRawProofRoute
+      || selectedNodeProofMapRoute?.apiPath
+      || selectedNodeProofMapRoute?.route
+      || selectedNodeProofMapRoute?.proofRoute
+      || null;
+    const selectedNodeProofMapKey = selectedNodeProofMapRoute?.proofMapKey || (selectedNodeProofRoute ? 'flow-node-route' : 'not-linked');
+    const openSelectedNodeProofMapRoute = () => {
+      exitProjectScene();
+      window.setTimeout(() => {
+        document.querySelector('[data-testid="manager-proof-map"]')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }, 540);
+    };
     const connectedPeople = selectedNode
       ? uniqueIds([
         ...(selectedNode.committerIds || []),
@@ -22444,6 +27844,29 @@ export default function EngineWorkspace() {
                     </div>
                   </div>
 
+                  <div data-testid="manager-flow-selected-proof-route" className="tl-detail-section border border-[#2a2118] bg-[#0d0c0b]/55 p-3">
+                    <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                      <div className="min-w-0">
+                        <div className="font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">Proof Map / API Route</div>
+                        <div className="mt-1 break-words font-mono text-[8px] uppercase tracking-widest text-[#bcae86]">
+                          {selectedNodeProofRoute || 'Backend proof route not linked yet'}
+                        </div>
+                        <div data-testid="manager-flow-selected-proof-map-coverage" className="mt-1 font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">
+                          Coverage: {selectedNodeProofMapKey} / matches {selectedNodeProofMapRoutes.length} / chat {selectedChatProofIds.length} / timeline {(selectedNode.timelineLogIds || []).length} / ledger {(selectedNode.eventIds || []).length}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        data-testid="manager-flow-selected-proof-route-open"
+                        onClick={openSelectedNodeProofMapRoute}
+                        disabled={!selectedNodeProofRoute}
+                        className="inline-flex shrink-0 items-center gap-1 border border-[#3a2a1c] px-3 py-2 font-mono text-[8px] uppercase tracking-widest text-[#bcae86] hover:border-[#7b6542] hover:text-[#efe2bd] disabled:opacity-40"
+                      >
+                        <Network size={11} /> Proof Map
+                      </button>
+                    </div>
+                  </div>
+
                   <div className="tl-detail-section">
                     <div className="tl-detail-section-title">Submission Packet</div>
                     <div className="border border-[#2a2118] bg-[#0d0c0b]/45 p-3">
@@ -22496,50 +27919,80 @@ export default function EngineWorkspace() {
                       </div>
                     </div>
                     <div className="mt-3 space-y-2">
-                      {(selectedNode.attachments || []).map(attachment => (
-                        <div
-                          key={attachment.id}
-                          data-testid={`manager-flow-detail-attachment-${String(attachment.type || 'attachment').replace(/[^a-zA-Z0-9_-]/g, '-')}`}
-                          className="border border-[#2a2118] bg-[#0d0c0b]/45 p-3"
-                        >
-                          <div className="flex items-start justify-between gap-3">
-                            <div className="min-w-0">
-                              <div className="font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">{attachment.type}</div>
-                              <div className="mt-1 font-serif text-sm leading-tight text-[#efe2bd]">{attachment.title}</div>
+                      {(selectedNode.attachments || []).map(attachment => {
+                        const attachmentChatProofIds = chatProofIdsFromAttachment(attachment);
+                        const attachmentChannelId = attachment.providerEvidenceTranscriptRoute?.match(/\/transcripts\/([^#/?]+)/)?.[1]
+                          || attachment.channelId
+                          || selectedNode.channelId
+                          || 'main';
+                        return (
+                          <div
+                            key={attachment.id}
+                            data-testid={`manager-flow-detail-attachment-${String(attachment.type || 'attachment').replace(/[^a-zA-Z0-9_-]/g, '-')}`}
+                            className="border border-[#2a2118] bg-[#0d0c0b]/45 p-3"
+                          >
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="min-w-0">
+                                <div className="font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">{attachment.type}</div>
+                                <div className="mt-1 font-serif text-sm leading-tight text-[#efe2bd]">{attachment.title}</div>
+                              </div>
+                              <span className={`node-status-tag shrink-0 ${attachment.autoGenerated ? 'bg-[#3a2a1c] text-[#bcae86]' : 'bg-[#59684b] text-white'}`}>
+                                {attachment.autoGenerated ? 'auto' : 'agent'}
+                              </span>
                             </div>
-                            <span className={`node-status-tag shrink-0 ${attachment.autoGenerated ? 'bg-[#3a2a1c] text-[#bcae86]' : 'bg-[#59684b] text-white'}`}>
-                              {attachment.autoGenerated ? 'auto' : 'agent'}
-                            </span>
-                          </div>
-                          <p className="mt-2 font-serif text-xs leading-relaxed text-[#bcae86]">{attachment.summary}</p>
-                          {(attachment.url || attachment.absolutePath || attachment.path || attachment.relativePath || attachment.route) && (
-                            <div className="mt-2 flex flex-wrap gap-2">
-                              <button
-                                type="button"
-                                data-testid={`flow-open-artifact-${attachment.id}`}
-                                onClick={() => {
-                                  const target = attachment.url || (attachment.absolutePath || attachment.path || attachment.route || '').replace(/\\/g, '/');
-                                  if (target) window.open(target.startsWith('file:') || target.startsWith('http') ? target : `file://${target}`, '_blank', 'noopener,noreferrer');
-                                }}
-                                className="border border-[#3a2a1c] px-2 py-1 font-mono text-[7px] uppercase tracking-widest text-[#bcae86] hover:border-[#7b6542] hover:text-[#efe2bd]"
-                              >
-                                Open artifact
-                              </button>
-                              <button
-                                type="button"
-                                data-testid={`flow-locate-artifact-${attachment.id}`}
-                                onClick={() => navigator.clipboard?.writeText(attachment.absolutePath || attachment.path || attachment.relativePath || attachment.route || '')}
-                                className="border border-[#3a2a1c] px-2 py-1 font-mono text-[7px] uppercase tracking-widest text-[#bcae86] hover:border-[#7b6542] hover:text-[#efe2bd]"
-                              >
-                                Locate artifact
-                              </button>
+                            <p className="mt-2 font-serif text-xs leading-relaxed text-[#bcae86]">{attachment.summary}</p>
+                            {renderAutonomousActionDecision(attachment.autonomousActionDecision, {
+                              testId: `manager-flow-autonomous-action-decision-${String(attachment.id || attachment.type || 'attachment').replace(/[^a-zA-Z0-9_-]/g, '-')}`,
+                              dark: true,
+                            })}
+                            {(attachment.url || attachment.absolutePath || attachment.path || attachment.relativePath || attachment.route || attachmentChatProofIds.length) && (
+                              <div className="mt-2 flex flex-wrap gap-2">
+                                {(attachment.url || attachment.absolutePath || attachment.path || attachment.relativePath || attachment.route) && (
+                                  <>
+                                    <button
+                                      type="button"
+                                      data-testid={`flow-open-artifact-${attachment.id}`}
+                                      onClick={() => {
+                                        const target = attachment.url || (attachment.absolutePath || attachment.path || attachment.route || '').replace(/\\/g, '/');
+                                        if (target) window.open(target.startsWith('file:') || target.startsWith('http') ? target : `file://${target}`, '_blank', 'noopener,noreferrer');
+                                      }}
+                                      className="border border-[#3a2a1c] px-2 py-1 font-mono text-[7px] uppercase tracking-widest text-[#bcae86] hover:border-[#7b6542] hover:text-[#efe2bd]"
+                                    >
+                                      Open artifact
+                                    </button>
+                                    <button
+                                      type="button"
+                                      data-testid={`flow-locate-artifact-${attachment.id}`}
+                                      onClick={() => navigator.clipboard?.writeText(attachment.absolutePath || attachment.path || attachment.relativePath || attachment.route || '')}
+                                      className="border border-[#3a2a1c] px-2 py-1 font-mono text-[7px] uppercase tracking-widest text-[#bcae86] hover:border-[#7b6542] hover:text-[#efe2bd]"
+                                    >
+                                      Locate artifact
+                                    </button>
+                                  </>
+                                )}
+                                {attachmentChatProofIds.length > 0 && (
+                                  <button
+                                    type="button"
+                                    data-testid={`flow-open-transcript-${attachment.id}`}
+                                    onClick={() => openProjectChatProof(activeProject, attachmentChatProofIds, attachmentChannelId)}
+                                    className="inline-flex items-center gap-1 border border-[#3a2a1c] px-2 py-1 font-mono text-[7px] uppercase tracking-widest text-[#bcae86] hover:border-[#7b6542] hover:text-[#efe2bd]"
+                                  >
+                                    <MessageSquare size={9} /> Transcript proof
+                                  </button>
+                                )}
+                              </div>
+                            )}
+                            {attachment.providerEvidenceTranscriptRoute && (
+                              <div className="mt-2 break-words font-mono text-[7px] uppercase tracking-widest text-[#59684b]">
+                                Transcript route: {attachment.providerEvidenceTranscriptRoute}
+                              </div>
+                            )}
+                            <div className="mt-2 font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">
+                              proof {(attachment.proofIds || []).length} / timeline {(attachment.timelineLogIds || []).length} / ledger {(attachment.eventIds || []).length}
                             </div>
-                          )}
-                          <div className="mt-2 font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">
-                            proof {(attachment.proofIds || []).length} / timeline {(attachment.timelineLogIds || []).length} / ledger {(attachment.eventIds || []).length}
                           </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   </div>
 
@@ -22616,6 +28069,28 @@ export default function EngineWorkspace() {
                           <div className="font-serif text-lg leading-tight">{value}</div>
                         </div>
                       ))}
+                    </div>
+                    <div data-testid="manager-flow-selected-proof-route-evidence" className="mt-3 border border-[#2a2118] bg-[#0d0c0b]/55 p-3">
+                      <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                        <div className="min-w-0">
+                          <div className="font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">Proof Map / API Route</div>
+                          <div className="mt-1 break-words font-mono text-[8px] uppercase tracking-widest text-[#bcae86]">
+                            {selectedNodeProofRoute || 'Backend proof route not linked yet'}
+                          </div>
+                          <div data-testid="manager-flow-selected-proof-map-coverage" className="mt-1 font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">
+                            Coverage: {selectedNodeProofMapKey} / matches {selectedNodeProofMapRoutes.length} / chat {selectedChatProofIds.length} / timeline {(selectedNode.timelineLogIds || []).length} / ledger {(selectedNode.eventIds || []).length}
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          data-testid="manager-flow-selected-proof-route-open-evidence"
+                          onClick={openSelectedNodeProofMapRoute}
+                          disabled={!selectedNodeProofRoute}
+                          className="inline-flex shrink-0 items-center gap-1 border border-[#3a2a1c] px-3 py-2 font-mono text-[8px] uppercase tracking-widest text-[#bcae86] hover:border-[#7b6542] hover:text-[#efe2bd] disabled:opacity-40"
+                        >
+                          <Network size={11} /> Proof Map
+                        </button>
+                      </div>
                     </div>
                     <div className="mt-3 flex flex-wrap gap-2">
                       <button

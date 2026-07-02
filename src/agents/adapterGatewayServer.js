@@ -85,6 +85,7 @@ function queueRowsFromSnapshot(workerQueueSnapshot = {}) {
   return [
     ...(workerQueueSnapshot.projectQueue || []),
     ...(workerQueueSnapshot.agentQueue || []),
+    ...(workerQueueSnapshot.autopilotQueue || []),
   ];
 }
 

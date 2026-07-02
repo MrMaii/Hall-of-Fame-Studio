@@ -311,16 +311,20 @@ export function createModelProvider({
   const resolvedModel = model || DEFAULT_MODEL;
   const resolvedBaseURL = cleanBaseUrl(baseURL || defaultBaseUrlFor(resolvedProvider));
   const blockedByPolicy = blockedModels.some((pattern) => modelMatches(resolvedModel, pattern));
-  const configured = Boolean(apiKey);
-  const providerEnabled = Boolean(enabled && configured && !blockedByPolicy && typeof fetchImpl === 'function');
+  let currentApiKey = apiKey || '';
+  let currentApiKeySource = apiKeySource || 'direct-config';
+  let runtimeEnabled = Boolean(enabled);
+  let runtimeEnabledSource = runtimeEnabled ? 'startup-config' : 'disabled';
+  const configured = () => Boolean(currentApiKey);
+  const providerEnabled = () => Boolean(runtimeEnabled && configured() && !blockedByPolicy && typeof fetchImpl === 'function');
   const limiter = createLimiter(maxConcurrency);
 
   async function performChatCompletion({ messages, json = false, signal, ...overrides } = {}) {
-    if (!providerEnabled) {
+    if (!providerEnabled()) {
       return {
         ok: false,
         skipped: true,
-        reason: blockedByPolicy ? 'model-blocked' : configured ? 'provider-disabled' : 'missing-api-key',
+        reason: blockedByPolicy ? 'model-blocked' : configured() ? 'provider-disabled' : 'missing-api-key',
         provider: resolvedProvider,
         model: resolvedModel,
       };
@@ -333,7 +337,7 @@ export function createModelProvider({
       const spec = requestSpec({
         provider: resolvedProvider,
         baseURL: resolvedBaseURL,
-        apiKey,
+        apiKey: currentApiKey,
         model: resolvedModel,
         messages,
         temperature,
@@ -384,21 +388,41 @@ export function createModelProvider({
 
   return {
     provider: resolvedProvider,
-    enabled: providerEnabled,
-    configured,
+    get enabled() {
+      return providerEnabled();
+    },
+    get configured() {
+      return configured();
+    },
     blockedByPolicy,
     model: resolvedModel,
     baseURL: redactUrl(resolvedBaseURL),
+    setEnabled(nextEnabled = true, source = 'runtime-config') {
+      runtimeEnabled = Boolean(nextEnabled);
+      runtimeEnabledSource = source || runtimeEnabledSource;
+      return this.status();
+    },
+    setApiKey(nextApiKey = '', source = 'runtime-secret-vault') {
+      currentApiKey = String(nextApiKey || '');
+      currentApiKeySource = source || currentApiKeySource;
+      if (currentApiKey) {
+        runtimeEnabled = true;
+        runtimeEnabledSource = source || runtimeEnabledSource;
+      }
+      return this.status();
+    },
     status() {
       return {
         provider: resolvedProvider,
-        enabled: providerEnabled,
-        configured,
+        enabled: providerEnabled(),
+        runtimeEnabled,
+        enabledSource: runtimeEnabledSource,
+        configured: configured(),
         blockedByPolicy,
         model: resolvedModel,
         baseURL: redactUrl(resolvedBaseURL),
-        hasApiKey: Boolean(apiKey),
-        apiKeySource: apiKey ? apiKeySource : 'missing',
+        hasApiKey: Boolean(currentApiKey),
+        apiKeySource: currentApiKey ? currentApiKeySource : 'missing',
         secretVault: secretVaultStatus
           ? {
             provider: secretVaultStatus.provider || 'unknown',
@@ -443,18 +467,20 @@ export function createModelProvider({
 export function createModelProviderFromEnv(env = globalThis.process?.env || {}, options = {}) {
   const provider = normalizeProvider(env.MODEL_PROVIDER || env.AGENT_MODEL_PROVIDER || DEFAULT_PROVIDER);
   const providerPrefix = provider.toUpperCase().replace(/-/g, '_');
+  const providerEnabledDefault = Boolean(options.apiKey);
   return createModelProvider({
     provider,
-    apiKey: env.MODEL_API_KEY
+    apiKey: options.apiKey
+      || env.MODEL_API_KEY
       || env[`${providerPrefix}_API_KEY`]
       || env.OPENAI_API_KEY
       || env.ANTHROPIC_API_KEY
       || env.GEMINI_API_KEY,
-    apiKeySource: options.apiKeySource || (options.secretVaultStatus?.ready ? 'local-secret-vault' : 'environment'),
+    apiKeySource: options.apiKeySource || (options.apiKey ? 'local-secret-vault' : (options.secretVaultStatus?.ready ? 'local-secret-vault' : 'environment')),
     secretVaultStatus: options.secretVaultStatus || null,
     baseURL: env.MODEL_BASE_URL || env[`${providerPrefix}_BASE_URL`] || defaultBaseUrlFor(provider),
     model: env.MODEL_NAME || env[`${providerPrefix}_MODEL`] || DEFAULT_MODEL,
-    enabled: parseBoolean(env.MODEL_PROVIDER_ENABLED || env.AGENT_LLM_ENABLED, false),
+    enabled: parseBoolean(env.MODEL_PROVIDER_ENABLED || env.AGENT_LLM_ENABLED, providerEnabledDefault),
     temperature: Number(env.MODEL_TEMPERATURE || 0.2),
     maxTokens: Number(env.MODEL_MAX_TOKENS || DEFAULT_MAX_TOKENS),
     timeoutMs: Number(env.MODEL_TIMEOUT_MS || DEFAULT_TIMEOUT_MS),

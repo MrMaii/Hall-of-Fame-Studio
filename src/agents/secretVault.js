@@ -69,6 +69,12 @@ function safeJsonParse(value, fallback = null) {
   }
 }
 
+function getNodeBuiltin(name = '') {
+  const loader = globalThis.process?.getBuiltinModule;
+  if (typeof loader !== 'function') return null;
+  return loader(`node:${name}`) || loader(name);
+}
+
 function cleanRecords(records = []) {
   return (Array.isArray(records) ? records : [])
     .filter((record) => record && typeof record === 'object')
@@ -78,6 +84,23 @@ function cleanRecords(records = []) {
       plaintext: undefined,
       secret: undefined,
     }));
+}
+
+function readRecordFile(filePath = '') {
+  const resolvedPath = String(filePath || '').trim();
+  const fs = getNodeBuiltin('fs');
+  if (!resolvedPath || !fs?.existsSync?.(resolvedPath)) return [];
+  return cleanRecords(safeJsonParse(fs.readFileSync(resolvedPath, 'utf8'), []));
+}
+
+function writeRecordFile(filePath = '', records = []) {
+  const resolvedPath = String(filePath || '').trim();
+  const fs = getNodeBuiltin('fs');
+  const path = getNodeBuiltin('path');
+  if (!fs || !path) return;
+  if (!resolvedPath) return;
+  fs.mkdirSync(path.dirname(resolvedPath), { recursive: true });
+  fs.writeFileSync(resolvedPath, `${JSON.stringify(cleanRecords(records), null, 2)}\n`, 'utf8');
 }
 
 function clone(value) {
@@ -310,12 +333,16 @@ export function createLocalSecretVault({
   keyId = 'local',
   keySource = 'SECRET_VAULT_KEY',
   records = [],
+  recordsFile = '',
 } = {}) {
   let currentMasterKey = masterKey;
   let currentKeyId = keyId;
   let currentKeySource = keySource;
   const sealedRecords = cleanRecords(records);
   const rotationReceipts = [];
+  const persistRecords = () => {
+    if (enabled && recordsFile) writeRecordFile(recordsFile, sealedRecords);
+  };
   const vault = {
     async seal(name, value, metadata = {}) {
       const record = await sealSecretRecord({
@@ -326,6 +353,7 @@ export function createLocalSecretVault({
         metadata,
       });
       sealedRecords.push(record);
+      persistRecords();
       return record;
     },
     async open(record = {}) {
@@ -350,6 +378,7 @@ export function createLocalSecretVault({
       currentKeyId = nextKeyId;
       currentKeySource = metadata.keySource || 'local-rotation-rehearsal';
       rotationReceipts.push(rotation.receipt);
+      persistRecords();
       return {
         receipt: clone(rotation.receipt),
         records: rotation.records.map((record) => clone(record)),
@@ -367,6 +396,9 @@ export function createLocalSecretVault({
         updatedAt: record.updatedAt,
         metadata: record.metadata || {},
       }));
+    },
+    exportRecords() {
+      return sealedRecords.map((record) => clone(record));
     },
     status() {
       const encryptedRecordCount = sealedRecords.filter(recordIsEncrypted).length;
@@ -395,13 +427,16 @@ export function createLocalSecretVault({
 }
 
 export function createSecretVaultFromEnv(env = globalThis.process?.env || {}) {
-  const records = safeJsonParse(env.SECRET_VAULT_RECORDS_JSON || '[]', []);
+  const recordsFile = env.SECRET_VAULT_RECORDS_FILE || '';
+  const fileRecords = readRecordFile(recordsFile);
+  const records = fileRecords.length ? fileRecords : safeJsonParse(env.SECRET_VAULT_RECORDS_JSON || '[]', []);
   return createLocalSecretVault({
     enabled: parseBoolean(env.SECRET_VAULT_ENABLED, false),
     masterKey: env.SECRET_VAULT_KEY || '',
     keyId: env.SECRET_VAULT_KEY_ID || 'local-env',
     keySource: env.SECRET_VAULT_KEY ? 'SECRET_VAULT_KEY' : 'missing',
     records,
+    recordsFile,
   });
 }
 

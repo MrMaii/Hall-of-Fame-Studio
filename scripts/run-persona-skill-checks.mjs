@@ -6,10 +6,17 @@ import { fileURLToPath } from 'node:url';
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const mode = process.argv[2] || 'check';
 const dependencyRoot = resolve(dirname(process.execPath), '..', '..');
+const homeDir = process.env.USERPROFILE || process.env.HOME || '';
+const codexDependencyRoot = homeDir
+  ? resolve(homeDir, '.cache', 'codex-runtimes', 'codex-primary-runtime', 'dependencies')
+  : '';
 
 const pythonCandidates = [
   process.env.PYTHON,
   resolve(dependencyRoot, 'python', process.platform === 'win32' ? 'python.exe' : 'bin/python'),
+  codexDependencyRoot
+    ? resolve(codexDependencyRoot, 'python', process.platform === 'win32' ? 'python.exe' : 'bin/python')
+    : '',
   'python3',
   'python',
 ].filter(Boolean);

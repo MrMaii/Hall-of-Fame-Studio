@@ -1,4 +1,5 @@
 import { createServer } from 'node:http';
+import { existsSync, readdirSync } from 'node:fs';
 import { mkdir, readFile } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -99,14 +100,34 @@ async function scrollDashboardToStation(page) {
   await page.waitForTimeout(250);
 }
 
+function playwrightChromiumExecutableCandidates() {
+  const explicitPath = process.env.HOFS_PLAYWRIGHT_CHROMIUM || process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || '';
+  const localPlaywrightPath = process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, 'ms-playwright') : '';
+  const localHeadlessShells = localPlaywrightPath && existsSync(localPlaywrightPath)
+    ? readdirSync(localPlaywrightPath, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && /^chromium_headless_shell-/.test(entry.name))
+      .map((entry) => join(localPlaywrightPath, entry.name, 'chrome-headless-shell-win64', 'chrome-headless-shell.exe'))
+      .filter((candidate) => existsSync(candidate))
+      .sort()
+      .reverse()
+    : [];
+  return [explicitPath, ...localHeadlessShells].filter(Boolean);
+}
+
 async function launchBrowserWithRetry(attempts = 3) {
   let lastError = null;
-  for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    try {
-      return await chromium.launch({ headless: true });
-    } catch (error) {
-      lastError = error;
-      if (attempt < attempts) await new Promise((resolve) => setTimeout(resolve, 600 * attempt));
+  const optionSets = [
+    { headless: true },
+    ...playwrightChromiumExecutableCandidates().map((executablePath) => ({ headless: true, executablePath })),
+  ];
+  for (const options of optionSets) {
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      try {
+        return await chromium.launch(options);
+      } catch (error) {
+        lastError = error;
+        if (attempt < attempts) await new Promise((resolve) => setTimeout(resolve, 600 * attempt));
+      }
     }
   }
   throw lastError;
@@ -137,6 +158,11 @@ const staticRuntime = await listen(staticServer);
 let browser = null;
 const backendResponses = [];
 const consoleDiagnostics = [];
+
+const managerDemoProjectPutCount = () => backendResponses.filter((entry) => (
+  /\sPUT\s/.test(entry)
+  && /\/projects\/p_manager_demo_001(?:\?|$|\/?$)/i.test(entry)
+)).length;
 
 try {
   browser = await launchBrowserWithRetry();
@@ -172,6 +198,64 @@ try {
   const station = page.getByTestId('backend-worker-station');
   await station.getByRole('button', { name: /Check/i }).click();
   await station.getByText('Online', { exact: true }).waitFor({ state: 'visible', timeout: 8000 });
+  await page.getByRole('button', { name: /Open project tools/i }).click();
+  await page.getByRole('button', { name: /Group Channels/i }).click();
+  await page.getByTestId('project-chat-create-transcript-channel').waitFor({ state: 'visible', timeout: 10000 });
+  await page.getByTestId('project-chat-create-transcript-channel').click();
+  const channelSnapshot = await waitForBackendSnapshot(
+    backendRuntime.url,
+    (snapshot) => {
+      const project = snapshot.projects.find((item) => item.id === 'p_manager_demo_001');
+      return Boolean(project?.transcriptChannelReceipts?.some((receipt) => (
+        receipt.schemaVersion === 'transcript-channel-created/v1'
+        && receipt.channelId?.startsWith('room_')
+        && receipt.messageId
+        && receipt.timelineLogId
+        && receipt.eventId
+      )));
+    },
+    'Group Chat plus button must create a backend transcript channel receipt for real backend projects.',
+  );
+  const channelProject = channelSnapshot.projects.find((item) => item.id === 'p_manager_demo_001');
+  const createdChannelReceipt = channelProject.transcriptChannelReceipts.find((receipt) => receipt.channelId?.startsWith('room_'));
+  const channelTranscript = await fetch(`${backendRuntime.url}/projects/p_manager_demo_001/transcripts/${encodeURIComponent(createdChannelReceipt.channelId)}`).then((response) => response.json());
+  assert(channelTranscript.messages?.some((message) => message.transcriptChannelReceiptChecksum === createdChannelReceipt.checksum), 'Backend-created channel transcript must expose the channel receipt proof message.');
+  const channelProofMap = await fetch(`${backendRuntime.url}/projects/p_manager_demo_001/readiness-proof-map`).then((response) => response.json());
+  assert(channelProofMap.transcriptChannelRoutes?.some((route) => (
+    route.channelId === createdChannelReceipt.channelId
+    && route.apiPath?.endsWith(`/transcripts/${encodeURIComponent(createdChannelReceipt.channelId)}`)
+    && route.readyForBackendTranscriptChannel === true
+    && route.proofIds?.includes(createdChannelReceipt.checksum)
+    && route.timelineLogIds?.includes(createdChannelReceipt.timelineLogId)
+    && route.eventIds?.includes(createdChannelReceipt.eventId)
+  )), 'Readiness Proof Map must expose backend-created transcript channel routes with receipt, timeline, and event proof.');
+  assert(backendResponses.some((entry) => entry.includes('POST') && entry.includes('/projects/p_manager_demo_001/transcripts')), 'Group Chat plus button must call the backend transcripts creation route.');
+  await page.getByText(createdChannelReceipt.name || /Room/i).first().waitFor({ state: 'visible', timeout: 8000 });
+  await page.getByTestId('project-scene-back').click();
+  await scrollDashboardToStation(page);
+  await page.getByTestId('manager-walkthrough-run-leader-group-assignment').scrollIntoViewIfNeeded();
+  await page.waitForFunction(() => {
+    const button = document.querySelector('[data-testid="manager-walkthrough-run-leader-group-assignment"]');
+    return Boolean(button && !button.disabled);
+  }, null, { timeout: 10000 });
+  await page.getByTestId('manager-walkthrough-run-leader-group-assignment').click();
+  await page.getByTestId('manager-action-run-output').waitFor({ state: 'visible', timeout: 15000 });
+  const managerActionOutputText = await page.getByTestId('manager-action-run-output').innerText();
+  assert(/Manager Action Output Nodes/i.test(managerActionOutputText), 'Manager walkthrough action must render backend output nodes.');
+  assert(/Result Messages|Task Node|Agent Submission|Evidence Search|Scheduler Tick/i.test(managerActionOutputText), 'Manager walkthrough action output must expose delegated chat/task/scheduler/product output.');
+  assert(/Output chat proof/i.test(managerActionOutputText), 'Manager walkthrough action output must expose chat proof exits.');
+  await waitForBackendSnapshot(
+    backendRuntime.url,
+    (snapshot) => {
+      const project = snapshot.projects.find((item) => item.id === 'p_manager_demo_001');
+      const run = project?.managerActionRunLedger?.find((item) => item.requirementId === 'leader-group-assignment');
+      return Boolean(run?.resultMessageIds?.length && run?.timelineLogIds?.length);
+    },
+    'Manager walkthrough action must persist a Manager Action Queue receipt with message and timeline proof.',
+  );
+  const projectPutCountAfterSeed = managerDemoProjectPutCount();
+  assert(projectPutCountAfterSeed <= 1, 'Manager Demo compatibility seed may write the sample snapshot at most once.');
+  await scrollDashboardToStation(page);
   const proofModelButton = await waitForButtonEnabled(page, 'backend-sync-proof-models', 'Sync Proof Models must be enabled before fetching proof and launch read models.');
   await Promise.all([
     page.waitForResponse((response) => response.url().includes('/production-infrastructure-rehearsal') && response.status() === 200, { timeout: 25000 }),
@@ -184,7 +268,7 @@ try {
 
   await page.getByTestId('backend-sync-agent-autonomous-action-queue').click();
   await page.getByTestId('backend-autonomous-run-control-snapshot').waitFor({ state: 'visible', timeout: 15000 });
-  await page.locator('[data-testid^="backend-autonomous-run-control-action-run-"]:not([disabled])').first().waitFor({ state: 'visible', timeout: 15000 });
+  await page.locator('button[data-testid^="backend-autonomous-run-control-action-run-"]:not([disabled])').first().waitFor({ state: 'visible', timeout: 15000 });
 
   const seededSnapshot = await waitForBackendSnapshot(
     backendRuntime.url,
@@ -194,8 +278,15 @@ try {
   const seededProject = seededSnapshot.projects.find((project) => project.id === 'p_manager_demo_001');
   assert(seededProject?.sampleFixture?.id === 'manager-demo' || seededProject?.dataSource === 'sample-fixture', 'Backend-adopted Manager Demo must remain visibly marked as a sample fixture.');
 
-  await page.locator('[data-testid^="backend-autonomous-run-control-action-run-"]:not([disabled])').first().click();
+  await page.locator('button[data-testid^="backend-autonomous-run-control-action-run-"]:not([disabled])').first().click();
   await page.getByTestId('backend-autonomous-run-control-run-receipt').waitFor({ state: 'visible', timeout: 15000 });
+  await page.getByTestId('backend-autonomous-run-control-run-output').waitFor({ state: 'visible', timeout: 15000 });
+  const runControlOutputText = await page.getByTestId('backend-autonomous-run-control-run-output').innerText();
+  assert(/Run Control Output Nodes/i.test(runControlOutputText), 'Autonomous Run Control must render delegated output nodes in the UI.');
+  assert(/Agent Submission|Evidence Search|Submission Review|Review Response|Result Messages|Artifact/i.test(runControlOutputText), 'Autonomous Run Control output must expose a delegated product or transcript node.');
+  await page.getByTestId('backend-run-control-action-decision').waitFor({ state: 'visible', timeout: 10000 });
+  const runControlDecisionText = await page.getByTestId('backend-run-control-action-decision').innerText();
+  assert(/Action Decision/i.test(runControlDecisionText) && /Strategy/i.test(runControlDecisionText), 'Autonomous Run Control output must render the backend Agent action decision.');
   const runSnapshot = await waitForBackendSnapshot(
     backendRuntime.url,
     (snapshot) => {
@@ -223,11 +314,20 @@ try {
   assert(proofMap.autonomousRunControlRunRoutes?.some((route) => route.id === delegatedRunReceipt.id && route.timelineLogIds?.length && route.eventIds?.length), 'Readiness Proof Map must expose the Autonomous Run Control run receipt route.');
   const agentDashboard = await fetch(`${backendRuntime.url}/projects/p_manager_demo_001/agents/${encodeURIComponent(delegatedRunReceipt.agentId)}/dashboard`).then((response) => response.json());
   assert(agentDashboard.autonomousRunControlRuns?.rows?.some((row) => row.id === delegatedRunReceipt.id), 'Delegated Agent dashboard must expose its Autonomous Run Control receipt.');
+  assert(managerDemoProjectPutCount() === projectPutCountAfterSeed, 'Autonomous Run Control must not reseed the browser snapshot after backend proof is written.');
 
   await page.getByTestId('backend-agent-autonomous-action-queue-snapshot').waitFor({ state: 'visible', timeout: 10000 });
-  await page.locator('[data-testid^="backend-agent-autonomous-action-run-"]:not([disabled])').first().waitFor({ state: 'visible', timeout: 15000 });
-  await page.locator('[data-testid^="backend-agent-autonomous-action-run-"]:not([disabled])').first().click();
+  await page.locator('button[data-testid^="backend-agent-autonomous-action-run-"]:not([disabled])').first().waitFor({ state: 'visible', timeout: 15000 });
+  await page.locator('button[data-testid^="backend-agent-autonomous-action-run-"]:not([disabled])').first().click();
   await page.getByTestId('backend-agent-autonomous-action-run-receipt').waitFor({ state: 'visible', timeout: 15000 });
+  await page.getByTestId('backend-agent-autonomous-action-run-output').waitFor({ state: 'visible', timeout: 15000 });
+  await page.getByTestId('backend-agent-autonomous-action-run-output-rows').waitFor({ state: 'visible', timeout: 15000 });
+  const agentActionOutputText = await page.getByTestId('backend-agent-autonomous-action-run-output').innerText();
+  assert(/Agent Action Output Nodes/i.test(agentActionOutputText), 'Agent Autonomous Queue must render delegated output nodes in the UI.');
+  assert(/Agent Submission|Evidence Search|Submission Review|Review Response|Result Messages/i.test(agentActionOutputText), 'Agent Autonomous Queue output must expose a delegated product or transcript node.');
+  await page.getByTestId('backend-agent-autonomous-action-decision').waitFor({ state: 'visible', timeout: 10000 });
+  const agentActionDecisionText = await page.getByTestId('backend-agent-autonomous-action-decision').innerText();
+  assert(/Action Decision/i.test(agentActionDecisionText) && /Strategy/i.test(agentActionDecisionText), 'Agent Autonomous Queue output must render the backend Agent action decision.');
   await waitForBackendSnapshot(
     backendRuntime.url,
     (snapshot) => {
@@ -240,6 +340,7 @@ try {
     },
     'Agent Autonomous Queue UI action must persist a backend Agent action receipt.',
   );
+  assert(managerDemoProjectPutCount() === projectPutCountAfterSeed, 'Agent Autonomous Queue must not reseed the browser snapshot after backend proof is written.');
 
   await page.getByTestId('backend-autonomous-run-control-session-start').click();
   await page.getByTestId('backend-autonomous-run-control-session-receipt').waitFor({ state: 'visible', timeout: 15000 });
@@ -264,6 +365,7 @@ try {
 
   const workerReceiptText = (await page.getByTestId('backend-autonomous-run-control-session-worker-receipt').innerText()).toLowerCase();
   assert(workerReceiptText.includes('/workers/autopilot/due'), 'Autopilot scheduler receipt must show the due-worker route.');
+  assert(managerDemoProjectPutCount() === projectPutCountAfterSeed, 'Autopilot scheduler controls must not reseed the browser snapshot after backend proof is written.');
 
   console.log('Manager backend core UI validation passed.');
 } catch (error) {
