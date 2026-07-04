@@ -27,6 +27,24 @@ function bodyRows(value) {
   return [];
 }
 
+function assertAutonomousHandoffOutput(project, submission, { context = 'real-user API handoff' } = {}) {
+  const runs = Array.isArray(project?.agentAutonomousActionRunLedger) ? project.agentAutonomousActionRunLedger : [];
+  const matchingRun = runs.find((run) => run.workSubmissionId === submission?.id) || runs[0] || null;
+  assert(matchingRun?.schemaVersion === 'agent-autonomous-action-run/v1', `${context} must persist an Agent autonomous action run receipt.`);
+  assert(matchingRun.workSubmissionId === submission?.id, `${context} run receipt must link to the autonomous Agent submission.`);
+  assert(matchingRun.autonomousActionDecision?.schemaVersion === 'autonomous-action-decision/v1' || matchingRun.autonomousActionDecisionChecksum, `${context} must include an autonomous action decision.`);
+  assert(matchingRun.resultMessageCount >= 1 && matchingRun.timelineLogIds?.length >= 1 && matchingRun.eventIds?.length >= 1, `${context} run receipt must carry chat, timeline, and event proof.`);
+  assertAgentSubmissionNode(submission, { context });
+  return matchingRun;
+}
+
+function assertAgentSubmissionNode(submission, { context = 'real-user API handoff' } = {}) {
+  const bodyText = `${submission?.title || ''}\n${submission?.summary || ''}\n${submission?.body || ''}`;
+  assert(submission?.id && submission?.messageId && submission?.timelineLogId && submission?.eventId, `${context} submission must carry proof ids.`);
+  assert(bodyText.split(/\s+/).filter(Boolean).length >= 35, `${context} submission must contain substantive Agent-authored content.`);
+  assert(/autonomous|backend Agent worker|worker cycle|proof/i.test(bodyText), `${context} submission body must identify autonomous worker provenance.`);
+}
+
 async function fetchJson(url, options = {}) {
   const response = await fetch(url, {
     ...options,
@@ -108,6 +126,13 @@ function createMockSearchServer(requests) {
             title: 'Local generic product-team evidence source',
             url: 'https://example.test/product-team-evidence?token=SHOULD_REDACT',
             summary: 'Controlled evidence proving the user-configured search provider path.',
+            confidence: 'high',
+          },
+          {
+            id: 'real-user-api-source-2',
+            title: 'Local generic product-team corroborating source',
+            url: 'https://example.test/product-team-corroboration',
+            summary: 'Second controlled source corroborating the product-team validation chain.',
             confidence: 'high',
           },
         ],
@@ -299,7 +324,7 @@ try {
     method: 'POST',
     body: JSON.stringify({ query: 'real user generic product-team evidence' }),
   });
-  assert(response.status === 200 && response.body.ok === true && response.body.sources?.length === 1, '/search/test must call the sealed search provider.');
+  assert(response.status === 200 && response.body.ok === true && response.body.sources?.length === 2, '/search/test must call the sealed search provider.');
   assert(searchRequests.length >= 1 && searchRequests.at(-1).authorization === `Bearer ${searchPlaintext}`, 'Search test must reach the configured endpoint with the sealed key.');
 
   response = await fetchJson(`${backendUrl}/secret-vault/records`);
@@ -352,6 +377,52 @@ try {
   assert(response.status === 200 && response.body.meetingAgentTurns?.length >= 1, 'Backend meeting must create Agent-authored meeting turns.');
   assert(response.body.meetingAgentTurns.every((turn) => turn.timelineLogIds?.length >= 1), 'Meeting turns must carry timeline proof ids.');
 
+  response = await fetchJson(`${backendUrl}/projects/${projectId}/collaboration-intent-queue/customer-agent-handoff-intent/run`, {
+    method: 'POST',
+    body: JSON.stringify({
+      includeReadModels: false,
+      now: '2026-06-01T09:07:00.000Z',
+    }),
+  });
+  assert(response.status === 200, `Collaboration handoff intent returned ${response.status}.`);
+  assert(response.body.collaborationIntentRun?.schemaVersion === 'collaboration-intent-run/v1', 'Collaboration handoff intent must persist a run receipt.');
+  assert(
+    response.body.agentAutonomousActionRun?.schemaVersion === 'agent-autonomous-action-run/v1'
+      || response.body.autonomousRunControlRun?.schemaVersion === 'autonomous-run-control-action-run/v1',
+    'Collaboration handoff intent must delegate to an autonomous execution lane.',
+  );
+  const collaborationHandoffSubmission = response.body.workSubmission || response.body.submission || {};
+  assertAgentSubmissionNode(collaborationHandoffSubmission, { context: 'real-user API collaboration handoff intent' });
+  assert(
+    response.body.autonomousRunControlRun?.resultAgentProcessedCount >= 1
+      || response.body.agentAutonomousActionRun?.workSubmissionId === collaborationHandoffSubmission.id,
+    'Collaboration handoff intent must prove an Agent worker processed the handoff submission.',
+  );
+  assert(
+    response.body.collaborationIntentRun.workSubmissionId === collaborationHandoffSubmission.id
+      || response.body.collaborationIntentRun.relatedIds?.includes(collaborationHandoffSubmission.id),
+    'Collaboration handoff intent receipt must link the Agent submission node.',
+  );
+
+  response = await fetchJson(`${backendUrl}/projects/${projectId}/agent-autonomous-action-queue/next/run`, {
+    method: 'POST',
+    body: JSON.stringify({
+      includeReadModels: false,
+      force: true,
+      now: '2026-06-01T09:08:00.000Z',
+      requestBodyOverrides: {
+        submitWorkArtifact: true,
+        submitWorkArtifactOn: 'always',
+        workArtifactType: 'progress-brief',
+        workArtifactReviewStatus: 'pending-review',
+      },
+    }),
+  });
+  assert(response.status === 200, `Agent autonomous queue returned ${response.status}.`);
+  assert(response.body.agentAutonomousActionRun?.schemaVersion === 'agent-autonomous-action-run/v1', 'Agent autonomous queue must persist a direct Agent action receipt.');
+  const handoffSubmission = response.body.workSubmission || response.body.submission || {};
+  assertAutonomousHandoffOutput(response.body.project, handoffSubmission, { context: 'real-user API Agent queue handoff' });
+
   response = await fetchJson(`${backendUrl}/projects/${projectId}/agents/curie/evidence-searches`, {
     method: 'POST',
     body: JSON.stringify({
@@ -366,7 +437,7 @@ try {
   });
   assert(response.status === 200, `Evidence search returned ${response.status}.`);
   const evidenceSearch = response.body.evidenceSearch || {};
-  assert(evidenceSearch.id && evidenceSearch.provider === 'http-json' && evidenceSearch.sources?.length === 1, 'Evidence search must use the sealed search provider and persist sources.');
+  assert(evidenceSearch.id && evidenceSearch.provider === 'http-json' && evidenceSearch.sources?.length === 2, 'Evidence search must use the sealed search provider and persist sources.');
   assert(response.body.providerReceipt?.id === evidenceSearch.providerReceiptId, 'Evidence search must link to a provider receipt.');
   assert(response.body.providerUsage?.providerVaultBindingChecksum, 'Evidence search must write provider-vault usage proof.');
 
@@ -562,8 +633,36 @@ try {
   assert(response.status === 200 && response.body.review?.verdict === 'accepted', 'Reviewer must accept the final deliverable.');
   const finalReview = response.body.review || {};
 
-  const submissions = await fetchJson(`${backendUrl}/projects/${projectId}/submissions`);
-  const submissionRows = bodyRows(submissions.body.submissions);
+  let submissions = await fetchJson(`${backendUrl}/projects/${projectId}/submissions`);
+  let submissionRows = bodyRows(submissions.body.submissions);
+  response = await fetchJson(`${backendUrl}/projects/${projectId}/submission-reviews`);
+  assert(response.status === 200 && Array.isArray(response.body.submissionReviews), 'Backend must list submission reviews for open-change closure.');
+  const respondedReviewIds = new Set(submissionRows.map((row) => row.respondsToReviewId).filter(Boolean));
+  const openChangeReviews = response.body.submissionReviews.filter((review) => (
+    review.verdict === 'changes-requested'
+    && review.submissionId
+    && !respondedReviewIds.has(review.id)
+  ));
+  for (const [index, openChangeReview] of openChangeReviews.entries()) {
+    const revisionResponse = await fetchJson(`${backendUrl}/projects/${projectId}/agents/turing/submissions`, {
+      method: 'POST',
+      body: JSON.stringify({
+        includeReadModels: false,
+        artifactType: 'revision-note',
+        title: `Real-user open change closure ${index + 1}`,
+        summary: 'Linked revision closes an open changes-requested review before readiness is assessed.',
+        body: '# Real-user open change closure\n\nThis linked revision responds to an earlier changes-requested review so the delivery trace has no open review obligations.',
+        reviewerAgentId: openChangeReview.reviewerAgentId || 'curie',
+        revisesSubmissionId: openChangeReview.submissionId,
+        respondsToReviewId: openChangeReview.id,
+        now: `2026-06-01T09:${41 + index}:00.000Z`,
+      }),
+    });
+    assert(revisionResponse.status === 200 && revisionResponse.body.submission?.respondsToReviewId === openChangeReview.id, 'Each open changes-requested review must close with a linked revision note.');
+  }
+
+  submissions = await fetchJson(`${backendUrl}/projects/${projectId}/submissions`);
+  submissionRows = bodyRows(submissions.body.submissions);
   const requiredGenericArtifactTypes = [
     'discovery-report',
     'brainstorm-board',
@@ -583,6 +682,7 @@ try {
   assert(artifactQuality.body.artifactQualityAudit?.summary?.missingArtifactTypeCount === 0, 'Artifact Quality Audit must report no missing generic artifact types.');
 
   const proofTargets = [
+    handoffSubmission.id,
     discoverySubmission.id,
     evidenceSearch.id,
     evidencePacketSubmission.id,
@@ -617,6 +717,10 @@ try {
   const deliveryTrace = await fetchJson(`${backendUrl}/projects/${projectId}/product-team-delivery-trace`);
   const deliveryTraceText = asText(deliveryTrace.body).toLowerCase();
   assert(deliveryTrace.status === 200 && ['kickoff', 'brainstorm', 'evidence', 'draft', 'review', 'revision', 'final'].every((word) => deliveryTraceText.includes(word)), 'Product Team Delivery Trace must preserve the generic zero-to-autonomy stage chain.');
+  const deliveryTraceModel = deliveryTrace.body.productTeamDeliveryTrace || {};
+  const deliveryTraceRow = (id) => (deliveryTraceModel.rows || []).find((row) => row.id === id) || {};
+  assert(deliveryTraceModel.readyForPrivatePilotDelivery === true, `Product Team Delivery Trace must close all generic zero-to-autonomy stages. Missing: ${JSON.stringify(deliveryTraceModel.missingRows || [])}`);
+  assert(deliveryTraceRow('draft-artifact').ready === true && deliveryTraceRow('review-and-revision').ready === true, 'Product Team Delivery Trace must mark draft and review/revision stages ready.');
 
   console.log('Real-user zero-to-autonomy agents:server API validation passed.');
 } finally {

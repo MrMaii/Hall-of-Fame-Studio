@@ -30,7 +30,7 @@ import {
   redactSensitiveText,
   redactUrl,
 } from './secretRedaction.js';
-import { buildAccessControlPolicySnapshot } from './accessControl.js';
+import { buildAccessControlPolicySnapshot, hmacSha256Hex } from './accessControl.js';
 import { createSecretVaultFromEnv, normalizeSecretVaultStatus } from './secretVault.js';
 import { createManagedPersistenceAdapterFromEnv, managedPersistenceAdapterStatus } from './managedPersistenceAdapter.js';
 import { createWorkerQueueAdapterFromEnv, workerQueueAdapterStatus } from './workerQueueAdapter.js';
@@ -67,6 +67,11 @@ const AGENT_EVIDENCE_SOURCE_REVIEW_LIMIT = 240;
 const AGENT_EVIDENCE_SOURCE_SNAPSHOT_LIMIT = 240;
 const AGENT_EVIDENCE_PROVIDER_RECEIPT_LIMIT = 120;
 const PROJECT_AGENT_CONTRACT_LIMIT = 120;
+const TRANSCRIPT_PIN_RECEIPT_LIMIT = 160;
+const TRANSCRIPT_CHANNEL_PIN_RECEIPT_LIMIT = 120;
+const TRANSCRIPT_REPLY_RECEIPT_LIMIT = 240;
+const TRANSCRIPT_MENTION_RECEIPT_LIMIT = 240;
+const TRANSCRIPT_ATTACHMENT_RECEIPT_LIMIT = 240;
 const SECURITY_ACCESS_AUDIT_LIMIT = 240;
 const PROJECT_MEMBERSHIP_AUDIT_LIMIT = 80;
 const PROJECT_SETTINGS_AUDIT_LIMIT = 80;
@@ -620,12 +625,17 @@ function agentManagementPriority({ project = {}, agent = {}, state = {} } = {}) 
   };
 }
 
-function slugifyArtifactPart(value = 'artifact') {
+function slugifyArtifactPart(value = 'artifact', maxLength = 48) {
+  const length = Math.max(8, Math.min(Number(maxLength) || 48, 96));
   return String(value || 'artifact')
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
-    .slice(0, 64) || 'artifact';
+    .slice(0, length) || 'artifact';
+}
+
+function shortArtifactHash(value = 'artifact') {
+  return persistenceChecksum(value).replace(/^chk_/, '').slice(0, 10);
 }
 
 function buildAgentArtifactDraft({
@@ -638,10 +648,16 @@ function buildAgentArtifactDraft({
   completed = false,
   cycleId = '',
 } = {}) {
-  const projectSlug = slugifyArtifactPart(project.name || project.id || 'project');
-  const agentSlug = slugifyArtifactPart(agent.name || agent.id || 'agent');
-  const taskSlug = slugifyArtifactPart(task?.text || workText || 'work');
-  const fileName = `${agentSlug}-${taskSlug}-${Date.parse(now) || Date.now()}.md`;
+  const projectSlug = slugifyArtifactPart(project.id || project.name || 'project', 32);
+  const agentSlug = slugifyArtifactPart(agent.name || agent.id || 'agent', 24);
+  const taskSlug = slugifyArtifactPart(task?.text || workText || 'work', 28);
+  const fileName = `${agentSlug}-${taskSlug}-${shortArtifactHash({
+    projectId: project.id || null,
+    agentId: agent.id || null,
+    taskId: task?.id || null,
+    taskText: task?.text || workText || '',
+    now,
+  })}.md`;
   const relativePath = `agent-artifacts/${projectSlug}/${fileName}`;
   const content = [
     `# ${task?.text || workText || 'Agent work artifact'}`,
@@ -978,7 +994,19 @@ function buildAgentSubmissionDraft({
     '## Handoff',
     'Submit to the Reviewer or Manager for the next review/revision step.',
   ].join('\n');
-  const body = payload.body || fallbackBody;
+  const body = payload.body
+    ? [
+      payload.body,
+      '',
+      '## Product-Team Artifact Contract',
+      `Artifact type: ${normalizedType} / ${typeLabel}.`,
+      `Task context: ${task ? task.text || task.title || task.id : 'project-scoped draft'}.`,
+      `Evidence context: ${evidenceSearches.length} linked evidence search(es).`,
+      `Prior product-team artifacts: ${priorSubmissions.length} linked submission(s).`,
+      'Reviewer/Manager handoff: submit this draft for review, requested changes, revision, and final deliverable closure.',
+      'Production boundary: local MVP proof is allowed; public production still requires managed identity, persistence, queueing, provider audit, cost controls, and incident recovery.',
+    ].join('\n')
+    : fallbackBody;
   const proofContext = {
     taskId: task?.id || null,
     evidenceSearchIds: evidenceSearches.map((record) => record.id).filter(Boolean),
@@ -2418,6 +2446,864 @@ export function createProjectTranscriptChannel({
       checksum: transcriptChannelReceipt.checksum,
     },
     transcriptChannelReceipt,
+    log,
+  };
+}
+
+export function pinProjectTranscriptMessage({
+  project = {},
+  messages = [],
+  channelId = 'main',
+  messageId = '',
+  reason = '',
+  pinnedBy = 'Director',
+  pinnedById = 'director',
+  now = nowIso(),
+  source = 'backend-transcript-pin',
+} = {}) {
+  const scopedChannelId = String(channelId || 'main').trim() || 'main';
+  const targetMessageId = String(messageId || '').trim();
+  if (!targetMessageId) throw new Error('transcript-message-id-required');
+
+  const transcript = buildChannelTranscript({ project, messages, channelId: scopedChannelId });
+  const transcriptMessages = [
+    ...(transcript.messages || []),
+    ...(transcript.archivedProofMessages || []),
+  ];
+  const pinnedMessage = transcriptMessages.find((message) => String(message.id || '') === targetMessageId);
+  if (!pinnedMessage) throw new Error(`Transcript message not found: ${targetMessageId}`);
+
+  const timestamp = Date.parse(now) || Date.now();
+  const safeMessageKey = slugPart(targetMessageId).slice(0, 72);
+  const pinId = `transcript_pin_${scopedChannelId}_${safeMessageKey}_${timestamp}`;
+  const pinMessageId = `transcript_pin_message_${scopedChannelId}_${safeMessageKey}_${timestamp}`;
+  const timelineLogId = `log_${pinMessageId}`;
+  const eventId = `evt_transcript_message_pinned_${scopedChannelId}_${timestamp}`;
+  const pinRoute = project.id
+    ? `/projects/${project.id}/transcripts/${encodeURIComponent(scopedChannelId)}#${encodeURIComponent(targetMessageId)}`
+    : null;
+  const pinReason = String(reason || '').trim() || 'Pinned for Manager review.';
+  const messageText = String(pinnedMessage.text || pinnedMessage.meta || '');
+  const receiptBase = {
+    schemaVersion: 'transcript-pin/v1',
+    id: pinId,
+    projectId: project.id || null,
+    channelId: scopedChannelId,
+    messageId: targetMessageId,
+    pinMessageId,
+    pinnedBy,
+    pinnedById,
+    pinnedAt: now,
+    reason: pinReason,
+    messageAuthor: pinnedMessage.author || 'Unknown',
+    messageAuthorId: pinnedMessage.authorId || null,
+    messageType: pinnedMessage.type || 'message',
+    messageTime: pinnedMessage.time || null,
+    messageTextPreview: compactPreview(messageText, 180),
+    messageTextChecksum: persistenceChecksum(messageText),
+    timelineLogId,
+    eventId,
+    apiPath: pinRoute,
+    transcriptRoute: project.id ? `/projects/${project.id}/transcripts/${encodeURIComponent(scopedChannelId)}` : null,
+    active: true,
+    readyForProduction: false,
+    productionBlockerReason: 'Transcript pins are local MVP proof records; production requires managed retention, tenant policy, and centralized audit controls.',
+  };
+  const transcriptPinReceipt = {
+    ...receiptBase,
+    proofIds: uniqueStrings([targetMessageId, pinMessageId, pinId].filter(Boolean)),
+    checksum: persistenceChecksum(receiptBase),
+  };
+  const systemMessage = attachMessageReceipts({
+    id: pinMessageId,
+    projectId: project.id || null,
+    channelId: scopedChannelId,
+    type: 'system',
+    schemaVersion: 'transcript-pin-message/v1',
+    author: 'System',
+    authorId: 'system',
+    source,
+    time: 'Pinned',
+    text: `${pinnedBy || 'Director'} pinned ${pinnedMessage.author || 'a message'}: ${pinReason}`,
+    targets: ['all'],
+    targetIds: (project.team || []).map((agent) => agent.id).filter(Boolean),
+    weight: 'Pinned',
+    pinnedMessageId: targetMessageId,
+    transcriptPinReceiptId: transcriptPinReceipt.id,
+    transcriptPinReceiptChecksum: transcriptPinReceipt.checksum,
+  }, project.team || [], { seenAt: now, broadcast: true });
+  const log = {
+    id: timelineLogId,
+    messageId: pinMessageId,
+    pinnedMessageId: targetMessageId,
+    time: now,
+    agent: pinnedBy || 'Director',
+    actor: pinnedBy || 'Director',
+    agentId: pinnedById || null,
+    eventType: 'transcript-message-pinned',
+    source,
+    channelId: scopedChannelId,
+    sourceChannelId: scopedChannelId,
+    log: `${pinnedBy || 'Director'} pinned transcript message ${targetMessageId}: ${pinReason}`,
+    transcriptPinReceiptId: transcriptPinReceipt.id,
+    checksum: transcriptPinReceipt.checksum,
+  };
+  const existingReceipts = (project.transcriptPinReceipts || [])
+    .filter((receipt) => !(
+      String(receipt.channelId || 'main') === scopedChannelId
+      && String(receipt.messageId || '') === targetMessageId
+      && receipt.active !== false
+    ));
+  const projectWithPin = appendProjectEvents({
+    ...project,
+    transcriptPinReceipts: [
+      transcriptPinReceipt,
+      ...existingReceipts,
+    ].slice(0, TRANSCRIPT_PIN_RECEIPT_LIMIT),
+    logs: [log, ...(project.logs || [])],
+  }, [
+    createProjectLedgerEvent({
+      id: eventId,
+      type: 'transcript-message-pinned',
+      time: now,
+      actor: pinnedBy || 'Director',
+      summary: log.log,
+      source,
+      channelId: scopedChannelId,
+      evidenceIds: [
+        targetMessageId,
+        pinMessageId,
+        timelineLogId,
+        transcriptPinReceipt.id,
+        transcriptPinReceipt.checksum,
+      ].filter(Boolean),
+      entityIds: {
+        projectId: project.id || null,
+        channelId: scopedChannelId,
+        messageId: pinMessageId,
+        pinnedMessageId: targetMessageId,
+        logId: timelineLogId,
+        transcriptPinReceiptId: transcriptPinReceipt.id,
+      },
+      payload: {
+        schemaVersion: transcriptPinReceipt.schemaVersion,
+        reason: pinReason,
+        pinnedMessageAuthor: pinnedMessage.author || null,
+        receiptChecksum: transcriptPinReceipt.checksum,
+      },
+    }),
+  ]);
+
+  return {
+    project: projectWithPin,
+    messages: [{ ...systemMessage, projectId: project.id }],
+    route: 'transcript-message-pinned',
+    transcriptPin: transcriptPinReceipt,
+    transcriptPinReceipt,
+    pinnedMessage,
+    log,
+  };
+}
+
+export function pinProjectTranscriptChannel({
+  project = {},
+  messages = [],
+  channelId = 'main',
+  reason = '',
+  pinnedBy = 'Director',
+  pinnedById = 'director',
+  now = nowIso(),
+  source = 'backend-transcript-channel-pin',
+} = {}) {
+  const scopedChannelId = String(channelId || 'main').trim() || 'main';
+  const index = buildTranscriptIndex({ project, messages });
+  const channel = (index.channels || []).find((item) => String(item.channelId || '') === scopedChannelId)
+    || normalizeTranscriptChannel({ projectId: project.id, channelId: scopedChannelId });
+  const timestamp = Date.parse(now) || Date.now();
+  const safeChannelKey = slugPart(scopedChannelId).slice(0, 72) || 'channel';
+  const channelPinId = `transcript_channel_pin_${safeChannelKey}_${timestamp}`;
+  const channelPinMessageId = `transcript_channel_pin_message_${safeChannelKey}_${timestamp}`;
+  const timelineLogId = `log_${channelPinMessageId}`;
+  const eventId = `evt_transcript_channel_pinned_${safeChannelKey}_${timestamp}`;
+  const channelRoute = project.id ? `/projects/${project.id}/transcripts/${encodeURIComponent(scopedChannelId)}` : null;
+  const channelPinReason = String(reason || '').trim() || 'Pinned channel for Manager review.';
+  const receiptBase = {
+    schemaVersion: 'transcript-channel-pin/v1',
+    id: channelPinId,
+    projectId: project.id || null,
+    channelId: scopedChannelId,
+    channelName: channel.name || scopedChannelId,
+    channelDescription: channel.description || '',
+    channelCategory: channel.category || 'text',
+    pinnedBy,
+    pinnedById,
+    pinnedAt: now,
+    reason: channelPinReason,
+    channelMessageCount: channel.messageCount || 0,
+    channelProofCount: channel.totalProofCount || channel.proofIds?.length || 0,
+    channelLatestMessageId: channel.latestMessage?.id || null,
+    channelProofIds: channel.proofIds || [],
+    channelPinMessageId,
+    timelineLogId,
+    eventId,
+    apiPath: channelRoute,
+    transcriptRoute: channelRoute,
+    active: true,
+    readyForProduction: false,
+    productionBlockerReason: 'Transcript channel pins are local MVP proof records; production requires managed retention, tenant policy, and centralized audit controls.',
+  };
+  const transcriptChannelPinReceipt = {
+    ...receiptBase,
+    proofIds: uniqueStrings([
+      channelPinMessageId,
+      channelPinId,
+      ...(channel.proofIds || []),
+    ].filter(Boolean)),
+    checksum: persistenceChecksum(receiptBase),
+  };
+  const systemMessage = attachMessageReceipts({
+    id: channelPinMessageId,
+    projectId: project.id || null,
+    channelId: scopedChannelId,
+    type: 'system',
+    schemaVersion: 'transcript-channel-pin-message/v1',
+    author: 'System',
+    authorId: 'system',
+    source,
+    time: 'Channel Pinned',
+    text: `${pinnedBy || 'Director'} pinned #${channel.name || scopedChannelId}: ${channelPinReason}`,
+    targets: ['all'],
+    targetIds: (project.team || []).map((agent) => agent.id).filter(Boolean),
+    weight: 'Channel Pinned',
+    pinnedChannelId: scopedChannelId,
+    transcriptChannelPinReceiptId: transcriptChannelPinReceipt.id,
+    transcriptChannelPinReceiptChecksum: transcriptChannelPinReceipt.checksum,
+  }, project.team || [], { seenAt: now, broadcast: true });
+  const log = {
+    id: timelineLogId,
+    messageId: channelPinMessageId,
+    pinnedChannelId: scopedChannelId,
+    time: now,
+    agent: pinnedBy || 'Director',
+    actor: pinnedBy || 'Director',
+    agentId: pinnedById || null,
+    eventType: 'transcript-channel-pinned',
+    source,
+    channelId: scopedChannelId,
+    sourceChannelId: scopedChannelId,
+    log: `${pinnedBy || 'Director'} pinned transcript channel #${channel.name || scopedChannelId}: ${channelPinReason}`,
+    transcriptChannelPinReceiptId: transcriptChannelPinReceipt.id,
+    checksum: transcriptChannelPinReceipt.checksum,
+  };
+  const existingReceipts = (project.transcriptChannelPinReceipts || [])
+    .filter((receipt) => !(
+      String(receipt.channelId || 'main') === scopedChannelId
+      && receipt.active !== false
+    ));
+  const projectWithChannelPin = appendProjectEvents({
+    ...project,
+    transcriptChannelPinReceipts: [
+      transcriptChannelPinReceipt,
+      ...existingReceipts,
+    ].slice(0, TRANSCRIPT_CHANNEL_PIN_RECEIPT_LIMIT),
+    logs: [log, ...(project.logs || [])],
+  }, [
+    createProjectLedgerEvent({
+      id: eventId,
+      type: 'transcript-channel-pinned',
+      time: now,
+      actor: pinnedBy || 'Director',
+      summary: log.log,
+      source,
+      channelId: scopedChannelId,
+      evidenceIds: [
+        channelPinMessageId,
+        timelineLogId,
+        transcriptChannelPinReceipt.id,
+        transcriptChannelPinReceipt.checksum,
+        ...(channel.proofIds || []),
+      ].filter(Boolean),
+      entityIds: {
+        projectId: project.id || null,
+        channelId: scopedChannelId,
+        messageId: channelPinMessageId,
+        logId: timelineLogId,
+        transcriptChannelPinReceiptId: transcriptChannelPinReceipt.id,
+      },
+      payload: {
+        schemaVersion: transcriptChannelPinReceipt.schemaVersion,
+        reason: channelPinReason,
+        channelName: channel.name || scopedChannelId,
+        receiptChecksum: transcriptChannelPinReceipt.checksum,
+      },
+    }),
+  ]);
+
+  return {
+    project: projectWithChannelPin,
+    messages: [{ ...systemMessage, projectId: project.id }],
+    route: 'transcript-channel-pinned',
+    transcriptChannelPin: transcriptChannelPinReceipt,
+    transcriptChannelPinReceipt,
+    pinnedChannel: channel,
+    log,
+  };
+}
+
+export function replyToProjectTranscriptMessage({
+  project = {},
+  messages = [],
+  channelId = 'main',
+  messageId = '',
+  text = '',
+  replier = 'Director',
+  replierId = 'director',
+  now = nowIso(),
+  source = 'backend-transcript-reply',
+  language = project.language || 'en',
+} = {}) {
+  const scopedChannelId = String(channelId || 'main').trim() || 'main';
+  const parentMessageId = String(messageId || '').trim();
+  const replyText = String(text || '').trim();
+  if (!parentMessageId) throw new Error('transcript-reply-message-id-required');
+  if (!replyText) throw new Error('transcript-reply-text-required');
+
+  const transcript = buildChannelTranscript({ project, messages, channelId: scopedChannelId });
+  const transcriptMessages = [
+    ...(transcript.messages || []),
+    ...(transcript.archivedProofMessages || []),
+  ];
+  const parentMessage = transcriptMessages.find((message) => String(message.id || '') === parentMessageId);
+  if (!parentMessage) throw new Error(`Transcript message not found: ${parentMessageId}`);
+
+  const team = project.team || [];
+  const parentAuthor = team.find((agent) => (
+    agent.id === parentMessage.authorId
+    || agent.name === parentMessage.author
+  ));
+  const targetIds = parentAuthor?.id ? [parentAuthor.id] : [];
+  const timestamp = Date.parse(now) || Date.now();
+  const safeMessageKey = slugPart(parentMessageId).slice(0, 72);
+  const replyId = `transcript_reply_${scopedChannelId}_${safeMessageKey}_${timestamp}`;
+  const replyMessageId = `transcript_reply_message_${scopedChannelId}_${safeMessageKey}_${timestamp}`;
+  const timelineLogId = `log_${replyMessageId}`;
+  const eventId = `evt_transcript_message_replied_${scopedChannelId}_${timestamp}`;
+  const replyRoute = project.id
+    ? `/projects/${project.id}/transcripts/${encodeURIComponent(scopedChannelId)}#${encodeURIComponent(replyMessageId)}`
+    : null;
+  const parentText = String(parentMessage.text || parentMessage.meta || '');
+  const replyBase = {
+    schemaVersion: 'transcript-reply/v1',
+    id: replyId,
+    projectId: project.id || null,
+    channelId: scopedChannelId,
+    parentMessageId,
+    replyMessageId,
+    replier,
+    replierId,
+    repliedAt: now,
+    replyTextPreview: compactPreview(replyText, 180),
+    replyTextChecksum: persistenceChecksum(replyText),
+    parentAuthor: parentMessage.author || 'Unknown',
+    parentAuthorId: parentMessage.authorId || null,
+    parentMessageType: parentMessage.type || 'message',
+    parentMessageTime: parentMessage.time || null,
+    parentTextPreview: compactPreview(parentText, 180),
+    parentTextChecksum: persistenceChecksum(parentText),
+    timelineLogId,
+    eventId,
+    apiPath: replyRoute,
+    transcriptRoute: project.id ? `/projects/${project.id}/transcripts/${encodeURIComponent(scopedChannelId)}` : null,
+    readyForProduction: false,
+    productionBlockerReason: 'Transcript replies are local MVP proof records; production requires managed retention, tenant policy, and centralized audit controls.',
+  };
+  const transcriptReplyReceipt = {
+    ...replyBase,
+    proofIds: uniqueStrings([parentMessageId, replyMessageId, replyId].filter(Boolean)),
+    checksum: persistenceChecksum(replyBase),
+  };
+  const replyMessage = attachMessageReceipts({
+    id: replyMessageId,
+    projectId: project.id || null,
+    channelId: scopedChannelId,
+    type: 'reply',
+    schemaVersion: 'transcript-reply-message/v1',
+    author: replier || 'Director',
+    authorId: replierId || null,
+    source,
+    time: 'Reply',
+    text: replyText,
+    targets: targetIds.length ? [parentAuthor.name || parentAuthor.id] : [],
+    targetIds,
+    weight: 'Reply',
+    replyToMessageId: parentMessageId,
+    replyToAuthor: parentMessage.author || null,
+    transcriptReplyReceiptId: transcriptReplyReceipt.id,
+    transcriptReplyReceiptChecksum: transcriptReplyReceipt.checksum,
+  }, team, { seenAt: now, broadcast: true });
+  const projectAfterReplyMessage = applyChatMessagesToAgentStates({
+    project,
+    team,
+    messages: [replyMessage],
+    now,
+    source,
+    language,
+  });
+  const log = {
+    id: timelineLogId,
+    messageId: replyMessageId,
+    parentMessageId,
+    time: now,
+    agent: replier || 'Director',
+    actor: replier || 'Director',
+    agentId: replierId || null,
+    eventType: 'transcript-message-replied',
+    source,
+    channelId: scopedChannelId,
+    sourceChannelId: scopedChannelId,
+    log: `${replier || 'Director'} replied to transcript message ${parentMessageId}: ${compactPreview(replyText, 140)}`,
+    transcriptReplyReceiptId: transcriptReplyReceipt.id,
+    directTargetIds: replyMessage.directTargetIds || [],
+    receiptCount: replyMessage.visibility?.receiptCount || 0,
+    checksum: transcriptReplyReceipt.checksum,
+  };
+  const projectWithReply = appendProjectEvents({
+    ...projectAfterReplyMessage,
+    transcriptReplyReceipts: [
+      transcriptReplyReceipt,
+      ...(projectAfterReplyMessage.transcriptReplyReceipts || []),
+    ].slice(0, TRANSCRIPT_REPLY_RECEIPT_LIMIT),
+    logs: [log, ...(projectAfterReplyMessage.logs || [])],
+  }, [
+    createProjectLedgerEvent({
+      id: eventId,
+      type: 'transcript-message-replied',
+      time: now,
+      actor: replier || 'Director',
+      summary: log.log,
+      source,
+      channelId: scopedChannelId,
+      evidenceIds: [
+        parentMessageId,
+        replyMessageId,
+        timelineLogId,
+        transcriptReplyReceipt.id,
+        transcriptReplyReceipt.checksum,
+      ].filter(Boolean),
+      entityIds: {
+        projectId: project.id || null,
+        channelId: scopedChannelId,
+        messageId: replyMessageId,
+        parentMessageId,
+        logId: timelineLogId,
+        transcriptReplyReceiptId: transcriptReplyReceipt.id,
+      },
+      payload: {
+        schemaVersion: transcriptReplyReceipt.schemaVersion,
+        parentAuthor: parentMessage.author || null,
+        directTargetIds: replyMessage.directTargetIds || [],
+        receiptChecksum: transcriptReplyReceipt.checksum,
+      },
+    }),
+  ]);
+
+  return {
+    project: projectWithReply,
+    messages: [{ ...replyMessage, projectId: project.id }],
+    route: 'transcript-message-replied',
+    transcriptReply: transcriptReplyReceipt,
+    transcriptReplyReceipt,
+    parentMessage,
+    replyMessage,
+    log,
+  };
+}
+
+export function mentionProjectTranscriptMessage({
+  project = {},
+  messages = [],
+  channelId = 'main',
+  messageId = '',
+  text = '',
+  targetAgentId = '',
+  targetAgentIds = [],
+  mentionedBy = 'Director',
+  mentionedById = 'director',
+  now = nowIso(),
+  source = 'backend-transcript-mention',
+  language = project.language || 'en',
+} = {}) {
+  const scopedChannelId = String(channelId || 'main').trim() || 'main';
+  const sourceMessageId = String(messageId || '').trim();
+  const rawText = String(text || '').trim();
+  if (!sourceMessageId) throw new Error('transcript-mention-message-id-required');
+  if (!rawText) throw new Error('transcript-mention-text-required');
+
+  const transcript = buildChannelTranscript({ project, messages, channelId: scopedChannelId });
+  const transcriptMessages = [
+    ...(transcript.messages || []),
+    ...(transcript.archivedProofMessages || []),
+  ];
+  const sourceMessage = transcriptMessages.find((message) => String(message.id || '') === sourceMessageId);
+  if (!sourceMessage) throw new Error(`Transcript message not found: ${sourceMessageId}`);
+
+  const team = project.team || [];
+  const explicitTargetIds = uniqueStrings([
+    targetAgentId,
+    ...(Array.isArray(targetAgentIds) ? targetAgentIds : []),
+  ].filter(Boolean));
+  const explicitTargets = explicitTargetIds
+    .map((id) => team.find((agent) => agent.id === id || agent.name === id))
+    .filter(Boolean);
+  const sourceAuthorTarget = team.find((agent) => (
+    agent.id === sourceMessage.authorId
+    || agent.name === sourceMessage.author
+  ));
+  const parsedTargetNames = resolveProjectChatTargets(rawText, team);
+  const parsedTargets = parsedTargetNames
+    .filter((name) => name !== 'all')
+    .map((name) => team.find((agent) => agent.name === name || agent.id === name))
+    .filter(Boolean);
+  const targetAgents = uniqueBy([
+    ...explicitTargets,
+    ...(explicitTargets.length ? [] : sourceAuthorTarget ? [sourceAuthorTarget] : []),
+    ...(explicitTargets.length || sourceAuthorTarget ? [] : parsedTargets),
+  ], (agent) => agent.id);
+  const mentionAll = parsedTargetNames.includes('all') || !targetAgents.length;
+  const finalTargetAgents = mentionAll ? team : targetAgents;
+  const finalTargetIds = finalTargetAgents.map((agent) => agent.id).filter(Boolean);
+  const finalTargets = mentionAll
+    ? ['all']
+    : finalTargetAgents.map((agent) => agent.name || agent.id).filter(Boolean);
+  const targetToken = mentionAll
+    ? '@all'
+    : finalTargetAgents[0]?.name
+      ? `@${String(finalTargetAgents[0].name).split(/\s+/)[0]}`
+      : '';
+  const mentionText = targetToken && !rawText.toLowerCase().includes(targetToken.toLowerCase())
+    ? `${targetToken} ${rawText}`
+    : rawText;
+  const timestamp = Date.parse(now) || Date.now();
+  const safeMessageKey = slugPart(sourceMessageId).slice(0, 72);
+  const mentionId = `transcript_mention_${scopedChannelId}_${safeMessageKey}_${timestamp}`;
+  const mentionMessageId = `transcript_mention_message_${scopedChannelId}_${safeMessageKey}_${timestamp}`;
+  const timelineLogId = `log_${mentionMessageId}`;
+  const eventId = `evt_transcript_message_mentioned_${scopedChannelId}_${timestamp}`;
+  const mentionRoute = project.id
+    ? `/projects/${project.id}/transcripts/${encodeURIComponent(scopedChannelId)}#${encodeURIComponent(mentionMessageId)}`
+    : null;
+  const sourceText = String(sourceMessage.text || sourceMessage.meta || '');
+  const mentionBase = {
+    schemaVersion: 'transcript-mention/v1',
+    id: mentionId,
+    projectId: project.id || null,
+    channelId: scopedChannelId,
+    sourceMessageId,
+    mentionMessageId,
+    mentionedBy,
+    mentionedById,
+    mentionedAt: now,
+    mentionTextPreview: compactPreview(mentionText, 180),
+    mentionTextChecksum: persistenceChecksum(mentionText),
+    targetAgentIds: finalTargetIds,
+    targetAgentNames: finalTargets,
+    sourceAuthor: sourceMessage.author || 'Unknown',
+    sourceAuthorId: sourceMessage.authorId || null,
+    sourceMessageType: sourceMessage.type || 'message',
+    sourceMessageTime: sourceMessage.time || null,
+    sourceTextPreview: compactPreview(sourceText, 180),
+    sourceTextChecksum: persistenceChecksum(sourceText),
+    timelineLogId,
+    eventId,
+    apiPath: mentionRoute,
+    transcriptRoute: project.id ? `/projects/${project.id}/transcripts/${encodeURIComponent(scopedChannelId)}` : null,
+    readyForProduction: false,
+    productionBlockerReason: 'Transcript mentions are local MVP proof records; production requires managed retention, tenant policy, and centralized audit controls.',
+  };
+  const transcriptMentionReceipt = {
+    ...mentionBase,
+    proofIds: uniqueStrings([sourceMessageId, mentionMessageId, mentionId].filter(Boolean)),
+    checksum: persistenceChecksum(mentionBase),
+  };
+  const mentionMessage = attachMessageReceipts({
+    id: mentionMessageId,
+    projectId: project.id || null,
+    channelId: scopedChannelId,
+    type: 'mention',
+    schemaVersion: 'transcript-mention-message/v1',
+    author: mentionedBy || 'Director',
+    authorId: mentionedById || null,
+    source,
+    time: 'Mention',
+    text: mentionText,
+    targets: finalTargets,
+    targetIds: finalTargetIds,
+    weight: 'Mention',
+    mentionSourceMessageId: sourceMessageId,
+    mentionSourceAuthor: sourceMessage.author || null,
+    transcriptMentionReceiptId: transcriptMentionReceipt.id,
+    transcriptMentionReceiptChecksum: transcriptMentionReceipt.checksum,
+  }, team, { seenAt: now, broadcast: true });
+  const projectAfterMentionMessage = applyChatMessagesToAgentStates({
+    project,
+    team,
+    messages: [mentionMessage],
+    now,
+    source,
+    language,
+  });
+  const log = {
+    id: timelineLogId,
+    messageId: mentionMessageId,
+    sourceMessageId,
+    time: now,
+    agent: mentionedBy || 'Director',
+    actor: mentionedBy || 'Director',
+    agentId: mentionedById || null,
+    eventType: 'transcript-message-mentioned',
+    source,
+    channelId: scopedChannelId,
+    sourceChannelId: scopedChannelId,
+    log: `${mentionedBy || 'Director'} mentioned ${finalTargets.join(', ') || 'the team'} from transcript message ${sourceMessageId}: ${compactPreview(mentionText, 140)}`,
+    transcriptMentionReceiptId: transcriptMentionReceipt.id,
+    directTargetIds: mentionMessage.directTargetIds || [],
+    receiptCount: mentionMessage.visibility?.receiptCount || 0,
+    checksum: transcriptMentionReceipt.checksum,
+  };
+  const projectWithMention = appendProjectEvents({
+    ...projectAfterMentionMessage,
+    transcriptMentionReceipts: [
+      transcriptMentionReceipt,
+      ...(projectAfterMentionMessage.transcriptMentionReceipts || []),
+    ].slice(0, TRANSCRIPT_MENTION_RECEIPT_LIMIT),
+    logs: [log, ...(projectAfterMentionMessage.logs || [])],
+  }, [
+    createProjectLedgerEvent({
+      id: eventId,
+      type: 'transcript-message-mentioned',
+      time: now,
+      actor: mentionedBy || 'Director',
+      summary: log.log,
+      source,
+      channelId: scopedChannelId,
+      evidenceIds: [
+        sourceMessageId,
+        mentionMessageId,
+        timelineLogId,
+        transcriptMentionReceipt.id,
+        transcriptMentionReceipt.checksum,
+      ].filter(Boolean),
+      entityIds: {
+        projectId: project.id || null,
+        channelId: scopedChannelId,
+        messageId: mentionMessageId,
+        sourceMessageId,
+        logId: timelineLogId,
+        transcriptMentionReceiptId: transcriptMentionReceipt.id,
+      },
+      payload: {
+        schemaVersion: transcriptMentionReceipt.schemaVersion,
+        targetAgentIds: finalTargetIds,
+        sourceAuthor: sourceMessage.author || null,
+        directTargetIds: mentionMessage.directTargetIds || [],
+        receiptChecksum: transcriptMentionReceipt.checksum,
+      },
+    }),
+  ]);
+
+  return {
+    project: projectWithMention,
+    messages: [{ ...mentionMessage, projectId: project.id }],
+    route: 'transcript-message-mentioned',
+    transcriptMention: transcriptMentionReceipt,
+    transcriptMentionReceipt,
+    sourceMessage,
+    mentionMessage,
+    log,
+  };
+}
+
+export function attachProjectTranscriptFile({
+  project = {},
+  messages = [],
+  channelId = 'main',
+  fileName = '',
+  contentType = '',
+  sizeBytes = 0,
+  contentText = '',
+  contentEncoding = 'utf8-preview',
+  note = '',
+  uploadedBy = 'Director',
+  uploadedById = 'director',
+  now = nowIso(),
+  source = 'backend-transcript-attachment',
+  language = project.language || 'en',
+} = {}) {
+  const scopedChannelId = String(channelId || 'main').trim() || 'main';
+  const safeFileName = String(fileName || '').trim();
+  if (!safeFileName) throw new Error('transcript-attachment-file-name-required');
+  const numericSizeBytes = Math.max(0, Number(sizeBytes) || 0);
+  const normalizedContentType = String(contentType || 'application/octet-stream').trim() || 'application/octet-stream';
+  const textPreview = compactPreview(String(contentText || ''), 4000);
+  const uploadNote = String(note || '').trim();
+  const timestamp = Date.parse(now) || Date.now();
+  const safeFileKey = slugPart(safeFileName).slice(0, 72) || 'file';
+  const attachmentId = `transcript_attachment_${scopedChannelId}_${safeFileKey}_${timestamp}`;
+  const attachmentMessageId = `transcript_attachment_message_${scopedChannelId}_${safeFileKey}_${timestamp}`;
+  const timelineLogId = `log_${attachmentMessageId}`;
+  const eventId = `evt_transcript_file_attached_${scopedChannelId}_${timestamp}`;
+  const attachmentRoute = project.id
+    ? `/projects/${project.id}/transcripts/${encodeURIComponent(scopedChannelId)}#${encodeURIComponent(attachmentMessageId)}`
+    : null;
+  const contentChecksum = persistenceChecksum({
+    fileName: safeFileName,
+    contentType: normalizedContentType,
+    sizeBytes: numericSizeBytes,
+    contentText,
+    contentEncoding,
+  });
+  const attachmentBase = {
+    schemaVersion: 'transcript-attachment/v1',
+    id: attachmentId,
+    projectId: project.id || null,
+    channelId: scopedChannelId,
+    attachmentMessageId,
+    fileName: safeFileName,
+    contentType: normalizedContentType,
+    sizeBytes: numericSizeBytes,
+    contentEncoding,
+    contentTextPreview: textPreview,
+    contentChecksum,
+    note: uploadNote,
+    uploadedBy,
+    uploadedById,
+    uploadedAt: now,
+    timelineLogId,
+    eventId,
+    apiPath: attachmentRoute,
+    transcriptRoute: project.id ? `/projects/${project.id}/transcripts/${encodeURIComponent(scopedChannelId)}` : null,
+    readyForProduction: false,
+    productionBlockerReason: 'Transcript attachments are local MVP metadata/proof records; production requires encrypted object storage, malware scanning, retention policy, and tenant audit controls.',
+  };
+  const transcriptAttachmentReceipt = {
+    ...attachmentBase,
+    proofIds: uniqueStrings([attachmentMessageId, attachmentId, contentChecksum].filter(Boolean)),
+    checksum: persistenceChecksum(attachmentBase),
+  };
+  const messageText = uploadNote
+    ? `${uploadedBy || 'Director'} attached ${safeFileName}: ${uploadNote}`
+    : `${uploadedBy || 'Director'} attached ${safeFileName}`;
+  const attachmentMessage = attachMessageReceipts({
+    id: attachmentMessageId,
+    projectId: project.id || null,
+    channelId: scopedChannelId,
+    type: 'file',
+    schemaVersion: 'transcript-attachment-message/v1',
+    author: uploadedBy || 'Director',
+    authorId: uploadedById || null,
+    source,
+    time: 'Attachment',
+    text: messageText,
+    meta: safeFileName,
+    targets: ['all'],
+    targetIds: (project.team || []).map((agent) => agent.id).filter(Boolean),
+    weight: 'Attachment',
+    fileId: attachmentId,
+    fileName: safeFileName,
+    fileSizeBytes: numericSizeBytes,
+    contentType: normalizedContentType,
+    contentChecksum,
+    transcriptAttachmentReceiptId: transcriptAttachmentReceipt.id,
+    transcriptAttachmentReceiptChecksum: transcriptAttachmentReceipt.checksum,
+  }, project.team || [], { seenAt: now, broadcast: true });
+  const attachmentRecord = {
+    id: attachmentId,
+    type: 'transcript-attachment',
+    title: safeFileName,
+    summary: uploadNote || textPreview || `${numericSizeBytes} byte(s), ${normalizedContentType}`,
+    source,
+    channelId: scopedChannelId,
+    messageId: attachmentMessageId,
+    route: attachmentRoute,
+    proofIds: transcriptAttachmentReceipt.proofIds,
+    timelineLogIds: [timelineLogId],
+    eventIds: [eventId],
+    checksum: transcriptAttachmentReceipt.checksum,
+  };
+  const projectAfterAttachmentMessage = applyChatMessagesToAgentStates({
+    project,
+    team: project.team || [],
+    messages: [attachmentMessage],
+    now,
+    source,
+    language,
+  });
+  const log = {
+    id: timelineLogId,
+    messageId: attachmentMessageId,
+    time: now,
+    agent: uploadedBy || 'Director',
+    actor: uploadedBy || 'Director',
+    agentId: uploadedById || null,
+    eventType: 'transcript-file-attached',
+    source,
+    channelId: scopedChannelId,
+    sourceChannelId: scopedChannelId,
+    log: `${uploadedBy || 'Director'} attached ${safeFileName} to #${scopedChannelId}.`,
+    transcriptAttachmentReceiptId: transcriptAttachmentReceipt.id,
+    attachmentIds: [attachmentId],
+    attachments: [attachmentRecord],
+    checksum: transcriptAttachmentReceipt.checksum,
+  };
+  const projectWithAttachment = appendProjectEvents({
+    ...projectAfterAttachmentMessage,
+    transcriptAttachmentReceipts: [
+      transcriptAttachmentReceipt,
+      ...(projectAfterAttachmentMessage.transcriptAttachmentReceipts || []),
+    ].slice(0, TRANSCRIPT_ATTACHMENT_RECEIPT_LIMIT),
+    logs: [log, ...(projectAfterAttachmentMessage.logs || [])],
+  }, [
+    createProjectLedgerEvent({
+      id: eventId,
+      type: 'transcript-file-attached',
+      time: now,
+      actor: uploadedBy || 'Director',
+      summary: log.log,
+      source,
+      channelId: scopedChannelId,
+      evidenceIds: [
+        attachmentMessageId,
+        timelineLogId,
+        transcriptAttachmentReceipt.id,
+        transcriptAttachmentReceipt.checksum,
+        contentChecksum,
+      ].filter(Boolean),
+      entityIds: {
+        projectId: project.id || null,
+        channelId: scopedChannelId,
+        messageId: attachmentMessageId,
+        attachmentId,
+        logId: timelineLogId,
+        transcriptAttachmentReceiptId: transcriptAttachmentReceipt.id,
+      },
+      payload: {
+        schemaVersion: transcriptAttachmentReceipt.schemaVersion,
+        fileName: safeFileName,
+        contentType: normalizedContentType,
+        sizeBytes: numericSizeBytes,
+        contentChecksum,
+        receiptChecksum: transcriptAttachmentReceipt.checksum,
+      },
+    }),
+  ]);
+
+  return {
+    project: projectWithAttachment,
+    messages: [{ ...attachmentMessage, projectId: project.id }],
+    route: 'transcript-file-attached',
+    transcriptAttachment: transcriptAttachmentReceipt,
+    transcriptAttachmentReceipt,
+    attachmentMessage,
     log,
   };
 }
@@ -3948,6 +4834,13 @@ export function submitAgentArtifact({
     normalizedRespondsToReviewId,
   ].filter(Boolean)).map((item) => redactSensitiveText(item));
   const extension = artifactExtensionForType(normalizedType);
+  const artifactFileName = `artifact-${shortArtifactHash({
+    submissionId,
+    projectId: project.id || null,
+    agentId: agent.id,
+    artifactType: normalizedType,
+    timestamp,
+  })}.${extension}`;
   const artifactDraft = {
     id: `artifact_${submissionId}`,
     submissionId,
@@ -3957,8 +4850,8 @@ export function submitAgentArtifact({
     artifactType: normalizedType,
     summary: safeSummary,
     content,
-    relativePath: `submissions/${agent.id}/${normalizedType}/${submissionId}.${extension}`,
-    path: `submissions/${agent.id}/${normalizedType}/${submissionId}.${extension}`,
+    relativePath: `submissions/${slugPart(agent.id).slice(0, 32)}/${normalizedType}/${artifactFileName}`,
+    path: `submissions/${slugPart(agent.id).slice(0, 32)}/${normalizedType}/${artifactFileName}`,
     createdAt: now,
     agentId: agent.id,
     taskId: task?.id || null,
@@ -5316,6 +6209,7 @@ export function runDueAgentWorkCycles({
   reviewResponseArtifactType = 'revision-note',
   reviewResponseReviewerAgentId = null,
   useAutonomousStrategy = false,
+  artifactWriter = null,
 } = {}) {
   const forceProjectIdSet = new Set((forceProjectIds || []).map(normalizeProjectIdKey).filter(Boolean));
   const forcedProjectFilterActive = Boolean(forceDue) && forceProjectIdSet.size > 0;
@@ -5412,6 +6306,7 @@ export function runDueAgentWorkCycles({
         reviewResponseArtifactType,
         reviewResponseReviewerAgentId,
         useAutonomousStrategy,
+        artifactWriter,
       });
       project = result.project;
       summary.processed.push({
@@ -6925,12 +7820,22 @@ function buildTranscriptIndex({ project = {}, messages = [] } = {}) {
   const recoveredMessages = transcriptRecoveredMessages(project);
   const currentIds = new Set(currentMessages.map((message) => String(message.id || '')));
   const archivedMessages = recoveredMessages.filter((message) => !currentIds.has(String(message.id || '')));
+  const channelPinReceipts = (project.transcriptChannelPinReceipts || []).filter((receipt) => receipt.active !== false);
+  const pinReceipts = (project.transcriptPinReceipts || []).filter((receipt) => receipt.active !== false);
+  const replyReceipts = project.transcriptReplyReceipts || [];
+  const mentionReceipts = project.transcriptMentionReceipts || [];
+  const attachmentReceipts = project.transcriptAttachmentReceipts || [];
   const channelIds = Array.from(new Set([
     'main',
     'google_chat',
     'decisions',
     ...currentMessages.map((message) => message.channelId || 'main'),
     ...recoveredMessages.map((message) => message.channelId || 'main'),
+    ...channelPinReceipts.map((receipt) => receipt.channelId || 'main'),
+    ...pinReceipts.map((receipt) => receipt.channelId || 'main'),
+    ...replyReceipts.map((receipt) => receipt.channelId || 'main'),
+    ...mentionReceipts.map((receipt) => receipt.channelId || 'main'),
+    ...attachmentReceipts.map((receipt) => receipt.channelId || 'main'),
   ]));
   const channelMetadataById = new Map();
   [...currentMessages, ...recoveredMessages].forEach((message) => {
@@ -6962,21 +7867,79 @@ function buildTranscriptIndex({ project = {}, messages = [] } = {}) {
     const channelMessages = currentMessages.filter((message) => (message.channelId || 'main') === channelId);
     const channelArchived = archivedMessages.filter((message) => (message.channelId || 'main') === channelId);
     const allProofMessages = [...channelMessages, ...channelArchived];
+    const channelPinsForChannel = channelPinReceipts.filter((receipt) => (receipt.channelId || 'main') === channelId);
+    const channelPins = pinReceipts.filter((receipt) => (receipt.channelId || 'main') === channelId);
+    const channelReplies = replyReceipts.filter((receipt) => (receipt.channelId || 'main') === channelId);
+    const channelMentions = mentionReceipts.filter((receipt) => (receipt.channelId || 'main') === channelId);
+    const channelAttachments = attachmentReceipts.filter((receipt) => (receipt.channelId || 'main') === channelId);
     const latestMessage = channelMessages[channelMessages.length - 1] || channelArchived[channelArchived.length - 1] || null;
     const directTargetIds = Array.from(new Set(allProofMessages.flatMap((message) => message.directTargetIds || [])));
     const receiptCoverage = allProofMessages.reduce((sum, message) => (
       sum + (message.visibility?.receiptCount || message.receiptCount || message.heardBy?.length || 0)
     ), 0);
+    const pinnedProofIds = uniqueStrings(channelPins.flatMap((receipt) => [
+      receipt.messageId,
+      receipt.pinMessageId,
+      receipt.id,
+      receipt.checksum,
+    ].filter(Boolean)));
+    const channelPinnedProofIds = uniqueStrings(channelPinsForChannel.flatMap((receipt) => [
+      receipt.channelPinMessageId,
+      receipt.id,
+      receipt.checksum,
+      ...(receipt.channelProofIds || []),
+    ].filter(Boolean)));
+    const replyProofIds = uniqueStrings(channelReplies.flatMap((receipt) => [
+      receipt.parentMessageId,
+      receipt.replyMessageId,
+      receipt.id,
+      receipt.checksum,
+    ].filter(Boolean)));
+    const mentionProofIds = uniqueStrings(channelMentions.flatMap((receipt) => [
+      receipt.sourceMessageId,
+      receipt.mentionMessageId,
+      receipt.id,
+      receipt.checksum,
+    ].filter(Boolean)));
+    const attachmentProofIds = uniqueStrings(channelAttachments.flatMap((receipt) => [
+      receipt.attachmentMessageId,
+      receipt.id,
+      receipt.checksum,
+      receipt.contentChecksum,
+    ].filter(Boolean)));
     return {
       ...metadata,
       channelId,
       messageCount: channelMessages.length,
       archivedProofCount: channelArchived.length,
       totalProofCount: allProofMessages.length,
+      channelPinned: channelPinsForChannel.length > 0,
+      channelPinCount: channelPinsForChannel.length,
+      channelPinnedProofIds,
+      latestChannelPin: channelPinsForChannel[0] || null,
+      pinnedMessageCount: channelPins.length,
+      pinnedProofIds,
+      latestPin: channelPins[0] || null,
+      replyCount: channelReplies.length,
+      replyProofIds,
+      latestReply: channelReplies[0] || null,
+      mentionCount: channelMentions.length,
+      mentionProofIds,
+      latestMention: channelMentions[0] || null,
+      attachmentCount: channelAttachments.length,
+      attachmentProofIds,
+      latestAttachment: channelAttachments[0] || null,
       latestMessage,
       directTargetIds,
       receiptCoverage,
-      proofIds: allProofMessages.map((message) => message.id).filter(Boolean),
+      proofIds: uniqueStrings([
+        ...allProofMessages.map((message) => message.id).filter(Boolean),
+        ...channelPinnedProofIds,
+        ...pinnedProofIds,
+        ...replyProofIds,
+        ...mentionProofIds,
+        ...attachmentProofIds,
+      ]),
       apiPath: project.id ? `/projects/${project.id}/transcripts/${encodeURIComponent(channelId)}` : null,
     };
   });
@@ -6999,21 +7962,394 @@ function buildChannelTranscript({ project = {}, messages = [], channelId = 'main
   const currentIds = new Set(currentMessages.map((message) => String(message.id || '')));
   const archivedProofMessages = transcriptRecoveredMessages(project)
     .filter((message) => (message.channelId || 'main') === channelId && !currentIds.has(String(message.id || '')));
+  const messageById = new Map([...currentMessages, ...archivedProofMessages].map((message) => [String(message.id || ''), message]));
+  const channelPins = (project.transcriptChannelPinReceipts || [])
+    .filter((receipt) => receipt.active !== false && (receipt.channelId || 'main') === channelId)
+    .map((receipt) => ({
+      ...receipt,
+      proofIds: uniqueStrings([
+        receipt.channelPinMessageId,
+        receipt.id,
+        receipt.checksum,
+        ...(receipt.channelProofIds || []),
+        ...(receipt.proofIds || []),
+      ].filter(Boolean)),
+      readyForBackendTranscriptChannelPin: Boolean(receipt.apiPath && receipt.timelineLogId && receipt.eventId),
+    }));
+  const pinnedMessages = (project.transcriptPinReceipts || [])
+    .filter((receipt) => receipt.active !== false && (receipt.channelId || 'main') === channelId)
+    .map((receipt) => {
+      const message = messageById.get(String(receipt.messageId || '')) || null;
+      return {
+        ...receipt,
+        message: message ? {
+          id: message.id,
+          author: message.author || 'Unknown',
+          authorId: message.authorId || null,
+          role: message.role || '',
+          type: message.type || 'message',
+          time: message.time || '',
+          text: message.text || message.meta || '',
+          source: message.source || '',
+        } : null,
+        proofIds: uniqueStrings([
+          receipt.messageId,
+          receipt.pinMessageId,
+          receipt.id,
+          receipt.checksum,
+          ...(receipt.proofIds || []),
+        ].filter(Boolean)),
+        readyForBackendTranscriptPin: Boolean(receipt.apiPath && receipt.timelineLogId && receipt.eventId),
+      };
+    });
+  const replies = (project.transcriptReplyReceipts || [])
+    .filter((receipt) => (receipt.channelId || 'main') === channelId)
+    .map((receipt) => {
+      const parent = messageById.get(String(receipt.parentMessageId || '')) || null;
+      const reply = messageById.get(String(receipt.replyMessageId || '')) || null;
+      return {
+        ...receipt,
+        parentMessage: parent ? {
+          id: parent.id,
+          author: parent.author || 'Unknown',
+          authorId: parent.authorId || null,
+          role: parent.role || '',
+          type: parent.type || 'message',
+          time: parent.time || '',
+          text: parent.text || parent.meta || '',
+          source: parent.source || '',
+        } : null,
+        replyMessage: reply ? {
+          id: reply.id,
+          author: reply.author || 'Unknown',
+          authorId: reply.authorId || null,
+          role: reply.role || '',
+          type: reply.type || 'reply',
+          time: reply.time || '',
+          text: reply.text || reply.meta || '',
+          source: reply.source || '',
+        } : null,
+        proofIds: uniqueStrings([
+          receipt.parentMessageId,
+          receipt.replyMessageId,
+          receipt.id,
+          receipt.checksum,
+          ...(receipt.proofIds || []),
+        ].filter(Boolean)),
+        readyForBackendTranscriptReply: Boolean(receipt.apiPath && receipt.timelineLogId && receipt.eventId),
+      };
+    });
+  const mentions = (project.transcriptMentionReceipts || [])
+    .filter((receipt) => (receipt.channelId || 'main') === channelId)
+    .map((receipt) => {
+      const source = messageById.get(String(receipt.sourceMessageId || '')) || null;
+      const mention = messageById.get(String(receipt.mentionMessageId || '')) || null;
+      return {
+        ...receipt,
+        sourceMessage: source ? {
+          id: source.id,
+          author: source.author || 'Unknown',
+          authorId: source.authorId || null,
+          role: source.role || '',
+          type: source.type || 'message',
+          time: source.time || '',
+          text: source.text || source.meta || '',
+          source: source.source || '',
+        } : null,
+        mentionMessage: mention ? {
+          id: mention.id,
+          author: mention.author || 'Unknown',
+          authorId: mention.authorId || null,
+          role: mention.role || '',
+          type: mention.type || 'mention',
+          time: mention.time || '',
+          text: mention.text || mention.meta || '',
+          source: mention.source || '',
+        } : null,
+        proofIds: uniqueStrings([
+          receipt.sourceMessageId,
+          receipt.mentionMessageId,
+          receipt.id,
+          receipt.checksum,
+          ...(receipt.proofIds || []),
+        ].filter(Boolean)),
+        readyForBackendTranscriptMention: Boolean(receipt.apiPath && receipt.timelineLogId && receipt.eventId),
+      };
+    });
+  const attachments = (project.transcriptAttachmentReceipts || [])
+    .filter((receipt) => (receipt.channelId || 'main') === channelId)
+    .map((receipt) => {
+      const message = messageById.get(String(receipt.attachmentMessageId || '')) || null;
+      return {
+        ...receipt,
+        attachmentMessage: message ? {
+          id: message.id,
+          author: message.author || 'Unknown',
+          authorId: message.authorId || null,
+          role: message.role || '',
+          type: message.type || 'file',
+          time: message.time || '',
+          text: message.text || message.meta || '',
+          source: message.source || '',
+          fileName: message.fileName || receipt.fileName || '',
+          contentType: message.contentType || receipt.contentType || '',
+          fileSizeBytes: message.fileSizeBytes || receipt.sizeBytes || 0,
+        } : null,
+        proofIds: uniqueStrings([
+          receipt.attachmentMessageId,
+          receipt.id,
+          receipt.checksum,
+          receipt.contentChecksum,
+          ...(receipt.proofIds || []),
+        ].filter(Boolean)),
+        readyForBackendTranscriptAttachment: Boolean(receipt.apiPath && receipt.timelineLogId && receipt.eventId && receipt.contentChecksum),
+      };
+    });
   return {
     projectId: project.id || null,
     channelId,
     messages: currentMessages,
     archivedProofMessages,
-    proofIds: [...currentMessages, ...archivedProofMessages].map((message) => message.id).filter(Boolean),
+    channelPins,
+    pinnedMessages,
+    replies,
+    mentions,
+    attachments,
+    proofIds: uniqueStrings([
+      ...[...currentMessages, ...archivedProofMessages].map((message) => message.id).filter(Boolean),
+      ...channelPins.flatMap((receipt) => receipt.proofIds || []),
+      ...pinnedMessages.flatMap((receipt) => receipt.proofIds || []),
+      ...replies.flatMap((receipt) => receipt.proofIds || []),
+      ...mentions.flatMap((receipt) => receipt.proofIds || []),
+      ...attachments.flatMap((receipt) => receipt.proofIds || []),
+    ]),
     summary: index.channels.find((channel) => channel.channelId === channelId) || {
       channelId,
       messageCount: 0,
       archivedProofCount: 0,
       totalProofCount: 0,
+      channelPinCount: 0,
+      pinnedMessageCount: 0,
+      replyCount: 0,
+      mentionCount: 0,
+      attachmentCount: 0,
       directTargetIds: [],
       receiptCoverage: 0,
       proofIds: [],
     },
+  };
+}
+
+function buildTranscriptMemberPresence({ project = {}, messages = [], channelId = 'main' } = {}) {
+  const scopedChannelId = String(channelId || 'main').trim() || 'main';
+  const transcript = buildChannelTranscript({ project, messages, channelId: scopedChannelId });
+  const channelMessages = [
+    ...(transcript.messages || []),
+    ...(transcript.archivedProofMessages || []),
+  ];
+  const messageIds = new Set(channelMessages.map((message) => String(message.id || '')).filter(Boolean));
+  const agentStates = project.agentStates || {};
+  const logs = (project.logs || []).filter((log) => (
+    (log.channelId || log.sourceChannelId || 'main') === scopedChannelId
+    && (
+      messageIds.has(String(log.messageId || ''))
+      || messageIds.has(String(log.id || '').replace(/^log_/, ''))
+    )
+  ));
+  const events = (project.eventLedger || []).filter((event) => {
+    const eventChannelId = event.channelId || event.payload?.channelId || null;
+    if (eventChannelId && eventChannelId !== scopedChannelId) return false;
+    const eventProofIds = [
+      ...(event.evidenceIds || []),
+      event.entityIds?.messageId,
+      event.entityIds?.sourceMessageId,
+      event.entityIds?.parentMessageId,
+      event.entityIds?.attachmentMessageId,
+    ].filter(Boolean).map(String);
+    return eventProofIds.some((id) => messageIds.has(id));
+  });
+  const members = (project.team || []).map((agent) => {
+    const state = agentStates[agent.id] || {};
+    const authoredMessages = channelMessages.filter((message) => (
+      message.authorId === agent.id
+      || message.author === agent.name
+    ));
+    const receivedMessages = channelMessages.filter((message) => (
+      (message.receipts || []).some((receipt) => receipt.agentId === agent.id)
+      || (message.heardBy || []).includes(agent.id)
+    ));
+    const directMessages = receivedMessages.filter((message) => (
+      (message.directTargetIds || []).includes(agent.id)
+      || (message.receipts || []).some((receipt) => receipt.agentId === agent.id && receipt.mode === 'direct')
+    ));
+    const inboxItems = (state.inbox || []).filter((item) => (
+      (item.channelId || 'main') === scopedChannelId
+      || messageIds.has(String(item.sourceMessageId || ''))
+    ));
+    const obligations = (state.obligations || []).filter((item) => messageIds.has(String(item.sourceMessageId || '')));
+    const receiptRows = receivedMessages.flatMap((message) => (
+      (message.receipts || [])
+        .filter((receipt) => receipt.agentId === agent.id)
+        .map((receipt) => ({
+          ...receipt,
+          messageId: message.id,
+          messageAuthor: message.author || null,
+          messageType: message.type || 'message',
+        }))
+    ));
+    const latestReceipt = receiptRows[receiptRows.length - 1] || null;
+    const latestAuthored = authoredMessages[authoredMessages.length - 1] || null;
+    const latestMessageId = latestAuthored?.id || latestReceipt?.messageId || inboxItems[inboxItems.length - 1]?.sourceMessageId || null;
+    return {
+      agentId: agent.id,
+      name: agent.name,
+      role: agent.role || agent.title || '',
+      status: authoredMessages.length || receivedMessages.length || inboxItems.length ? 'present' : 'not-yet-seen',
+      authoredCount: authoredMessages.length,
+      receivedCount: receivedMessages.length,
+      directReceivedCount: directMessages.length,
+      inboxCount: inboxItems.length,
+      openObligationCount: obligations.filter((item) => item.status !== 'closed').length,
+      latestMessageId,
+      latestReceiptAt: latestReceipt?.seenAt || null,
+      latestAuthoredAt: latestAuthored?.createdAt || latestAuthored?.time || null,
+      proofIds: uniqueStrings([
+        ...authoredMessages.map((message) => message.id),
+        ...receivedMessages.map((message) => message.id),
+        ...inboxItems.map((item) => item.sourceMessageId),
+      ].filter(Boolean)),
+      directProofIds: uniqueStrings(directMessages.map((message) => message.id).filter(Boolean)),
+    };
+  });
+  const proofIds = uniqueStrings([
+    ...channelMessages.map((message) => message.id).filter(Boolean),
+    ...members.flatMap((member) => member.proofIds || []),
+  ]);
+  const timelineLogIds = uniqueStrings(logs.map((log) => log.id).filter(Boolean));
+  const eventIds = uniqueStrings(events.map((event) => event.id).filter(Boolean));
+  const apiPath = project.id
+    ? `/projects/${project.id}/transcripts/${encodeURIComponent(scopedChannelId)}/members`
+    : null;
+  return {
+    schemaVersion: 'transcript-member-presence/v1',
+    projectId: project.id || null,
+    channelId: scopedChannelId,
+    apiPath,
+    transcriptRoute: project.id ? `/projects/${project.id}/transcripts/${encodeURIComponent(scopedChannelId)}` : null,
+    generatedAt: nowIso(),
+    members,
+    summary: {
+      memberCount: members.length,
+      presentCount: members.filter((member) => member.status === 'present').length,
+      directTargetCount: members.filter((member) => member.directReceivedCount > 0).length,
+      inboxCount: members.reduce((sum, member) => sum + member.inboxCount, 0),
+      openObligationCount: members.reduce((sum, member) => sum + member.openObligationCount, 0),
+      authoredCount: members.reduce((sum, member) => sum + member.authoredCount, 0),
+      receivedCount: members.reduce((sum, member) => sum + member.receivedCount, 0),
+      readyForBackendTranscriptMemberPresence: Boolean(apiPath && members.length && proofIds.length),
+    },
+    proofIds,
+    timelineLogIds,
+    eventIds,
+    readyForProduction: false,
+    productionBlockerReason: 'Transcript member presence is a local MVP read model from chat receipts; production requires authenticated user presence, durable read receipts, retention policy, and tenant audit controls.',
+    checksum: persistenceChecksum({
+      projectId: project.id || null,
+      channelId: scopedChannelId,
+      memberIds: members.map((member) => member.agentId),
+      proofIds,
+      timelineLogIds,
+      eventIds,
+    }),
+  };
+}
+
+function buildTranscriptSearch({ project = {}, messages = [], query = '', channelId = '', limit = 20 } = {}) {
+  const normalizedQuery = String(query || '').trim();
+  const scopedChannelId = String(channelId || '').trim();
+  const safeLimit = Math.min(Math.max(Number(limit) || 20, 1), 50);
+  const index = buildTranscriptIndex({ project, messages });
+  const channelIds = scopedChannelId
+    ? [scopedChannelId]
+    : (index.channels || []).map((channel) => channel.channelId || 'main');
+  const searchableMessages = channelIds.flatMap((id) => {
+    const transcript = buildChannelTranscript({ project, messages, channelId: id || 'main' });
+    return [
+      ...(transcript.messages || []),
+      ...(transcript.archivedProofMessages || []),
+    ];
+  });
+  const lowerQuery = normalizedQuery.toLowerCase();
+  const queryTerms = lowerQuery.split(/\s+/).filter(Boolean).slice(0, 8);
+  const matchingMessages = normalizedQuery
+    ? searchableMessages.filter((message) => {
+        const haystack = [
+          message.id,
+          message.author,
+          message.role,
+          message.type,
+          message.text,
+          message.meta,
+          message.fileId,
+          message.decisionId,
+          message.logId,
+        ].filter(Boolean).join(' ').toLowerCase();
+        return haystack.includes(lowerQuery) || queryTerms.every((term) => haystack.includes(term));
+      })
+    : [];
+  const results = matchingMessages.slice(0, safeLimit).map((message) => {
+    const text = String(message.text || message.meta || '');
+    const lowerText = text.toLowerCase();
+    const matchIndex = lowerQuery ? lowerText.indexOf(lowerQuery) : -1;
+    const snippetStart = matchIndex >= 0 ? Math.max(matchIndex - 60, 0) : 0;
+    const snippet = text.slice(snippetStart, snippetStart + 180);
+    const messageChannelId = message.channelId || 'main';
+    return {
+      schemaVersion: 'transcript-search-result/v1',
+      messageId: message.id,
+      channelId: messageChannelId,
+      author: message.author || 'Unknown',
+      role: message.role || '',
+      type: message.type || 'message',
+      time: message.time || '',
+      snippet,
+      text,
+      source: message.source || (message.recoveredProof ? 'archived-proof' : 'backend-transcript'),
+      proofIds: uniqueStrings([message.id, message.logId, ...(message.proofIds || [])].filter(Boolean)),
+      apiPath: project.id ? `/projects/${project.id}/transcripts/${encodeURIComponent(messageChannelId)}#${encodeURIComponent(message.id)}` : null,
+    };
+  });
+  const proofIds = uniqueStrings(results.flatMap((result) => result.proofIds || []));
+  const searchRoute = project.id
+    ? `/projects/${project.id}/transcripts/search${normalizedQuery ? `?query=${encodeURIComponent(normalizedQuery)}${scopedChannelId ? `&channelId=${encodeURIComponent(scopedChannelId)}` : ''}` : ''}`
+    : null;
+  return {
+    schemaVersion: 'transcript-search/v1',
+    projectId: project.id || null,
+    query: normalizedQuery,
+    channelId: scopedChannelId || null,
+    status: normalizedQuery ? 'completed' : 'query-required',
+    searchedMessageCount: searchableMessages.length,
+    resultCount: results.length,
+    truncated: matchingMessages.length > results.length,
+    channelsSearched: channelIds,
+    results,
+    proofIds,
+    backendRoutes: {
+      transcriptIndex: project.id ? `/projects/${project.id}/transcripts` : null,
+      search: searchRoute,
+      channel: project.id && scopedChannelId ? `/projects/${project.id}/transcripts/${encodeURIComponent(scopedChannelId)}` : null,
+    },
+    readyForProduction: false,
+    productionBlockerReason: 'Transcript search is a local read model; production search still needs managed transcript retention, tenant policy, and audit controls.',
+    checksum: persistenceChecksum({
+      projectId: project.id || null,
+      query: normalizedQuery,
+      channelId: scopedChannelId || null,
+      searchedMessageCount: searchableMessages.length,
+      resultIds: results.map((result) => result.messageId),
+      proofIds,
+    }),
   };
 }
 
@@ -9298,6 +10634,254 @@ function buildReadinessProofMap({ project = {}, messages = [] } = {}) {
   const transcriptChannelProofIds = uniqueStrings(transcriptChannelRoutes.flatMap((route) => route.proofIds || []));
   const transcriptChannelTimelineLogIds = uniqueStrings(transcriptChannelRoutes.flatMap((route) => route.timelineLogIds || []));
   const transcriptChannelEventIds = uniqueStrings(transcriptChannelRoutes.flatMap((route) => route.eventIds || []));
+  const transcriptChannelPinRoutes = (project.transcriptChannelPinReceipts || [])
+    .filter((receipt) => receipt.active !== false)
+    .map((receipt) => {
+      const channelId = receipt.channelId || 'main';
+      const apiPath = receipt.apiPath || (projectId ? `/projects/${projectId}/transcripts/${encodeURIComponent(channelId)}` : null);
+      const proofIds = uniqueStrings([
+        receipt.channelPinMessageId,
+        receipt.id,
+        receipt.checksum,
+        ...(receipt.channelProofIds || []),
+        ...(receipt.proofIds || []),
+      ].filter(Boolean));
+      const timelineLogIds = uniqueStrings([receipt.timelineLogId, ...(receipt.timelineLogIds || [])].filter(Boolean));
+      const eventIds = uniqueStrings([receipt.eventId, ...(receipt.eventIds || [])].filter(Boolean));
+      return {
+        id: receipt.id || `transcript_channel_pin_${channelId}`,
+        proofKind: 'transcript-channel-pinned',
+        proofLabel: `${receipt.pinnedBy || 'Director'} pinned #${receipt.channelName || channelId}`,
+        apiPath,
+        channelId,
+        channelName: receipt.channelName || channelId,
+        channelPinMessageId: receipt.channelPinMessageId || null,
+        proofIds,
+        timelineLogIds,
+        eventIds,
+        taskIds: [],
+        agentIds: [receipt.pinnedById].filter(Boolean),
+        receiptId: receipt.id || null,
+        receiptSchemaVersion: receipt.schemaVersion || null,
+        pinnedBy: receipt.pinnedBy || null,
+        pinnedById: receipt.pinnedById || null,
+        pinnedAt: receipt.pinnedAt || null,
+        reason: receipt.reason || null,
+        checksum: receipt.checksum || null,
+        readyForBackendTranscriptChannelPin: Boolean(apiPath && proofIds.length && timelineLogIds.length && eventIds.length),
+      };
+    });
+  const transcriptChannelPinProofIds = uniqueStrings(transcriptChannelPinRoutes.flatMap((route) => route.proofIds || []));
+  const transcriptChannelPinTimelineLogIds = uniqueStrings(transcriptChannelPinRoutes.flatMap((route) => route.timelineLogIds || []));
+  const transcriptChannelPinEventIds = uniqueStrings(transcriptChannelPinRoutes.flatMap((route) => route.eventIds || []));
+  const transcriptPinRoutes = (project.transcriptPinReceipts || [])
+    .filter((receipt) => receipt.active !== false)
+    .map((receipt) => {
+      const channelId = receipt.channelId || 'main';
+      const apiPath = receipt.apiPath || (projectId ? `/projects/${projectId}/transcripts/${encodeURIComponent(channelId)}#${encodeURIComponent(receipt.messageId || '')}` : null);
+      const proofIds = uniqueStrings([
+        receipt.messageId,
+        receipt.pinMessageId,
+        receipt.id,
+        receipt.checksum,
+        ...(receipt.proofIds || []),
+      ].filter(Boolean));
+      const timelineLogIds = uniqueStrings([
+        receipt.timelineLogId,
+        ...(receipt.timelineLogIds || []),
+      ].filter(Boolean));
+      const eventIds = uniqueStrings([
+        receipt.eventId,
+        ...(receipt.eventIds || []),
+      ].filter(Boolean));
+      return {
+        id: receipt.id || `transcript_pin_${channelId}_${receipt.messageId || 'message'}`,
+        proofKind: 'transcript-message-pinned',
+        proofLabel: `${receipt.messageAuthor || 'Message'} pinned in #${channelId}`,
+        apiPath,
+        channelId,
+        messageId: receipt.messageId || null,
+        pinMessageId: receipt.pinMessageId || null,
+        proofIds,
+        timelineLogIds,
+        eventIds,
+        taskIds: [],
+        agentIds: [receipt.pinnedById].filter(Boolean),
+        receiptId: receipt.id || null,
+        receiptSchemaVersion: receipt.schemaVersion || null,
+        pinnedBy: receipt.pinnedBy || null,
+        pinnedById: receipt.pinnedById || null,
+        pinnedAt: receipt.pinnedAt || null,
+        reason: receipt.reason || null,
+        checksum: receipt.checksum || null,
+        readyForBackendTranscriptPin: Boolean(apiPath && proofIds.length && timelineLogIds.length && eventIds.length),
+      };
+    });
+  const transcriptPinProofIds = uniqueStrings(transcriptPinRoutes.flatMap((route) => route.proofIds || []));
+  const transcriptPinTimelineLogIds = uniqueStrings(transcriptPinRoutes.flatMap((route) => route.timelineLogIds || []));
+  const transcriptPinEventIds = uniqueStrings(transcriptPinRoutes.flatMap((route) => route.eventIds || []));
+  const transcriptReplyRoutes = (project.transcriptReplyReceipts || []).map((receipt) => {
+    const channelId = receipt.channelId || 'main';
+    const apiPath = receipt.apiPath || (projectId ? `/projects/${projectId}/transcripts/${encodeURIComponent(channelId)}#${encodeURIComponent(receipt.replyMessageId || '')}` : null);
+    const proofIds = uniqueStrings([
+      receipt.parentMessageId,
+      receipt.replyMessageId,
+      receipt.id,
+      receipt.checksum,
+      ...(receipt.proofIds || []),
+    ].filter(Boolean));
+    const timelineLogIds = uniqueStrings([
+      receipt.timelineLogId,
+      ...(receipt.timelineLogIds || []),
+    ].filter(Boolean));
+    const eventIds = uniqueStrings([
+      receipt.eventId,
+      ...(receipt.eventIds || []),
+    ].filter(Boolean));
+    return {
+      id: receipt.id || `transcript_reply_${channelId}_${receipt.replyMessageId || 'message'}`,
+      proofKind: 'transcript-message-replied',
+      proofLabel: `${receipt.replier || 'Director'} replied in #${channelId}`,
+      apiPath,
+      channelId,
+      parentMessageId: receipt.parentMessageId || null,
+      replyMessageId: receipt.replyMessageId || null,
+      proofIds,
+      timelineLogIds,
+      eventIds,
+      taskIds: [],
+      agentIds: [receipt.replierId, receipt.parentAuthorId].filter(Boolean),
+      receiptId: receipt.id || null,
+      receiptSchemaVersion: receipt.schemaVersion || null,
+      replier: receipt.replier || null,
+      replierId: receipt.replierId || null,
+      parentAuthor: receipt.parentAuthor || null,
+      parentAuthorId: receipt.parentAuthorId || null,
+      repliedAt: receipt.repliedAt || null,
+      checksum: receipt.checksum || null,
+      readyForBackendTranscriptReply: Boolean(apiPath && proofIds.length && timelineLogIds.length && eventIds.length),
+    };
+  });
+  const transcriptReplyProofIds = uniqueStrings(transcriptReplyRoutes.flatMap((route) => route.proofIds || []));
+  const transcriptReplyTimelineLogIds = uniqueStrings(transcriptReplyRoutes.flatMap((route) => route.timelineLogIds || []));
+  const transcriptReplyEventIds = uniqueStrings(transcriptReplyRoutes.flatMap((route) => route.eventIds || []));
+  const transcriptMentionRoutes = (project.transcriptMentionReceipts || []).map((receipt) => {
+    const channelId = receipt.channelId || 'main';
+    const apiPath = receipt.apiPath || (projectId ? `/projects/${projectId}/transcripts/${encodeURIComponent(channelId)}#${encodeURIComponent(receipt.mentionMessageId || '')}` : null);
+    const proofIds = uniqueStrings([
+      receipt.sourceMessageId,
+      receipt.mentionMessageId,
+      receipt.id,
+      receipt.checksum,
+      ...(receipt.proofIds || []),
+    ].filter(Boolean));
+    const timelineLogIds = uniqueStrings([
+      receipt.timelineLogId,
+      ...(receipt.timelineLogIds || []),
+    ].filter(Boolean));
+    const eventIds = uniqueStrings([
+      receipt.eventId,
+      ...(receipt.eventIds || []),
+    ].filter(Boolean));
+    return {
+      id: receipt.id || `transcript_mention_${channelId}_${receipt.mentionMessageId || 'message'}`,
+      proofKind: 'transcript-message-mentioned',
+      proofLabel: `${receipt.mentionedBy || 'Director'} mentioned ${receipt.targetAgentNames?.join(', ') || 'the team'} in #${channelId}`,
+      apiPath,
+      channelId,
+      sourceMessageId: receipt.sourceMessageId || null,
+      mentionMessageId: receipt.mentionMessageId || null,
+      proofIds,
+      timelineLogIds,
+      eventIds,
+      taskIds: [],
+      agentIds: uniqueStrings([receipt.mentionedById, ...(receipt.targetAgentIds || [])].filter(Boolean)),
+      receiptId: receipt.id || null,
+      receiptSchemaVersion: receipt.schemaVersion || null,
+      mentionedBy: receipt.mentionedBy || null,
+      mentionedById: receipt.mentionedById || null,
+      targetAgentIds: receipt.targetAgentIds || [],
+      targetAgentNames: receipt.targetAgentNames || [],
+      mentionedAt: receipt.mentionedAt || null,
+      checksum: receipt.checksum || null,
+      readyForBackendTranscriptMention: Boolean(apiPath && proofIds.length && timelineLogIds.length && eventIds.length),
+    };
+  });
+  const transcriptMentionProofIds = uniqueStrings(transcriptMentionRoutes.flatMap((route) => route.proofIds || []));
+  const transcriptMentionTimelineLogIds = uniqueStrings(transcriptMentionRoutes.flatMap((route) => route.timelineLogIds || []));
+  const transcriptMentionEventIds = uniqueStrings(transcriptMentionRoutes.flatMap((route) => route.eventIds || []));
+  const transcriptAttachmentRoutes = (project.transcriptAttachmentReceipts || []).map((receipt) => {
+    const channelId = receipt.channelId || 'main';
+    const apiPath = receipt.apiPath || (projectId ? `/projects/${projectId}/transcripts/${encodeURIComponent(channelId)}#${encodeURIComponent(receipt.attachmentMessageId || '')}` : null);
+    const proofIds = uniqueStrings([
+      receipt.attachmentMessageId,
+      receipt.id,
+      receipt.checksum,
+      receipt.contentChecksum,
+      ...(receipt.proofIds || []),
+    ].filter(Boolean));
+    const timelineLogIds = uniqueStrings([
+      receipt.timelineLogId,
+      ...(receipt.timelineLogIds || []),
+    ].filter(Boolean));
+    const eventIds = uniqueStrings([
+      receipt.eventId,
+      ...(receipt.eventIds || []),
+    ].filter(Boolean));
+    return {
+      id: receipt.id || `transcript_attachment_${channelId}_${receipt.attachmentMessageId || 'file'}`,
+      proofKind: 'transcript-file-attached',
+      proofLabel: `${receipt.uploadedBy || 'Director'} attached ${receipt.fileName || 'a file'} in #${channelId}`,
+      apiPath,
+      channelId,
+      attachmentMessageId: receipt.attachmentMessageId || null,
+      fileName: receipt.fileName || null,
+      contentType: receipt.contentType || null,
+      sizeBytes: receipt.sizeBytes || 0,
+      proofIds,
+      timelineLogIds,
+      eventIds,
+      taskIds: [],
+      agentIds: [receipt.uploadedById].filter(Boolean),
+      receiptId: receipt.id || null,
+      receiptSchemaVersion: receipt.schemaVersion || null,
+      uploadedBy: receipt.uploadedBy || null,
+      uploadedById: receipt.uploadedById || null,
+      uploadedAt: receipt.uploadedAt || null,
+      checksum: receipt.checksum || null,
+      contentChecksum: receipt.contentChecksum || null,
+      readyForBackendTranscriptAttachment: Boolean(apiPath && proofIds.length && timelineLogIds.length && eventIds.length && receipt.contentChecksum),
+    };
+  });
+  const transcriptAttachmentProofIds = uniqueStrings(transcriptAttachmentRoutes.flatMap((route) => route.proofIds || []));
+  const transcriptAttachmentTimelineLogIds = uniqueStrings(transcriptAttachmentRoutes.flatMap((route) => route.timelineLogIds || []));
+  const transcriptAttachmentEventIds = uniqueStrings(transcriptAttachmentRoutes.flatMap((route) => route.eventIds || []));
+  const transcriptMemberPresenceRoutes = (transcriptIndex.channels || []).map((channel) => {
+    const channelId = channel.channelId || 'main';
+    const presence = buildTranscriptMemberPresence({ project, messages, channelId });
+    return {
+      id: `transcript_member_presence_${channelId}`,
+      proofKind: 'transcript-member-presence',
+      proofLabel: `Member presence for #${channelId}`,
+      apiPath: presence.apiPath,
+      transcriptRoute: presence.transcriptRoute,
+      channelId,
+      memberCount: presence.summary?.memberCount || 0,
+      presentCount: presence.summary?.presentCount || 0,
+      directTargetCount: presence.summary?.directTargetCount || 0,
+      inboxCount: presence.summary?.inboxCount || 0,
+      openObligationCount: presence.summary?.openObligationCount || 0,
+      proofIds: presence.proofIds || [],
+      timelineLogIds: presence.timelineLogIds || [],
+      eventIds: presence.eventIds || [],
+      agentIds: uniqueStrings((presence.members || []).map((member) => member.agentId).filter(Boolean)),
+      checksum: presence.checksum || null,
+      readyForBackendTranscriptMemberPresence: Boolean(presence.summary?.readyForBackendTranscriptMemberPresence),
+    };
+  });
+  const transcriptMemberPresenceProofIds = uniqueStrings(transcriptMemberPresenceRoutes.flatMap((route) => route.proofIds || []));
+  const transcriptMemberPresenceTimelineLogIds = uniqueStrings(transcriptMemberPresenceRoutes.flatMap((route) => route.timelineLogIds || []));
+  const transcriptMemberPresenceEventIds = uniqueStrings(transcriptMemberPresenceRoutes.flatMap((route) => route.eventIds || []));
   const eventIdsForProofEvidence = (proofIds = [], types = []) => {
     const proofSet = new Set((proofIds || []).filter(Boolean).map(String));
     const typeSet = new Set((types || []).filter(Boolean).map(String));
@@ -9784,17 +11368,35 @@ function buildReadinessProofMap({ project = {}, messages = [] } = {}) {
     ...productTeamOperatingLoopProofIds,
     ...assignmentProofIds,
     ...transcriptChannelProofIds,
+    ...transcriptChannelPinProofIds,
+    ...transcriptPinProofIds,
+    ...transcriptReplyProofIds,
+    ...transcriptMentionProofIds,
+    ...transcriptAttachmentProofIds,
+    ...transcriptMemberPresenceProofIds,
     ...agentMessageProofIds,
   ]);
   const teamCollaborationDiagnosticTimelineLogIds = uniqueStrings([
     ...productTeamOperatingLoopTimelineLogIds,
     ...assignmentLogIds,
     ...transcriptChannelTimelineLogIds,
+    ...transcriptChannelPinTimelineLogIds,
+    ...transcriptPinTimelineLogIds,
+    ...transcriptReplyTimelineLogIds,
+    ...transcriptMentionTimelineLogIds,
+    ...transcriptAttachmentTimelineLogIds,
+    ...transcriptMemberPresenceTimelineLogIds,
     ...agentMessageTimelineLogIds,
   ]);
   const teamCollaborationDiagnosticEventIds = uniqueStrings([
     ...productTeamOperatingLoopEventIds,
     ...transcriptChannelEventIds,
+    ...transcriptChannelPinEventIds,
+    ...transcriptPinEventIds,
+    ...transcriptReplyEventIds,
+    ...transcriptMentionEventIds,
+    ...transcriptAttachmentEventIds,
+    ...transcriptMemberPresenceEventIds,
     ...agentMessageEventIds,
     ...ledgerEventIdsForTypes(project, [
       'kickoff-charter',
@@ -9802,6 +11404,11 @@ function buildReadinessProofMap({ project = {}, messages = [] } = {}) {
       'assignment-acknowledged',
       'agent-message',
       'transcript-channel-created',
+      'transcript-channel-pinned',
+      'transcript-message-pinned',
+      'transcript-message-replied',
+      'transcript-message-mentioned',
+      'transcript-file-attached',
       'autonomous-cycle',
       'agent-submission',
       'submission-review',
@@ -10210,6 +11817,284 @@ function buildReadinessProofMap({ project = {}, messages = [] } = {}) {
     readyForProduction: false,
     productionBlocked: true,
   };
+  const plannerExecutorReviewerLeaderId = productTeamMissionRunRoutes[0]?.selectedLeaderId
+    || project.kickoffCharter?.governance?.leaderId
+    || team.find((agent) => agent.isLeader)?.id
+    || null;
+  const plannerExecutorReviewerReviewerId = productTeamMissionRunRoutes[0]?.reviewerId
+    || project.kickoffCharter?.governance?.reviewerId
+    || submissionReviewRecords.find((review) => review.reviewerAgentId)?.reviewerAgentId
+    || submissionRecords.find((submission) => submission.requestedReviewAgentId)?.requestedReviewAgentId
+    || null;
+  const plannerExecutorReviewerExecutorAgentIds = uniqueStrings([
+    ...submissionRecords.map((submission) => submission.agentId),
+    ...evidenceSearchRecords.map((record) => record.agentId),
+    ...(agentAutonomousActionQueue.rows || []).map((row) => row.agentId),
+  ].filter(Boolean));
+  const plannerExecutorReviewerStateRow = ({
+    id,
+    lane,
+    label,
+    ready,
+    detail,
+    apiPath,
+    agentIds: rowAgentIds = [],
+    proofIds = [],
+    timelineLogIds = [],
+    eventIds = [],
+  }) => ({
+    id,
+    lane,
+    label,
+    ready: Boolean(ready),
+    status: ready ? `${lane}-ready` : `${lane}-waiting-for-proof`,
+    detail,
+    apiPath: projectId ? apiPath : null,
+    agentIds: uniqueStrings(rowAgentIds),
+    proofIds: uniqueStrings(proofIds).slice(0, 24),
+    timelineLogIds: uniqueStrings(timelineLogIds).slice(0, 24),
+    eventIds: uniqueStrings(eventIds).slice(0, 24),
+  });
+  const plannerExecutorReviewerStateRows = [
+    plannerExecutorReviewerStateRow({
+      id: 'planner',
+      lane: 'planner',
+      label: 'Planner: kickoff, role negotiation, and work allocation',
+      ready: Boolean(
+        plannerExecutorReviewerLeaderId
+        && kickoffProofIds.length
+        && (selfMarketingRoutes.length || roleNegotiationRoutes.length)
+      ),
+      detail: `${plannerExecutorReviewerLeaderId || 'leader-pending'} planned kickoff and role negotiation with ${kickoffProofIds.length} kickoff proof id(s).`,
+      apiPath: `/projects/${projectId}/readiness-proof-map`,
+      agentIds: [plannerExecutorReviewerLeaderId].filter(Boolean),
+      proofIds: uniqueStrings([
+        ...kickoffProofIds,
+        ...selfMarketingRoutes.flatMap((route) => route.proofIds || []),
+        ...roleNegotiationRoutes.flatMap((route) => route.proofIds || []),
+      ]),
+      eventIds: uniqueStrings([
+        ...selfMarketingRoutes.flatMap((route) => route.eventIds || []),
+        ...roleNegotiationRoutes.flatMap((route) => route.eventIds || []),
+      ]),
+    }),
+    plannerExecutorReviewerStateRow({
+      id: 'executor',
+      lane: 'executor',
+      label: 'Executor: brainstorm, evidence, draft, and artifact submission',
+      ready: Boolean(
+        plannerExecutorReviewerExecutorAgentIds.length
+        && brainstormSubmissionRecords.length
+        && evidenceSearchRecords.length
+        && productTeamGeneratedDraftRecords.length
+        && submissionRecords.length
+      ),
+      detail: `${submissionRecords.length} submission(s), ${evidenceSearchRecords.length} evidence search(es), ${brainstormSubmissionRecords.length} brainstorm board(s).`,
+      apiPath: `/projects/${projectId}/product-team-delivery-trace`,
+      agentIds: plannerExecutorReviewerExecutorAgentIds,
+      proofIds: uniqueStrings([
+        ...brainstormProofIds,
+        ...evidenceSearchProofIds,
+        ...submissionProofIds,
+      ]),
+      timelineLogIds: uniqueStrings([
+        ...brainstormLogIds,
+        ...evidenceSearchLogIds,
+        ...submissionLogIds,
+      ]),
+      eventIds: uniqueStrings([
+        ...brainstormEventIds,
+        ...evidenceSearchEventIds,
+        ...submissionEventIds,
+      ]),
+    }),
+    plannerExecutorReviewerStateRow({
+      id: 'reviewer',
+      lane: 'reviewer',
+      label: 'Reviewer: requested changes, revision closure, and final acceptance',
+      ready: Boolean(
+        plannerExecutorReviewerReviewerId
+        && submissionReviewRecords.length
+        && revisionRecords.length
+        && productTeamAcceptedFinalDeliverableReviewRecords.length
+      ),
+      detail: `${submissionReviewRecords.length} review(s), ${revisionRecords.length} revision response(s), ${productTeamAcceptedFinalDeliverableReviewRecords.length} accepted final review(s).`,
+      apiPath: `/projects/${projectId}/submission-review-workflow`,
+      agentIds: uniqueStrings([
+        plannerExecutorReviewerReviewerId,
+        ...submissionReviewRecords.map((review) => review.reviewerAgentId),
+      ].filter(Boolean)),
+      proofIds: uniqueStrings([
+        ...submissionReviewProofIds,
+        ...revisionRecords.map((submission) => submission.messageId),
+      ]),
+      timelineLogIds: uniqueStrings([
+        ...submissionReviewLogIds,
+        ...revisionRecords.map((submission) => submission.timelineLogId),
+      ]),
+      eventIds: uniqueStrings([
+        ...submissionReviewEventIds,
+        ...revisionRecords.map((submission) => submission.eventId),
+      ]),
+    }),
+  ];
+  const plannerExecutorReviewerTransitionRow = ({
+    id,
+    from,
+    to,
+    label,
+    ready,
+    detail,
+    apiPath,
+    proofIds = [],
+    timelineLogIds = [],
+    eventIds = [],
+  }) => ({
+    id,
+    from,
+    to,
+    label,
+    ready: Boolean(ready),
+    status: ready ? 'transition-ready' : 'transition-waiting-for-proof',
+    detail,
+    apiPath: projectId ? apiPath : null,
+    proofIds: uniqueStrings(proofIds).slice(0, 24),
+    timelineLogIds: uniqueStrings(timelineLogIds).slice(0, 24),
+    eventIds: uniqueStrings(eventIds).slice(0, 24),
+  });
+  const plannerExecutorReviewerTransitionRows = [
+    plannerExecutorReviewerTransitionRow({
+      id: 'plan-to-execute',
+      from: 'planner',
+      to: 'executor',
+      label: 'Plan handed to executing Agents',
+      ready: Boolean(kickoffProofIds.length && (brainstormSubmissionRecords.length || evidenceSearchRecords.length || submissionRecords.length)),
+      detail: `${submissionRecords.length} submission(s) follow kickoff planning proof.`,
+      apiPath: `/projects/${projectId}/manager-flow-graph`,
+      proofIds: uniqueStrings([...kickoffProofIds, ...brainstormProofIds, ...evidenceSearchProofIds, ...submissionProofIds]),
+      timelineLogIds: uniqueStrings([...brainstormLogIds, ...evidenceSearchLogIds, ...submissionLogIds]),
+      eventIds: uniqueStrings([...brainstormEventIds, ...evidenceSearchEventIds, ...submissionEventIds]),
+    }),
+    plannerExecutorReviewerTransitionRow({
+      id: 'execute-to-review',
+      from: 'executor',
+      to: 'reviewer',
+      label: 'Execution submitted into review',
+      ready: Boolean(submissionRecords.length && submissionReviewRecords.length),
+      detail: `${submissionReviewRecords.length} review round(s) opened against submitted work.`,
+      apiPath: `/projects/${projectId}/submission-review-workflow`,
+      proofIds: uniqueStrings([...submissionProofIds, ...submissionReviewProofIds]),
+      timelineLogIds: uniqueStrings([...submissionLogIds, ...submissionReviewLogIds]),
+      eventIds: uniqueStrings([...submissionEventIds, ...submissionReviewEventIds]),
+    }),
+    plannerExecutorReviewerTransitionRow({
+      id: 'review-to-revision',
+      from: 'reviewer',
+      to: 'executor',
+      label: 'Requested changes closed by revision',
+      ready: Boolean(
+        submissionReviewRecords.some((review) => review.verdict === 'changes-requested')
+        && revisionRecords.length
+      ),
+      detail: `${revisionRecords.length} revision response(s) linked to requested changes.`,
+      apiPath: `/projects/${projectId}/submission-review-workflow`,
+      proofIds: uniqueStrings([...submissionReviewProofIds, ...revisionRecords.map((submission) => submission.messageId)]),
+      timelineLogIds: uniqueStrings([...submissionReviewLogIds, ...revisionRecords.map((submission) => submission.timelineLogId)]),
+      eventIds: uniqueStrings([...submissionReviewEventIds, ...revisionRecords.map((submission) => submission.eventId)]),
+    }),
+    plannerExecutorReviewerTransitionRow({
+      id: 'revision-to-final',
+      from: 'executor',
+      to: 'reviewer',
+      label: 'Revision promoted to accepted final deliverable',
+      ready: Boolean(productTeamFinalDeliverableRecords.length && productTeamAcceptedFinalDeliverableReviewRecords.length),
+      detail: `${productTeamFinalDeliverableRecords.length} final deliverable submission(s), ${productTeamAcceptedFinalDeliverableReviewRecords.length} accepted final review(s).`,
+      apiPath: `/projects/${projectId}/product-team-delivery-trace`,
+      proofIds: uniqueStrings([
+        ...productTeamFinalDeliverableRecords.map((submission) => submission.messageId),
+        ...productTeamAcceptedFinalDeliverableReviewRecords.map((review) => review.messageId),
+      ]),
+      timelineLogIds: uniqueStrings([
+        ...productTeamFinalDeliverableRecords.map((submission) => submission.timelineLogId),
+        ...productTeamAcceptedFinalDeliverableReviewRecords.map((review) => review.timelineLogId),
+      ]),
+      eventIds: uniqueStrings([
+        ...productTeamFinalDeliverableRecords.map((submission) => submission.eventId),
+        ...productTeamAcceptedFinalDeliverableReviewRecords.map((review) => review.eventId),
+      ]),
+    }),
+  ];
+  const plannerExecutorReviewerProofIds = uniqueStrings([
+    ...plannerExecutorReviewerStateRows.flatMap((row) => row.proofIds || []),
+    ...plannerExecutorReviewerTransitionRows.flatMap((row) => row.proofIds || []),
+  ]);
+  const plannerExecutorReviewerTimelineLogIds = uniqueStrings([
+    ...plannerExecutorReviewerStateRows.flatMap((row) => row.timelineLogIds || []),
+    ...plannerExecutorReviewerTransitionRows.flatMap((row) => row.timelineLogIds || []),
+  ]);
+  const plannerExecutorReviewerEventIds = uniqueStrings([
+    ...plannerExecutorReviewerStateRows.flatMap((row) => row.eventIds || []),
+    ...plannerExecutorReviewerTransitionRows.flatMap((row) => row.eventIds || []),
+  ]);
+  const plannerExecutorReviewerReady = Boolean(
+    projectId
+    && plannerExecutorReviewerStateRows.every((row) => row.ready)
+    && plannerExecutorReviewerTransitionRows.every((row) => row.ready)
+    && productTeamAcceptanceChainReady
+    && productTeamOperatingLoopReady
+    && plannerExecutorReviewerProofIds.length
+    && plannerExecutorReviewerTimelineLogIds.length
+    && plannerExecutorReviewerEventIds.length
+  );
+  const plannerExecutorReviewerStateMachineRoutes = projectId ? [{
+    proofKind: 'planner-executor-reviewer-state-machine',
+    proofLabel: 'Planner / Executor / Reviewer state machine',
+    apiPath: `/projects/${projectId}/planner-executor-reviewer-state-machine`,
+    channelId: 'manager-dashboard',
+    proofIds: plannerExecutorReviewerProofIds,
+    timelineLogIds: plannerExecutorReviewerTimelineLogIds,
+    eventIds: plannerExecutorReviewerEventIds,
+    taskIds: uniqueStrings([
+      ...assignmentTaskIds,
+      ...submissionRecords.map((submission) => submission.taskId),
+      ...evidenceSearchRecords.map((record) => record.taskId),
+      ...submissionReviewRecords.map((review) => review.taskId),
+    ].filter(Boolean)),
+    agentIds: uniqueStrings([
+      plannerExecutorReviewerLeaderId,
+      plannerExecutorReviewerReviewerId,
+      ...plannerExecutorReviewerExecutorAgentIds,
+    ].filter(Boolean)),
+    roleRows: plannerExecutorReviewerStateRows,
+    transitionRows: plannerExecutorReviewerTransitionRows,
+    productTeamDeliveryTraceRoute: `/projects/${projectId}/product-team-delivery-trace`,
+    productTeamOperatingLoopRoute: `/projects/${projectId}/product-team-operating-loop`,
+    teamCollaborationDiagnosticsRoute: `/projects/${projectId}/team-collaboration-diagnostics`,
+    submissionReviewWorkflowRoute: `/projects/${projectId}/submission-review-workflow`,
+    managerFlowGraphRoute: `/projects/${projectId}/manager-flow-graph`,
+    readinessProofMapRoute: `/projects/${projectId}/readiness-proof-map`,
+    readyForLocalProductTeamStateMachine: plannerExecutorReviewerReady,
+    readyForProduction: false,
+    productionBlocked: true,
+    productionBlockerReason: 'Local Planner / Executor / Reviewer flow is proofable; public production still requires provider/BYOK policy, managed queue/cron, durable audit, customer acceptance policy, and incident recovery.',
+  }] : [];
+  const plannerExecutorReviewerStateMachineSummary = {
+    count: plannerExecutorReviewerStateMachineRoutes.length,
+    routeReady: Boolean(projectId),
+    roleCount: plannerExecutorReviewerStateRows.length,
+    readyRoleCount: plannerExecutorReviewerStateRows.filter((row) => row.ready).length,
+    transitionCount: plannerExecutorReviewerTransitionRows.length,
+    readyTransitionCount: plannerExecutorReviewerTransitionRows.filter((row) => row.ready).length,
+    plannerAgentId: plannerExecutorReviewerLeaderId,
+    reviewerAgentId: plannerExecutorReviewerReviewerId,
+    executorAgentCount: plannerExecutorReviewerExecutorAgentIds.length,
+    readyForLocalProductTeamStateMachine: plannerExecutorReviewerReady,
+    readyForProduction: false,
+    proofIds: plannerExecutorReviewerProofIds,
+    timelineLogIds: plannerExecutorReviewerTimelineLogIds,
+    eventIds: plannerExecutorReviewerEventIds,
+    productionBlockerCount: 1,
+  };
 
   const route = (kind, label, path, extra = {}) => ({
     proofKind: kind,
@@ -10481,6 +12366,79 @@ function buildReadinessProofMap({ project = {}, messages = [] } = {}) {
       proofIds: transcriptChannelProofIds,
       timelineLogIds: transcriptChannelTimelineLogIds,
       eventIds: transcriptChannelEventIds,
+    },
+    transcriptChannelPinRoutes,
+    transcriptChannelPinSummary: {
+      count: transcriptChannelPinRoutes.length,
+      routeReady: transcriptChannelPinRoutes.length > 0 && transcriptChannelPinRoutes.every((route) => route.readyForBackendTranscriptChannelPin),
+      readyForBackendTranscriptChannelPins: transcriptChannelPinRoutes.length > 0 && transcriptChannelPinRoutes.every((route) => route.readyForBackendTranscriptChannelPin),
+      readyCount: transcriptChannelPinRoutes.filter((route) => route.readyForBackendTranscriptChannelPin).length,
+      channelIds: uniqueStrings(transcriptChannelPinRoutes.map((route) => route.channelId).filter(Boolean)),
+      latestChannelId: transcriptChannelPinRoutes[0]?.channelId || null,
+      proofIds: transcriptChannelPinProofIds,
+      timelineLogIds: transcriptChannelPinTimelineLogIds,
+      eventIds: transcriptChannelPinEventIds,
+    },
+    transcriptPinRoutes,
+    transcriptPinSummary: {
+      count: transcriptPinRoutes.length,
+      routeReady: transcriptPinRoutes.length > 0 && transcriptPinRoutes.every((route) => route.readyForBackendTranscriptPin),
+      readyForBackendTranscriptPins: transcriptPinRoutes.length > 0 && transcriptPinRoutes.every((route) => route.readyForBackendTranscriptPin),
+      readyCount: transcriptPinRoutes.filter((route) => route.readyForBackendTranscriptPin).length,
+      channelIds: uniqueStrings(transcriptPinRoutes.map((route) => route.channelId).filter(Boolean)),
+      latestMessageId: transcriptPinRoutes[0]?.messageId || null,
+      proofIds: transcriptPinProofIds,
+      timelineLogIds: transcriptPinTimelineLogIds,
+      eventIds: transcriptPinEventIds,
+    },
+    transcriptReplyRoutes,
+    transcriptReplySummary: {
+      count: transcriptReplyRoutes.length,
+      routeReady: transcriptReplyRoutes.length > 0 && transcriptReplyRoutes.every((route) => route.readyForBackendTranscriptReply),
+      readyForBackendTranscriptReplies: transcriptReplyRoutes.length > 0 && transcriptReplyRoutes.every((route) => route.readyForBackendTranscriptReply),
+      readyCount: transcriptReplyRoutes.filter((route) => route.readyForBackendTranscriptReply).length,
+      channelIds: uniqueStrings(transcriptReplyRoutes.map((route) => route.channelId).filter(Boolean)),
+      latestReplyMessageId: transcriptReplyRoutes[0]?.replyMessageId || null,
+      proofIds: transcriptReplyProofIds,
+      timelineLogIds: transcriptReplyTimelineLogIds,
+      eventIds: transcriptReplyEventIds,
+    },
+    transcriptMentionRoutes,
+    transcriptMentionSummary: {
+      count: transcriptMentionRoutes.length,
+      routeReady: transcriptMentionRoutes.length > 0 && transcriptMentionRoutes.every((route) => route.readyForBackendTranscriptMention),
+      readyForBackendTranscriptMentions: transcriptMentionRoutes.length > 0 && transcriptMentionRoutes.every((route) => route.readyForBackendTranscriptMention),
+      readyCount: transcriptMentionRoutes.filter((route) => route.readyForBackendTranscriptMention).length,
+      channelIds: uniqueStrings(transcriptMentionRoutes.map((route) => route.channelId).filter(Boolean)),
+      latestMentionMessageId: transcriptMentionRoutes[0]?.mentionMessageId || null,
+      proofIds: transcriptMentionProofIds,
+      timelineLogIds: transcriptMentionTimelineLogIds,
+      eventIds: transcriptMentionEventIds,
+    },
+    transcriptAttachmentRoutes,
+    transcriptAttachmentSummary: {
+      count: transcriptAttachmentRoutes.length,
+      routeReady: transcriptAttachmentRoutes.length > 0 && transcriptAttachmentRoutes.every((route) => route.readyForBackendTranscriptAttachment),
+      readyForBackendTranscriptAttachments: transcriptAttachmentRoutes.length > 0 && transcriptAttachmentRoutes.every((route) => route.readyForBackendTranscriptAttachment),
+      readyCount: transcriptAttachmentRoutes.filter((route) => route.readyForBackendTranscriptAttachment).length,
+      channelIds: uniqueStrings(transcriptAttachmentRoutes.map((route) => route.channelId).filter(Boolean)),
+      latestAttachmentMessageId: transcriptAttachmentRoutes[0]?.attachmentMessageId || null,
+      proofIds: transcriptAttachmentProofIds,
+      timelineLogIds: transcriptAttachmentTimelineLogIds,
+      eventIds: transcriptAttachmentEventIds,
+    },
+    transcriptMemberPresenceRoutes,
+    transcriptMemberPresenceSummary: {
+      count: transcriptMemberPresenceRoutes.length,
+      routeReady: transcriptMemberPresenceRoutes.some((route) => route.readyForBackendTranscriptMemberPresence),
+      readyForBackendTranscriptMemberPresence: transcriptMemberPresenceRoutes.some((route) => route.readyForBackendTranscriptMemberPresence),
+      readyCount: transcriptMemberPresenceRoutes.filter((route) => route.readyForBackendTranscriptMemberPresence).length,
+      channelIds: uniqueStrings(transcriptMemberPresenceRoutes.map((route) => route.channelId).filter(Boolean)),
+      memberCount: transcriptMemberPresenceRoutes.reduce((sum, route) => sum + (route.memberCount || 0), 0),
+      presentCount: transcriptMemberPresenceRoutes.reduce((sum, route) => sum + (route.presentCount || 0), 0),
+      proofIds: transcriptMemberPresenceProofIds,
+      timelineLogIds: transcriptMemberPresenceTimelineLogIds,
+      eventIds: transcriptMemberPresenceEventIds,
     },
     agentMessageRoutes,
     agentMessageSummary: {
@@ -11015,6 +12973,8 @@ function buildReadinessProofMap({ project = {}, messages = [] } = {}) {
     },
     productTeamAcceptanceChainRoutes,
     productTeamAcceptanceChainSummary,
+    plannerExecutorReviewerStateMachineRoutes,
+    plannerExecutorReviewerStateMachineSummary,
     managerUseCaseAuditRoutes: projectId ? [{
       proofKind: 'manager-use-case-audit',
       proofLabel: 'Manager Use Case Audit',
@@ -11497,6 +13457,33 @@ function buildReadinessProofMap({ project = {}, messages = [] } = {}) {
     localMvpStartupReadinessSummary: {
       count: projectId ? 1 : 0,
       routeReady: Boolean(projectId),
+      readyForProduction: false,
+      proofIds: projectSettingsProofIds,
+      timelineLogIds: projectSettingsLogIds,
+      eventIds: projectSettingsEventIds,
+      productionBlockerCount: 1,
+    },
+    publicProductionStartupReadinessRoutes: projectId ? [{
+      proofKind: 'public-production-startup-readiness',
+      proofLabel: 'Public Production Startup Readiness',
+      apiPath: '/public-production-startup-readiness',
+      channelId: 'settings',
+      proofIds: projectSettingsProofIds,
+      timelineLogIds: projectSettingsLogIds,
+      eventIds: projectSettingsEventIds,
+      taskIds: [],
+      agentIds: [],
+      settingsRuntimeReadinessRoute: `/projects/${projectId}/settings-runtime-readiness`,
+      localMvpStartupReadinessRoute: '/local-mvp-startup-readiness',
+      readyForPublicProduction: false,
+      readyForProduction: false,
+      productionBlocker: true,
+      productionBlockerReason: 'Public production startup still needs enforced signed access, managed secrets, managed persistence, managed queue, observability, alerting, incident response, restore drill proof, and centralized audit retention.',
+    }] : [],
+    publicProductionStartupReadinessSummary: {
+      count: projectId ? 1 : 0,
+      routeReady: Boolean(projectId),
+      readyForPublicProduction: false,
       readyForProduction: false,
       proofIds: projectSettingsProofIds,
       timelineLogIds: projectSettingsLogIds,
@@ -15772,6 +17759,7 @@ function buildManagerDashboardSnapshot({ project = {}, messages = [] } = {}) {
     },
     backendRoutes: {
       project: projectId ? `/projects/${projectId}` : null,
+      publicProductionStartupReadiness: '/public-production-startup-readiness',
       projectSettings: projectId ? `/projects/${projectId}/project-settings` : null,
       readiness: projectId ? `/projects/${projectId}/readiness` : null,
       readinessProofMap: projectId ? `/projects/${projectId}/readiness-proof-map` : null,
@@ -15786,6 +17774,7 @@ function buildManagerDashboardSnapshot({ project = {}, messages = [] } = {}) {
       productionLaunchEvidenceDossier: projectId ? `/projects/${projectId}/production-launch-evidence-dossier` : null,
       productionEvidenceIntegrityAudit: projectId ? `/projects/${projectId}/production-evidence-integrity-audit` : null,
       productionInfrastructureRehearsal: projectId ? `/projects/${projectId}/production-infrastructure-rehearsal` : null,
+      managedInfrastructureCutoverAttestations: projectId ? `/projects/${projectId}/managed-infrastructure-cutover-attestations` : null,
       productionDeploymentControlReceipts: projectId ? `/projects/${projectId}/production-deployment-control-receipts` : null,
       productionSecurityControlReceipts: projectId ? `/projects/${projectId}/production-security-control-receipts` : null,
       productionProviderControlReceipts: projectId ? `/projects/${projectId}/production-provider-control-receipts` : null,
@@ -15810,6 +17799,7 @@ function buildManagerDashboardSnapshot({ project = {}, messages = [] } = {}) {
       autonomousRunControl: projectId ? `/projects/${projectId}/autonomous-run-control` : null,
       runtimeAutonomyStatus: projectId ? `/projects/${projectId}/runtime-autonomy-status` : null,
       productTeamOperatingLoop: projectId ? `/projects/${projectId}/product-team-operating-loop` : null,
+      plannerExecutorReviewerStateMachine: projectId ? `/projects/${projectId}/planner-executor-reviewer-state-machine` : null,
       autonomousCycleConsistency: projectId ? `/projects/${projectId}/autonomous-cycle-consistency` : null,
       agentAutonomousActionQueue: projectId ? `/projects/${projectId}/agent-autonomous-action-queue` : null,
       agentAutonomousActionRunTemplate: projectId ? `/projects/${projectId}/agent-autonomous-action-queue/:agentId/run` : null,
@@ -17118,6 +19108,7 @@ function buildCollaborationIntentQueue({
     relatedIds = [],
     artifactType = null,
     selectedAction = null,
+    requestBodyTemplate = null,
   }) => {
     const safeProofIds = uniqueStrings(proofIds).slice(0, 20);
     const safeTimelineLogIds = uniqueStrings(timelineLogIds).slice(0, 20);
@@ -17153,6 +19144,7 @@ function buildCollaborationIntentQueue({
       relatedIds: uniqueStrings(relatedIds),
       artifactType,
       selectedAction,
+      requestBodyTemplate: requestBodyTemplate || null,
     };
   };
 
@@ -17237,6 +19229,29 @@ function buildCollaborationIntentQueue({
   }
 
   if (customerAgentHandoff) {
+    const handoffTargetControl = customerAgentHandoff.targetStageId
+      ? buildAutopilotDeliveryTargetControls({
+        targetSnapshot: {
+          schemaVersion: 'product-team-delivery-trace-target/v1',
+          targetKind: 'product-team-delivery-trace',
+          targetRoute: projectId ? `/projects/${projectId}/product-team-delivery-trace` : null,
+          nextMissingStageId: customerAgentHandoff.targetStageId,
+          missingStageIds: [customerAgentHandoff.targetStageId],
+          readyForPrivatePilotDelivery: false,
+        },
+        stageId: customerAgentHandoff.targetStageId,
+        now,
+      })
+      : null;
+    const handoffTargetOverrides = handoffTargetControl
+      ? buildAutopilotTargetExecutionOverrides({ targetControls: handoffTargetControl })
+      : {
+        submitWorkArtifact: true,
+        submitAgentWorkArtifacts: true,
+        workArtifactType: 'progress-brief',
+        agentWorkArtifactType: 'progress-brief',
+        submitWorkArtifactOn: 'always',
+      };
     rows.push(makeRow({
       id: 'customer-agent-handoff-intent',
       source: 'product-team-customer-agent-handoff',
@@ -17284,6 +19299,30 @@ function buildCollaborationIntentQueue({
         ...(customerAgentHandoffExecution?.submissionIds || []),
       ].filter(Boolean),
       selectedAction: 'continue-customer-agent-handoff',
+      requestBodyTemplate: {
+        trigger: 'collaboration-intent-customer-agent-handoff',
+        agentTrigger: 'collaboration-intent-customer-agent-handoff-agents',
+        schedulerReason: 'collaboration-intent-customer-agent-handoff',
+        source: 'collaboration-intent-queue',
+        forceProjectRun: true,
+        forceAgentRun: true,
+        forceProjectIds: projectId ? [projectId] : [],
+        forceAgentProjectIds: projectId ? [projectId] : [],
+        maxProjects: 1,
+        maxAgentProjects: 1,
+        maxAgentsPerProject: Math.max(1, team.length || 1),
+        useAgentAutonomousStrategy: true,
+        reviewPendingSubmission: true,
+        reviewPendingSubmissions: true,
+        agentReviewVerdict: 'auto',
+        respondToReviewObligation: true,
+        respondToReviewObligations: true,
+        includeReadModels: false,
+        ...handoffTargetOverrides,
+        submitWorkArtifact: handoffTargetOverrides.submitWorkArtifact !== false,
+        submitAgentWorkArtifacts: handoffTargetOverrides.submitAgentWorkArtifacts !== false,
+        submitWorkArtifactOn: handoffTargetOverrides.submitWorkArtifactOn || 'always',
+      },
     }));
   }
 
@@ -17592,6 +19631,7 @@ function buildRuntimeContractFreeze({
   productTeamDeliveryTrace = {},
   productTeamOperatingLoop = {},
   teamCollaborationDiagnostics = {},
+  plannerExecutorReviewerStateMachine = {},
   now = nowIso(),
 } = {}) {
   const projectId = project.id || managerDashboard.projectId || productTeamDeliveryTrace.projectId || null;
@@ -17739,6 +19779,17 @@ function buildRuntimeContractFreeze({
       eventIds: productTeamOperatingLoop.proofLoop?.eventIds || [],
     }),
     row({
+      id: 'planner-executor-reviewer-state-machine-contract',
+      label: 'Planner / Executor / Reviewer state machine contract',
+      schemaVersions: ['planner-executor-reviewer-state-machine/v1'],
+      apiPath: projectId ? `/projects/${projectId}/planner-executor-reviewer-state-machine` : null,
+      ready: Boolean(plannerExecutorReviewerStateMachine.readyForLocalProductTeamStateMachine),
+      detail: `${plannerExecutorReviewerStateMachine.summary?.readyRoleCount || 0}/${plannerExecutorReviewerStateMachine.summary?.roleCount || 0} role lane(s), ${plannerExecutorReviewerStateMachine.summary?.readyTransitionCount || 0}/${plannerExecutorReviewerStateMachine.summary?.transitionCount || 0} transition(s) ready.`,
+      proofIds: plannerExecutorReviewerStateMachine.proofIds || [],
+      timelineLogIds: plannerExecutorReviewerStateMachine.timelineLogIds || [],
+      eventIds: plannerExecutorReviewerStateMachine.eventIds || [],
+    }),
+    row({
       id: 'team-collaboration-diagnostics-contract',
       label: 'Team collaboration break-diagnostics contract',
       schemaVersions: ['team-collaboration-diagnostics/v1'],
@@ -17772,6 +19823,7 @@ function buildRuntimeContractFreeze({
     evidenceQualityAudit: projectId ? `/projects/${projectId}/evidence-quality-audit` : null,
     submissionReviewWorkflow: projectId ? `/projects/${projectId}/submission-review-workflow` : null,
     productTeamOperatingLoop: projectId ? `/projects/${projectId}/product-team-operating-loop` : null,
+    plannerExecutorReviewerStateMachine: projectId ? `/projects/${projectId}/planner-executor-reviewer-state-machine` : null,
     teamCollaborationDiagnostics: projectId ? `/projects/${projectId}/team-collaboration-diagnostics` : null,
     managerFlowGraph: projectId ? `/projects/${projectId}/manager-flow-graph` : null,
     readinessProofMap: projectId ? `/projects/${projectId}/readiness-proof-map` : null,
@@ -19510,6 +21562,370 @@ function buildProductTeamDeliveryTrace({
       checksum,
     },
     checksum,
+  });
+}
+
+function buildPlannerExecutorReviewerStateMachine({
+  project = {},
+  managerDashboard = {},
+  productTeamDeliveryTrace = {},
+  submissionReviewWorkflow = {},
+  productTeamOperatingLoop = {},
+  teamCollaborationDiagnostics = {},
+  readinessProofMap = {},
+  now = nowIso(),
+} = {}) {
+  const projectId = project.id || managerDashboard.projectId || productTeamDeliveryTrace.projectId || null;
+  const proofMap = readinessProofMap || managerDashboard.readinessProofMap || {};
+  const team = project.team || [];
+  const submissions = project.agentSubmissions || [];
+  const evidenceSearches = project.evidenceSearches || [];
+  const reviews = project.submissionReviews || [];
+  const latestMissionRun = (project.productTeamMissionRuns || [])[0] || {};
+  const leaderId = latestMissionRun.selectedLeaderId
+    || project.kickoffCharter?.governance?.leaderId
+    || team.find((agent) => agent.isLeader)?.id
+    || null;
+  const reviewerId = latestMissionRun.reviewerId
+    || project.kickoffCharter?.governance?.reviewerId
+    || reviews.find((review) => review.reviewerAgentId)?.reviewerAgentId
+    || submissions.find((submission) => submission.requestedReviewAgentId)?.requestedReviewAgentId
+    || null;
+  const agentNameById = Object.fromEntries(team.map((agent) => [agent.id, agent.name || agent.id]));
+  const traceRows = productTeamDeliveryTrace.rows || [];
+  const traceRow = (id) => traceRows.find((row) => row.id === id) || {};
+  const traceRowsFor = (ids = []) => ids.map(traceRow).filter((row) => row.id);
+  const idsFromRows = (rows = [], field = 'proofIds') => uniqueStrings(rows.flatMap((row) => row[field] || []));
+  const revisionSubmissions = submissions.filter((submission) => (
+    submission.revisesSubmissionId
+    || submission.respondsToReviewId
+    || (submission.supersedesSubmissionIds || []).length
+  ));
+  const finalSubmissions = submissions.filter((submission) => (
+    submission.artifactType === 'final-deliverable'
+    || submission.status === 'final'
+  ));
+  const submissionById = new Map(submissions.map((submission) => [String(submission.id || ''), submission]));
+  const acceptedFinalReviews = reviews.filter((review) => {
+    const submission = submissionById.get(String(review.submissionId || ''));
+    return review.verdict === 'accepted'
+      && (submission?.artifactType === 'final-deliverable' || submission?.status === 'final');
+  });
+  const changeRequestReviews = reviews.filter((review) => review.verdict === 'changes-requested');
+  const executorAgentIds = uniqueStrings([
+    ...submissions.map((submission) => submission.agentId),
+    ...evidenceSearches.map((record) => record.agentId),
+    ...(productTeamOperatingLoop.agentSide?.initiativeRows || []).map((row) => row.agentId),
+  ].filter(Boolean));
+  const plannerProofRows = traceRowsFor(['kickoff-meeting', 'agent-self-marketing']);
+  const executorProofRows = traceRowsFor(['brainstorm-layer', 'evidence-quality', 'draft-artifact']);
+  const reviewerProofRows = traceRowsFor(['review-and-revision', 'final-deliverable']);
+  const plannerProofIds = uniqueStrings([
+    ...(proofMap.roleNegotiationSummary?.proofIds || []),
+    ...(proofMap.selfMarketingSummary?.proofIds || []),
+    ...(latestMissionRun.proofIds || []),
+    ...idsFromRows(plannerProofRows),
+  ]);
+  const plannerTimelineLogIds = uniqueStrings([
+    ...(latestMissionRun.timelineLogIds || []),
+    ...idsFromRows(plannerProofRows, 'timelineLogIds'),
+  ]);
+  const plannerEventIds = uniqueStrings([
+    ...(proofMap.roleNegotiationSummary?.eventIds || []),
+    ...(proofMap.selfMarketingSummary?.eventIds || []),
+    ...(latestMissionRun.eventIds || []),
+    ...idsFromRows(plannerProofRows, 'eventIds'),
+  ]);
+  const executorProofIds = uniqueStrings([
+    ...idsFromRows(executorProofRows),
+    ...evidenceSearches.map((record) => record.messageId),
+    ...submissions.map((submission) => submission.messageId),
+    ...(productTeamOperatingLoop.proofIds || []),
+  ]);
+  const executorTimelineLogIds = uniqueStrings([
+    ...idsFromRows(executorProofRows, 'timelineLogIds'),
+    ...evidenceSearches.map((record) => record.timelineLogId),
+    ...submissions.map((submission) => submission.timelineLogId),
+    ...(productTeamOperatingLoop.timelineLogIds || []),
+  ]);
+  const executorEventIds = uniqueStrings([
+    ...idsFromRows(executorProofRows, 'eventIds'),
+    ...evidenceSearches.map((record) => record.eventId),
+    ...submissions.map((submission) => submission.eventId),
+    ...(productTeamOperatingLoop.eventIds || []),
+  ]);
+  const reviewerProofIds = uniqueStrings([
+    ...idsFromRows(reviewerProofRows),
+    ...(submissionReviewWorkflow.proofIds || []),
+    ...reviews.map((review) => review.messageId),
+    ...revisionSubmissions.map((submission) => submission.messageId),
+  ]);
+  const reviewerTimelineLogIds = uniqueStrings([
+    ...idsFromRows(reviewerProofRows, 'timelineLogIds'),
+    ...(submissionReviewWorkflow.timelineLogIds || []),
+    ...reviews.map((review) => review.timelineLogId),
+    ...revisionSubmissions.map((submission) => submission.timelineLogId),
+  ]);
+  const reviewerEventIds = uniqueStrings([
+    ...idsFromRows(reviewerProofRows, 'eventIds'),
+    ...(submissionReviewWorkflow.eventIds || []),
+    ...reviews.map((review) => review.eventId),
+    ...revisionSubmissions.map((submission) => submission.eventId),
+  ]);
+  const plannerReady = Boolean(
+    projectId
+    && leaderId
+    && (traceRow('kickoff-meeting').ready || latestMissionRun.id || project.kickoffCharter)
+    && ((proofMap.selfMarketingSummary?.selfNominationCount || 0) > 0 || traceRow('agent-self-marketing').ready)
+    && plannerProofIds.length
+  );
+  const executorReady = Boolean(
+    projectId
+    && executorAgentIds.length
+    && evidenceSearches.length
+    && submissions.length
+    && ['brainstorm-layer', 'evidence-quality', 'draft-artifact'].every((id) => traceRow(id).ready)
+    && executorProofIds.length
+  );
+  const reviewerReady = Boolean(
+    projectId
+    && reviewerId
+    && reviews.length
+    && submissionReviewWorkflow.readyForPrivatePilotReview
+    && acceptedFinalReviews.length
+    && reviewerProofIds.length
+  );
+  const roleRow = ({
+    id,
+    lane,
+    label,
+    agentIds = [],
+    ready,
+    detail,
+    apiPath,
+    proofIds = [],
+    timelineLogIds = [],
+    eventIds = [],
+  }) => ({
+    id,
+    lane,
+    label,
+    agentIds: uniqueStrings(agentIds),
+    agentNames: uniqueStrings(agentIds.map((id) => agentNameById[id] || id).filter(Boolean)),
+    ready: Boolean(ready),
+    status: ready ? `${lane}-ready` : `${lane}-waiting-for-proof`,
+    detail,
+    apiPath,
+    proofIds: uniqueStrings(proofIds).slice(0, 24),
+    timelineLogIds: uniqueStrings(timelineLogIds).slice(0, 24),
+    eventIds: uniqueStrings(eventIds).slice(0, 24),
+  });
+  const roleRows = [
+    roleRow({
+      id: 'planner',
+      lane: 'planner',
+      label: 'Planner: kickoff, role negotiation, and work allocation',
+      agentIds: [leaderId].filter(Boolean),
+      ready: plannerReady,
+      detail: `${leaderId ? agentNameById[leaderId] || leaderId : 'Leader pending'} owns kickoff plan; ${plannerProofIds.length} proof id(s).`,
+      apiPath: projectId ? `/projects/${projectId}/readiness-proof-map` : null,
+      proofIds: plannerProofIds,
+      timelineLogIds: plannerTimelineLogIds,
+      eventIds: plannerEventIds,
+    }),
+    roleRow({
+      id: 'executor',
+      lane: 'executor',
+      label: 'Executor: brainstorm, evidence, draft, and artifact submission',
+      agentIds: executorAgentIds,
+      ready: executorReady,
+      detail: `${submissions.length} submission(s), ${evidenceSearches.length} evidence search(es), ${executorAgentIds.length} executing Agent(s).`,
+      apiPath: projectId ? `/projects/${projectId}/product-team-delivery-trace` : null,
+      proofIds: executorProofIds,
+      timelineLogIds: executorTimelineLogIds,
+      eventIds: executorEventIds,
+    }),
+    roleRow({
+      id: 'reviewer',
+      lane: 'reviewer',
+      label: 'Reviewer: requested changes, revision closure, and final acceptance',
+      agentIds: uniqueStrings([reviewerId, ...reviews.map((review) => review.reviewerAgentId)].filter(Boolean)),
+      ready: reviewerReady,
+      detail: `${reviews.length} review(s), ${revisionSubmissions.length} revision response(s), ${acceptedFinalReviews.length} accepted final review(s).`,
+      apiPath: projectId ? `/projects/${projectId}/submission-review-workflow` : null,
+      proofIds: reviewerProofIds,
+      timelineLogIds: reviewerTimelineLogIds,
+      eventIds: reviewerEventIds,
+    }),
+  ];
+  const transitionRow = ({
+    id,
+    from,
+    to,
+    label,
+    ready,
+    detail,
+    apiPath,
+    proofIds = [],
+    timelineLogIds = [],
+    eventIds = [],
+  }) => ({
+    id,
+    from,
+    to,
+    label,
+    ready: Boolean(ready),
+    status: ready ? 'transition-ready' : 'transition-waiting-for-proof',
+    detail,
+    apiPath,
+    proofIds: uniqueStrings(proofIds).slice(0, 24),
+    timelineLogIds: uniqueStrings(timelineLogIds).slice(0, 24),
+    eventIds: uniqueStrings(eventIds).slice(0, 24),
+  });
+  const transitionRows = [
+    transitionRow({
+      id: 'plan-to-execute',
+      from: 'planner',
+      to: 'executor',
+      label: 'Plan handed to executing Agents',
+      ready: plannerReady && (traceRow('brainstorm-layer').ready || traceRow('evidence-quality').ready || submissions.length > 0),
+      detail: `${submissions.length} downstream submission(s) and ${evidenceSearches.length} evidence search(es) follow the kickoff plan.`,
+      apiPath: projectId ? `/projects/${projectId}/manager-flow-graph` : null,
+      proofIds: uniqueStrings([...plannerProofIds, ...idsFromRows(executorProofRows)]),
+      timelineLogIds: uniqueStrings([...plannerTimelineLogIds, ...idsFromRows(executorProofRows, 'timelineLogIds')]),
+      eventIds: uniqueStrings([...plannerEventIds, ...idsFromRows(executorProofRows, 'eventIds')]),
+    }),
+    transitionRow({
+      id: 'execute-to-review',
+      from: 'executor',
+      to: 'reviewer',
+      label: 'Execution submitted into review',
+      ready: executorReady && reviews.length > 0,
+      detail: `${reviews.length} review round(s) opened against submitted artifacts.`,
+      apiPath: projectId ? `/projects/${projectId}/submission-review-workflow` : null,
+      proofIds: uniqueStrings([...executorProofIds, ...reviews.map((review) => review.messageId)]),
+      timelineLogIds: uniqueStrings([...executorTimelineLogIds, ...reviews.map((review) => review.timelineLogId)]),
+      eventIds: uniqueStrings([...executorEventIds, ...reviews.map((review) => review.eventId)]),
+    }),
+    transitionRow({
+      id: 'review-to-revision',
+      from: 'reviewer',
+      to: 'executor',
+      label: 'Requested changes closed by revision',
+      ready: changeRequestReviews.length > 0
+        && revisionSubmissions.length > 0
+        && (submissionReviewWorkflow.summary?.openChangeRequestCount || 0) === 0,
+      detail: `${changeRequestReviews.length} requested-change review(s), ${revisionSubmissions.length} revision response(s), ${submissionReviewWorkflow.summary?.openChangeRequestCount || 0} open.`,
+      apiPath: projectId ? `/projects/${projectId}/submission-review-workflow` : null,
+      proofIds: uniqueStrings([...reviews.map((review) => review.messageId), ...revisionSubmissions.map((submission) => submission.messageId)]),
+      timelineLogIds: uniqueStrings([...reviews.map((review) => review.timelineLogId), ...revisionSubmissions.map((submission) => submission.timelineLogId)]),
+      eventIds: uniqueStrings([...reviews.map((review) => review.eventId), ...revisionSubmissions.map((submission) => submission.eventId)]),
+    }),
+    transitionRow({
+      id: 'revision-to-final',
+      from: 'executor',
+      to: 'reviewer',
+      label: 'Revision promoted to accepted final deliverable',
+      ready: revisionSubmissions.length > 0 && finalSubmissions.length > 0 && acceptedFinalReviews.length > 0,
+      detail: `${finalSubmissions.length} final deliverable(s), ${acceptedFinalReviews.length} accepted final review(s).`,
+      apiPath: projectId ? `/projects/${projectId}/product-team-delivery-trace` : null,
+      proofIds: uniqueStrings([...finalSubmissions.map((submission) => submission.messageId), ...acceptedFinalReviews.map((review) => review.messageId)]),
+      timelineLogIds: uniqueStrings([...finalSubmissions.map((submission) => submission.timelineLogId), ...acceptedFinalReviews.map((review) => review.timelineLogId)]),
+      eventIds: uniqueStrings([...finalSubmissions.map((submission) => submission.eventId), ...acceptedFinalReviews.map((review) => review.eventId)]),
+    }),
+  ];
+  const readyRoleRows = roleRows.filter((row) => row.ready);
+  const readyTransitionRows = transitionRows.filter((row) => row.ready);
+  const proofIds = uniqueStrings([
+    ...roleRows.flatMap((row) => row.proofIds || []),
+    ...transitionRows.flatMap((row) => row.proofIds || []),
+  ]);
+  const timelineLogIds = uniqueStrings([
+    ...roleRows.flatMap((row) => row.timelineLogIds || []),
+    ...transitionRows.flatMap((row) => row.timelineLogIds || []),
+  ]);
+  const eventIds = uniqueStrings([
+    ...roleRows.flatMap((row) => row.eventIds || []),
+    ...transitionRows.flatMap((row) => row.eventIds || []),
+  ]);
+  const readyForLocalProductTeamStateMachine = Boolean(
+    projectId
+    && readyRoleRows.length === roleRows.length
+    && readyTransitionRows.length === transitionRows.length
+    && productTeamDeliveryTrace.readyForPrivatePilotDelivery
+    && productTeamOperatingLoop.readyForLocalPilotOperatingLoop
+    && teamCollaborationDiagnostics.readyForLocalPilotCollaboration
+    && proofIds.length
+    && timelineLogIds.length
+    && eventIds.length
+  );
+  const status = readyForLocalProductTeamStateMachine
+    ? 'planner-executor-reviewer-state-machine-ready'
+    : 'planner-executor-reviewer-state-machine-incomplete';
+  const stateMachine = {
+    projectId,
+    generatedAt: now,
+    schemaVersion: 'planner-executor-reviewer-state-machine/v1',
+    status,
+    readyForLocalProductTeamStateMachine,
+    readyForProduction: false,
+    roleRows,
+    stateRows: roleRows,
+    transitionRows,
+    missingRoleRows: roleRows.filter((row) => !row.ready),
+    missingTransitionRows: transitionRows.filter((row) => !row.ready),
+    proofIds,
+    timelineLogIds,
+    eventIds,
+    backendRoutes: {
+      plannerExecutorReviewerStateMachine: projectId ? `/projects/${projectId}/planner-executor-reviewer-state-machine` : null,
+      productTeamDeliveryTrace: productTeamDeliveryTrace.backendRoutes?.productTeamDeliveryTrace || (projectId ? `/projects/${projectId}/product-team-delivery-trace` : null),
+      productTeamOperatingLoop: productTeamOperatingLoop.backendRoutes?.productTeamOperatingLoop || (projectId ? `/projects/${projectId}/product-team-operating-loop` : null),
+      teamCollaborationDiagnostics: teamCollaborationDiagnostics.backendRoutes?.teamCollaborationDiagnostics || (projectId ? `/projects/${projectId}/team-collaboration-diagnostics` : null),
+      submissionReviewWorkflow: submissionReviewWorkflow.backendRoutes?.submissionReviewWorkflow || (projectId ? `/projects/${projectId}/submission-review-workflow` : null),
+      managerFlowGraph: managerDashboard.backendRoutes?.managerFlowGraph || (projectId ? `/projects/${projectId}/manager-flow-graph` : null),
+      readinessProofMap: managerDashboard.backendRoutes?.readinessProofMap || (projectId ? `/projects/${projectId}/readiness-proof-map` : null),
+      transcripts: managerDashboard.backendRoutes?.transcripts || (projectId ? `/projects/${projectId}/transcripts` : null),
+      timeline: managerDashboard.backendRoutes?.timeline || (projectId ? `/projects/${projectId}/timeline` : null),
+      events: managerDashboard.backendRoutes?.events || (projectId ? `/projects/${projectId}/events` : null),
+    },
+    productionBlockers: [
+      'managed-queue-or-cron',
+      'durable-audit-storage',
+      'provider-and-byok-policy',
+      'customer-acceptance-policy',
+      'incident-ownership-and-recovery',
+    ],
+    summary: {
+      roleCount: roleRows.length,
+      readyRoleCount: readyRoleRows.length,
+      transitionCount: transitionRows.length,
+      readyTransitionCount: readyTransitionRows.length,
+      plannerAgentId: leaderId,
+      reviewerAgentId: reviewerId,
+      executorAgentCount: executorAgentIds.length,
+      submissionCount: submissions.length,
+      evidenceSearchCount: evidenceSearches.length,
+      reviewCount: reviews.length,
+      revisionResponseCount: revisionSubmissions.length,
+      acceptedFinalDeliverableCount: acceptedFinalReviews.length,
+      proofIdCount: proofIds.length,
+      timelineLogIdCount: timelineLogIds.length,
+      eventIdCount: eventIds.length,
+      readyForLocalProductTeamStateMachine,
+      readyForProduction: false,
+    },
+  };
+  return redactSensitiveObject({
+    ...stateMachine,
+    checksum: persistenceChecksum({
+      schemaVersion: stateMachine.schemaVersion,
+      status,
+      roles: roleRows.map((row) => [row.id, row.ready, row.agentIds]),
+      transitions: transitionRows.map((row) => [row.id, row.ready]),
+      proofIds,
+      generatedAt: now,
+    }),
   });
 }
 
@@ -23248,6 +25664,13 @@ function normalizeProductionDeploymentControlRows(input = {}) {
       evidenceId: input.evidenceId || input.receiptId,
       evidenceChecksum: input.evidenceChecksum || input.checksum,
       evidenceEnvironment: input.evidenceEnvironment || input.environment,
+      attestationId: input.attestationId || input.evidenceAttestationId,
+      attestationRoute: input.attestationRoute || input.evidenceAttestationRoute,
+      attestationChecksum: input.attestationChecksum || input.evidenceAttestationChecksum,
+      attestationSignature: input.attestationSignature || input.evidenceAttestationSignature,
+      attestationProvider: input.attestationProvider || input.controlPlaneProvider,
+      attestationKind: input.attestationKind,
+      attestation: input.attestation,
       completedAt: input.completedAt,
       ownerRole: input.ownerRole || input.actorRole,
       detail: input.detail || input.reason,
@@ -23262,6 +25685,7 @@ function normalizeProductionDeploymentControlRows(input = {}) {
       const evidenceId = row.evidenceId || row.receiptId || row.id || null;
       const evidenceRoute = row.evidenceRoute || row.route || row.url || null;
       const evidenceEnvironment = row.evidenceEnvironment || row.environment || null;
+      const attestationFields = normalizeProductionAttestationFields(row);
       const verified = approvedStatuses.has(status) && Boolean(evidenceChecksum || evidenceId || evidenceRoute || row.completedAt);
       return {
         controlId,
@@ -23272,6 +25696,7 @@ function normalizeProductionDeploymentControlRows(input = {}) {
         evidenceRoute: evidenceRoute ? redactUrl(evidenceRoute) : null,
         evidenceChecksum: evidenceChecksum ? String(evidenceChecksum) : null,
         evidenceEnvironment: evidenceEnvironment ? String(evidenceEnvironment).trim().toLowerCase().replace(/_/g, '-') : null,
+        ...attestationFields,
         completedAt: row.completedAt || null,
         ownerRole: row.ownerRole || row.actorRole || 'runtime-platform',
         detail: redactSensitiveText(row.detail || row.reason || row.summary || ''),
@@ -23306,7 +25731,7 @@ function buildProductionDeploymentControlReceipt({
     projectId,
     schemaVersion: 'production-deployment-control-receipt/v1',
     actorRole,
-    controls: controls.map((control) => [control.controlId, control.status, control.evidenceChecksum || control.evidenceId, control.evidenceEnvironment || null]),
+    controls: controls.map((control) => [control.controlId, control.status, control.evidenceChecksum || control.evidenceId, control.evidenceEnvironment || null, control.attestationChecksum || control.attestationId || control.attestationRoute || null, control.attestationSignature || null]),
     readyForPrivatePilotDeployment,
     readyForProductionDeploymentControls,
     deploymentPreflightChecksum: deploymentPreflight.checksum || null,
@@ -23340,7 +25765,7 @@ function buildProductionDeploymentControlReceipt({
       persistenceAdapterDryRun.checksum,
       workerQueueAdapterDryRun.checksum,
       adapterGatewayPreflight.checksum,
-      ...controls.flatMap((control) => [control.evidenceId, control.evidenceChecksum]).filter(Boolean),
+      ...controls.flatMap((control) => [control.evidenceId, control.evidenceChecksum, control.attestationId, control.attestationChecksum, control.attestationSignature]).filter(Boolean),
     ]),
     timelineLogIds: [],
     eventIds: [],
@@ -25990,6 +28415,13 @@ function normalizeProductionSecurityControlRows(input = {}) {
       evidenceId: input.evidenceId || input.receiptId,
       evidenceChecksum: input.evidenceChecksum || input.checksum,
       evidenceEnvironment: input.evidenceEnvironment || input.environment,
+      attestationId: input.attestationId || input.evidenceAttestationId,
+      attestationRoute: input.attestationRoute || input.evidenceAttestationRoute,
+      attestationChecksum: input.attestationChecksum || input.evidenceAttestationChecksum,
+      attestationSignature: input.attestationSignature || input.evidenceAttestationSignature,
+      attestationProvider: input.attestationProvider || input.controlPlaneProvider,
+      attestationKind: input.attestationKind,
+      attestation: input.attestation,
       completedAt: input.completedAt,
       ownerRole: input.ownerRole || input.actorRole,
       detail: input.detail || input.reason,
@@ -26004,6 +28436,7 @@ function normalizeProductionSecurityControlRows(input = {}) {
       const evidenceId = row.evidenceId || row.receiptId || row.id || null;
       const evidenceRoute = row.evidenceRoute || row.route || row.url || null;
       const evidenceEnvironment = row.evidenceEnvironment || row.environment || null;
+      const attestationFields = normalizeProductionAttestationFields(row);
       const verified = approvedStatuses.has(status) && Boolean(evidenceChecksum || evidenceId || evidenceRoute || row.completedAt);
       return {
         controlId,
@@ -26014,6 +28447,7 @@ function normalizeProductionSecurityControlRows(input = {}) {
         evidenceRoute: evidenceRoute ? redactUrl(evidenceRoute) : null,
         evidenceChecksum: evidenceChecksum ? String(evidenceChecksum) : null,
         evidenceEnvironment: evidenceEnvironment ? String(evidenceEnvironment).trim().toLowerCase().replace(/_/g, '-') : null,
+        ...attestationFields,
         completedAt: row.completedAt || null,
         ownerRole: row.ownerRole || row.actorRole || 'security-admin',
         detail: redactSensitiveText(row.detail || row.reason || row.summary || ''),
@@ -26043,7 +28477,7 @@ function buildProductionSecurityControlReceipt({
     projectId,
     schemaVersion: 'production-security-control-receipt/v1',
     actorRole,
-    controls: controls.map((control) => [control.controlId, control.status, control.evidenceChecksum || control.evidenceId, control.evidenceEnvironment || null]),
+    controls: controls.map((control) => [control.controlId, control.status, control.evidenceChecksum || control.evidenceId, control.evidenceEnvironment || null, control.attestationChecksum || control.attestationId || control.attestationRoute || null, control.attestationSignature || null]),
     readyForProductionSecurityControls,
     securityBoundaryChecksum: securityBoundary.checksum || readModelChecksum(securityBoundary),
   });
@@ -26070,7 +28504,7 @@ function buildProductionSecurityControlReceipt({
       checksum,
       securityBoundary.checksum,
       readModelChecksum(securityBoundary),
-      ...controls.flatMap((control) => [control.evidenceId, control.evidenceChecksum]).filter(Boolean),
+      ...controls.flatMap((control) => [control.evidenceId, control.evidenceChecksum, control.attestationId, control.attestationChecksum, control.attestationSignature]).filter(Boolean),
     ]),
     timelineLogIds: [],
     eventIds: [],
@@ -26259,6 +28693,13 @@ function normalizeProductionOperationsControlRows(input = {}) {
       evidenceId: input.evidenceId || input.receiptId,
       evidenceChecksum: input.evidenceChecksum || input.checksum,
       evidenceEnvironment: input.evidenceEnvironment || input.environment,
+      attestationId: input.attestationId || input.evidenceAttestationId,
+      attestationRoute: input.attestationRoute || input.evidenceAttestationRoute,
+      attestationChecksum: input.attestationChecksum || input.evidenceAttestationChecksum,
+      attestationSignature: input.attestationSignature || input.evidenceAttestationSignature,
+      attestationProvider: input.attestationProvider || input.controlPlaneProvider,
+      attestationKind: input.attestationKind,
+      attestation: input.attestation,
       completedAt: input.completedAt,
       ownerRole: input.ownerRole || input.actorRole,
       detail: input.detail || input.reason,
@@ -26273,6 +28714,7 @@ function normalizeProductionOperationsControlRows(input = {}) {
       const evidenceId = row.evidenceId || row.receiptId || row.id || null;
       const evidenceRoute = row.evidenceRoute || row.route || row.url || null;
       const evidenceEnvironment = row.evidenceEnvironment || row.environment || null;
+      const attestationFields = normalizeProductionAttestationFields(row);
       const verified = approvedStatuses.has(status) && Boolean(evidenceChecksum || evidenceId || evidenceRoute || row.completedAt);
       return {
         controlId,
@@ -26283,6 +28725,7 @@ function normalizeProductionOperationsControlRows(input = {}) {
         evidenceRoute: evidenceRoute ? redactUrl(evidenceRoute) : null,
         evidenceChecksum: evidenceChecksum ? String(evidenceChecksum) : null,
         evidenceEnvironment: evidenceEnvironment ? String(evidenceEnvironment).trim().toLowerCase().replace(/_/g, '-') : null,
+        ...attestationFields,
         completedAt: row.completedAt || null,
         ownerRole: row.ownerRole || row.actorRole || 'operations-owner',
         detail: redactSensitiveText(row.detail || row.reason || row.summary || ''),
@@ -26315,7 +28758,7 @@ function buildProductionOperationsControlReceipt({
     projectId,
     schemaVersion: 'production-operations-control-receipt/v1',
     actorRole,
-    controls: controls.map((control) => [control.controlId, control.status, control.evidenceChecksum || control.evidenceId, control.evidenceEnvironment || null]),
+    controls: controls.map((control) => [control.controlId, control.status, control.evidenceChecksum || control.evidenceId, control.evidenceEnvironment || null, control.attestationChecksum || control.attestationId || control.attestationRoute || null, control.attestationSignature || null]),
     readyForProductionOperationsControls,
     readinessChecksum: productionOperationsReadiness.checksum || null,
   });
@@ -26350,7 +28793,7 @@ function buildProductionOperationsControlReceipt({
       latestAcceptanceReport?.checksum,
       latestHealthCheck?.id,
       latestHealthCheck?.checksum,
-      ...controls.flatMap((control) => [control.evidenceId, control.evidenceChecksum]).filter(Boolean),
+      ...controls.flatMap((control) => [control.evidenceId, control.evidenceChecksum, control.attestationId, control.attestationChecksum, control.attestationSignature]).filter(Boolean),
     ]),
     timelineLogIds: [],
     eventIds: [],
@@ -27165,6 +29608,7 @@ function buildProductionLaunchControlCenter({
   const evidenceCustodyReadiness = managerReadyPackage.evidenceCustodyReadiness || {};
   const artifactQualityAudit = managerReadyPackage.artifactQualityAudit || {};
   const readinessProofMap = managerReadyPackage.readinessProofMap || {};
+  const publicProductionStartupReadiness = managerReadyPackage.publicProductionStartupReadiness || {};
   const productionEvidenceIntegrityAudit = managerReadyPackage.productionEvidenceIntegrityAudit || buildProductionEvidenceIntegrityAudit({
     project,
     managerReadyPackage,
@@ -27184,6 +29628,7 @@ function buildProductionLaunchControlCenter({
     productionSecurityControlReceiptWorkflow.checksum,
     productionProviderControlReceiptWorkflow.checksum,
     productionEvidenceIntegrityAudit.checksum,
+    publicProductionStartupReadiness.checksum,
     launchApprovalWorkflow.checksum,
     launchApprovalWorkflow.summary?.latestApprovalChecksum,
     deploymentPreflight.checksum,
@@ -27253,6 +29698,21 @@ function buildProductionLaunchControlCenter({
         ? 'Private-pilot release, launch, health, and acceptance proof are closed.'
         : 'Close private-pilot go-live and customer acceptance before considering public production.',
       apiPath: route('private-pilot-go-live-readiness'),
+    }),
+    control({
+      id: 'public-production-startup-readiness',
+      label: 'Public production startup readiness',
+      owner: 'runtime-platform',
+      domain: 'managed-infrastructure',
+      ready: Boolean(publicProductionStartupReadiness.readyForPublicProduction),
+      detail: publicProductionStartupReadiness.readyForPublicProduction
+        ? 'Global public-production startup preflight is ready.'
+        : `Global public-production startup remains blocked by ${publicProductionStartupReadiness.nextAction?.label || publicProductionStartupReadiness.status || 'managed production runtime gates'}.`,
+      apiPath: publicProductionStartupReadiness.backendRoutes?.publicProductionStartupReadiness || '/public-production-startup-readiness',
+      missing: (publicProductionStartupReadiness.failedGates || publicProductionStartupReadiness.productionBlockers || [])
+        .slice(0, 12)
+        .map((row) => row.id || row.label)
+        .filter(Boolean),
     }),
     control({
       id: 'production-gap-register',
@@ -27401,6 +29861,12 @@ function buildProductionLaunchControlCenter({
       apiPath: route('launch-approvals'),
     },
     {
+      id: 'public-production-startup',
+      label: 'Public production startup',
+      ready: Boolean(publicProductionStartupReadiness.readyForPublicProduction),
+      apiPath: publicProductionStartupReadiness.backendRoutes?.publicProductionStartupReadiness || '/public-production-startup-readiness',
+    },
+    {
       id: 'production-launch-audit',
       label: 'Production launch audit',
       ready: Boolean(productionLaunchAudit.readyForProduction && productionLaunchAudit.productionDecision === 'go'),
@@ -27428,6 +29894,7 @@ function buildProductionLaunchControlCenter({
     controlRows: controlRows.map((row) => [row.id, row.status, row.owner]),
     proofIds,
     nextActionId: nextAction?.id || null,
+    publicProductionStartupReady: Boolean(publicProductionStartupReadiness.readyForPublicProduction),
     productionDecision: productionLaunchAudit.productionDecision || 'no-go',
   });
   return redactSensitiveObject({
@@ -27453,6 +29920,7 @@ function buildProductionLaunchControlCenter({
     eventIds,
     backendRoutes: {
       productionLaunchControlCenter: route('production-launch-control-center'),
+      publicProductionStartupReadiness: publicProductionStartupReadiness.backendRoutes?.publicProductionStartupReadiness || '/public-production-startup-readiness',
       productionLaunchGapRegister: route('production-launch-gap-register'),
       productionLaunchAudit: route('production-launch-audit'),
       productionOperationsReadiness: route('production-operations-readiness'),
@@ -27478,6 +29946,7 @@ function buildProductionLaunchControlCenter({
       productionSecurityControlReceiptWorkflow: productionSecurityControlReceiptWorkflow.checksum || null,
       productionProviderControlReceiptWorkflow: productionProviderControlReceiptWorkflow.checksum || null,
       productionEvidenceIntegrityAudit: productionEvidenceIntegrityAudit.checksum || null,
+      publicProductionStartupReadiness: publicProductionStartupReadiness.checksum || null,
       deploymentPreflight: deploymentPreflight.checksum || null,
       providerReadiness: providerReadiness.checksum || null,
       securityBoundary: securityBoundary.checksum || null,
@@ -27502,6 +29971,9 @@ function buildProductionLaunchControlCenter({
       productionEvidenceIntegrityManagedControlCount: productionEvidenceIntegrityAudit.summary?.managedProductionControlCount || 0,
       productionEvidenceIntegrityLocalControlCount: productionEvidenceIntegrityAudit.summary?.localRehearsalControlCount || 0,
       productionEvidenceIntegrityMissingControlCount: productionEvidenceIntegrityAudit.summary?.missingControlCount || 0,
+      publicProductionStartupReady: Boolean(publicProductionStartupReadiness.readyForPublicProduction),
+      publicProductionStartupFailedGateCount: publicProductionStartupReadiness.summary?.failedGateCount || 0,
+      publicProductionStartupNextActionId: publicProductionStartupReadiness.nextAction?.id || null,
       productionApprovalReady: Boolean(launchApprovalWorkflow.readyForProduction),
       privatePilotAccepted: Boolean(privatePilotGoLiveReadiness.readyForPrivatePilotAcceptance),
       proofIdCount: proofIds.length,
@@ -27811,8 +30283,116 @@ function buildProductionLaunchEvidenceDossier({
   });
 }
 
-function inferProductionEvidenceTier(control = {}, receipt = {}) {
-  if (!control?.verified) return 'missing';
+function normalizeProductionAttestationFields(row = {}) {
+  const attestation = row.attestation && typeof row.attestation === 'object' ? row.attestation : {};
+  const attestationId = row.attestationId || row.evidenceAttestationId || attestation.id || null;
+  const attestationRoute = row.attestationRoute || row.evidenceAttestationRoute || attestation.route || attestation.url || null;
+  const attestationChecksum = row.attestationChecksum || row.evidenceAttestationChecksum || attestation.checksum || null;
+  const attestationSignature = row.attestationSignature || row.evidenceAttestationSignature || attestation.signature || null;
+  const attestationProvider = row.attestationProvider || row.controlPlaneProvider || attestation.provider || null;
+  const attestationKind = row.attestationKind || attestation.kind || (attestationId || attestationRoute || attestationChecksum ? 'managed-control-plane-attestation' : null);
+  return {
+    attestationId: attestationId ? String(attestationId) : null,
+    attestationRoute: attestationRoute ? redactUrl(attestationRoute) : null,
+    attestationChecksum: attestationChecksum ? String(attestationChecksum) : null,
+    attestationSignature: attestationSignature ? String(attestationSignature) : null,
+    attestationProvider: attestationProvider ? String(attestationProvider) : null,
+    attestationKind: attestationKind ? String(attestationKind) : null,
+  };
+}
+
+function managedProductionAttestationSigningSecret(env = globalThis.process?.env || {}) {
+  return String(
+    env.MANAGED_PRODUCTION_ATTESTATION_SIGNING_SECRET
+    || env.PRODUCTION_ATTESTATION_SIGNING_SECRET
+    || '',
+  ).trim();
+}
+
+function managedProductionAttestationSignaturePayload({
+  projectId = null,
+  domain = null,
+  controlId = null,
+  control = {},
+  receipt = {},
+  attestation = {},
+} = {}) {
+  return {
+    schemaVersion: 'managed-production-control-attestation-signature/v1',
+    projectId,
+    domain,
+    controlId,
+    evidenceId: control.evidenceId || null,
+    evidenceRoute: control.evidenceRoute || null,
+    evidenceChecksum: control.evidenceChecksum || null,
+    evidenceEnvironment: control.evidenceEnvironment || receipt.evidenceEnvironment || null,
+    attestationId: attestation.attestationId || null,
+    attestationRoute: attestation.attestationRoute || null,
+    attestationChecksum: attestation.attestationChecksum || null,
+    attestationProvider: attestation.attestationProvider || null,
+    attestationKind: attestation.attestationKind || null,
+  };
+}
+
+function signManagedProductionAttestationPayload(signingSecret = '', payload = {}) {
+  if (!signingSecret) return null;
+  return `sig_hmac_sha256_v1_${hmacSha256Hex(signingSecret, stableJson(payload))}`;
+}
+
+function expectedManagedProductionAttestationSignature(args = {}) {
+  const signingSecret = managedProductionAttestationSigningSecret(args.env);
+  if (!signingSecret) return null;
+  return signManagedProductionAttestationPayload(signingSecret, managedProductionAttestationSignaturePayload(args));
+}
+
+function verifyManagedProductionAttestation({
+  projectId = null,
+  domain = null,
+  controlId = null,
+  control = {},
+  receipt = {},
+  env = globalThis.process?.env || {},
+} = {}) {
+  const fields = normalizeProductionAttestationFields({
+    attestationId: control.attestationId || receipt.attestationId,
+    attestationRoute: control.attestationRoute || receipt.attestationRoute,
+    attestationChecksum: control.attestationChecksum || receipt.attestationChecksum,
+    attestationSignature: control.attestationSignature || receipt.attestationSignature,
+    attestationProvider: control.attestationProvider || receipt.attestationProvider,
+    attestationKind: control.attestationKind || receipt.attestationKind,
+  });
+  const signingSecretConfigured = Boolean(managedProductionAttestationSigningSecret(env));
+  const expectedSignature = expectedManagedProductionAttestationSignature({
+    projectId,
+    domain,
+    controlId,
+    control,
+    receipt,
+    attestation: fields,
+    env,
+  });
+  const signatureReady = Boolean(
+    signingSecretConfigured
+    && fields.attestationSignature
+    && expectedSignature
+    && fields.attestationSignature === expectedSignature
+  );
+  return {
+    ...fields,
+    signingSecretConfigured,
+    signatureReady,
+    ready: signatureReady,
+    failureReason: signatureReady
+      ? null
+      : !signingSecretConfigured
+        ? 'managed-production-attestation-signing-secret-missing'
+        : !fields.attestationSignature
+          ? 'managed-production-attestation-signature-missing'
+          : 'managed-production-attestation-signature-invalid',
+  };
+}
+
+function isExplicitManagedProductionEnvironment(control = {}, receipt = {}) {
   const explicitEnvironment = String(
     control.evidenceEnvironment
     || control.environment
@@ -27820,9 +30400,21 @@ function inferProductionEvidenceTier(control = {}, receipt = {}) {
     || receipt.environment
     || '',
   ).trim().toLowerCase().replace(/_/g, '-');
-  if (['managed-production', 'production-managed', 'public-production'].includes(explicitEnvironment)) {
+  return ['managed-production', 'production-managed', 'public-production'].includes(explicitEnvironment);
+}
+
+function inferProductionEvidenceTier(control = {}, receipt = {}, context = {}) {
+  if (!control?.verified) return 'missing';
+  const explicitManagedProduction = isExplicitManagedProductionEnvironment(control, receipt);
+  const attestationVerification = verifyManagedProductionAttestation({
+    control,
+    receipt,
+    ...context,
+  });
+  if (explicitManagedProduction && attestationVerification.ready) {
     return 'managed-production';
   }
+  if (explicitManagedProduction) return 'external-unattested';
   const route = String(control.evidenceRoute || '').toLowerCase();
   const detail = `${control.detail || ''} ${receipt.reason || ''} ${receipt.source || ''}`.toLowerCase();
   const localHints = ['localhost', '127.0.0.1', '.test', 'example.', '/projects/', 'local', 'shadow', 'dry-run', 'rehearsal', 'validation', 'fixture', 'deterministic'];
@@ -27837,6 +30429,7 @@ function buildProductionEvidenceIntegrityAudit({
   project = {},
   managerReadyPackage = {},
   now = nowIso(),
+  env = globalThis.process?.env || {},
 } = {}) {
   const projectId = project.id || managerReadyPackage.projectId || null;
   const route = (suffix) => (projectId ? `/projects/${projectId}/${suffix}` : null);
@@ -27890,9 +30483,24 @@ function buildProductionEvidenceIntegrityAudit({
       const latest = latestReceiptByControl.get(controlId) || {};
       const receipt = latest.receipt || {};
       const control = latest.control || {};
-      const evidenceTier = inferProductionEvidenceTier(control, receipt);
+      const evidenceTier = inferProductionEvidenceTier(control, receipt, {
+        projectId,
+        domain: group.domain,
+        controlId,
+        env,
+      });
       const managedProductionReady = evidenceTier === 'managed-production';
       const verified = Boolean(control.verified);
+      const explicitManagedProduction = isExplicitManagedProductionEnvironment(control, receipt);
+      const attestationVerification = verifyManagedProductionAttestation({
+        projectId,
+        domain: group.domain,
+        controlId,
+        control,
+        receipt,
+        env,
+      });
+      const attestationReady = attestationVerification.ready;
       return {
         id: `${group.domain}:${controlId}`,
         domain: group.domain,
@@ -27910,11 +30518,22 @@ function buildProductionEvidenceIntegrityAudit({
         evidenceRoute: control.evidenceRoute || null,
         evidenceChecksum: control.evidenceChecksum || null,
         evidenceEnvironment: control.evidenceEnvironment || receipt.evidenceEnvironment || null,
+        attestationId: attestationVerification.attestationId,
+        attestationRoute: attestationVerification.attestationRoute,
+        attestationChecksum: attestationVerification.attestationChecksum,
+        attestationSignature: attestationVerification.attestationSignature,
+        attestationProvider: attestationVerification.attestationProvider,
+        attestationKind: attestationVerification.attestationKind,
+        attestationReady,
+        attestationSignatureReady: attestationVerification.signatureReady,
+        attestationFailureReason: attestationVerification.failureReason,
         apiPath: group.apiPath,
         detail: managedProductionReady
-          ? 'Control has explicit managed-production evidence.'
+          ? 'Control has explicit managed-production evidence and a valid signed attestation.'
           : verified
-            ? 'Control is locally receipted, but managed-production evidence is not explicit yet.'
+            ? explicitManagedProduction && !attestationReady
+              ? `Control claims managed-production evidence, but managed control-plane attestation is not valid (${attestationVerification.failureReason}).`
+              : 'Control is locally receipted, but managed-production evidence is not explicit yet.'
             : 'Control has no verified receipt evidence.',
       };
     });
@@ -27924,6 +30543,9 @@ function buildProductionEvidenceIntegrityAudit({
     row.receiptChecksum,
     row.evidenceId,
     row.evidenceChecksum,
+    row.attestationId,
+    row.attestationChecksum,
+    row.attestationSignature,
   ]).filter(Boolean));
   const timelineLogIds = uniqueStrings(groups.flatMap((group) => (
     group.records.flatMap((record) => [
@@ -27967,7 +30589,7 @@ function buildProductionEvidenceIntegrityAudit({
   const checksum = persistenceChecksum({
     schemaVersion: 'production-evidence-integrity-audit/v1',
     projectId,
-    rows: rows.map((row) => [row.id, row.status, row.receiptChecksum, row.evidenceChecksum, row.evidenceEnvironment || null]),
+    rows: rows.map((row) => [row.id, row.status, row.receiptChecksum, row.evidenceChecksum, row.evidenceEnvironment || null, row.attestationChecksum || row.attestationId || row.attestationRoute || null, row.attestationSignature || null]),
     readyForManagedProductionEvidence,
   });
   return redactSensitiveObject({
@@ -28034,6 +30656,51 @@ function buildProductionOperationsReadiness({
   const productionLaunchAudit = managerReadyPackage.productionLaunchAudit || {};
   const controlProof = latestProductionOperationsControlProof(project);
   const controlVerified = (controlId) => controlProof.latestByControl.has(controlId);
+  const managedProductionEvidenceRows = PRODUCTION_OPERATIONS_CONTROL_IDS.map((controlId) => {
+    const latest = controlProof.latestByControl.get(controlId) || null;
+    const receipt = latest ? {
+      id: latest.receiptId,
+      checksum: latest.receiptChecksum,
+      createdAt: latest.receiptCreatedAt,
+      evidenceEnvironment: latest.evidenceEnvironment,
+    } : {};
+    const evidenceTier = latest
+      ? inferProductionEvidenceTier(latest, receipt, { projectId, domain: 'operations', controlId, env })
+      : 'missing';
+    const attestationVerification = latest ? verifyManagedProductionAttestation({
+      projectId,
+      domain: 'operations',
+      controlId,
+      control: latest,
+      receipt,
+      env,
+    }) : null;
+    return {
+      id: controlId,
+      controlId,
+      label: latest?.label || controlId,
+      verified: Boolean(latest?.verified),
+      status: evidenceTier === 'managed-production'
+        ? 'managed-production-ready'
+        : latest?.verified
+          ? evidenceTier
+          : 'missing',
+      managedProductionReady: evidenceTier === 'managed-production',
+      evidenceTier,
+      receiptId: latest?.receiptId || null,
+      receiptChecksum: latest?.receiptChecksum || null,
+      evidenceEnvironment: latest?.evidenceEnvironment || null,
+      attestationReady: Boolean(attestationVerification?.ready),
+      attestationSignatureReady: Boolean(attestationVerification?.signatureReady),
+      attestationFailureReason: attestationVerification?.failureReason || (latest ? null : 'production-control-receipt-missing'),
+    };
+  });
+  const managedProductionControlCount = managedProductionEvidenceRows.filter((row) => row.managedProductionReady).length;
+  const localRehearsalControlCount = managedProductionEvidenceRows.filter((row) => row.evidenceTier === 'local-rehearsal').length;
+  const externalUnattestedControlCount = managedProductionEvidenceRows.filter((row) => row.evidenceTier === 'external-unattested').length;
+  const managedProductionMissingControlCount = managedProductionEvidenceRows.filter((row) => row.evidenceTier === 'missing').length;
+  const readyForManagedProductionOperationsEvidence = managedProductionEvidenceRows.length > 0
+    && managedProductionControlCount === managedProductionEvidenceRows.length;
   const productionConfig = {
     logsEndpointConfigured: envConfigured('PRODUCTION_LOGS_ENDPOINT', 'PRODUCTION_OBSERVABILITY_ENDPOINT'),
     metricsEndpointConfigured: envConfigured('PRODUCTION_METRICS_ENDPOINT', 'PRODUCTION_OBSERVABILITY_ENDPOINT'),
@@ -28251,7 +30918,28 @@ function buildProductionOperationsReadiness({
       persistenceProductionCutoverReady: Boolean(persistenceAdapterDryRun.summary?.adapterProductionCutoverReady) || controlVerified('managed-persistence-cutover'),
       queueProductionCutoverReady: Boolean(workerQueueAdapterDryRun.summary?.adapterProductionCutoverReady) || controlVerified('managed-worker-queue-cutover'),
       centralizedAuditConfigured: productionConfig.centralizedAuditConfigured || controlVerified('centralized-audit-retention'),
+      operationsManagedProductionEvidenceReady: readyForManagedProductionOperationsEvidence,
       productionLaunchDecision: productionLaunchAudit.productionDecision || 'no-go',
+    },
+    managedProductionEvidence: {
+      schemaVersion: 'production-operations-managed-production-evidence/v1',
+      readyForManagedProductionOperationsEvidence,
+      readyForProduction: readyForManagedProductionOperationsEvidence,
+      rows: managedProductionEvidenceRows,
+      nextAction: managedProductionEvidenceRows.find((row) => !row.managedProductionReady) ? {
+        id: managedProductionEvidenceRows.find((row) => !row.managedProductionReady).id,
+        label: managedProductionEvidenceRows.find((row) => !row.managedProductionReady).label,
+        detail: 'Replace local or unattested operations receipts with signed managed-production control-plane attestations.',
+        apiPath: route('production-evidence-integrity-audit'),
+      } : null,
+      productionRequirement: 'Each operations control must carry explicit managed-production evidence plus a valid managed control-plane attestation signature.',
+      summary: {
+        requiredControlCount: managedProductionEvidenceRows.length,
+        managedProductionControlCount,
+        localRehearsalControlCount,
+        externalUnattestedControlCount,
+        missingControlCount: managedProductionMissingControlCount,
+      },
     },
     productionControlReceipts: {
       receiptCount: controlProof.rows.length,
@@ -28297,6 +30985,11 @@ function buildProductionOperationsReadiness({
       productionControlReceiptCount: controlProof.rows.length,
       verifiedProductionControlReceiptCount: controlProof.verifiedControlIds.length,
       missingProductionControlReceiptCount: controlProof.missingControlIds.length,
+      managedProductionOperationsEvidenceReady: readyForManagedProductionOperationsEvidence,
+      managedProductionOperationsControlCount: managedProductionControlCount,
+      managedProductionOperationsLocalRehearsalControlCount: localRehearsalControlCount,
+      managedProductionOperationsExternalUnattestedControlCount: externalUnattestedControlCount,
+      managedProductionOperationsMissingControlCount: managedProductionMissingControlCount,
       proofIdCount: proofIds.length,
       readyForPrivatePilotOperations,
       readyForProductionOperations,
@@ -33839,6 +36532,14 @@ function buildSecurityBoundarySnapshot({
       productionControl: 'requires authenticated project membership, role-based control visibility, immutable audit storage, managed queue/cron, provider/BYOK policy, cost controls, and incident recovery ownership before production autonomy',
     }),
     securityRoutePolicy({
+      routeKey: 'planner-executor-reviewer-state-machine',
+      pathTemplate: '/projects/:projectId/planner-executor-reviewer-state-machine',
+      capability: 'read Planner / Executor / Reviewer responsibility handoff state',
+      sensitivity: 'product-team-responsibility-handoff-proof-chain',
+      currentControl: 'read-only Manager route aggregates kickoff planning, Agent execution, Reviewer requested changes, revision closure, final acceptance, Flow Graph, Proof Map, timeline, and event proof into one redacted responsibility state machine',
+      productionControl: 'requires authenticated project membership, role-based responsibility visibility, immutable audit storage, managed queue/cron, provider/BYOK policy, cost controls, customer acceptance policy, and incident recovery before production autonomy',
+    }),
+    securityRoutePolicy({
       routeKey: 'team-collaboration-diagnostics',
       pathTemplate: '/projects/:projectId/team-collaboration-diagnostics',
       capability: 'read C-side/A-side collaboration break diagnostics',
@@ -34280,6 +36981,16 @@ function buildSecurityBoundarySnapshot({
       sensitivity: 'managed-infrastructure-readiness-metadata',
       currentControl: 'aggregates adapter gateway, managed persistence, queue adapter, deployment preflight, operations, and production gap status without exposing raw secrets or payloads',
       productionControl: 'requires real managed database, queue/cron, gateway auth, observability, restore drills, and managed-production evidence receipts before public production cutover',
+    }),
+    securityRoutePolicy({
+      routeKey: 'managed-infrastructure-cutover-attestations',
+      pathTemplate: '/projects/:projectId/managed-infrastructure-cutover-attestations',
+      methods: ['POST'],
+      actor: 'runtime-platform',
+      capability: 'request signed adapter-gateway attestations for managed persistence and queue cutover',
+      sensitivity: 'managed-infrastructure-cutover-attestation-evidence',
+      currentControl: 'calls the configured private adapter gateway, requires managed-production attestation readiness, and writes production operations receipt evidence only after signed attestations are returned',
+      productionControl: 'requires runtime/security/operations authority, real managed database readback parity, durable queue evidence, KMS/Secret Manager, centralized audit, and incident ownership before public production cutover',
     }),
     securityRoutePolicy({
       routeKey: 'operations-readiness',
@@ -36300,6 +39011,13 @@ function normalizeProductionProviderControlRows(input = {}) {
       evidenceId: input.evidenceId || input.receiptId,
       evidenceChecksum: input.evidenceChecksum || input.checksum,
       evidenceEnvironment: input.evidenceEnvironment || input.environment,
+      attestationId: input.attestationId || input.evidenceAttestationId,
+      attestationRoute: input.attestationRoute || input.evidenceAttestationRoute,
+      attestationChecksum: input.attestationChecksum || input.evidenceAttestationChecksum,
+      attestationSignature: input.attestationSignature || input.evidenceAttestationSignature,
+      attestationProvider: input.attestationProvider || input.controlPlaneProvider,
+      attestationKind: input.attestationKind,
+      attestation: input.attestation,
       completedAt: input.completedAt,
       ownerRole: input.ownerRole || input.actorRole,
       detail: input.detail || input.reason,
@@ -36314,6 +39032,7 @@ function normalizeProductionProviderControlRows(input = {}) {
       const evidenceId = row.evidenceId || row.receiptId || row.id || null;
       const evidenceRoute = row.evidenceRoute || row.route || row.url || null;
       const evidenceEnvironment = row.evidenceEnvironment || row.environment || null;
+      const attestationFields = normalizeProductionAttestationFields(row);
       const verified = approvedStatuses.has(status) && Boolean(evidenceChecksum || evidenceId || evidenceRoute || row.completedAt);
       return {
         controlId,
@@ -36324,6 +39043,7 @@ function normalizeProductionProviderControlRows(input = {}) {
         evidenceRoute: evidenceRoute ? redactUrl(evidenceRoute) : null,
         evidenceChecksum: evidenceChecksum ? String(evidenceChecksum) : null,
         evidenceEnvironment: evidenceEnvironment ? String(evidenceEnvironment).trim().toLowerCase().replace(/_/g, '-') : null,
+        ...attestationFields,
         completedAt: row.completedAt || null,
         ownerRole: row.ownerRole || row.actorRole || 'runtime-platform',
         detail: redactSensitiveText(row.detail || row.reason || row.summary || ''),
@@ -36361,7 +39081,7 @@ function buildProductionProviderControlReceipt({
     projectId,
     schemaVersion: 'production-provider-control-receipt/v1',
     actorRole,
-    controls: controls.map((control) => [control.controlId, control.status, control.evidenceChecksum || control.evidenceId, control.evidenceEnvironment || null]),
+    controls: controls.map((control) => [control.controlId, control.status, control.evidenceChecksum || control.evidenceId, control.evidenceEnvironment || null, control.attestationChecksum || control.attestationId || control.attestationRoute || null, control.attestationSignature || null]),
     readyForPrivatePilotProvider,
     readyForProductionProviderControls,
     providerReadinessChecksum: providerReadiness.checksum || readModelChecksum(providerReadiness),
@@ -36401,7 +39121,7 @@ function buildProductionProviderControlReceipt({
       providerEvalRunWorkflow.latestRun?.id,
       providerEvalRunWorkflow.latestRun?.checksum,
       ...(providerEvalRunWorkflow.proofIds || []),
-      ...controls.flatMap((control) => [control.evidenceId, control.evidenceChecksum]).filter(Boolean),
+      ...controls.flatMap((control) => [control.evidenceId, control.evidenceChecksum, control.attestationId, control.attestationChecksum, control.attestationSignature]).filter(Boolean),
     ]),
     timelineLogIds: [],
     eventIds: [],
@@ -38923,6 +41643,96 @@ function buildManagerFlowGraphSnapshot({ project = {}, messages = [] } = {}) {
   }
 
   if (projectId && nodesById.has('product-team-operating-loop')) {
+    const stateMachineSummary = dashboard.readinessProofMap?.plannerExecutorReviewerStateMachineSummary || {};
+    const stateMachineRoutes = dashboard.readinessProofMap?.plannerExecutorReviewerStateMachineRoutes || [];
+    const stateMachineRoute = stateMachineRoutes[0] || {};
+    const stateMachineProofIds = uniqueStrings(stateMachineSummary.proofIds || stateMachineRoute.proofIds || []);
+    const stateMachineTimelineLogIds = uniqueStrings(stateMachineSummary.timelineLogIds || stateMachineRoute.timelineLogIds || []);
+    const stateMachineEventIds = uniqueStrings(stateMachineSummary.eventIds || stateMachineRoute.eventIds || []);
+    addNode({
+      id: 'planner-executor-reviewer-state-machine',
+      category: 'decision',
+      subtype: 'planner-executor-reviewer-state-machine',
+      title: 'Planner / Executor / Reviewer State Machine',
+      summary: stateMachineSummary.readyForLocalProductTeamStateMachine
+        ? `${stateMachineSummary.readyRoleCount || 0}/${stateMachineSummary.roleCount || 0} role lane(s) and ${stateMachineSummary.readyTransitionCount || 0}/${stateMachineSummary.transitionCount || 0} handoff transition(s) ready.`
+        : 'Planner, Executor, and Reviewer lanes are visible, but one or more handoff transitions still need proof.',
+      status: stateMachineSummary.readyForLocalProductTeamStateMachine ? 'confirmed' : 'blocked',
+      importance: 'critical',
+      source: 'plannerExecutorReviewerStateMachine',
+      proofIds: stateMachineProofIds,
+      timelineLogIds: stateMachineTimelineLogIds,
+      eventIds: stateMachineEventIds,
+      affectedAgentIds: stateMachineRoute.agentIds || [],
+      affectedTaskIds: stateMachineRoute.taskIds || [],
+      participantIds: stateMachineRoute.agentIds || [],
+      submissionIntent: 'Submit the Planner / Executor / Reviewer responsibility handoff state machine for Manager inspection.',
+      attachmentType: 'planner-executor-reviewer-state-machine',
+      attachmentTitle: 'Planner / Executor / Reviewer state machine',
+      attachmentSummary: 'Aggregates kickoff planning, Agent execution, Reviewer requested changes, revision response, and final acceptance into one proofed responsibility model.',
+      attachments: [
+        {
+          id: 'planner-executor-reviewer-state-machine_roles',
+          type: 'state-machine-role-lanes',
+          title: 'Role lanes',
+          summary: `${stateMachineSummary.readyRoleCount || 0}/${stateMachineSummary.roleCount || 0} role lane(s) ready.`,
+          route: `/projects/${projectId}/planner-executor-reviewer-state-machine`,
+          ready: stateMachineSummary.readyRoleCount === stateMachineSummary.roleCount,
+        },
+        {
+          id: 'planner-executor-reviewer-state-machine_transitions',
+          type: 'state-machine-transitions',
+          title: 'Handoff transitions',
+          summary: `${stateMachineSummary.readyTransitionCount || 0}/${stateMachineSummary.transitionCount || 0} transition(s) ready.`,
+          route: `/projects/${projectId}/planner-executor-reviewer-state-machine`,
+          ready: stateMachineSummary.readyTransitionCount === stateMachineSummary.transitionCount,
+        },
+        {
+          id: 'planner-executor-reviewer-state-machine_proof',
+          type: 'state-machine-proof',
+          title: 'Proof surfaces',
+          summary: `${stateMachineProofIds.length} proof id(s), ${stateMachineTimelineLogIds.length} timeline id(s), ${stateMachineEventIds.length} event id(s).`,
+          route: `/projects/${projectId}/readiness-proof-map`,
+          proofIds: stateMachineProofIds,
+          timelineLogIds: stateMachineTimelineLogIds,
+          eventIds: stateMachineEventIds,
+          ready: Boolean(stateMachineProofIds.length && stateMachineTimelineLogIds.length && stateMachineEventIds.length),
+        },
+        {
+          id: 'planner-executor-reviewer-state-machine_production-boundary',
+          type: 'state-machine-production-boundary',
+          title: 'Production autonomy boundary',
+          summary: 'Public production still needs provider/BYOK policy, managed queue/cron, durable audit, customer acceptance policy, and incident recovery.',
+          route: `/projects/${projectId}/production-launch-gap-register`,
+          ready: false,
+          status: 'production-blocked',
+        },
+      ],
+      route: `/projects/${projectId}/planner-executor-reviewer-state-machine`,
+      relatedNodeIds: uniqueStrings([
+        'product-team-operating-loop',
+        nodesById.has('product-team-delivery-trace') ? 'product-team-delivery-trace' : null,
+        nodesById.has('submission-review-workflow') ? 'submission-review-workflow' : null,
+      ].filter(Boolean)),
+    });
+    ['product-team-operating-loop', 'product-team-delivery-trace', 'submission-review-workflow']
+      .filter((nodeId) => nodesById.has(nodeId))
+      .forEach((nodeId) => {
+        addEdge({
+          type: 'task_dependency',
+          fromNodeId: nodeId,
+          toNodeId: 'planner-executor-reviewer-state-machine',
+          label: 'Feeds Planner / Executor / Reviewer state',
+          source: 'plannerExecutorReviewerStateMachine',
+          proofIds: nodesById.get(nodeId)?.proofIds || [],
+          timelineLogIds: nodesById.get(nodeId)?.timelineLogIds || [],
+          eventIds: nodesById.get(nodeId)?.eventIds || [],
+          importance: 'critical',
+        });
+      });
+  }
+
+  if (projectId && nodesById.has('product-team-operating-loop')) {
     const diagnosticSummary = dashboard.readinessProofMap?.teamCollaborationDiagnosticsSummary || {};
     const diagnosticRoutes = dashboard.readinessProofMap?.teamCollaborationDiagnosticRoutes || [];
     const diagnosticRoute = diagnosticRoutes[0] || {};
@@ -41381,6 +44191,268 @@ function buildManagerFlowGraphSnapshot({ project = {}, messages = [] } = {}) {
     });
   }
 
+  (project.transcriptPinReceipts || [])
+    .filter((receipt) => receipt.active !== false)
+    .forEach((receipt) => {
+      const channelId = receipt.channelId || 'main';
+      const nodeId = `transcript-pin-${receipt.id || `${channelId}-${receipt.messageId || 'message'}`}`;
+      const proofIds = uniqueStrings([
+        receipt.messageId,
+        receipt.pinMessageId,
+        receipt.id,
+        receipt.checksum,
+        ...(receipt.proofIds || []),
+      ].filter(Boolean));
+      const timelineLogIds = uniqueStrings([receipt.timelineLogId, ...(receipt.timelineLogIds || [])].filter(Boolean));
+      const eventIds = uniqueStrings([receipt.eventId, ...(receipt.eventIds || [])].filter(Boolean));
+      const transcriptNodeId = `project-evidence-transcript-${channelId}`;
+      addNode({
+        id: nodeId,
+        category: 'communication',
+        subtype: 'transcript-pin',
+        title: `Pinned #${channelId} message`,
+        summary: `${receipt.pinnedBy || 'Director'} pinned ${receipt.messageAuthor || 'a transcript message'}: ${receipt.reason || 'Manager review'}`,
+        status: 'confirmed',
+        importance: 'normal',
+        source: 'transcriptPinReceipts',
+        time: receipt.pinnedAt,
+        proofIds,
+        timelineLogIds,
+        eventIds,
+        channelId,
+        affectedAgentIds: [receipt.pinnedById].filter(Boolean),
+        participantIds: [receipt.pinnedById].filter(Boolean),
+        submissionIntent: 'Submit the pinned transcript message as a Manager-visible collaboration proof node.',
+        attachmentType: 'transcript-pin',
+        attachmentTitle: 'Pinned transcript proof',
+        attachmentSummary: receipt.messageTextPreview || receipt.reason || '',
+        route: receipt.apiPath || (projectId ? `/projects/${projectId}/transcripts/${encodeURIComponent(channelId)}` : null),
+        relatedNodeIds: [transcriptNodeId].filter(Boolean),
+      });
+      addEdge({
+        type: 'evidence',
+        fromNodeId: transcriptNodeId,
+        toNodeId: nodeId,
+        label: 'Pinned transcript proof',
+        source: 'transcriptPinReceipts',
+        proofIds,
+        timelineLogIds,
+        eventIds,
+        importance: 'normal',
+      });
+    });
+
+  (project.transcriptChannelPinReceipts || [])
+    .filter((receipt) => receipt.active !== false)
+    .forEach((receipt) => {
+      const channelId = receipt.channelId || 'main';
+      const nodeId = `transcript-channel-pin-${receipt.id || channelId}`;
+      const proofIds = uniqueStrings([
+        receipt.channelPinMessageId,
+        receipt.id,
+        receipt.checksum,
+        ...(receipt.channelProofIds || []),
+        ...(receipt.proofIds || []),
+      ].filter(Boolean));
+      const timelineLogIds = uniqueStrings([receipt.timelineLogId, ...(receipt.timelineLogIds || [])].filter(Boolean));
+      const eventIds = uniqueStrings([receipt.eventId, ...(receipt.eventIds || [])].filter(Boolean));
+      const transcriptNodeId = `project-evidence-transcript-${channelId}`;
+      addNode({
+        id: nodeId,
+        category: 'communication',
+        subtype: 'transcript-channel-pin',
+        title: `Pinned #${receipt.channelName || channelId}`,
+        summary: `${receipt.pinnedBy || 'Director'} pinned #${receipt.channelName || channelId}: ${receipt.reason || 'Manager review'}`,
+        status: 'confirmed',
+        importance: 'normal',
+        source: 'transcriptChannelPinReceipts',
+        time: receipt.pinnedAt,
+        proofIds,
+        timelineLogIds,
+        eventIds,
+        channelId,
+        affectedAgentIds: [receipt.pinnedById].filter(Boolean),
+        participantIds: [receipt.pinnedById].filter(Boolean),
+        submissionIntent: 'Submit the pinned transcript channel as a Manager-visible collaboration proof node.',
+        attachmentType: 'transcript-channel-pin',
+        attachmentTitle: 'Pinned transcript channel proof',
+        attachmentSummary: receipt.reason || '',
+        route: receipt.apiPath || (projectId ? `/projects/${projectId}/transcripts/${encodeURIComponent(channelId)}` : null),
+        relatedNodeIds: [transcriptNodeId].filter(Boolean),
+      });
+      addEdge({
+        type: 'evidence',
+        fromNodeId: transcriptNodeId,
+        toNodeId: nodeId,
+        label: 'Pinned channel proof',
+        source: 'transcriptChannelPinReceipts',
+        proofIds,
+        timelineLogIds,
+        eventIds,
+        importance: 'normal',
+      });
+    });
+
+  (project.transcriptReplyReceipts || []).forEach((receipt) => {
+    const channelId = receipt.channelId || 'main';
+    const nodeId = `transcript-reply-${receipt.id || `${channelId}-${receipt.replyMessageId || 'message'}`}`;
+    const proofIds = uniqueStrings([
+      receipt.parentMessageId,
+      receipt.replyMessageId,
+      receipt.id,
+      receipt.checksum,
+      ...(receipt.proofIds || []),
+    ].filter(Boolean));
+    const timelineLogIds = uniqueStrings([receipt.timelineLogId, ...(receipt.timelineLogIds || [])].filter(Boolean));
+    const eventIds = uniqueStrings([receipt.eventId, ...(receipt.eventIds || [])].filter(Boolean));
+    const transcriptNodeId = `project-evidence-transcript-${channelId}`;
+    addNode({
+      id: nodeId,
+      category: 'communication',
+      subtype: 'transcript-reply',
+      title: `Reply in #${channelId}`,
+      summary: `${receipt.replier || 'Director'} replied to ${receipt.parentAuthor || 'a transcript message'}: ${receipt.replyTextPreview || ''}`,
+      status: 'confirmed',
+      importance: 'normal',
+      source: 'transcriptReplyReceipts',
+      time: receipt.repliedAt,
+      proofIds,
+      timelineLogIds,
+      eventIds,
+      channelId,
+      affectedAgentIds: [receipt.replierId, receipt.parentAuthorId].filter(Boolean),
+      participantIds: [receipt.replierId, receipt.parentAuthorId].filter(Boolean),
+      submissionIntent: 'Submit the transcript reply as a Manager-visible collaboration proof node.',
+      attachmentType: 'transcript-reply',
+      attachmentTitle: 'Transcript reply proof',
+      attachmentSummary: receipt.replyTextPreview || '',
+      route: receipt.apiPath || (projectId ? `/projects/${projectId}/transcripts/${encodeURIComponent(channelId)}` : null),
+      relatedNodeIds: [transcriptNodeId].filter(Boolean),
+    });
+    addEdge({
+      type: 'agent_collaboration',
+      fromNodeId: transcriptNodeId,
+      toNodeId: nodeId,
+      label: 'Transcript reply proof',
+      source: 'transcriptReplyReceipts',
+      proofIds,
+      timelineLogIds,
+      eventIds,
+      importance: 'normal',
+    });
+  });
+
+  (project.transcriptMentionReceipts || []).forEach((receipt) => {
+    const channelId = receipt.channelId || 'main';
+    const nodeId = `transcript-mention-${receipt.id || `${channelId}-${receipt.mentionMessageId || 'message'}`}`;
+    const proofIds = uniqueStrings([
+      receipt.sourceMessageId,
+      receipt.mentionMessageId,
+      receipt.id,
+      receipt.checksum,
+      ...(receipt.proofIds || []),
+    ].filter(Boolean));
+    const timelineLogIds = uniqueStrings([receipt.timelineLogId, ...(receipt.timelineLogIds || [])].filter(Boolean));
+    const eventIds = uniqueStrings([receipt.eventId, ...(receipt.eventIds || [])].filter(Boolean));
+    const transcriptNodeId = `project-evidence-transcript-${channelId}`;
+    addNode({
+      id: nodeId,
+      category: 'communication',
+      subtype: 'transcript-mention',
+      title: `Mention in #${channelId}`,
+      summary: `${receipt.mentionedBy || 'Director'} mentioned ${receipt.targetAgentNames?.join(', ') || 'the team'}: ${receipt.mentionTextPreview || ''}`,
+      status: 'confirmed',
+      importance: 'normal',
+      source: 'transcriptMentionReceipts',
+      time: receipt.mentionedAt,
+      proofIds,
+      timelineLogIds,
+      eventIds,
+      channelId,
+      affectedAgentIds: uniqueStrings([...(receipt.targetAgentIds || []), receipt.mentionedById].filter(Boolean)),
+      participantIds: uniqueStrings([...(receipt.targetAgentIds || []), receipt.mentionedById].filter(Boolean)),
+      submissionIntent: 'Submit the transcript mention as a Manager-visible collaboration proof node.',
+      attachmentType: 'transcript-mention',
+      attachmentTitle: 'Transcript mention proof',
+      attachmentSummary: receipt.mentionTextPreview || '',
+      route: receipt.apiPath || (projectId ? `/projects/${projectId}/transcripts/${encodeURIComponent(channelId)}` : null),
+      relatedNodeIds: [transcriptNodeId].filter(Boolean),
+    });
+    addEdge({
+      type: 'agent_collaboration',
+      fromNodeId: transcriptNodeId,
+      toNodeId: nodeId,
+      label: 'Transcript mention proof',
+      source: 'transcriptMentionReceipts',
+      proofIds,
+      timelineLogIds,
+      eventIds,
+      importance: 'normal',
+    });
+  });
+
+  (project.transcriptAttachmentReceipts || []).forEach((receipt) => {
+    const channelId = receipt.channelId || 'main';
+    const nodeId = `transcript-attachment-${receipt.id || `${channelId}-${receipt.attachmentMessageId || 'file'}`}`;
+    const proofIds = uniqueStrings([
+      receipt.attachmentMessageId,
+      receipt.id,
+      receipt.checksum,
+      receipt.contentChecksum,
+      ...(receipt.proofIds || []),
+    ].filter(Boolean));
+    const timelineLogIds = uniqueStrings([receipt.timelineLogId, ...(receipt.timelineLogIds || [])].filter(Boolean));
+    const eventIds = uniqueStrings([receipt.eventId, ...(receipt.eventIds || [])].filter(Boolean));
+    const transcriptNodeId = `project-evidence-transcript-${channelId}`;
+    addNode({
+      id: nodeId,
+      category: 'communication',
+      subtype: 'transcript-attachment',
+      title: `Attachment in #${channelId}`,
+      summary: `${receipt.uploadedBy || 'Director'} attached ${receipt.fileName || 'a file'} (${receipt.contentType || 'unknown'}).`,
+      status: 'confirmed',
+      importance: 'normal',
+      source: 'transcriptAttachmentReceipts',
+      time: receipt.uploadedAt,
+      proofIds,
+      timelineLogIds,
+      eventIds,
+      channelId,
+      affectedAgentIds: [receipt.uploadedById].filter(Boolean),
+      participantIds: [receipt.uploadedById].filter(Boolean),
+      submissionIntent: 'Submit the transcript attachment as a Manager-visible collaboration proof node.',
+      attachmentType: 'transcript-attachment',
+      attachmentTitle: receipt.fileName || 'Transcript attachment',
+      attachmentSummary: receipt.note || receipt.contentTextPreview || `${receipt.sizeBytes || 0} byte(s)`,
+      attachments: [{
+        id: receipt.id || `${nodeId}_file`,
+        type: 'transcript-attachment',
+        title: receipt.fileName || 'Transcript attachment',
+        summary: receipt.note || receipt.contentTextPreview || '',
+        source: 'transcriptAttachmentReceipts',
+        channelId,
+        route: receipt.apiPath || (projectId ? `/projects/${projectId}/transcripts/${encodeURIComponent(channelId)}` : null),
+        proofIds,
+        timelineLogIds,
+        eventIds,
+        checksum: receipt.checksum || null,
+      }],
+      route: receipt.apiPath || (projectId ? `/projects/${projectId}/transcripts/${encodeURIComponent(channelId)}` : null),
+      relatedNodeIds: [transcriptNodeId].filter(Boolean),
+    });
+    addEdge({
+      type: 'evidence',
+      fromNodeId: transcriptNodeId,
+      toNodeId: nodeId,
+      label: 'Transcript attachment proof',
+      source: 'transcriptAttachmentReceipts',
+      proofIds,
+      timelineLogIds,
+      eventIds,
+      importance: 'normal',
+    });
+  });
+
   (dashboard.transcriptIndex?.channels || []).forEach((channel) => {
     const nodeId = `project-evidence-transcript-${channel.channelId || channel.id || 'main'}`;
     addNode({
@@ -41407,6 +44479,46 @@ function buildManagerFlowGraphSnapshot({ project = {}, messages = [] } = {}) {
       source: 'messages',
       proofIds: channel.proofIds || [],
       importance: channel.channelId === 'main' ? 'major' : 'normal',
+    });
+    const presence = buildTranscriptMemberPresence({
+      project,
+      messages,
+      channelId: channel.channelId || channel.id || 'main',
+    });
+    const presenceNodeId = `transcript-member-presence-${channel.channelId || channel.id || 'main'}`;
+    addNode({
+      id: presenceNodeId,
+      category: 'communication',
+      subtype: 'transcript-member-presence',
+      title: `${channel.name || channel.channelName || channel.channelId || 'Channel'} member presence`,
+      summary: `${presence.summary?.presentCount || 0}/${presence.summary?.memberCount || 0} members present; ${presence.summary?.directTargetCount || 0} direct target(s).`,
+      status: presence.summary?.readyForBackendTranscriptMemberPresence ? 'confirmed' : 'draft',
+      importance: 'normal',
+      source: 'transcriptMemberPresence',
+      time: fallbackTime,
+      proofIds: presence.proofIds || [],
+      timelineLogIds: presence.timelineLogIds || [],
+      eventIds: presence.eventIds || [],
+      channelId: presence.channelId,
+      affectedAgentIds: (presence.members || []).map((member) => member.agentId).filter(Boolean),
+      participantIds: (presence.members || []).map((member) => member.agentId).filter(Boolean),
+      submissionIntent: 'Submit backend member presence as a Manager-visible collaboration proof node.',
+      attachmentType: 'transcript-member-presence',
+      attachmentTitle: 'Transcript member presence proof',
+      attachmentSummary: `${presence.summary?.presentCount || 0}/${presence.summary?.memberCount || 0} members present in channel.`,
+      route: presence.apiPath || (projectId ? `/projects/${projectId}/transcripts/${channel.channelId || channel.id || 'main'}/members` : null),
+      relatedNodeIds: [nodeId],
+    });
+    addEdge({
+      type: 'agent_collaboration',
+      fromNodeId: nodeId,
+      toNodeId: presenceNodeId,
+      label: 'Member presence proof',
+      source: 'transcriptMemberPresence',
+      proofIds: presence.proofIds || [],
+      timelineLogIds: presence.timelineLogIds || [],
+      eventIds: presence.eventIds || [],
+      importance: 'normal',
     });
   });
 
@@ -42444,6 +45556,266 @@ export function createAgentProjectService({
     snapshot.checksum = persistenceChecksum(snapshot);
     return snapshot;
   };
+  const buildPublicProductionStartupReadiness = () => {
+    const env = globalThis.process?.env || {};
+    const envConfigured = (...keys) => keys.some((key) => String(env[key] || '').trim());
+    const modelStatus = redactSensitiveObject(modelProviderStatus());
+    const searchStatus = redactSensitiveObject(searchProviderStatus());
+    const vaultStatus = secretVaultStatus();
+    const providerVaultBindings = buildProviderVaultBindings();
+    const persistenceStatus = redactSensitiveObject(managedPersistenceAdapterStatus(env));
+    const queueStatus = redactSensitiveObject(workerQueueAdapterStatus(env));
+    const accessMode = String(env.AGENT_ACCESS_CONTROL_MODE || 'prototype-open').trim().toLowerCase() || 'prototype-open';
+    const accessControlEnforced = ['enforced', 'strict'].includes(accessMode);
+    const signedAccessConfigured = envConfigured('AGENT_ACCESS_SIGNING_SECRET');
+    const replayProtectionEnabled = envFlag(env, 'AGENT_ACCESS_REPLAY_PROTECTION');
+    const auditFailClosedEnabled = envFlag(env, 'AGENT_ACCESS_AUDIT_FAIL_CLOSED');
+    const managedSecretsReady = Boolean(vaultStatus.productionReady || (
+      envConfigured('PRODUCTION_SECRET_MANAGER_ENDPOINT', 'PRODUCTION_KMS_KEY_ID', 'MANAGED_SECRET_MANAGER_ENDPOINT', 'MANAGED_KMS_KEY_ID')
+      && vaultStatus.provider !== 'local-aes-gcm'
+      && vaultStatus.provider !== 'none'
+    ));
+    const managedPersistenceReady = Boolean(
+      persistenceStatus.configured
+      && persistenceStatus.requireRealAdapter
+      && persistenceStatus.driver !== 'local-shadow'
+      && persistenceStatus.productionCutoverReady
+    );
+    const managedQueueReady = Boolean(
+      queueStatus.configured
+      && queueStatus.requireRealAdapter
+      && queueStatus.driver !== 'local-shadow'
+      && queueStatus.productionCutoverReady
+    );
+    const providerRuntimeReady = Boolean(modelStatus.enabled && modelStatus.configured && searchStatus.enabled && searchStatus.configured);
+    const providerVaultRedacted = providerVaultBindings.redaction?.rawLeakCount === 0;
+    const gatewayReady = Boolean(
+      envConfigured('ADAPTER_GATEWAY_HTTP_ENDPOINT', 'MANAGED_PERSISTENCE_HTTP_ENDPOINT', 'WORKER_QUEUE_HTTP_ENDPOINT')
+      && envConfigured('ADAPTER_GATEWAY_AUTH_TOKEN')
+    );
+    const attestationSigningReady = envConfigured('MANAGED_PRODUCTION_ATTESTATION_SIGNING_SECRET', 'PRODUCTION_ATTESTATION_SIGNING_SECRET');
+    const observabilityReady = Boolean(
+      envConfigured('PRODUCTION_LOGS_ENDPOINT', 'PRODUCTION_OBSERVABILITY_ENDPOINT')
+      && envConfigured('PRODUCTION_METRICS_ENDPOINT', 'PRODUCTION_OBSERVABILITY_ENDPOINT')
+      && envConfigured('PRODUCTION_TRACES_ENDPOINT', 'PRODUCTION_OBSERVABILITY_ENDPOINT')
+    );
+    const alertRoutingReady = envConfigured('PRODUCTION_ALERT_ROUTING_ENDPOINT', 'PRODUCTION_PAGERDUTY_ROUTING_KEY', 'PRODUCTION_OPSGENIE_ROUTING_KEY');
+    const onCallReady = envConfigured('PRODUCTION_ONCALL_SCHEDULE_ID') && envConfigured('PRODUCTION_ONCALL_OWNER');
+    const incidentSystemReady = envConfigured('PRODUCTION_INCIDENT_SYSTEM_ENDPOINT') && envConfigured('PRODUCTION_INCIDENT_PROJECT_KEY');
+    const restoreDrillReady = envConfigured('PRODUCTION_RESTORE_DRILL_RECEIPT_ID') && envConfigured('PRODUCTION_RESTORE_DRILL_COMPLETED_AT');
+    const auditSinkReady = envConfigured('PRODUCTION_SECURITY_AUDIT_SINK', 'PRODUCTION_AUDIT_LOG_ENDPOINT');
+    const gate = ({ id, label, passed, detail, apiPath = null, envVars = [], severity = 'blocker' }) => ({
+      id,
+      label,
+      passed: Boolean(passed),
+      status: passed ? 'passed' : 'blocked',
+      severity,
+      detail,
+      apiPath,
+      envVars,
+    });
+    const gates = [
+      gate({
+        id: 'backend-api-reachable',
+        label: 'Backend API is reachable',
+        passed: true,
+        detail: 'This response was generated by the backend API.',
+        apiPath: '/public-production-startup-readiness',
+      }),
+      gate({
+        id: 'access-control-enforced',
+        label: 'Access control is enforced',
+        passed: accessControlEnforced && signedAccessConfigured && replayProtectionEnabled && auditFailClosedEnabled,
+        detail: `mode=${accessMode}, signing=${signedAccessConfigured ? 'configured' : 'missing'}, replay=${replayProtectionEnabled ? 'on' : 'off'}, auditFailClosed=${auditFailClosedEnabled ? 'on' : 'off'}.`,
+        envVars: [
+          'AGENT_ACCESS_CONTROL_MODE',
+          'AGENT_ACCESS_SIGNING_SECRET',
+          'AGENT_ACCESS_REPLAY_PROTECTION',
+          'AGENT_ACCESS_AUDIT_FAIL_CLOSED',
+        ],
+      }),
+      gate({
+        id: 'managed-secret-manager-or-kms',
+        label: 'Managed Secret Manager or KMS is ready',
+        passed: managedSecretsReady,
+        detail: managedSecretsReady
+          ? `${vaultStatus.provider || 'secret-vault'} reports production-ready secret storage.`
+          : 'The local envelope vault is acceptable for MVP/private pilot, but public production needs managed KMS or Secret Manager.',
+        apiPath: '/secret-vault/status',
+        envVars: ['PRODUCTION_SECRET_MANAGER_ENDPOINT', 'PRODUCTION_KMS_KEY_ID', 'MANAGED_SECRET_MANAGER_ENDPOINT', 'MANAGED_KMS_KEY_ID'],
+      }),
+      gate({
+        id: 'managed-persistence-real-adapter',
+        label: 'Managed persistence cutover is approved',
+        passed: managedPersistenceReady,
+        detail: `driver=${persistenceStatus.driver || 'unknown'}, configured=${persistenceStatus.configured ? 'yes' : 'no'}, requireRealAdapter=${persistenceStatus.requireRealAdapter ? 'yes' : 'no'}, productionCutover=${persistenceStatus.productionCutoverReady ? 'ready' : 'blocked'}.`,
+        envVars: ['MANAGED_PERSISTENCE_ADAPTER_DRIVER', 'MANAGED_PERSISTENCE_DATABASE_URL', 'MANAGED_PERSISTENCE_REQUIRE_REAL_ADAPTER'],
+      }),
+      gate({
+        id: 'managed-worker-queue-real-adapter',
+        label: 'Managed worker queue cutover is approved',
+        passed: managedQueueReady,
+        detail: `driver=${queueStatus.driver || 'unknown'}, configured=${queueStatus.configured ? 'yes' : 'no'}, requireRealAdapter=${queueStatus.requireRealAdapter ? 'yes' : 'no'}, productionCutover=${queueStatus.productionCutoverReady ? 'ready' : 'blocked'}.`,
+        envVars: ['WORKER_QUEUE_ADAPTER_DRIVER', 'WORKER_QUEUE_HTTP_ENDPOINT', 'WORKER_QUEUE_REQUIRE_REAL_ADAPTER'],
+      }),
+      gate({
+        id: 'provider-runtime-and-redaction',
+        label: 'Model/search providers are configured and redacted',
+        passed: providerRuntimeReady && providerVaultRedacted,
+        detail: `model=${modelStatus.enabled ? 'enabled' : 'disabled'}, search=${searchStatus.enabled ? 'enabled' : 'disabled'}, rawLeaks=${providerVaultBindings.redaction?.rawLeakCount || 0}.`,
+        apiPath: '/provider-vault-bindings',
+      }),
+      gate({
+        id: 'adapter-gateway-and-attestation',
+        label: 'Adapter gateway and managed-production attestation are configured',
+        passed: gatewayReady && attestationSigningReady,
+        detail: `gateway=${gatewayReady ? 'configured' : 'missing'}, attestationSigning=${attestationSigningReady ? 'configured' : 'missing'}.`,
+        envVars: [
+          'ADAPTER_GATEWAY_HTTP_ENDPOINT',
+          'ADAPTER_GATEWAY_AUTH_TOKEN',
+          'MANAGED_PRODUCTION_ATTESTATION_SIGNING_SECRET',
+          'PRODUCTION_ATTESTATION_SIGNING_SECRET',
+        ],
+      }),
+      gate({
+        id: 'centralized-observability',
+        label: 'Centralized logs, metrics, and traces are configured',
+        passed: observabilityReady,
+        detail: 'Public production needs centralized logs, metrics, and traces for API, worker, provider, queue, and security events.',
+        envVars: ['PRODUCTION_LOGS_ENDPOINT', 'PRODUCTION_METRICS_ENDPOINT', 'PRODUCTION_TRACES_ENDPOINT', 'PRODUCTION_OBSERVABILITY_ENDPOINT'],
+      }),
+      gate({
+        id: 'production-alert-routing',
+        label: 'Production alert routing is configured',
+        passed: alertRoutingReady,
+        detail: 'Critical production failures must route to a managed paging or escalation target.',
+        envVars: ['PRODUCTION_ALERT_ROUTING_ENDPOINT', 'PRODUCTION_PAGERDUTY_ROUTING_KEY', 'PRODUCTION_OPSGENIE_ROUTING_KEY'],
+      }),
+      gate({
+        id: 'production-on-call',
+        label: 'On-call owner and schedule are configured',
+        passed: onCallReady,
+        detail: 'Public production needs an accountable operator and schedule before customer traffic.',
+        envVars: ['PRODUCTION_ONCALL_SCHEDULE_ID', 'PRODUCTION_ONCALL_OWNER'],
+      }),
+      gate({
+        id: 'production-incident-system',
+        label: 'Managed incident system is configured',
+        passed: incidentSystemReady,
+        detail: 'Production incidents need durable records outside the local project store.',
+        envVars: ['PRODUCTION_INCIDENT_SYSTEM_ENDPOINT', 'PRODUCTION_INCIDENT_PROJECT_KEY'],
+      }),
+      gate({
+        id: 'restore-drill-receipt',
+        label: 'Restore drill receipt is available',
+        passed: restoreDrillReady,
+        detail: 'A real restore drill must cover managed database, queue, audit, and artifact storage.',
+        envVars: ['PRODUCTION_RESTORE_DRILL_RECEIPT_ID', 'PRODUCTION_RESTORE_DRILL_COMPLETED_AT'],
+      }),
+      gate({
+        id: 'centralized-audit-retention',
+        label: 'Centralized audit retention is configured',
+        passed: auditSinkReady,
+        detail: 'Security, provider, and operator events need a centralized immutable audit sink before public production.',
+        envVars: ['PRODUCTION_SECURITY_AUDIT_SINK', 'PRODUCTION_AUDIT_LOG_ENDPOINT'],
+      }),
+    ];
+    const failedGates = gates.filter((row) => !row.passed);
+    const failedBlockerGates = failedGates.filter((row) => row.severity === 'blocker');
+    const readyForPublicProduction = failedBlockerGates.length === 0;
+    const nextFailedGate = failedBlockerGates[0] || failedGates[0] || null;
+    const snapshot = {
+      schemaVersion: 'public-production-startup-readiness/v1',
+      generatedAt: nowIso(),
+      status: readyForPublicProduction ? 'ready-for-public-production-startup' : 'public-production-startup-blocked',
+      readyForPublicProduction,
+      readyForProduction: readyForPublicProduction,
+      nextAction: nextFailedGate
+        ? {
+          id: nextFailedGate.id,
+          label: nextFailedGate.label,
+          detail: nextFailedGate.detail,
+          apiPath: nextFailedGate.apiPath || null,
+          envVars: nextFailedGate.envVars || [],
+        }
+        : {
+          id: 'start-public-production-traffic',
+          label: 'Start controlled public production traffic',
+          detail: 'All public production startup gates passed. Continue with production launch control receipts and live monitoring.',
+          apiPath: '/public-production-startup-readiness',
+        },
+      gates,
+      failedGates,
+      summary: {
+        gateCount: gates.length,
+        passedGateCount: gates.length - failedGates.length,
+        failedGateCount: failedGates.length,
+        failedBlockerGateCount: failedBlockerGates.length,
+        accessControlEnforced,
+        signedAccessConfigured,
+        replayProtectionEnabled,
+        auditFailClosedEnabled,
+        managedSecretsReady,
+        managedPersistenceReady,
+        managedQueueReady,
+        providerRuntimeReady,
+        providerVaultRedacted,
+        gatewayReady,
+        attestationSigningReady,
+        observabilityReady,
+        alertRoutingReady,
+        onCallReady,
+        incidentSystemReady,
+        restoreDrillReady,
+        auditSinkReady,
+        readyForProduction: readyForPublicProduction,
+      },
+      deploymentRuntime: {
+        persistenceAdapter: persistenceStatus,
+        workerQueueAdapter: queueStatus,
+        adapterGatewayConfigured: gatewayReady,
+        managedProductionAttestationSigningConfigured: attestationSigningReady,
+      },
+      providerRuntime: {
+        model: modelStatus,
+        search: searchStatus,
+        providerVaultBindings: {
+          schemaVersion: providerVaultBindings.schemaVersion,
+          status: providerVaultBindings.status,
+          checksum: providerVaultBindings.checksum || null,
+          summary: providerVaultBindings.summary || {},
+          redaction: providerVaultBindings.redaction || {},
+        },
+      },
+      secretVaultStatus: {
+        ...vaultStatus,
+        backendRoutes: secretVaultBackendRoutes(),
+      },
+      backendRoutes: {
+        publicProductionStartupReadiness: '/public-production-startup-readiness',
+        localMvpStartupReadiness: '/local-mvp-startup-readiness',
+        settingsRuntimeReadiness: '/settings/runtime-readiness',
+        secretVaultStatus: '/secret-vault/status',
+        providerVaultBindings: '/provider-vault-bindings',
+        modelStatus: '/llm/status',
+        searchStatus: '/search/status',
+        workerStatus: '/workers/autonomous/status',
+      },
+      validationCommands: [
+        'npm run agents:public-production-startup-readiness',
+        'npm run launch:gates',
+      ],
+      productionBlockers: failedBlockerGates.map((row) => ({
+        id: row.id,
+        label: row.label,
+        detail: row.detail,
+        envVars: row.envVars || [],
+        apiPath: row.apiPath || null,
+      })),
+    };
+    snapshot.checksum = persistenceChecksum(snapshot);
+    return snapshot;
+  };
   const buildSettingsHealthReadiness = () => {
     const modelStatus = redactSensitiveObject(modelProviderStatus());
     const searchStatus = redactSensitiveObject(searchProviderStatus());
@@ -42605,6 +45977,7 @@ export function createAgentProjectService({
     const providerVaultBindings = buildProviderVaultBindings({ projectId });
     const persistenceStatus = redactSensitiveObject(managedPersistenceAdapterStatus());
     const queueStatus = redactSensitiveObject(workerQueueAdapterStatus());
+    const publicProductionStartupReadiness = buildPublicProductionStartupReadiness();
     const modelRuntimeReady = Boolean(modelStatus.enabled && modelStatus.configured);
     const searchRuntimeReady = Boolean(searchStatus.enabled && searchStatus.configured);
     const providerVaultRedacted = providerVaultBindings.redaction?.rawLeakCount === 0;
@@ -42684,6 +46057,13 @@ export function createAgentProjectService({
           : 'Open a backend project before project-scoped deployment preflight can run.',
         route: projectId ? `/projects/${projectId}/deployment-preflight` : '/projects/:id/deployment-preflight',
       },
+      {
+        id: 'public-production-startup-readiness',
+        label: 'Public production startup',
+        status: publicProductionStartupReadiness.readyForPublicProduction ? 'pass' : 'fail',
+        detail: publicProductionStartupReadiness.nextAction?.label || publicProductionStartupReadiness.status,
+        route: publicProductionStartupReadiness.backendRoutes?.publicProductionStartupReadiness || '/public-production-startup-readiness',
+      },
     ];
     const failedCount = rows.filter((row) => row.status === 'fail').length;
     const pendingCount = rows.filter((row) => row.status === 'pending').length;
@@ -42708,6 +46088,7 @@ export function createAgentProjectService({
         schedulerStatusRoute: '/workers/autonomous/status',
         deploymentPreflightRoute: projectId ? `/projects/${projectId}/deployment-preflight` : '/projects/:id/deployment-preflight',
         adapterGatewayPreflightRoute: projectId ? `/projects/${projectId}/adapter-gateway-preflight` : '/projects/:id/adapter-gateway-preflight',
+        publicProductionStartupReadinessRoute: '/public-production-startup-readiness',
       },
       modelRuntime: {
         modelProvider: modelStatus,
@@ -42735,6 +46116,7 @@ export function createAgentProjectService({
         workerStatus: '/workers/autonomous/status',
         deploymentPreflight: projectId ? `/projects/${projectId}/deployment-preflight` : '/projects/:id/deployment-preflight',
         adapterGatewayPreflight: projectId ? `/projects/${projectId}/adapter-gateway-preflight` : '/projects/:id/adapter-gateway-preflight',
+        publicProductionStartupReadiness: '/public-production-startup-readiness',
         persistenceAdapterDryRun: projectId ? `/projects/${projectId}/persistence-adapter-dry-run` : '/projects/:id/persistence-adapter-dry-run',
         workerQueueAdapterDryRun: projectId ? `/projects/${projectId}/worker-queue-adapter-dry-run` : '/projects/:id/worker-queue-adapter-dry-run',
       },
@@ -42748,10 +46130,12 @@ export function createAgentProjectService({
         providerVaultRedacted,
         localPersistenceReady,
         localQueueReady,
+        publicProductionStartupReady: Boolean(publicProductionStartupReadiness.readyForPublicProduction),
         readyForProduction: false,
       },
       validationCommands: [
         'npm run agents:settings-runtime-readiness',
+        'npm run agents:public-production-startup-readiness',
         'npm run agents:settings-provider-readiness',
         'npm run agents:local-mvp-startup-readiness',
         'npm run ui:settings-agents-server',
@@ -43297,6 +46681,9 @@ export function createAgentProjectService({
     },
     getLocalMvpStartupReadiness() {
       return buildLocalMvpStartupReadiness();
+    },
+    getPublicProductionStartupReadiness() {
+      return buildPublicProductionStartupReadiness();
     },
     getSettingsHealthReadiness() {
       return buildSettingsHealthReadiness();
@@ -43855,6 +47242,57 @@ export function createAgentProjectService({
         messages: store.getMessages(projectId),
         channelId,
       });
+    },
+    getTranscriptMemberPresence(projectId, channelId = 'main') {
+      return buildTranscriptMemberPresence({
+        project: store.getProject(projectId),
+        messages: store.getMessages(projectId),
+        channelId,
+      });
+    },
+    searchTranscripts(projectId, options = {}) {
+      return buildTranscriptSearch({
+        project: store.getProject(projectId),
+        messages: store.getMessages(projectId),
+        query: options.query || '',
+        channelId: options.channelId || '',
+        limit: options.limit,
+      });
+    },
+    pinTranscriptMessage({ projectId, ...input } = {}) {
+      return persistResult(pinProjectTranscriptMessage({
+        project: store.getProject(projectId),
+        messages: store.getMessages(projectId),
+        ...input,
+      }));
+    },
+    pinTranscriptChannel({ projectId, ...input } = {}) {
+      return persistResult(pinProjectTranscriptChannel({
+        project: store.getProject(projectId),
+        messages: store.getMessages(projectId),
+        ...input,
+      }));
+    },
+    replyToTranscriptMessage({ projectId, ...input } = {}) {
+      return persistResult(replyToProjectTranscriptMessage({
+        project: store.getProject(projectId),
+        messages: store.getMessages(projectId),
+        ...input,
+      }));
+    },
+    mentionTranscriptMessage({ projectId, ...input } = {}) {
+      return persistResult(mentionProjectTranscriptMessage({
+        project: store.getProject(projectId),
+        messages: store.getMessages(projectId),
+        ...input,
+      }));
+    },
+    attachTranscriptFile({ projectId, ...input } = {}) {
+      return persistResult(attachProjectTranscriptFile({
+        project: store.getProject(projectId),
+        messages: store.getMessages(projectId),
+        ...input,
+      }));
     },
     getMeetingSummaries(projectId, options = {}) {
       return cachedReadModel('meeting-summaries', projectId, options, () => {
@@ -44635,7 +48073,14 @@ export function createAgentProjectService({
         const index = pathParts.indexOf(segment);
         return index >= 0 ? pathParts[index + 1] || null : null;
       };
+      const nestedRequestBodyOverrides = requestBodyOverrides.requestBodyOverrides
+        && typeof requestBodyOverrides.requestBodyOverrides === 'object'
+        ? requestBodyOverrides.requestBodyOverrides
+        : {};
+      const rowRequestBodyTemplate = materializeActionTemplate(row.requestBodyTemplate || {}, now);
       const requestBody = {
+        ...rowRequestBodyTemplate,
+        ...nestedRequestBodyOverrides,
         ...requestBodyOverrides,
         now,
         collaborationIntentId: row.id,
@@ -44643,6 +48088,8 @@ export function createAgentProjectService({
         collaborationIntentStage: row.stage || null,
         collaborationIntentLane: row.lane || null,
       };
+      delete requestBody.requestBodyOverrides;
+      const effectiveForce = Boolean(force || requestBody.force || requestBody.forceRun);
       let result;
       let delegatedRunKind = 'unknown';
       let delegatedActionId = null;
@@ -44656,7 +48103,7 @@ export function createAgentProjectService({
           actionId: delegatedActionId,
           requestBodyOverrides: requestBody,
           now,
-          force,
+          force: effectiveForce,
         });
       } else if (pathParts.includes('agent-autonomous-action-queue')) {
         delegatedRunKind = 'agent-autonomous-action-queue';
@@ -44666,7 +48113,7 @@ export function createAgentProjectService({
           agentId: delegatedAgentId,
           requestBodyOverrides: requestBody,
           now,
-          force,
+          force: effectiveForce,
         });
       } else if (pathParts.includes('manager-action-queue')) {
         delegatedRunKind = 'manager-action-queue';
@@ -44676,7 +48123,7 @@ export function createAgentProjectService({
           actionId: delegatedActionId,
           requestBodyOverrides: requestBody,
           now,
-          force,
+          force: effectiveForce,
         });
       } else {
         throw new Error(`Unsupported collaboration intent run route: ${row.runApiPath}`);
@@ -44689,6 +48136,9 @@ export function createAgentProjectService({
         || result.agentAutonomousActionRun
         || result.managerActionRun
         || null;
+      const outputSubmission = result.workSubmission || result.submission || null;
+      const outputArtifact = result.artifact || outputSubmission?.artifact || null;
+      const outputEvidenceSearch = result.evidenceSearch || null;
       const autonomousActionDecision = result.autonomousActionDecision
         || result.agentAutonomousActionRun?.autonomousActionDecision
         || result.autonomousRunControlRun?.autonomousActionDecision
@@ -44753,6 +48203,12 @@ export function createAgentProjectService({
         row.id,
         delegatedReceipt?.id,
         delegatedReceipt?.checksum,
+        outputSubmission?.id,
+        outputSubmission?.messageId,
+        outputSubmission?.artifactStorageProofChecksum,
+        outputArtifact?.id,
+        outputArtifact?.checksum,
+        outputEvidenceSearch?.id,
         ...(row.proofIds || []),
         ...resultMessageIds,
       ].filter(Boolean));
@@ -44796,6 +48252,10 @@ export function createAgentProjectService({
         resultRoute: result.route || null,
         resultMessageIds,
         resultMessageCount: resultMessageIds.length,
+        workSubmissionId: outputSubmission?.id || null,
+        submissionId: outputSubmission?.id || null,
+        artifactId: outputArtifact?.id || null,
+        evidenceSearchId: outputEvidenceSearch?.id || null,
         proofIds,
         logId: runLog.id,
         timelineLogIds,
@@ -44804,8 +48264,9 @@ export function createAgentProjectService({
           ...(row.relatedIds || []),
           delegatedReceipt?.id,
           result.agentAutonomousActionRun?.workSubmissionId,
-          result.submission?.id,
-          result.workSubmission?.id,
+          outputSubmission?.id,
+          outputArtifact?.id,
+          outputEvidenceSearch?.id,
         ].filter(Boolean)),
         requestBody,
         checksum: persistenceChecksum({
@@ -44818,6 +48279,9 @@ export function createAgentProjectService({
           delegatedAgentId,
           delegatedReceiptId: delegatedReceipt?.id || null,
           autonomousActionDecisionChecksum: autonomousActionDecision?.checksum || null,
+          workSubmissionId: outputSubmission?.id || null,
+          artifactId: outputArtifact?.id || null,
+          evidenceSearchId: outputEvidenceSearch?.id || null,
           resultMessageIds,
           timelineLogIds,
           eventIds,
@@ -47144,6 +50608,7 @@ export function createAgentProjectService({
       return cachedReadModel('manager-ready-package', projectId, options, () => {
       const language = options.language || store.getProject(projectId)?.language || 'en';
       const localMvpStartupReadiness = buildLocalMvpStartupReadiness();
+      const publicProductionStartupReadiness = buildPublicProductionStartupReadiness();
       const settingsHealthReadiness = buildSettingsHealthReadiness();
       const settingsProviderReadiness = buildSettingsProviderReadiness({ projectId });
       const settingsRuntimeReadiness = buildSettingsRuntimeReadiness({ projectId });
@@ -47288,6 +50753,15 @@ export function createAgentProjectService({
         productTeamOperatingLoop,
         readinessProofMap: managerDashboard.readinessProofMap,
       });
+      const plannerExecutorReviewerStateMachine = buildPlannerExecutorReviewerStateMachine({
+        project: store.getProject(projectId),
+        managerDashboard,
+        productTeamDeliveryTrace,
+        submissionReviewWorkflow,
+        productTeamOperatingLoop,
+        teamCollaborationDiagnostics,
+        readinessProofMap: managerDashboard.readinessProofMap,
+      });
       const collaborationIntentQueue = buildCollaborationIntentQueue({
         project: store.getProject(projectId),
         messages: store.getMessages(projectId),
@@ -47304,6 +50778,7 @@ export function createAgentProjectService({
         productTeamDeliveryTrace,
         productTeamOperatingLoop,
         teamCollaborationDiagnostics,
+        plannerExecutorReviewerStateMachine,
       });
       const autonomousCycleConsistency = buildAutonomousCycleConsistency({
         project: store.getProject(projectId),
@@ -47640,6 +51115,7 @@ export function createAgentProjectService({
           evidenceCustodyReadiness,
           artifactQualityAudit,
           launchApprovalWorkflow,
+          publicProductionStartupReadiness,
           readinessProofMap: managerDashboard.readinessProofMap,
           summary: null,
         },
@@ -47698,6 +51174,7 @@ export function createAgentProjectService({
         productionProviderControlReceiptWorkflow,
         autonomousRunControl,
         productTeamOperatingLoop,
+        plannerExecutorReviewerStateMachine,
         teamCollaborationDiagnostics,
         collaborationIntentQueue,
         runtimeContracts,
@@ -47720,6 +51197,7 @@ export function createAgentProjectService({
         operationsBoard: managerDashboard.operationsBoard,
         backendRoutes: managerDashboard.backendRoutes,
         localMvpStartupReadiness,
+        publicProductionStartupReadiness,
         settingsHealthReadiness,
         settingsProviderReadiness,
         settingsRuntimeReadiness,
@@ -47800,6 +51278,11 @@ export function createAgentProjectService({
           localMvpReadyForFirstProjectRun: Boolean(localMvpStartupReadiness.readyForFirstProjectRun),
           localMvpStartupFailedGateCount: localMvpStartupReadiness.summary?.failedGateCount || 0,
           localMvpStartupChecksum: localMvpStartupReadiness.checksum || null,
+          publicProductionStartupStatus: publicProductionStartupReadiness.status || 'unknown',
+          publicProductionStartupReady: Boolean(publicProductionStartupReadiness.readyForPublicProduction),
+          publicProductionStartupFailedGateCount: publicProductionStartupReadiness.summary?.failedGateCount || 0,
+          publicProductionStartupFailedBlockerGateCount: publicProductionStartupReadiness.summary?.failedBlockerGateCount || 0,
+          publicProductionStartupChecksum: publicProductionStartupReadiness.checksum || null,
           settingsHealthStatus: settingsHealthReadiness.status || 'unknown',
           settingsHealthReadyForProviderTests: Boolean(settingsHealthReadiness.summary?.readyForProviderTests),
           settingsHealthReadyForWorkflowSmoke: Boolean(settingsHealthReadiness.summary?.readyForWorkflowSmoke),
@@ -47915,6 +51398,13 @@ export function createAgentProjectService({
           productTeamOperatingLoopReady: Boolean(productTeamOperatingLoop.readyForLocalPilotOperatingLoop),
           productTeamOperatingLoopAgentInitiativeCount: productTeamOperatingLoop.summary?.agentInitiativeCount || 0,
           productTeamOperatingLoopChecksum: productTeamOperatingLoop.checksum || null,
+          plannerExecutorReviewerStateMachineStatus: plannerExecutorReviewerStateMachine.status || 'unknown',
+          plannerExecutorReviewerStateMachineReady: Boolean(plannerExecutorReviewerStateMachine.readyForLocalProductTeamStateMachine),
+          plannerExecutorReviewerReadyRoleCount: plannerExecutorReviewerStateMachine.summary?.readyRoleCount || 0,
+          plannerExecutorReviewerRoleCount: plannerExecutorReviewerStateMachine.summary?.roleCount || 0,
+          plannerExecutorReviewerReadyTransitionCount: plannerExecutorReviewerStateMachine.summary?.readyTransitionCount || 0,
+          plannerExecutorReviewerTransitionCount: plannerExecutorReviewerStateMachine.summary?.transitionCount || 0,
+          plannerExecutorReviewerStateMachineChecksum: plannerExecutorReviewerStateMachine.checksum || null,
           teamCollaborationDiagnosticsStatus: teamCollaborationDiagnostics.status || 'unknown',
           teamCollaborationDiagnosticsReady: Boolean(teamCollaborationDiagnostics.readyForLocalPilotCollaboration),
           teamCollaborationDiagnosticsFailedLocalRowCount: teamCollaborationDiagnostics.summary?.failedLocalRowCount || 0,
@@ -49688,6 +53178,28 @@ export function createAgentProjectService({
         }), language);
       });
     },
+    getPlannerExecutorReviewerStateMachine(projectId, options = {}) {
+      return cachedReadModel('planner-executor-reviewer-state-machine', projectId, options, () => {
+        const language = options.language || store.getProject(projectId)?.language || 'en';
+        const project = store.getProject(projectId);
+        const managerDashboard = this.getManagerDashboard(projectId, { language });
+        const productTeamDeliveryTrace = this.getProductTeamDeliveryTrace(projectId, { language });
+        const submissionReviewWorkflow = this.getSubmissionReviewWorkflow(projectId, { language });
+        const productTeamOperatingLoop = this.getProductTeamOperatingLoop(projectId, { language });
+        const teamCollaborationDiagnostics = this.getTeamCollaborationDiagnostics(projectId, { language });
+        const readinessProofMap = this.getReadinessProofMap(projectId);
+        return localizeReadModel(buildPlannerExecutorReviewerStateMachine({
+          project,
+          managerDashboard,
+          productTeamDeliveryTrace,
+          submissionReviewWorkflow,
+          productTeamOperatingLoop,
+          teamCollaborationDiagnostics,
+          readinessProofMap,
+          now: options.now || nowIso(),
+        }), language);
+      });
+    },
     getCollaborationIntentQueue(projectId, options = {}) {
       return cachedReadModel('collaboration-intent-queue', projectId, options, () => {
         const language = options.language || store.getProject(projectId)?.language || 'en';
@@ -49717,6 +53229,7 @@ export function createAgentProjectService({
         const productTeamDeliveryTrace = this.getProductTeamDeliveryTrace(projectId, { language });
         const productTeamOperatingLoop = this.getProductTeamOperatingLoop(projectId, { language });
         const teamCollaborationDiagnostics = this.getTeamCollaborationDiagnostics(projectId, { language });
+        const plannerExecutorReviewerStateMachine = this.getPlannerExecutorReviewerStateMachine(projectId, { language });
         return localizeReadModel(buildRuntimeContractFreeze({
           project,
           managerDashboard,
@@ -49725,6 +53238,7 @@ export function createAgentProjectService({
           productTeamDeliveryTrace,
           productTeamOperatingLoop,
           teamCollaborationDiagnostics,
+          plannerExecutorReviewerStateMachine,
           now: options.now || nowIso(),
         }), language);
       });
@@ -50164,6 +53678,234 @@ export function createAgentProjectService({
         productionOperationsControlReceiptWorkflow: savedManagerReadyPackage.productionOperationsControlReceiptWorkflow,
         productionOperationsReadiness: savedManagerReadyPackage.productionOperationsReadiness,
         log,
+      };
+    },
+    async recordManagedInfrastructureCutoverAttestations({ projectId, ...input } = {}) {
+      const project = store.getProject(projectId);
+      if (!project?.id) throw new Error(`Project not found: ${projectId}`);
+      const now = input.now || nowIso();
+      const env = input.env || globalThis.process?.env || {};
+      const endpoint = input.adapterGatewayEndpoint || adapterGatewayEndpointFromEnv(env);
+      const controlIds = uniqueStrings((
+        Array.isArray(input.controlIds) && input.controlIds.length
+          ? input.controlIds
+          : ['managed-persistence-cutover', 'managed-worker-queue-cutover']
+      )
+        .map((controlId) => normalizeProductionOperationsControlId(controlId))
+        .filter((controlId) => ['managed-persistence-cutover', 'managed-worker-queue-cutover'].includes(controlId)));
+      const runId = input.id || `managed_infrastructure_cutover_attestation_run_${projectId}_${Date.parse(now) || Date.now()}`;
+      const baseRun = (overrides = {}) => redactSensitiveObject({
+        id: runId,
+        projectId,
+        schemaVersion: 'managed-infrastructure-cutover-attestation-run/v1',
+        createdAt: now,
+        actorRole: input.actorRole || input.role || 'operations-owner',
+        actorId: input.actorId || input.userId || input.updatedBy || 'operations-owner',
+        source: input.source || 'managed-infrastructure-cutover-attestation-api',
+        requestedControlIds: controlIds,
+        adapterGatewayEndpointConfigured: Boolean(endpoint),
+        backendRoutes: {
+          adapterGatewayPreflight: `/projects/${projectId}/adapter-gateway-preflight`,
+          productionOperationsControlReceipts: `/projects/${projectId}/production-operations-control-receipts`,
+          productionOperationsReadiness: `/projects/${projectId}/production-operations-readiness`,
+          productionInfrastructureRehearsal: `/projects/${projectId}/production-infrastructure-rehearsal`,
+          productionEvidenceIntegrityAudit: `/projects/${projectId}/production-evidence-integrity-audit`,
+          readinessProofMap: `/projects/${projectId}/readiness-proof-map`,
+          managerFlowGraph: `/projects/${projectId}/manager-flow-graph`,
+        },
+        readyForManagedInfrastructureCutoverEvidence: false,
+        readyForProduction: false,
+        localProofCreated: false,
+        ...overrides,
+      });
+      if (!endpoint) {
+        return {
+          managedInfrastructureCutoverAttestationRun: baseRun({
+            status: 'adapter-gateway-endpoint-missing',
+            blocker: 'Configure ADAPTER_GATEWAY_HTTP_ENDPOINT, MANAGED_PERSISTENCE_HTTP_ENDPOINT, or WORKER_QUEUE_HTTP_ENDPOINT before requesting managed cutover attestations.',
+          }),
+        };
+      }
+
+      const client = createHttpJsonAdapterGatewayClient({
+        baseUrl: endpoint,
+        timeoutMs: adapterGatewayTimeoutMsFromEnv(env),
+        headers: adapterGatewayHeadersFromEnv(env),
+      });
+      let health = await client.health();
+      if (!health.ok || health.body?.schemaVersion !== 'adapter-gateway-health/v1') {
+        return {
+          managedInfrastructureCutoverAttestationRun: baseRun({
+            status: 'adapter-gateway-health-blocked',
+            blocker: `Adapter gateway health check failed with status ${health.status}.`,
+            adapterGatewayHealthStatus: health.status,
+          }),
+        };
+      }
+      let state = await client.state();
+      if (!state.ok) {
+        return {
+          managedInfrastructureCutoverAttestationRun: baseRun({
+            status: 'adapter-gateway-state-blocked',
+            blocker: `Adapter gateway state read failed with status ${state.status}.`,
+            adapterGatewayHealth: {
+              status: health.body.status || null,
+              managedProductionAttestation: health.body.managedProductionAttestation || null,
+              capabilities: health.body.capabilities || [],
+            },
+          }),
+        };
+      }
+      let attestationReadiness = health.body.managedProductionAttestation || {};
+      if (!attestationReadiness.ready) {
+        return {
+          managedInfrastructureCutoverAttestationRun: baseRun({
+            status: 'managed-production-attestation-not-ready',
+            blocker: 'Adapter gateway cannot issue managed-production control attestations yet.',
+            adapterGatewayHealth: {
+              status: health.body.status || null,
+              managedProductionAttestation: attestationReadiness,
+              capabilities: health.body.capabilities || [],
+            },
+            adapterGatewayStateSummary: {
+              storageAdapter: state.body?.storageAdapter || null,
+              persistence: state.body?.persistence || null,
+              workerQueue: state.body?.workerQueue || null,
+            },
+          }),
+        };
+      }
+
+      const persistenceGatewayProject = (state.body?.persistence?.latestProjects || [])
+        .find((row) => String(row.projectId || '') === String(projectId)) || null;
+      const workerQueueGatewayProject = (state.body?.workerQueue?.latestProjects || [])
+        .find((row) => String(row.projectId || '') === String(projectId)) || null;
+      const projectDryRunSummary = {
+        persistenceGatewayDryRunCount: state.body?.persistence?.dryRunCount || 0,
+        persistenceGatewayProjectReceiptReady: Boolean(persistenceGatewayProject?.latestReceiptChecksum),
+        workerQueueGatewayDryRunCount: state.body?.workerQueue?.dryRunCount || 0,
+        workerQueueGatewayProjectReceiptReady: Boolean(workerQueueGatewayProject?.latestReceiptChecksum),
+      };
+      if (!projectDryRunSummary.persistenceGatewayProjectReceiptReady || !projectDryRunSummary.workerQueueGatewayProjectReceiptReady) {
+        return {
+          managedInfrastructureCutoverAttestationRun: baseRun({
+            status: 'project-infrastructure-dry-run-blocked',
+            blocker: 'Gateway persistence and worker-queue dry-run receipt evidence must exist for this project before managed infrastructure cutover attestations can be recorded.',
+            projectDryRunSummary,
+            adapterGatewayHealth: {
+              status: health.body.status || null,
+              managedProductionAttestation: attestationReadiness,
+              capabilities: health.body.capabilities || [],
+            },
+            adapterGatewayStateSummary: {
+              storageAdapter: state.body?.storageAdapter || null,
+              persistence: state.body?.persistence || null,
+              workerQueue: state.body?.workerQueue || null,
+            },
+          }),
+        };
+      }
+
+      const latestReadback = state.body?.storageAdapter?.latestReadback || {};
+      const evidenceChecksum = latestReadback.expected?.stateChecksum
+        || latestReadback.checksum
+        || state.body?.storageAdapter?.latestExecution?.checksum
+        || persistenceChecksum(state.body || {});
+      const evidenceRoute = `${client.baseUrl}/state`;
+      const attestationRows = [];
+      for (const controlId of controlIds) {
+        const attestationResponse = await client.requestManagedProductionControlAttestation({
+          projectId,
+          domain: 'operations',
+          controlId,
+          evidenceId: `adapter_gateway_${controlId}_cutover_evidence`,
+          evidenceRoute,
+          evidenceChecksum,
+        });
+        if (!attestationResponse.ok) {
+          return {
+            managedInfrastructureCutoverAttestationRun: baseRun({
+              status: 'managed-production-attestation-request-failed',
+              blocker: `Adapter gateway attestation request failed for ${controlId} with status ${attestationResponse.status}.`,
+              failedControlId: controlId,
+              adapterGatewayHealth: {
+                status: health.body.status || null,
+                managedProductionAttestation: attestationReadiness,
+                capabilities: health.body.capabilities || [],
+              },
+              adapterGatewayStateSummary: {
+                storageAdapter: state.body?.storageAdapter || null,
+                persistence: state.body?.persistence || null,
+                workerQueue: state.body?.workerQueue || null,
+              },
+            }),
+          };
+        }
+        const attestation = attestationResponse.body || {};
+        attestationRows.push({
+          controlId,
+          attestation,
+        });
+      }
+
+      const receiptResult = this.recordProductionOperationsControlReceipt({
+        projectId,
+        actorRole: input.actorRole || input.role || 'operations-owner',
+        actorId: input.actorId || input.userId || input.updatedBy || 'operations-owner',
+        actorName: input.actorName || input.approverName || input.actorId || input.userId || 'Operations Owner',
+        reason: input.reason || 'Record signed managed-production adapter gateway attestations for managed persistence and queue cutover.',
+        source: 'managed-infrastructure-cutover-attestation-run',
+        now,
+        controls: attestationRows.map(({ controlId, attestation }) => ({
+          controlId,
+          status: 'verified',
+          evidenceId: attestation.evidenceId,
+          evidenceRoute: attestation.evidenceRoute,
+          evidenceChecksum: attestation.evidenceChecksum,
+          evidenceEnvironment: attestation.evidenceEnvironment,
+          attestationId: attestation.attestationId,
+          attestationRoute: attestation.attestationRoute,
+          attestationChecksum: attestation.attestationChecksum,
+          attestationSignature: attestation.attestationSignature,
+          attestationProvider: attestation.attestationProvider,
+          attestationKind: attestation.attestationKind,
+          completedAt: attestation.generatedAt || now,
+          ownerRole: 'operations-owner',
+          detail: `Signed adapter gateway managed-production attestation for ${controlId}.`,
+        })),
+      });
+      return {
+        ...receiptResult,
+        managedInfrastructureCutoverAttestationRun: baseRun({
+          status: 'managed-infrastructure-cutover-attested',
+          attestedControlIds: controlIds,
+          readyForManagedInfrastructureCutoverEvidence: attestationRows.length === controlIds.length,
+          localProofCreated: true,
+          adapterGatewayHealth: {
+            status: health.body.status || null,
+            managedProductionAttestation: attestationReadiness,
+            capabilities: health.body.capabilities || [],
+          },
+          adapterGatewayStateSummary: {
+            storageAdapter: state.body?.storageAdapter || null,
+            persistence: state.body?.persistence || null,
+            workerQueue: state.body?.workerQueue || null,
+          },
+          projectDryRunSummary,
+          productionOperationsControlReceiptId: receiptResult.productionOperationsControlReceipt?.id || null,
+          productionOperationsControlReceiptChecksum: receiptResult.productionOperationsControlReceipt?.checksum || null,
+          proofIds: uniqueStrings([
+            receiptResult.productionOperationsControlReceipt?.id,
+            receiptResult.productionOperationsControlReceipt?.checksum,
+            ...attestationRows.flatMap(({ attestation }) => [
+              attestation.id,
+              attestation.checksum,
+              attestation.attestationId,
+              attestation.attestationChecksum,
+              attestation.attestationSignature,
+            ]),
+          ].filter(Boolean)),
+        }),
       };
     },
     getProductionDeploymentControlReceiptWorkflow(projectId, options = {}) {
@@ -51719,6 +55461,7 @@ export function createAgentProjectService({
     runDueAgentWorkCycles(input = {}) {
       const summary = runDueAgentWorkCycles({
         projects: store.listProjects(),
+        artifactWriter: artifactWriter || (projectRuntime?.writeArtifact ? projectRuntime.writeArtifact.bind(projectRuntime) : null),
         ...input,
       });
       summary.projects.forEach((project) => {

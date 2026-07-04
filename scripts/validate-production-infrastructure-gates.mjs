@@ -10,6 +10,10 @@ const tasks = [
     script: 'scripts/validate-launch-readiness-gates.mjs',
   },
   {
+    label: 'public production startup readiness blockers',
+    script: 'scripts/validate-public-production-startup-readiness-contract.mjs',
+  },
+  {
     label: 'shared adapter gateway contract',
     script: 'scripts/validate-adapter-gateway-contract.mjs',
   },
@@ -24,6 +28,10 @@ const tasks = [
   {
     label: 'Postgres-compatible gateway storage boundary',
     script: 'scripts/validate-adapter-gateway-postgres-store.mjs',
+  },
+  {
+    label: 'managed infrastructure cutover attestations',
+    script: 'scripts/validate-managed-infrastructure-cutover-attestations.mjs',
   },
 ];
 

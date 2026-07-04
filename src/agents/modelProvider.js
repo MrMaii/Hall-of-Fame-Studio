@@ -8,6 +8,36 @@ const DEFAULT_MODEL = 'gpt-4o-mini';
 const DEFAULT_TIMEOUT_MS = 45_000;
 const DEFAULT_MAX_TOKENS = 700;
 const DEFAULT_MAX_CONCURRENCY = 2;
+const MODEL_PROVIDER_ADAPTERS = Object.freeze({
+  'openai-compatible': {
+    provider: 'openai-compatible',
+    apiStyle: 'openai-chat-completions',
+    defaultBaseUrl: DEFAULT_OPENAI_COMPATIBLE_BASE_URL,
+    operations: ['chat-completion', 'json-completion', 'runtime-intent', 'health-test'],
+    secretNames: ['model.apiKey', 'MODEL_API_KEY', 'OPENAI_API_KEY'],
+  },
+  openai: {
+    provider: 'openai',
+    apiStyle: 'openai-chat-completions',
+    defaultBaseUrl: DEFAULT_OPENAI_COMPATIBLE_BASE_URL,
+    operations: ['chat-completion', 'json-completion', 'runtime-intent', 'health-test'],
+    secretNames: ['model.apiKey', 'MODEL_API_KEY', 'OPENAI_API_KEY'],
+  },
+  anthropic: {
+    provider: 'anthropic',
+    apiStyle: 'anthropic-messages',
+    defaultBaseUrl: DEFAULT_ANTHROPIC_BASE_URL,
+    operations: ['chat-completion', 'json-completion', 'runtime-intent', 'health-test'],
+    secretNames: ['model.apiKey', 'MODEL_API_KEY', 'ANTHROPIC_API_KEY'],
+  },
+  gemini: {
+    provider: 'gemini',
+    apiStyle: 'gemini-generate-content',
+    defaultBaseUrl: DEFAULT_GEMINI_BASE_URL,
+    operations: ['chat-completion', 'json-completion', 'runtime-intent', 'health-test'],
+    secretNames: ['model.apiKey', 'MODEL_API_KEY', 'GEMINI_API_KEY'],
+  },
+});
 
 function cleanBaseUrl(value = '') {
   return String(value || '').replace(/\/+$/, '');
@@ -79,6 +109,32 @@ function defaultBaseUrlFor(provider) {
   if (provider === 'anthropic') return DEFAULT_ANTHROPIC_BASE_URL;
   if (provider === 'gemini') return DEFAULT_GEMINI_BASE_URL;
   return DEFAULT_OPENAI_COMPATIBLE_BASE_URL;
+}
+
+function adapterConfigFor(provider) {
+  return MODEL_PROVIDER_ADAPTERS[normalizeProvider(provider)] || MODEL_PROVIDER_ADAPTERS['openai-compatible'];
+}
+
+export function getModelProviderAdapterManifest() {
+  return {
+    schemaVersion: 'model-provider-adapter-manifest/v1',
+    defaultProvider: DEFAULT_PROVIDER,
+    defaultModel: DEFAULT_MODEL,
+    adapters: Object.values(MODEL_PROVIDER_ADAPTERS).map((adapter) => ({
+      provider: adapter.provider,
+      apiStyle: adapter.apiStyle,
+      defaultBaseUrl: redactUrl(adapter.defaultBaseUrl),
+      operations: [...adapter.operations],
+      secretNames: [...adapter.secretNames],
+    })),
+    productionBlockers: [
+      'managed KMS or Secret Manager',
+      'centralized provider usage audit',
+      'production retry and circuit-breaker policy',
+      'calibrated model-output eval datasets',
+      'centralized cost alerts and incident runbooks',
+    ],
+  };
 }
 
 function buildIntentMessages({
@@ -308,6 +364,7 @@ export function createModelProvider({
   fetchImpl = globalThis.fetch,
 } = {}) {
   const resolvedProvider = normalizeProvider(provider);
+  const adapterConfig = adapterConfigFor(resolvedProvider);
   const resolvedModel = model || DEFAULT_MODEL;
   const resolvedBaseURL = cleanBaseUrl(baseURL || defaultBaseUrlFor(resolvedProvider));
   const blockedByPolicy = blockedModels.some((pattern) => modelMatches(resolvedModel, pattern));
@@ -436,6 +493,13 @@ export function createModelProvider({
         maxConcurrency: limiter.limit,
         activeRequests: limiter.activeCount(),
         queuedRequests: limiter.pendingCount(),
+        adapterContract: {
+          schemaVersion: 'model-provider-adapter/v1',
+          provider: adapterConfig.provider,
+          apiStyle: adapterConfig.apiStyle,
+          operations: [...adapterConfig.operations],
+          defaultBaseUrl: redactUrl(adapterConfig.defaultBaseUrl),
+        },
       };
     },
     createChatCompletion(input = {}) {

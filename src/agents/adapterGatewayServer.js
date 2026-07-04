@@ -1,3 +1,4 @@
+import { createHmac } from 'node:crypto';
 import { createServer } from 'node:http';
 import { resolve } from 'node:path';
 import {
@@ -51,6 +52,42 @@ function finalReceipt(schemaVersion, payload = {}) {
   };
   row.checksum = checksum(row);
   return row;
+}
+
+function managedProductionAttestationSignaturePayload({
+  projectId = null,
+  domain = null,
+  controlId = null,
+  evidenceId = null,
+  evidenceRoute = null,
+  evidenceChecksum = null,
+  evidenceEnvironment = null,
+  attestationId = null,
+  attestationRoute = null,
+  attestationChecksum = null,
+  attestationProvider = null,
+  attestationKind = null,
+} = {}) {
+  return {
+    schemaVersion: 'managed-production-control-attestation-signature/v1',
+    projectId,
+    domain,
+    controlId,
+    evidenceId,
+    evidenceRoute,
+    evidenceChecksum,
+    evidenceEnvironment,
+    attestationId,
+    attestationRoute,
+    attestationChecksum,
+    attestationProvider,
+    attestationKind,
+  };
+}
+
+function signManagedProductionAttestationPayload(signingSecret = '', payload = {}) {
+  if (!signingSecret) return null;
+  return `sig_hmac_sha256_v1_${createHmac('sha256', signingSecret).update(stableJson(payload)).digest('hex')}`;
 }
 
 function tableCountsFor(recordsByTable = {}) {
@@ -332,6 +369,132 @@ function hasValidBearerToken(request, authToken = '') {
   return header === `Bearer ${authToken}`;
 }
 
+function managedProductionAttestationReadiness(state = {}, storageAdapterStatus = {}, signingSecret = '') {
+  const latestReadback = storageAdapterStatus.latestReadback || {};
+  const counts = summarizeAdapterGatewayStoreState(state, storageAdapterStatus);
+  const ready = Boolean(
+    signingSecret
+    && storageAdapterStatus.driver === 'postgres'
+    && storageAdapterStatus.queryBound === true
+    && latestReadback.parityReady === true
+  );
+  const blockers = [
+    ...(signingSecret ? [] : ['managed-production-attestation-signing-secret-missing']),
+    ...(storageAdapterStatus.driver === 'postgres' ? [] : ['postgres-storage-adapter-required']),
+    ...(storageAdapterStatus.queryBound === true ? [] : ['postgres-query-bound-adapter-required']),
+    ...(latestReadback.parityReady === true ? [] : ['postgres-readback-parity-required']),
+  ];
+  return {
+    schemaVersion: 'adapter-gateway-managed-production-attestation-readiness/v1',
+    ready,
+    blockers,
+    storageDriver: storageAdapterStatus.driver || null,
+    queryBound: Boolean(storageAdapterStatus.queryBound),
+    readbackParityReady: Boolean(latestReadback.parityReady),
+    tableRecordCount: counts.persistence?.tableRecordCount || 0,
+    queueRowCount: counts.workerQueue?.queueRowCount || 0,
+    leaseCount: counts.workerQueue?.leaseCount || 0,
+  };
+}
+
+function buildManagedProductionControlAttestation({
+  body = {},
+  state = {},
+  storageAdapterStatus = {},
+  signingSecret = '',
+  origin = 'http://127.0.0.1',
+  now = new Date().toISOString(),
+} = {}) {
+  const readiness = managedProductionAttestationReadiness(state, storageAdapterStatus, signingSecret);
+  if (!readiness.ready) {
+    const error = new Error('Adapter gateway cannot issue managed-production attestation.');
+    error.status = 409;
+    error.body = {
+      error: 'adapter-gateway-managed-production-attestation-blocked',
+      readiness,
+    };
+    throw error;
+  }
+  const projectId = body.projectId || null;
+  const domain = body.domain || 'operations';
+  const controlId = body.controlId || null;
+  const evidenceId = body.evidenceId || null;
+  const evidenceRoute = body.evidenceRoute || null;
+  const evidenceChecksum = body.evidenceChecksum || null;
+  const evidenceEnvironment = 'managed-production';
+  const attestationId = body.attestationId || `adapter_gateway_attestation_${checksum({
+    projectId,
+    domain,
+    controlId,
+    evidenceId,
+    evidenceChecksum,
+    generatedAt: now,
+  })}`;
+  const attestationRoute = body.attestationRoute || `${origin}/attestations/managed-production-control/${encodeURIComponent(attestationId)}`;
+  const attestationChecksum = body.attestationChecksum || checksum({
+    schemaVersion: 'adapter-gateway-managed-production-control-attestation/v1',
+    projectId,
+    domain,
+    controlId,
+    evidenceId,
+    evidenceRoute,
+    evidenceChecksum,
+    evidenceEnvironment,
+    storageDriver: storageAdapterStatus.driver || null,
+    storageSchema: storageAdapterStatus.storage?.schema || null,
+    latestReadbackChecksum: storageAdapterStatus.latestReadback?.expected?.stateChecksum || null,
+    readiness,
+  });
+  const attestationProvider = body.attestationProvider || 'adapter-gateway-control-plane';
+  const attestationKind = body.attestationKind || 'managed-control-plane-attestation';
+  const signaturePayload = managedProductionAttestationSignaturePayload({
+    projectId,
+    domain,
+    controlId,
+    evidenceId,
+    evidenceRoute,
+    evidenceChecksum,
+    evidenceEnvironment,
+    attestationId,
+    attestationRoute,
+    attestationChecksum,
+    attestationProvider,
+    attestationKind,
+  });
+  const attestationSignature = signManagedProductionAttestationPayload(signingSecret, signaturePayload);
+  const receipt = {
+    schemaVersion: 'adapter-gateway-managed-production-control-attestation/v1',
+    generatedAt: now,
+    projectId,
+    domain,
+    controlId,
+    evidenceId,
+    evidenceRoute,
+    evidenceChecksum,
+    evidenceEnvironment,
+    attestationId,
+    attestationRoute,
+    attestationChecksum,
+    attestationSignature,
+    attestationProvider,
+    attestationKind,
+    signatureAlgorithm: 'hmac-sha256',
+    readiness,
+    productionCutoverReady: false,
+    summary: {
+      storageDriver: storageAdapterStatus.driver || null,
+      readbackParityReady: readiness.readbackParityReady,
+      tableRecordCount: readiness.tableRecordCount,
+      queueRowCount: readiness.queueRowCount,
+      leaseCount: readiness.leaseCount,
+    },
+  };
+  return {
+    ...receipt,
+    checksum: checksum(receipt),
+  };
+}
+
 export function createAdapterGatewayServer({
   storagePath = resolve(process.cwd(), '.tmp/adapter-gateway-store.json'),
   storageDriver = 'json-file',
@@ -340,6 +503,7 @@ export function createAdapterGatewayServer({
   storageQuery = null,
   storeAdapter = null,
   authToken = '',
+  productionAttestationSigningSecret = process.env.MANAGED_PRODUCTION_ATTESTATION_SIGNING_SECRET || process.env.PRODUCTION_ATTESTATION_SIGNING_SECRET || '',
   maxBodyBytes = 25 * 1024 * 1024,
   now = () => new Date().toISOString(),
 } = {}) {
@@ -383,6 +547,9 @@ export function createAdapterGatewayServer({
         return;
       }
       if (request.method === 'GET' && url.pathname === '/health') {
+        await ensureState();
+        const storageStatus = resolvedStoreAdapter.status();
+        const attestationReadiness = managedProductionAttestationReadiness(state, storageStatus, productionAttestationSigningSecret);
         writeJson(response, 200, {
           schemaVersion: 'adapter-gateway-health/v1',
           status: 'local-private-gateway-ready-production-blocked',
@@ -391,9 +558,11 @@ export function createAdapterGatewayServer({
           capabilities: [
             'managed-persistence-adapter-contract/v2',
             'worker-queue-adapter-contract/v1',
+            ...(attestationReadiness.ready ? ['managed-production-control-attestation/v1'] : []),
           ],
-          storage: resolvedStoreAdapter.status().storage,
-          storageAdapter: resolvedStoreAdapter.status(),
+          storage: storageStatus.storage,
+          storageAdapter: storageStatus,
+          managedProductionAttestation: attestationReadiness,
           auth: {
             required: Boolean(authToken),
             scheme: authToken ? 'bearer' : 'none',
@@ -409,6 +578,21 @@ export function createAdapterGatewayServer({
       if (request.method === 'GET' && url.pathname === '/state') {
         await ensureState();
         writeJson(response, 200, summarizeAdapterGatewayStoreState(state, resolvedStoreAdapter.status()));
+        return;
+      }
+      if (request.method === 'POST' && url.pathname === '/attestations/managed-production-control') {
+        await ensureState();
+        const body = await readJsonBody(request, maxBodyBytes);
+        const host = request.headers.host || '127.0.0.1';
+        const origin = `${request.socket.encrypted ? 'https' : 'http'}://${host}`;
+        writeJson(response, 200, buildManagedProductionControlAttestation({
+          body,
+          state,
+          storageAdapterStatus: resolvedStoreAdapter.status(),
+          signingSecret: productionAttestationSigningSecret,
+          origin,
+          now: now(),
+        }));
         return;
       }
       if (request.method === 'POST' && url.pathname === '/persistence/dry-run') {
@@ -429,7 +613,7 @@ export function createAdapterGatewayServer({
       }
       writeJson(response, 404, { error: 'adapter-gateway-not-found' });
     } catch (error) {
-      writeJson(response, error.status || 500, {
+      writeJson(response, error.status || 500, error.body || {
         error: 'adapter-gateway-error',
         message: error.message || String(error),
       });

@@ -1,3 +1,4 @@
+import { createHmac } from 'node:crypto';
 import { createAdapterGatewayServer } from '../src/agents/adapterGatewayServer.js';
 import { createAdapterGatewayPostgresStore } from '../src/agents/adapterGatewayStore.js';
 import { verifyHttpJsonAdapterGateway } from '../src/agents/adapterGatewayClient.js';
@@ -22,6 +23,18 @@ const fakeDatabase = {
 
 function parseJson(value) {
   return typeof value === 'string' ? JSON.parse(value) : value;
+}
+
+function stableJson(value) {
+  if (Array.isArray(value)) return `[${value.map((item) => stableJson(item)).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function managedProductionAttestationSignature(signingSecret, payload) {
+  return `sig_hmac_sha256_v1_${createHmac('sha256', signingSecret).update(stableJson(payload)).digest('hex')}`;
 }
 
 const query = async (text, values, operation) => {
@@ -79,6 +92,7 @@ const query = async (text, values, operation) => {
 };
 
 const authToken = 'ADAPTER_GATEWAY_POSTGRES_VALIDATION_TOKEN';
+const productionAttestationSigningSecret = 'ADAPTER_GATEWAY_PRODUCTION_ATTESTATION_SECRET_SHOULD_NOT_LEAK';
 const storeAdapter = createAdapterGatewayPostgresStore({
   databaseUrl: 'postgres://gateway_user:secret_password@localhost:5432/hofs',
   schema: 'hofs_gateway_validation',
@@ -87,6 +101,7 @@ const storeAdapter = createAdapterGatewayPostgresStore({
 const gateway = createAdapterGatewayServer({
   storeAdapter,
   authToken,
+  productionAttestationSigningSecret,
 });
 
 const originalEnv = {
@@ -125,6 +140,10 @@ try {
   assert(
     health.storageAdapter.storage?.schema === 'hofs_gateway_validation',
     'Postgres storage adapter status must expose the selected safe schema.'
+  );
+  assert(
+    health.managedProductionAttestation?.ready === false,
+    'Postgres gateway must not issue production attestations before readback parity exists.'
   );
 
   const verification = await verifyHttpJsonAdapterGateway({
@@ -223,6 +242,54 @@ try {
   assert(stateSummary.persistence.tableRecordCount > 0, 'Postgres store state summary must expose persisted table records.');
   assert(stateSummary.workerQueue.queueRowCount > 0, 'Postgres store state summary must expose persisted queue rows.');
   assert(stateSummary.workerQueue.leaseCount > 0, 'Postgres store state summary must expose persisted queue leases.');
+
+  const attestationHealthResponse = await fetch(`${runtime.url}/health`, {
+    headers: {
+      authorization: `Bearer ${authToken}`,
+    },
+  });
+  const attestationHealth = await attestationHealthResponse.json();
+  assert(attestationHealth.managedProductionAttestation?.ready === true, 'Postgres gateway must mark signed attestation readiness after query-bound readback parity.');
+  assert(attestationHealth.capabilities?.includes('managed-production-control-attestation/v1'), 'Postgres gateway health must advertise signed production control attestation only after readiness.');
+
+  const attestationRequest = {
+    projectId,
+    domain: 'operations',
+    controlId: 'managed-persistence-cutover',
+    evidenceId: 'adapter_gateway_postgres_persistence_cutover_receipt',
+    evidenceRoute: `${runtime.url}/state`,
+    evidenceChecksum: stateSummary.storageAdapter.latestReadback?.expected?.stateChecksum,
+  };
+  const attestationResponse = await fetch(`${runtime.url}/attestations/managed-production-control`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${authToken}`,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify(attestationRequest),
+  });
+  assert(attestationResponse.status === 200, 'Postgres gateway must issue signed production control attestation after readiness.');
+  const attestation = await attestationResponse.json();
+  assert(attestation.schemaVersion === 'adapter-gateway-managed-production-control-attestation/v1', 'Gateway attestation must expose the managed production control attestation contract.');
+  assert(attestation.evidenceEnvironment === 'managed-production', 'Gateway attestation must produce managed-production evidence environment.');
+  assert(attestation.attestationSignature?.startsWith('sig_hmac_sha256_v1_'), 'Gateway attestation must include an HMAC signature.');
+  const expectedSignature = managedProductionAttestationSignature(productionAttestationSigningSecret, {
+    schemaVersion: 'managed-production-control-attestation-signature/v1',
+    projectId: attestation.projectId,
+    domain: attestation.domain,
+    controlId: attestation.controlId,
+    evidenceId: attestation.evidenceId,
+    evidenceRoute: attestation.evidenceRoute,
+    evidenceChecksum: attestation.evidenceChecksum,
+    evidenceEnvironment: attestation.evidenceEnvironment,
+    attestationId: attestation.attestationId,
+    attestationRoute: attestation.attestationRoute,
+    attestationChecksum: attestation.attestationChecksum,
+    attestationProvider: attestation.attestationProvider,
+    attestationKind: attestation.attestationKind,
+  });
+  assert(attestation.attestationSignature === expectedSignature, 'Gateway attestation signature must match the service verification payload.');
+  assert(!JSON.stringify(attestation).includes(productionAttestationSigningSecret), 'Gateway attestation must not expose the signing secret.');
 
   console.log('Adapter gateway postgres store validation passed.');
 } finally {

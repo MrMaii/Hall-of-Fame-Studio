@@ -123,7 +123,7 @@ function bytesToHex(bytes = []) {
   return bytes.map((byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
-function hmacSha256Hex(secret = '', message = '') {
+export function hmacSha256Hex(secret = '', message = '') {
   let key = toUtf8Bytes(secret);
   if (key.length > HMAC_BLOCK_SIZE) key = sha256Bytes(key);
   const paddedKey = [...key, ...Array(Math.max(0, HMAC_BLOCK_SIZE - key.length)).fill(0)].slice(0, HMAC_BLOCK_SIZE);
@@ -785,6 +785,15 @@ export function classifyAccessRequest({ method = 'GET', path = '/', body = {} } 
       allowedRoles: ['manager', 'runtime-platform', 'security-admin'],
     });
   }
+  if (action === 'managed-infrastructure-cutover-attestations') {
+    return accessRoute({
+      routeKey: 'managed-infrastructure-cutover-attestations',
+      capability: 'request signed managed infrastructure cutover attestations and write operations receipt evidence',
+      sensitivity: 'managed-infrastructure-cutover-attestation-evidence',
+      projectId,
+      allowedRoles: ['runtime-platform', 'security-admin', 'operations-owner'],
+    });
+  }
   if (action === 'project-evidence-archive') {
     return accessRoute({
       routeKey: 'project-evidence-archive',
@@ -1114,7 +1123,7 @@ export function classifyAccessRequest({ method = 'GET', path = '/', body = {} } 
       allowedRoles: ['manager', 'security-admin', 'observer'],
     });
   }
-  if (['messages', 'transcripts', 'timeline', 'events', 'tasks', 'readiness', 'readiness-proof-map', 'manager-dashboard', 'manager-flow-graph', 'manager-ready-package', 'pilot-launch-readiness', 'deployment-preflight', 'production-launch-audit', 'mvp-readiness', 'manager-command-center', 'manager-scenario-trail', 'manager-scenario-walkthrough', 'manager-requirement-matrix', 'sync-protocol-audit', 'manager-use-case-audit', 'manager-action-queue', 'autonomous-run-control', 'product-team-operating-loop', 'team-collaboration-diagnostics', 'runtime-contracts', 'autonomous-cycle-consistency', 'get'].includes(action)) {
+  if (['messages', 'transcripts', 'timeline', 'events', 'tasks', 'readiness', 'readiness-proof-map', 'manager-dashboard', 'manager-flow-graph', 'manager-ready-package', 'pilot-launch-readiness', 'deployment-preflight', 'production-launch-audit', 'mvp-readiness', 'manager-command-center', 'manager-scenario-trail', 'manager-scenario-walkthrough', 'manager-requirement-matrix', 'sync-protocol-audit', 'manager-use-case-audit', 'manager-action-queue', 'autonomous-run-control', 'product-team-operating-loop', 'planner-executor-reviewer-state-machine', 'team-collaboration-diagnostics', 'runtime-contracts', 'autonomous-cycle-consistency', 'get'].includes(action)) {
     return accessRoute({
       routeKey: action === 'get' ? 'project' : action,
       capability: `read ${action === 'get' ? 'project' : action}`,

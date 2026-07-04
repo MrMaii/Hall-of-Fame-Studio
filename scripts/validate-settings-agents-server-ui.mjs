@@ -23,7 +23,48 @@ function readCliArg(name) {
   return prefixed ? prefixed.slice(name.length + 1) : '';
 }
 
-const configuredUiBaseUrl = (readCliArg('--ui-base-url') || process.env.HOFS_UI_BASE_URL || '').trim().replace(/\/+$/, '');
+function normalizeBaseUrl(value = '') {
+  const trimmed = String(value || '').trim();
+  return trimmed ? trimmed.replace(/\/+$/, '') : '';
+}
+
+const configuredUiBaseUrl = normalizeBaseUrl(readCliArg('--ui-base-url') || process.env.HOFS_UI_BASE_URL || '');
+
+function localUiBaseUrlCandidates(value = '') {
+  const normalized = normalizeBaseUrl(value);
+  if (!normalized) return [];
+  const candidates = [normalized];
+  try {
+    const url = new URL(normalized);
+    if (url.hostname === '127.0.0.1') {
+      url.hostname = 'localhost';
+      candidates.push(normalizeBaseUrl(url.toString()));
+    } else if (url.hostname === 'localhost') {
+      url.hostname = '127.0.0.1';
+      candidates.push(normalizeBaseUrl(url.toString()));
+    }
+  } catch {
+    // Keep the original value as the only candidate.
+  }
+  return Array.from(new Set(candidates));
+}
+
+async function resolveExternalUiRuntime(value = '') {
+  const candidates = localUiBaseUrlCandidates(value);
+  let lastError = null;
+  for (const candidate of candidates) {
+    try {
+      const response = await fetch(candidate);
+      if (response.ok) {
+        return { server: null, url: candidate, external: true, configuredUrl: normalizeBaseUrl(value) };
+      }
+      lastError = new Error(`HTTP ${response.status}`);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw new Error(`Configured UI base URL is unreachable: ${normalizeBaseUrl(value)}. Tried: ${candidates.join(', ')}. ${lastError?.message || lastError || ''}`);
+}
 
 const mimeTypes = {
   '.html': 'text/html; charset=utf-8',
@@ -237,7 +278,7 @@ try {
   assert(vaultStatus.body.secretVaultStatus?.ready === true, 'agents:server Secret Vault must be ready before Settings UI validation.');
 
   mockSearchRuntime = await listen(createMockSearchServer(searchRequests));
-  staticRuntime = configuredUiBaseUrl ? null : await listen(createStaticServer());
+  staticRuntime = configuredUiBaseUrl ? await resolveExternalUiRuntime(configuredUiBaseUrl) : await listen(createStaticServer());
   browser = await launchBrowserWithRetry();
   const context = await browser.newContext({ viewport: { width: 1440, height: 1100 } });
   await context.addInitScript(({ targetBackendUrl, storageKey, languageKey }) => {
@@ -257,7 +298,7 @@ try {
     }
   });
 
-  await page.goto(configuredUiBaseUrl || staticRuntime.url, { waitUntil: 'networkidle' });
+  await page.goto(staticRuntime.url, { waitUntil: 'networkidle' });
   await page.getByTestId('open-settings-button').click();
   await page.getByTestId('settings-tab-keys').click();
   await page.getByTestId('settings-provider-boundary').waitFor({ state: 'visible', timeout: 10000 });

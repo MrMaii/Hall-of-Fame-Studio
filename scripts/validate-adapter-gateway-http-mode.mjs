@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { createAdapterGatewayServer } from '../src/agents/adapterGatewayServer.js';
 import { createAgentProjectHttpServer } from '../src/agents/agentProjectHttpServer.js';
@@ -26,6 +26,18 @@ async function requestJson(url, options = {}) {
 
 const root = fileURLToPath(new URL('../.tmp/adapter-gateway-http-mode-validation', import.meta.url));
 mkdirSync(root, { recursive: true });
+const preserveTmp = process.env.HOFS_ADAPTER_GATEWAY_PRESERVE_TMP === '1';
+function cleanupTmp() {
+  if (!preserveTmp) {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+['SIGINT', 'SIGTERM', 'SIGHUP'].forEach((signal) => {
+  process.once(signal, () => {
+    cleanupTmp();
+    process.exit(signal === 'SIGINT' ? 130 : 143);
+  });
+});
 
 const storagePath = `${root}/adapter-gateway-store-${Date.now()}.json`;
 const projectStorePath = `${root}/agent-project-store-${Date.now()}.json`;
@@ -150,4 +162,5 @@ try {
   });
   if (projectServer) await projectServer.close();
   await gateway.close();
+  cleanupTmp();
 }

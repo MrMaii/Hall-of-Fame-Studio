@@ -99,6 +99,12 @@ export function createHttpJsonAdapterGatewayClient({
         body: payload,
       });
     },
+    async requestManagedProductionControlAttestation(payload = {}) {
+      return requestJson('/attestations/managed-production-control', {
+        method: 'POST',
+        body: payload,
+      });
+    },
   };
 }
 

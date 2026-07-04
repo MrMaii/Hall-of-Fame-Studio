@@ -160,6 +160,15 @@ response = request({
         url: 'https://example.test/generic-product-team-validation',
         summary: 'Controlled local source proving evidence can be attached to the product-team chain.',
         confidence: 'high',
+        kind: 'evidence-report',
+      },
+      {
+        id: 'core-smoke-source-2',
+        title: 'Generic product-team corroboration source',
+        url: 'https://example.test/generic-product-team-corroboration',
+        summary: 'Second controlled local source corroborating that the workflow remains generic and product-team oriented.',
+        confidence: 'high',
+        kind: 'evidence-report',
       },
     ],
     findings: ['Evidence supports validating the system as a generic product-team workflow.'],
@@ -169,7 +178,41 @@ response = request({
 });
 assert(response.status === 200, `Evidence search returned ${response.status}.`);
 const evidenceSearch = response.body.evidenceSearch;
-assert(evidenceSearch?.id && evidenceSearch.sources?.length === 1 && evidenceSearch.timelineLogId && evidenceSearch.eventId, 'Evidence search must persist source, timeline, and event proof.');
+assert(evidenceSearch?.id && evidenceSearch.sources?.length === 2 && evidenceSearch.timelineLogId && evidenceSearch.eventId, 'Evidence search must persist sources, timeline, and event proof.');
+
+response = request({
+  method: 'POST',
+  path: `/projects/${projectId}/evidence-source-review-workflow`,
+  body: {
+    includeReadModels: false,
+    evidenceSearchId: evidenceSearch.id,
+    sourceId: 'core-smoke-source-1',
+    reviewerAgentId: 'curie',
+    decision: 'approved',
+    comments: 'Approved for local pilot use: the source is controlled, checksummed, and tied to the generic product-team validation chain.',
+    now: '2026-06-01T09:11:00.000Z',
+  },
+});
+assert(response.status === 200, `First evidence source review returned ${response.status}.`);
+const firstSourceReview = response.body.evidenceSourceReview;
+assert(firstSourceReview?.decision === 'approved' && firstSourceReview.messageId && firstSourceReview.timelineLogId && firstSourceReview.eventId, 'Reviewer must approve the first evidence source with transcript, timeline, and event proof.');
+
+response = request({
+  method: 'POST',
+  path: `/projects/${projectId}/evidence-source-review-workflow`,
+  body: {
+    includeReadModels: false,
+    evidenceSearchId: evidenceSearch.id,
+    sourceId: 'core-smoke-source-2',
+    reviewerAgentId: 'curie',
+    decision: 'approved',
+    comments: 'Approved for local pilot use: the corroborating source confirms the workflow is a generic product-team validation sample.',
+    now: '2026-06-01T09:11:30.000Z',
+  },
+});
+assert(response.status === 200, `Second evidence source review returned ${response.status}.`);
+const secondSourceReview = response.body.evidenceSourceReview;
+assert(secondSourceReview?.decision === 'approved' && secondSourceReview.messageId && secondSourceReview.timelineLogId && secondSourceReview.eventId, 'Reviewer must approve the second evidence source with transcript, timeline, and event proof.');
 
 const discoverySubmission = submitArtifact({
   agentId: 'jobs',
@@ -188,8 +231,12 @@ const evidencePacketSubmission = submitArtifact({
   summary: 'Evidence packet links the source search, judgement, confidence, and downstream product-team decisions.',
   body: '# Generic product-team evidence packet\n\nThe evidence packet links the controlled source, confidence judgement, source snapshot, and downstream delivery decisions so the Manager can inspect why the team chose the strongest direction.',
   taskId: 'task_evidence',
-  sourceRefs: [{ type: 'evidence-search', id: evidenceSearch.id, route: `/projects/${projectId}/evidence-searches/${evidenceSearch.id}` }],
-  dependsOn: [evidenceSearch.id],
+  sourceRefs: [
+    { type: 'evidence-search', id: evidenceSearch.id, route: `/projects/${projectId}/evidence-searches/${evidenceSearch.id}` },
+    { type: 'evidence-source-review', id: firstSourceReview.id, route: `/projects/${projectId}/evidence-source-review-workflow#${firstSourceReview.id}` },
+    { type: 'evidence-source-review', id: secondSourceReview.id, route: `/projects/${projectId}/evidence-source-review-workflow#${secondSourceReview.id}` },
+  ],
+  dependsOn: [evidenceSearch.id, firstSourceReview.id, secondSourceReview.id],
   now: '2026-06-01T09:13:00.000Z',
 });
 
@@ -209,7 +256,14 @@ response = request({
 });
 assert(response.status === 200, `Brainstorm submission returned ${response.status}.`);
 const brainstormSubmission = response.body.submission;
-assert(brainstormSubmission?.artifactType === 'brainstorm-board' && brainstormSubmission.messageId && brainstormSubmission.timelineLogId && brainstormSubmission.eventId, 'Brainstorm board must be a proofed Agent submission node.');
+assert(
+  brainstormSubmission?.artifactType === 'brainstorm-board'
+    && brainstormSubmission.messageId
+    && brainstormSubmission.timelineLogId
+    && brainstormSubmission.eventId
+    && brainstormSubmission.artifactStorageProofChecksum,
+  'Brainstorm board must be a proofed Agent artifact node with chat, timeline, event, and storage proof.',
+);
 
 response = await requestAsync({
   method: 'POST',
@@ -313,7 +367,15 @@ response = request({
 });
 assert(response.status === 200, `Revision submission returned ${response.status}.`);
 const revisionSubmission = response.body.submission;
-assert(revisionSubmission?.artifactType === 'revision-note' && revisionSubmission.respondsToReviewId === productBriefReview.id, 'Revision note must link to the requested-changes review.');
+assert(
+  revisionSubmission?.artifactType === 'revision-note'
+    && revisionSubmission.respondsToReviewId === productBriefReview.id
+    && revisionSubmission.messageId
+    && revisionSubmission.timelineLogId
+    && revisionSubmission.eventId
+    && revisionSubmission.artifactStorageProofChecksum,
+  'Revision note must link to the requested-changes review and carry chat, timeline, event, and storage proof.',
+);
 
 response = request({
   method: 'POST',
@@ -334,7 +396,15 @@ response = request({
 });
 assert(response.status === 200, `Final deliverable returned ${response.status}.`);
 const finalSubmission = response.body.submission;
-assert(finalSubmission?.artifactType === 'final-deliverable' && finalSubmission.status === 'final', 'Final deliverable must be a final Agent submission node.');
+assert(
+  finalSubmission?.artifactType === 'final-deliverable'
+    && finalSubmission.status === 'final'
+    && finalSubmission.messageId
+    && finalSubmission.timelineLogId
+    && finalSubmission.eventId
+    && finalSubmission.artifactStorageProofChecksum,
+  'Final deliverable must be a final Agent artifact node with chat, timeline, event, and storage proof.',
+);
 
 response = request({
   method: 'POST',
@@ -364,6 +434,16 @@ const requiredGenericArtifactTypes = [
   'final-deliverable',
 ];
 assert(requiredGenericArtifactTypes.every((type) => submissionRows.some((row) => row.artifactType === type)), 'Submissions route must expose every required generic product-team artifact type.');
+for (const artifactType of requiredGenericArtifactTypes) {
+  const submission = submissionRows.find((row) => row.artifactType === artifactType);
+  assert(
+    submission?.messageId
+      && submission.timelineLogId
+      && submission.eventId
+      && submission.artifactStorageProofChecksum,
+    `Submission route must expose ${artifactType} with chat, timeline, event, and storage proof.`,
+  );
+}
 
 const brainstormLayer = request({ method: 'GET', path: `/projects/${projectId}/brainstorm-layer` });
 assert(brainstormLayer.status === 200 && asText(brainstormLayer.body).includes(brainstormSubmission.id), 'Brainstorm Layer must trace the brainstorm-board submission.');
@@ -372,6 +452,7 @@ const artifactQuality = request({ method: 'GET', path: `/projects/${projectId}/a
 assert(artifactQuality.status === 200 && artifactQuality.body.artifactQualityAudit?.gates?.some((gate) => gate.id === 'draft-review-revision-final-loop' && gate.passed), 'Artifact Quality Audit must prove the draft-review-revision-final loop.');
 assert(artifactQuality.body.artifactQualityAudit?.gates?.some((gate) => gate.id === 'generic-artifact-type-coverage' && gate.passed), 'Artifact Quality Audit must prove required generic artifact type coverage.');
 assert(artifactQuality.body.artifactQualityAudit?.summary?.missingArtifactTypeCount === 0, 'Artifact Quality Audit must report no missing generic artifact types.');
+assert(artifactQuality.body.artifactQualityAudit?.readyForLocalPilot === true, `Artifact Quality Audit must be local-ready. Failed gates: ${(artifactQuality.body.artifactQualityAudit?.failedLocalDecisionGates || []).map((gate) => gate.id).join(', ') || 'none'}.`);
 
 const reviewWorkflow = request({ method: 'GET', path: `/projects/${projectId}/submission-review-workflow` });
 assert(reviewWorkflow.status === 200 && asText(reviewWorkflow.body).includes(productBriefReview.id) && asText(reviewWorkflow.body).includes(finalReview.id), 'Submission Review Workflow must include requested-changes and final acceptance reviews.');
@@ -380,6 +461,23 @@ const deliveryTrace = request({ method: 'GET', path: `/projects/${projectId}/pro
 const deliveryTraceText = asText(deliveryTrace.body);
 assert(deliveryTrace.status === 200 && ['brainstorm', 'evidence', 'draft', 'review', 'revision', 'final'].every((word) => deliveryTraceText.toLowerCase().includes(word)), 'Product Team Delivery Trace must include brainstorm, evidence, draft, review, revision, and final stages.');
 
+const stateMachine = request({ method: 'GET', path: `/projects/${projectId}/planner-executor-reviewer-state-machine` });
+const stateMachineModel = stateMachine.body.plannerExecutorReviewerStateMachine;
+const stateMachineText = asText(stateMachine.body);
+assert(stateMachine.status === 200 && stateMachineModel?.schemaVersion === 'planner-executor-reviewer-state-machine/v1', 'Planner / Executor / Reviewer state machine must expose its backend contract.');
+assert(stateMachineModel.readyForLocalProductTeamStateMachine === true, 'Planner / Executor / Reviewer state machine must be local-ready for the complete product-team run.');
+assert(['planner', 'executor', 'reviewer'].every((id) => stateMachineModel.roleRows?.some((row) => row.id === id && row.ready)), 'Planner / Executor / Reviewer state machine must prove all role lanes ready.');
+assert(['plan-to-execute', 'execute-to-review', 'review-to-revision', 'revision-to-final'].every((id) => stateMachineModel.transitionRows?.some((row) => row.id === id && row.ready)), 'Planner / Executor / Reviewer state machine must prove every handoff transition ready.');
+assert(
+  stateMachineText.includes(productBriefReview.id)
+    && stateMachineText.includes(revisionSubmission.id)
+    && stateMachineText.includes(finalReview.id),
+  'Planner / Executor / Reviewer state machine must trace review, revision, and final acceptance proof.',
+);
+
+const readyPackage = request({ method: 'GET', path: `/projects/${projectId}/manager-ready-package` });
+assert(readyPackage.status === 200 && readyPackage.body.plannerExecutorReviewerStateMachine?.readyForLocalProductTeamStateMachine === true, 'Manager Ready Package must embed the Planner / Executor / Reviewer state machine.');
+
 const flowGraph = request({ method: 'GET', path: `/projects/${projectId}/manager-flow-graph` });
 const flowText = asText(flowGraph.body);
 const requiredTraceIds = [
@@ -387,6 +485,8 @@ const requiredTraceIds = [
   evidencePacketSubmission.id,
   brainstormSubmission.id,
   evidenceSearch.id,
+  firstSourceReview.id,
+  secondSourceReview.id,
   productBriefSubmission.id,
   decisionProposalSubmission.id,
   riskReviewSubmission.id,
@@ -397,11 +497,14 @@ const requiredTraceIds = [
   finalReview.id,
 ];
 assert(flowGraph.status === 200 && requiredTraceIds.every((id) => flowText.includes(id)), 'Manager Flow Graph must trace all required generic submission/evidence/review nodes.');
+assert(flowText.includes('planner-executor-reviewer-state-machine'), 'Manager Flow Graph must expose the Planner / Executor / Reviewer state machine node.');
 
 const proofMap = request({ method: 'GET', path: `/projects/${projectId}/readiness-proof-map` });
 const proofText = asText(proofMap.body);
 assert(proofMap.status === 200 && requiredTraceIds.filter((id) => id !== productBriefReview.id && id !== finalReview.id).every((id) => proofText.includes(id)), 'Readiness Proof Map must expose required generic submission and evidence proof routes.');
 assert(proofMap.body.projectMemoryReadinessRoutes?.[0]?.apiPath === `/projects/${projectId}/memory-readiness`, 'Readiness Proof Map must expose the project memory readiness proof route.');
+assert(proofMap.body.plannerExecutorReviewerStateMachineRoutes?.[0]?.apiPath === `/projects/${projectId}/planner-executor-reviewer-state-machine`, 'Readiness Proof Map must expose the Planner / Executor / Reviewer state machine proof route.');
+assert(proofMap.body.plannerExecutorReviewerStateMachineSummary?.readyForLocalProductTeamStateMachine === true, 'Readiness Proof Map must mark the Planner / Executor / Reviewer state machine local-ready.');
 
 const transcript = request({ method: 'GET', path: `/projects/${projectId}/transcripts/main` });
 const transcriptText = asText(transcript.body);
@@ -418,6 +521,47 @@ assert(agentDashboard.status === 200 && [productBriefSubmission.id, implementati
 
 const evidenceIndex = request({ method: 'GET', path: `/projects/${projectId}/evidence-index-readiness` });
 assert(evidenceIndex.status === 200 && asText(evidenceIndex.body).includes(evidenceSearch.id) && asText(evidenceIndex.body).includes(finalSubmission.id), 'Evidence Index readiness must trace evidence and final-deliverable ids.');
+
+const projectEvidenceArchive = request({ method: 'GET', path: `/projects/${projectId}/project-evidence-archive` });
+const archive = projectEvidenceArchive.body.projectEvidenceArchive;
+const archiveArtifactProofManifest = archive?.manifest?.find((entry) => entry.id === 'artifact-storage-proofs');
+const archiveFinalDeliverablesManifest = archive?.manifest?.find((entry) => entry.id === 'final-deliverables');
+const archiveArtifactQualityManifest = archive?.manifest?.find((entry) => entry.id === 'artifact-quality-audit');
+const archiveTranscriptManifest = archive?.manifest?.find((entry) => entry.id === 'group-chat-transcripts');
+assert(projectEvidenceArchive.status === 200 && archive?.schemaVersion === 'project-evidence-archive/v1', 'Project Evidence Archive must expose the backend archive contract.');
+assert(archive.readyForProduction === false, 'Project Evidence Archive must not overclaim production readiness.');
+assert(archive.summary?.rawLeakCount === 0, 'Project Evidence Archive must not leak raw secrets.');
+assert(archive.summary?.finalDeliverableCount >= 1, 'Project Evidence Archive summary must include the final deliverable.');
+assert(archive.summary?.artifactQualityReady === true, 'Project Evidence Archive summary must include local-ready artifact quality.');
+assert(
+  archive.summary?.transcriptProofCoverageReady === true
+    && archive.summary?.transcriptMissingProofIdCount === 0,
+  'Project Evidence Archive summary must prove transcript proof coverage for critical work nodes.',
+);
+assert(
+  archive.summary?.artifactStorageProofCoverageReady === true
+    && archive.summary?.artifactStorageProofCount >= submissionRows.length
+    && archive.summary?.workspaceFileProofCount >= submissionRows.length,
+  'Project Evidence Archive summary must prove artifact storage and workspace-file proof coverage for every submission.',
+);
+assert(
+  archiveArtifactProofManifest?.ready
+    && archiveArtifactProofManifest.count >= submissionRows.length
+    && archiveArtifactProofManifest.storageProofCount >= submissionRows.length
+    && archiveArtifactProofManifest.workspaceFileProofCount >= submissionRows.length,
+  'Project Evidence Archive manifest must include ready artifact-storage-proof coverage for every submission.',
+);
+assert(
+  archive.backendRoutes?.projectEvidenceArchive === `/projects/${projectId}/project-evidence-archive`,
+  'Project Evidence Archive must expose its own backend proof route.',
+);
+assert(archiveFinalDeliverablesManifest?.ready, 'Project Evidence Archive manifest must include ready final-deliverable evidence.');
+assert(archiveArtifactQualityManifest?.ready, 'Project Evidence Archive manifest must include ready artifact quality audit evidence.');
+assert(
+  archiveTranscriptManifest?.ready
+    && archiveTranscriptManifest.missingTranscriptProofIdCount === 0,
+  'Project Evidence Archive manifest must include complete backend transcript proof coverage.',
+);
 
 const memoryReadiness = request({ method: 'GET', path: `/projects/${projectId}/memory-readiness` });
 assert(memoryReadiness.status === 200 && memoryReadiness.body.projectMemoryReadiness?.schemaVersion === 'project-memory-readiness/v1', 'Project memory readiness must be available for a real product-team run.');

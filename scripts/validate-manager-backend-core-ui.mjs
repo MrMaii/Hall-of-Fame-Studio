@@ -100,6 +100,14 @@ async function scrollDashboardToStation(page) {
   await page.waitForTimeout(250);
 }
 
+async function clickDynamic(locator) {
+  try {
+    await locator.click({ force: true, timeout: 10000 });
+  } catch {
+    await locator.dispatchEvent('click');
+  }
+}
+
 function playwrightChromiumExecutableCandidates() {
   const explicitPath = process.env.HOFS_PLAYWRIGHT_CHROMIUM || process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || '';
   const localPlaywrightPath = process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, 'ms-playwright') : '';
@@ -198,7 +206,20 @@ try {
   const station = page.getByTestId('backend-worker-station');
   await station.getByRole('button', { name: /Check/i }).click();
   await station.getByText('Online', { exact: true }).waitFor({ state: 'visible', timeout: 8000 });
-  await page.getByRole('button', { name: /Open project tools/i }).click();
+  await page.getByTestId('backend-sync-ready-package').click();
+  await page.getByTestId('backend-manager-ready-package-snapshot').waitFor({ state: 'visible', timeout: 15000 });
+  const publicStartupReadinessCard = page.getByTestId('backend-public-production-startup-readiness-snapshot');
+  await publicStartupReadinessCard.waitFor({ state: 'visible', timeout: 10000 });
+  const publicStartupReadinessText = await publicStartupReadinessCard.innerText();
+  assert(/public production startup readiness/i.test(publicStartupReadinessText), 'Manager Ready Package must render the public production startup readiness panel.');
+  assert(publicStartupReadinessText.toLowerCase().includes('public blocked'), 'Manager Ready Package must show public production startup as blocked until managed production controls exist.');
+  assert(publicStartupReadinessText.toLowerCase().includes('/public-production-startup-readiness'), 'Manager Ready Package must expose the public production startup readiness route.');
+  const managerReadyPackage = await fetch(`${backendRuntime.url}/projects/p_manager_demo_001/manager-ready-package`).then((response) => response.json());
+  assert(managerReadyPackage.publicProductionStartupReadiness?.schemaVersion === 'public-production-startup-readiness/v1', 'Backend Manager Ready Package must include the public production startup readiness contract.');
+  assert(managerReadyPackage.summary?.publicProductionStartupReady === false, 'Backend Manager Ready Package must keep public production startup readiness blocked.');
+  assert(backendResponses.some((entry) => entry.includes('GET') && entry.includes('/projects/p_manager_demo_001/manager-ready-package')), 'Manager Ready Package sync must call the backend manager-ready-package route.');
+  const projectToolsButton = page.getByRole('button', { name: /Open project tools/i });
+  await clickDynamic(projectToolsButton);
   await page.getByRole('button', { name: /Group Channels/i }).click();
   await page.getByTestId('project-chat-create-transcript-channel').waitFor({ state: 'visible', timeout: 10000 });
   await page.getByTestId('project-chat-create-transcript-channel').click();

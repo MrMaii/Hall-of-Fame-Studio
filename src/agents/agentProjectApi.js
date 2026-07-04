@@ -378,7 +378,16 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
       meetingSummariesRoute: projectId ? `/projects/${projectId}/meeting-summaries` : null,
       timelineRoute: projectId ? `/projects/${projectId}/timeline` : null,
       eventsRoute: projectId ? `/projects/${projectId}/events` : null,
+      brainstormLayerRoute: projectId ? `/projects/${projectId}/brainstorm-layer` : null,
+      artifactQualityAuditRoute: projectId ? `/projects/${projectId}/artifact-quality-audit` : null,
+      submissionReviewWorkflowRoute: projectId ? `/projects/${projectId}/submission-review-workflow` : null,
       productTeamDeliveryTraceRoute: projectId ? `/projects/${projectId}/product-team-delivery-trace` : null,
+      evidenceQualityAuditRoute: projectId ? `/projects/${projectId}/evidence-quality-audit` : null,
+      evidenceIndexReadinessRoute: projectId ? `/projects/${projectId}/evidence-index-readiness` : null,
+      evidenceSourceReviewWorkflowRoute: projectId ? `/projects/${projectId}/evidence-source-review-workflow` : null,
+      evidenceCustodyReadinessRoute: projectId ? `/projects/${projectId}/evidence-custody-readiness` : null,
+      productTeamOperatingLoopRoute: projectId ? `/projects/${projectId}/product-team-operating-loop` : null,
+      plannerExecutorReviewerStateMachineRoute: projectId ? `/projects/${projectId}/planner-executor-reviewer-state-machine` : null,
       teamCollaborationDiagnosticsRoute: projectId ? `/projects/${projectId}/team-collaboration-diagnostics` : null,
       collaborationIntentQueueRoute: projectId ? `/projects/${projectId}/collaboration-intent-queue` : null,
       runtimeContractsRoute: projectId ? `/projects/${projectId}/runtime-contracts` : null,
@@ -549,6 +558,18 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
               status: 'backend-required',
               readyForSettingsEntry: false,
               readyForFirstProjectRun: false,
+            },
+        });
+      }
+      if (method === 'GET' && path === '/public-production-startup-readiness') {
+        return json(200, {
+          publicProductionStartupReadiness: service.getPublicProductionStartupReadiness
+            ? service.getPublicProductionStartupReadiness()
+            : {
+              schemaVersion: 'public-production-startup-readiness/v1',
+              status: 'backend-required',
+              readyForPublicProduction: false,
+              readyForProduction: false,
             },
         });
       }
@@ -898,6 +919,31 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
           adapterGatewayPreflight: await service.getAdapterGatewayPreflightAsync(route.projectId, { language }),
         });
       }
+      if (method === 'POST' && route?.action === 'managed-infrastructure-cutover-attestations' && typeof service.recordManagedInfrastructureCutoverAttestations === 'function') {
+        const result = await service.recordManagedInfrastructureCutoverAttestations({
+          projectId: route.projectId,
+          ...body,
+        });
+        const resultProjectId = result.project?.id || route.projectId;
+        return json(200, {
+          ...publicProjectResult(result, resultProjectId, language, { includeReadModels }),
+          managedInfrastructureCutoverAttestationRun: result.managedInfrastructureCutoverAttestationRun,
+          productionOperationsControlReceipt: result.productionOperationsControlReceipt || null,
+          productionOperationsControlReceiptWorkflow: result.productionOperationsControlReceiptWorkflow || null,
+          productionOperationsReadiness: result.productionOperationsReadiness || null,
+          log: result.log || null,
+          ...(includeReadModels
+            ? {
+                managerReadyPackage: service.getManagerReadyPackage(resultProjectId, { language, fresh: true }),
+                managerFlowGraph: service.getManagerFlowGraph(resultProjectId, { language }),
+                readinessProofMap: service.getReadinessProofMap(resultProjectId, { language }),
+              }
+            : productionControlReceiptReadModels(resultProjectId, {
+                productionOperationsControlReceiptWorkflowRoute: `/projects/${resultProjectId}/production-operations-control-receipts`,
+                productionOperationsReadinessRoute: `/projects/${resultProjectId}/production-operations-readiness`,
+              })),
+        });
+      }
 
       if (method === 'POST' && kickoffMeetingRoute && !kickoffMeetingRoute.meetingId) {
         try {
@@ -971,6 +1017,7 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
     },
     handle(request = {}) {
       const method = String(request.method || 'GET').toUpperCase();
+      const requestUrl = new URL(request.url || request.path || '/', 'http://127.0.0.1');
       const path = normalizePath(request.path || request.url || '/');
       const body = request.body || {};
       const language = languageFromRequest(request, body);
@@ -1072,6 +1119,18 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
                 status: 'backend-required',
                 readyForSettingsEntry: false,
                 readyForFirstProjectRun: false,
+              },
+          });
+        }
+        if (method === 'GET' && path === '/public-production-startup-readiness') {
+          return json(200, {
+            publicProductionStartupReadiness: service.getPublicProductionStartupReadiness
+              ? service.getPublicProductionStartupReadiness()
+              : {
+                schemaVersion: 'public-production-startup-readiness/v1',
+                status: 'backend-required',
+                readyForPublicProduction: false,
+                readyForProduction: false,
               },
           });
         }
@@ -1324,13 +1383,155 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
           if (!route.tail.length) {
             return json(200, service.getTranscriptIndex(route.projectId));
           }
+          if (route.tail[0] === 'search') {
+            return json(200, service.searchTranscripts(route.projectId, {
+              query: requestUrl.searchParams.get('query') || requestUrl.searchParams.get('q') || body.query || '',
+              channelId: requestUrl.searchParams.get('channelId') || body.channelId || '',
+              limit: requestUrl.searchParams.get('limit') || body.limit,
+            }));
+          }
           const channelId = decodeURIComponent(route.tail[0]);
+          if (route.tail[1] === 'members') {
+            return json(200, service.getTranscriptMemberPresence(route.projectId, channelId));
+          }
           return json(200, service.getChannelTranscript(route.projectId, channelId));
         }
         if (method === 'GET' && route.action === 'meeting-summaries') {
           return json(200, { meetingSummaries: service.getMeetingSummaries(route.projectId, { language }) });
         }
         if (method === 'POST' && route.action === 'transcripts') {
+          if (route.tail[1] === 'pins') {
+            const channelId = decodeURIComponent(route.tail[0] || body.channelId || 'main');
+            const result = service.pinTranscriptMessage({
+              projectId: route.projectId,
+              ...body,
+              channelId,
+            });
+            const resultProjectId = result.project?.id || route.projectId;
+            const includeReadModels = shouldIncludeReadModels(body);
+            return json(200, {
+              ...publicProjectResult(result, resultProjectId, language, { includeReadModels }),
+              transcriptPin: result.transcriptPin,
+              transcriptPinReceipt: result.transcriptPinReceipt,
+              pinnedMessage: result.pinnedMessage,
+              ...(includeReadModels
+                ? {}
+                : deferredReadModels(resultProjectId, '', {
+                    transcriptPinRoute: result.transcriptPin?.apiPath || null,
+                    transcriptChannelRoute: result.transcriptPin?.channelId
+                      ? `/projects/${resultProjectId}/transcripts/${encodeURIComponent(result.transcriptPin.channelId)}`
+                      : null,
+                    timelineRoute: `/projects/${resultProjectId}/timeline`,
+                    eventsRoute: `/projects/${resultProjectId}/events`,
+              })),
+            });
+          }
+          if (route.tail[1] === 'channel-pin') {
+            const channelId = decodeURIComponent(route.tail[0] || body.channelId || 'main');
+            const result = service.pinTranscriptChannel({
+              projectId: route.projectId,
+              ...body,
+              channelId,
+            });
+            const resultProjectId = result.project?.id || route.projectId;
+            const includeReadModels = shouldIncludeReadModels(body);
+            return json(200, {
+              ...publicProjectResult(result, resultProjectId, language, { includeReadModels }),
+              transcriptChannelPin: result.transcriptChannelPin,
+              transcriptChannelPinReceipt: result.transcriptChannelPinReceipt,
+              pinnedChannel: result.pinnedChannel,
+              ...(includeReadModels
+                ? {}
+                : deferredReadModels(resultProjectId, '', {
+                    transcriptChannelPinRoute: result.transcriptChannelPin?.apiPath || null,
+                    transcriptChannelRoute: result.transcriptChannelPin?.channelId
+                      ? `/projects/${resultProjectId}/transcripts/${encodeURIComponent(result.transcriptChannelPin.channelId)}`
+                      : null,
+                    timelineRoute: `/projects/${resultProjectId}/timeline`,
+                    eventsRoute: `/projects/${resultProjectId}/events`,
+                  })),
+            });
+          }
+          if (route.tail[1] === 'replies') {
+            const channelId = decodeURIComponent(route.tail[0] || body.channelId || 'main');
+            const result = service.replyToTranscriptMessage({
+              projectId: route.projectId,
+              ...body,
+              channelId,
+            });
+            const resultProjectId = result.project?.id || route.projectId;
+            const includeReadModels = shouldIncludeReadModels(body);
+            return json(200, {
+              ...publicProjectResult(result, resultProjectId, language, { includeReadModels }),
+              transcriptReply: result.transcriptReply,
+              transcriptReplyReceipt: result.transcriptReplyReceipt,
+              parentMessage: result.parentMessage,
+              replyMessage: result.replyMessage,
+              ...(includeReadModels
+                ? {}
+                : deferredReadModels(resultProjectId, '', {
+                    transcriptReplyRoute: result.transcriptReply?.apiPath || null,
+                    transcriptChannelRoute: result.transcriptReply?.channelId
+                      ? `/projects/${resultProjectId}/transcripts/${encodeURIComponent(result.transcriptReply.channelId)}`
+                      : null,
+                    timelineRoute: `/projects/${resultProjectId}/timeline`,
+                    eventsRoute: `/projects/${resultProjectId}/events`,
+                })),
+            });
+          }
+          if (route.tail[1] === 'mentions') {
+            const channelId = decodeURIComponent(route.tail[0] || body.channelId || 'main');
+            const result = service.mentionTranscriptMessage({
+              projectId: route.projectId,
+              ...body,
+              channelId,
+            });
+            const resultProjectId = result.project?.id || route.projectId;
+            const includeReadModels = shouldIncludeReadModels(body);
+            return json(200, {
+              ...publicProjectResult(result, resultProjectId, language, { includeReadModels }),
+              transcriptMention: result.transcriptMention,
+              transcriptMentionReceipt: result.transcriptMentionReceipt,
+              sourceMessage: result.sourceMessage,
+              mentionMessage: result.mentionMessage,
+              ...(includeReadModels
+                ? {}
+                : deferredReadModels(resultProjectId, '', {
+                    transcriptMentionRoute: result.transcriptMention?.apiPath || null,
+                    transcriptChannelRoute: result.transcriptMention?.channelId
+                      ? `/projects/${resultProjectId}/transcripts/${encodeURIComponent(result.transcriptMention.channelId)}`
+                      : null,
+                    timelineRoute: `/projects/${resultProjectId}/timeline`,
+                    eventsRoute: `/projects/${resultProjectId}/events`,
+                })),
+            });
+          }
+          if (route.tail[1] === 'attachments') {
+            const channelId = decodeURIComponent(route.tail[0] || body.channelId || 'main');
+            const result = service.attachTranscriptFile({
+              projectId: route.projectId,
+              ...body,
+              channelId,
+            });
+            const resultProjectId = result.project?.id || route.projectId;
+            const includeReadModels = shouldIncludeReadModels(body);
+            return json(200, {
+              ...publicProjectResult(result, resultProjectId, language, { includeReadModels }),
+              transcriptAttachment: result.transcriptAttachment,
+              transcriptAttachmentReceipt: result.transcriptAttachmentReceipt,
+              attachmentMessage: result.attachmentMessage,
+              ...(includeReadModels
+                ? {}
+                : deferredReadModels(resultProjectId, '', {
+                    transcriptAttachmentRoute: result.transcriptAttachment?.apiPath || null,
+                    transcriptChannelRoute: result.transcriptAttachment?.channelId
+                      ? `/projects/${resultProjectId}/transcripts/${encodeURIComponent(result.transcriptAttachment.channelId)}`
+                      : null,
+                    timelineRoute: `/projects/${resultProjectId}/timeline`,
+                    eventsRoute: `/projects/${resultProjectId}/events`,
+                  })),
+            });
+          }
           const result = service.createTranscriptChannel({
             projectId: route.projectId,
             ...body,
@@ -1463,6 +1664,9 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
         }
         if (method === 'GET' && route.action === 'product-team-operating-loop') {
           return json(200, { productTeamOperatingLoop: service.getProductTeamOperatingLoop(route.projectId, { language }) });
+        }
+        if (method === 'GET' && route.action === 'planner-executor-reviewer-state-machine') {
+          return json(200, { plannerExecutorReviewerStateMachine: service.getPlannerExecutorReviewerStateMachine(route.projectId, { language }) });
         }
         if (method === 'GET' && route.action === 'team-collaboration-diagnostics') {
           return json(200, { teamCollaborationDiagnostics: service.getTeamCollaborationDiagnostics(route.projectId, { language }) });

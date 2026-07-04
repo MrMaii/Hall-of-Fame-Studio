@@ -27,6 +27,7 @@ const LANGUAGE_STORAGE_KEY = 'hall_of_fame_studio.language.v1';
 const PROJECT_ID = 'product_team_acceptance_project';
 const PROJECT_NAME = 'General Product Team Acceptance Project';
 const VIEWPORT = { width: 1440, height: 1100 };
+const RUN_PRODUCTION_CONTROLS = process.env.HOFS_MANAGER_PRIVATE_PILOT_RUN_PRODUCTION_CONTROLS === '1';
 const FAKE_SEARCH_SECRET = 'SEARCH_SECRET_SHOULD_NOT_LEAK_12345';
 const FAKE_MODEL_SECRET = 'MODEL_SECRET_SHOULD_NOT_LEAK_12345';
 const FAKE_VAULT_MASTER_KEY = 'VAULT_MASTER_KEY_SHOULD_NOT_LEAK_12345';
@@ -67,7 +68,7 @@ function assert(condition, message) {
 
 function preparePrivatePilotHandoffStore() {
   const stageScript = fileURLToPath(new URL('./run-product-team-acceptance-stage.mjs', import.meta.url));
-  const result = spawnSync(process.execPath, [stageScript, 'private-pilot-launch-handoff'], {
+  const result = spawnSync(process.execPath, [stageScript, 'private-pilot-ui-launch-approval-prep'], {
     cwd: ROOT_DIR,
     stdio: 'inherit',
     timeout: HANDOFF_PREP_TIMEOUT_MS,
@@ -75,20 +76,20 @@ function preparePrivatePilotHandoffStore() {
       ...process.env,
       HOFS_PRODUCT_TEAM_RUN_ID: ACCEPTANCE_RUN_ID,
       HOFS_PRODUCT_TEAM_PRESERVE_TMP: '1',
-      HOFS_PROGRESS: process.env.HOFS_PROGRESS || '1',
+      HOFS_PROGRESS: process.env.HOFS_PROGRESS || '0',
     },
   });
   if (result.error) {
     if (result.error.code === 'ETIMEDOUT') {
-      throw new Error(`Private-pilot launch-handoff preparation timed out after ${HANDOFF_PREP_TIMEOUT_MS}ms for run ${ACCEPTANCE_RUN_ID}.`);
+      throw new Error(`Private-pilot launch-approval UI preparation timed out after ${HANDOFF_PREP_TIMEOUT_MS}ms for run ${ACCEPTANCE_RUN_ID}.`);
     }
     throw result.error;
   }
   if (result.signal) {
-    throw new Error(`Private-pilot launch-handoff preparation ended by ${result.signal} for run ${ACCEPTANCE_RUN_ID}.`);
+    throw new Error(`Private-pilot launch-approval UI preparation ended by ${result.signal} for run ${ACCEPTANCE_RUN_ID}.`);
   }
-  assert(result.status === 0, `Private-pilot launch-handoff preparation failed with status ${result.status}.`);
-  assert(existsSync(ACCEPTANCE_STORE), 'Private-pilot launch-handoff store must exist after staged acceptance preparation.');
+  assert(result.status === 0, `Private-pilot launch-approval UI preparation failed with status ${result.status}.`);
+  assert(existsSync(ACCEPTANCE_STORE), 'Private-pilot launch-approval UI prep store must exist after staged acceptance preparation.');
 }
 
 async function createAcceptanceRuntimeDependencies() {
@@ -245,7 +246,11 @@ async function launchBrowserWithRetry(attempts = 3) {
       }
     }
   }
-  throw lastError;
+  try {
+    return await chromium.launch({ channel: 'msedge', headless: true });
+  } catch (edgeError) {
+    throw new Error(`Could not launch Playwright browser. Bundled Chromium failed: ${lastError?.message || lastError}. Edge fallback failed: ${edgeError?.message || edgeError}`);
+  }
 }
 
 async function assertPageContains(page, text, message = `Expected page to contain "${text}".`) {
@@ -577,6 +582,94 @@ try {
     /Acceptance Ready/i.test(acceptancePanelText),
     'C-side Ready Package must show private-pilot acceptance readiness after the final backend receipt.',
   );
+
+  if (RUN_PRODUCTION_CONTROLS) {
+    await recordPrivatePilotReceipt({
+      page,
+      backendUrl: backendRuntime.url,
+      testId: 'backend-production-operations-record-controls',
+      route: `/projects/${PROJECT_ID}/production-operations-control-receipts`,
+      workflowKey: 'productionOperationsControlReceiptWorkflow',
+      beforePredicate: (workflow) => workflow.readyForPrivatePilotOperations === true && workflow.readyForProductionOperations === false,
+      readyPredicate: (workflow) => workflow.readyForProductionOperations === true,
+      label: 'Production operations control rehearsal',
+    });
+    await recordPrivatePilotReceipt({
+      page,
+      backendUrl: backendRuntime.url,
+      testId: 'backend-production-deployment-record-controls',
+      route: `/projects/${PROJECT_ID}/production-deployment-control-receipts`,
+      workflowKey: 'productionDeploymentControlReceiptWorkflow',
+      beforePredicate: (workflow) => workflow.readyForPrivatePilotDeployment === true && workflow.readyForProductionDeployment === false,
+      readyPredicate: (workflow) => workflow.readyForProductionDeployment === true,
+      label: 'Production deployment control rehearsal',
+    });
+    await recordPrivatePilotReceipt({
+      page,
+      backendUrl: backendRuntime.url,
+      testId: 'backend-production-security-record-controls',
+      route: `/projects/${PROJECT_ID}/production-security-control-receipts`,
+      workflowKey: 'productionSecurityControlReceiptWorkflow',
+      beforePredicate: (workflow) => workflow.readyForLocalSecurityBoundary === true && workflow.readyForProductionSecurity === false,
+      readyPredicate: (workflow) => workflow.readyForProductionSecurity === true,
+      label: 'Production security control rehearsal',
+    });
+    await recordPrivatePilotReceipt({
+      page,
+      backendUrl: backendRuntime.url,
+      testId: 'backend-production-provider-record-controls',
+      route: `/projects/${PROJECT_ID}/production-provider-control-receipts`,
+      workflowKey: 'productionProviderControlReceiptWorkflow',
+      beforePredicate: (workflow) => workflow.readyForLocalProviderContract === true && workflow.readyForProductionProvider === false,
+      readyPredicate: (workflow) => workflow.readyForProductionProvider === true,
+      label: 'Production provider control rehearsal',
+    });
+
+    const productionFlowGraph = await getBackendJson(backendRuntime.url, `/projects/${PROJECT_ID}/manager-flow-graph`);
+    for (const subtype of [
+      'production-operations-control-receipt',
+      'production-deployment-control-receipt',
+      'production-security-control-receipt',
+      'production-provider-control-receipt',
+    ]) {
+      assert(
+        productionFlowGraph.nodes?.some((node) => (
+          node.subtype === subtype
+          && node.proofIds?.length
+          && node.timelineLogIds?.length
+          && node.eventIds?.length
+        )),
+        `Manager Flow Graph must include proofed ${subtype} nodes after C-side production control clicks.`,
+      );
+    }
+
+    const productionProofMap = await getBackendJson(backendRuntime.url, `/projects/${PROJECT_ID}/readiness-proof-map`);
+    assert(productionProofMap.productionOperationsControlReceiptSummary?.readyForProductionOperations === true, 'Proof Map must summarize production operations control receipt readiness after UI clicks.');
+    assert(productionProofMap.productionDeploymentControlReceiptSummary?.readyForProductionDeployment === true, 'Proof Map must summarize production deployment control receipt readiness after UI clicks.');
+    assert(productionProofMap.productionSecurityControlReceiptSummary?.readyForProductionSecurity === true, 'Proof Map must summarize production security control receipt readiness after UI clicks.');
+    assert(productionProofMap.productionProviderControlReceiptSummary?.readyForProductionProvider === true, 'Proof Map must summarize production provider control receipt readiness after UI clicks.');
+    assert(
+      productionProofMap.productionLaunchControlCenterSummary?.productionOperationsControlsReady === true
+        && productionProofMap.productionLaunchControlCenterSummary?.productionDeploymentControlsReady === true
+        && productionProofMap.productionLaunchControlCenterSummary?.productionSecurityControlsReady === true
+        && productionProofMap.productionLaunchControlCenterSummary?.productionProviderControlsReady === true
+        && productionProofMap.productionLaunchControlCenterSummary?.readyForProduction === false,
+      'Production Launch Control Center proof summary must show all local rehearsal controls ready while public production remains blocked.',
+    );
+
+    const productionEvidenceIntegrity = await getBackendJson(backendRuntime.url, `/projects/${PROJECT_ID}/production-evidence-integrity-audit`);
+    assert(
+      productionEvidenceIntegrity.productionEvidenceIntegrityAudit?.readyForProduction === false
+        && productionEvidenceIntegrity.productionEvidenceIntegrityAudit?.readyForManagedProductionEvidence === false
+        && productionEvidenceIntegrity.productionEvidenceIntegrityAudit?.summary?.localRehearsalControlCount > 0,
+      'Production evidence integrity audit must keep local rehearsal receipts from becoming public-production proof.',
+    );
+
+    await syncReadyPackageModels(page);
+    const productionLaunchControlText = await page.getByTestId('backend-production-launch-control-center-snapshot').innerText();
+    assert(/no-go/i.test(productionLaunchControlText), 'Manager UI must keep production launch control center no-go after local rehearsal receipts.');
+    console.log('Manager production controls UI validation passed.');
+  }
 
   assert(pageErrors.length === 0, `Page errors were recorded:\n${pageErrors.join('\n')}`);
   assert(diagnostics.length === 0, `Browser/backend diagnostics were recorded:\n${diagnostics.join('\n')}`);

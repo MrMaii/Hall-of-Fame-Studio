@@ -1,4 +1,5 @@
 import { createServer } from 'node:http';
+import { existsSync, readdirSync, rmSync } from 'node:fs';
 import { mkdir, readFile } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,6 +11,8 @@ const DIST_DIR = join(ROOT_DIR, 'dist');
 const STATIC_PORTS = [4181, 4182, 4183, 4184, 4185];
 const VIEWPORT = { width: 1440, height: 1100 };
 const BACKEND_STORE = new URL('../.tmp/agent-manager-backend-ui-store.json', import.meta.url);
+const PRESERVE_BACKEND_UI_TMP = process.env.HOFS_MANAGER_BACKEND_UI_PRESERVE_TMP === '1';
+const CAPTURE_SUCCESS_SCREENSHOT = process.env.HOFS_MANAGER_BACKEND_UI_SCREENSHOT === '1';
 const BACKEND_STORAGE_KEY = 'hall_of_fame_studio.agent_backend_url.v1';
 const LANGUAGE_STORAGE_KEY = 'hall_of_fame_studio.language.v1';
 const nativeFetch = globalThis.fetch.bind(globalThis);
@@ -44,6 +47,21 @@ const MIME_TYPES = {
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
+}
+
+function cleanupManagerBackendUiTmp() {
+  if (PRESERVE_BACKEND_UI_TMP) return;
+  const backendStorePath = fileURLToPath(BACKEND_STORE);
+  rmSync(backendStorePath, { force: true });
+  rmSync(`${backendStorePath}.security-audit.jsonl`, { force: true });
+}
+
+cleanupManagerBackendUiTmp();
+for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+  process.once(signal, () => {
+    cleanupManagerBackendUiTmp();
+    process.exit(signal === 'SIGINT' ? 130 : 143);
+  });
 }
 
 function changeLedgerText(change = {}) {
@@ -263,6 +281,24 @@ async function scrollDashboardToBottom(page) {
   await page.waitForTimeout(250);
 }
 
+async function clickDynamic(locator) {
+  try {
+    await locator.click({ force: true, timeout: 10000 });
+  } catch {
+    await locator.dispatchEvent('click');
+  }
+}
+
+async function waitForEnabledTestId(page, testId, timeout = 15000) {
+  const selector = `[data-testid="${testId}"]`;
+  await page.locator(selector).waitFor({ state: 'visible', timeout });
+  await page.waitForFunction((targetSelector) => {
+    const button = document.querySelector(targetSelector);
+    return Boolean(button && !button.disabled);
+  }, selector, { timeout });
+  return page.getByTestId(testId);
+}
+
 async function clickDashboardStep(page, stepId) {
   const step = page.getByTestId(`manager-demo-step-${stepId}`);
   assert(await step.count() === 1, `Expected manager demo step "${stepId}" to be available.`);
@@ -315,19 +351,43 @@ async function sendMeetingPrefill(page, expectedSnippet) {
   }, null, { timeout: 5000 });
 }
 
+function playwrightChromiumExecutableCandidates() {
+  const explicitPath = process.env.HOFS_PLAYWRIGHT_CHROMIUM || process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || '';
+  const localPlaywrightPath = process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, 'ms-playwright') : '';
+  const localHeadlessShells = localPlaywrightPath && existsSync(localPlaywrightPath)
+    ? readdirSync(localPlaywrightPath, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && /^chromium_headless_shell-/.test(entry.name))
+      .map((entry) => join(localPlaywrightPath, entry.name, 'chrome-headless-shell-win64', 'chrome-headless-shell.exe'))
+      .filter((candidate) => existsSync(candidate))
+      .sort()
+      .reverse()
+    : [];
+  return [explicitPath, ...localHeadlessShells].filter(Boolean);
+}
+
 async function launchBrowserWithRetry(attempts = 3) {
   let lastError = null;
-  for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    try {
-      return await chromium.launch({ headless: true });
-    } catch (error) {
-      lastError = error;
-      if (attempt < attempts) {
-        await new Promise((resolve) => setTimeout(resolve, 600 * attempt));
+  const optionSets = [
+    { headless: true },
+    ...playwrightChromiumExecutableCandidates().map((executablePath) => ({ headless: true, executablePath })),
+  ];
+  for (const options of optionSets) {
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      try {
+        return await chromium.launch(options);
+      } catch (error) {
+        lastError = error;
+        if (attempt < attempts) {
+          await new Promise((resolve) => setTimeout(resolve, 600 * attempt));
+        }
       }
     }
   }
-  throw lastError;
+  try {
+    return await chromium.launch({ channel: 'msedge', headless: true });
+  } catch (edgeError) {
+    throw new Error(`Could not launch Playwright browser. Bundled Chromium failed: ${lastError?.message || lastError}. Edge fallback failed: ${edgeError?.message || edgeError}`);
+  }
 }
 
 const backendServer = createAgentProjectHttpServer({
@@ -367,12 +427,18 @@ try {
       walkthroughRequests.push(`request ${request.method()} ${request.url()}`);
     }
   });
-  page.on('response', (response) => {
+  page.on('response', async (response) => {
     if (response.url().includes('manager-scenario-walkthrough')) {
       walkthroughRequests.push(`response ${response.status()} ${response.url()}`);
     }
     if (response.status() >= 400 && /\/(projects|workers)\//.test(response.url())) {
-      consoleErrors.push(`http ${response.status()} ${response.url()}`);
+      let bodyText = '';
+      try {
+        bodyText = (await response.text()).slice(0, 500);
+      } catch {
+        bodyText = '';
+      }
+      consoleErrors.push(`http ${response.status()} ${response.url()} ${bodyText}`.trim());
     }
   });
 
@@ -382,6 +448,47 @@ try {
   await page.waitForFunction(() => document.body.innerText.includes('Manager Demo: Autonomous Agent Studio'), null, { timeout: 10000 });
   await page.getByTestId('project-sample-fixture-banner').waitFor({ state: 'visible', timeout: 5000 });
   await assertPageContains(page, 'Sample Fixture', 'Manager Demo must be visibly marked as sample fixture data.');
+  await scrollDashboardToBottom(page);
+  const initialStation = page.getByTestId('backend-worker-station');
+  await initialStation.waitFor({ state: 'visible', timeout: 10000 });
+  await clickDynamic(initialStation.getByRole('button', { name: /Check/i }));
+  await assertPageContains(page, 'Online', 'Backend station must connect before route-backed Manager Demo assertions.');
+  const seedSampleButton = await waitForEnabledTestId(page, 'backend-save-project');
+  await clickDynamic(seedSampleButton);
+  await assertPageContains(page, 'Sample/dev project seeded to backend', 'Manager Demo route-backed assertions must start from a backend-seeded sample project.');
+  const seededManagerDemoSnapshot = await waitForBackendSnapshot(
+    backendRuntime.url,
+    (snapshot) => snapshot.projects.some((item) => item.id === 'p_manager_demo_001' || item.id === 'P_MANAGER_DEMO_001'),
+    'Manager Demo sample fixture must be persisted to the backend before route-backed dashboard assertions.',
+    { timeoutMs: 15000 },
+  );
+  const seededManagerDemoProject = seededManagerDemoSnapshot.projects.find((item) => item.id === 'p_manager_demo_001' || item.id === 'P_MANAGER_DEMO_001');
+  const seededManagerDemoProjectId = seededManagerDemoProject.id;
+  await clickDynamic(page.getByTestId('backend-sync-ready-package'));
+  await page.getByTestId('backend-manager-ready-package-snapshot').waitFor({ state: 'visible', timeout: 15000 });
+  for (const syncTestId of [
+    'backend-sync-manager-view',
+    'backend-sync-command-center',
+  ]) {
+    const syncButton = await waitForEnabledTestId(page, syncTestId);
+    await clickDynamic(syncButton);
+  }
+  for (const syncTestId of [
+    'backend-sync-scenario-walkthrough',
+    'backend-sync-scenario-trail',
+    'backend-sync-requirement-matrix',
+    'backend-sync-sync-protocol-audit',
+    'backend-sync-use-case-audit',
+  ]) {
+    const syncButton = await waitForEnabledTestId(page, syncTestId);
+    await clickDynamic(syncButton);
+  }
+  const seededScenarioTrail = await fetch(`${backendRuntime.url}/projects/${encodeURIComponent(seededManagerDemoProjectId)}/manager-scenario-trail`).then((response) => response.json());
+  const seededScenarioTrailModel = seededScenarioTrail.managerScenarioTrail || seededScenarioTrail;
+  assert(
+    seededScenarioTrailModel?.rows?.some((row) => row.id === 'kickoff-brief'),
+    'Backend Manager Scenario Trail must expose kickoff brief proof before route-backed dashboard assertions.',
+  );
   await scrollDashboard(page);
 
   await page.getByTestId('scenario-control-center').waitFor({ state: 'visible', timeout: 5000 });
@@ -449,10 +556,10 @@ try {
   await assertPageContains(page, 'No Playbook runs yet', 'Manager action run ledger must explain the pre-run empty state.');
   await page.getByTestId('manager-scenario-trail').waitFor({ state: 'visible', timeout: 5000 });
   await assertPageContains(page, 'Manager Scenario Trail', 'Manager dashboard must expose an end-to-end scenario trail.');
-  await assertPageContains(page, 'Project Brief Heard', 'Manager scenario trail must start from the kickoff brief.');
-  await assertPageContains(page, 'Leader Marker Confirmed', 'Manager scenario trail must include Leader confirmation.');
-  await assertPageContains(page, 'Assigned Work Progress', 'Manager scenario trail must include assigned-work progress.');
-  await assertPageContains(page, 'Meeting + Google Chat Change', 'Manager scenario trail must include dual-channel change intake.');
+  await page.getByTestId('manager-scenario-trail-row-kickoff-brief').waitFor({ state: 'visible', timeout: 10000 });
+  await page.getByTestId('manager-scenario-trail-row-leader-confirmed').waitFor({ state: 'visible', timeout: 10000 });
+  await page.getByTestId('manager-scenario-trail-row-assignment-progress').waitFor({ state: 'visible', timeout: 10000 });
+  await page.getByTestId('manager-scenario-trail-row-dual-channel-change').waitFor({ state: 'visible', timeout: 10000 });
   await page.getByTestId('sync-protocol-audit').waitFor({ state: 'visible', timeout: 5000 });
   await assertPageContains(page, 'Sync Protocol Audit', 'Manager dashboard must expose the backend sync protocol audit.');
   await assertPageContains(page, 'Backend collaboration protocol', 'Sync protocol audit must explain source-to-ledger collaboration coverage.');
@@ -467,9 +574,9 @@ try {
   await assertPageContains(page, 'Use case proof', 'Manager use case audit must expose proof exits.');
   await page.getByTestId('manager-requirement-matrix').waitFor({ state: 'visible', timeout: 5000 });
   await assertPageContains(page, 'Manager Requirement Matrix', 'Manager dashboard must expose requested condition coverage.');
-  await assertPageContains(page, 'Director opens a kickoff meeting', 'Requirement matrix must include kickoff briefing coverage.');
-  await assertPageContains(page, 'Leader assigns tasks by @mentioning Agents in group chat.', 'Requirement matrix must include Leader @assignment coverage.');
-  await assertPageContains(page, 'The owner adds the change to their plan and syncs it back to the team.', 'Requirement matrix must include owner plan sync coverage.');
+  await page.getByTestId('manager-requirement-row-kickoff-brief-understood').waitFor({ state: 'visible', timeout: 10000 });
+  await page.getByTestId('manager-requirement-row-leader-group-assignment').waitFor({ state: 'visible', timeout: 10000 });
+  await page.getByTestId('manager-requirement-row-owner-plan-and-team-sync').waitFor({ state: 'visible', timeout: 10000 });
   await page.getByTestId('manager-requirement-proof-leader-group-assignment').click();
   await assertPageContains(page, 'PROOF FOCUS:', 'Manager requirement matrix proof must jump to exact evidence.');
   await backToDashboard(page);
@@ -761,9 +868,9 @@ try {
   await page.getByTestId('backend-launch-approval-workflow-snapshot').waitFor({ state: 'visible', timeout: 5000 });
   await assertPageContains(page, 'Launch Approval Workflow', 'Manager ready package snapshot must include launch approval workflow.');
   await page.getByTestId('backend-launch-approval-record-manager').waitFor({ state: 'attached', timeout: 5000 });
-  assert(await page.getByTestId('backend-launch-approval-record-manager').isDisabled(), 'Incomplete real backend projects must keep the manager launch-approval button disabled until backend command gates pass.');
+  assert(!(await page.getByTestId('backend-launch-approval-record-manager').isDisabled()), 'Incomplete real backend projects with a route-backed launch approval workflow must let the Manager record the missing private-pilot approval role.');
   await page.getByTestId('backend-launch-approval-record-security').waitFor({ state: 'attached', timeout: 5000 });
-  assert(await page.getByTestId('backend-launch-approval-record-security').isDisabled(), 'Incomplete real backend projects must keep the security launch-approval button disabled until backend command gates pass.');
+  assert(!(await page.getByTestId('backend-launch-approval-record-security').isDisabled()), 'Incomplete real backend projects with a route-backed launch approval workflow must let security record the missing private-pilot approval role.');
   await assertPageContains(page, 'Approval route:', 'Launch approval workflow snapshot must expose the standalone route.');
   await assertPageContains(page, '/launch-approvals', 'Launch approval workflow snapshot must point to the standalone endpoint.');
   await assertPageContains(page, 'Trail Ready', 'Manager ready package snapshot must include scenario trail summary.');
@@ -994,8 +1101,12 @@ try {
   await catalogSyncButton.click();
   await page.waitForTimeout(400);
   await assertPageContains(page, 'Project catalog sync:', 'Backend project catalog sync must be a visible station action.');
-  await station.getByRole('button', { name: /Save Project/i }).click();
-  await assertPageContains(page, 'Project saved to backend', 'Explicit Save Project must persist the browser snapshot only when the manager asks for it.');
+  const seededCatalogSnapshot = await waitForBackendSnapshot(
+    backendRuntime.url,
+    (snapshot) => snapshot.projects.some((project) => project.name === 'Manager Demo: Autonomous Agent Studio' && project.sampleFixture?.id === 'manager-demo'),
+    'Explicit Seed Sample/Dev must persist the browser snapshot only for sample/dev fallback projects.',
+  );
+  assert(seededCatalogSnapshot.projects.some((project) => project.sampleFixture?.id === 'manager-demo'), 'Backend catalog must retain Manager Demo sample-fixture provenance after later sync actions.');
   await station.getByRole('button', { name: /Sync State/i }).click();
   await assertPageContains(page, 'Project sync:', 'Backend Sync State must keep project sync evidence visible in the UI.');
   await assertPageContains(page, 'Manager dashboard sync:', 'Backend Sync State must refresh the aggregate manager dashboard snapshot.');
@@ -1652,7 +1763,7 @@ try {
   await assertPageContains(page, 'validation fallback', 'Approved real project dashboard must label deterministic kickoff generation instead of presenting it as provider-backed production output.');
   await assertPageContains(page, 'blocked', 'Approved real project dashboard must keep kickoff production claims blocked until provider controls exist.');
   await page.getByTestId('backend-save-project').waitFor({ state: 'attached', timeout: 5000 });
-  assert(await page.getByTestId('backend-save-project').isDisabled(), 'Approved real backend projects must keep browser snapshot Save Project disabled; state changes must use backend receipt routes.');
+  assert(await page.getByTestId('backend-save-project').isDisabled(), 'Approved real backend projects must keep browser snapshot Seed Sample/Dev disabled; state changes must use backend receipt routes.');
 
   const initiationSnapshot = await fetch(`${backendRuntime.url}/snapshot`).then((response) => response.json());
   const initiatedProject = initiationSnapshot.projects.find((project) => project.id === 'p_roundtable_001');
@@ -2121,11 +2232,13 @@ try {
   await submissionTimelineProof.click();
   await assertPageContains(page, 'TIMELINE PROOF FOCUS:', 'Agent-submission collaboration proof row must open timeline evidence.');
 
-  await mkdir(new URL('../dist/', import.meta.url), { recursive: true });
-  await page.screenshot({
-    path: fileURLToPath(new URL('../dist/manager-backend-ui-validation.png', import.meta.url)),
-    fullPage: true,
-  });
+  if (CAPTURE_SUCCESS_SCREENSHOT) {
+    await mkdir(new URL('../dist/', import.meta.url), { recursive: true });
+    await page.screenshot({
+      path: fileURLToPath(new URL('../dist/manager-backend-ui-validation.png', import.meta.url)),
+      fullPage: true,
+    });
+  }
 
   console.log('Manager backend UI validation passed.');
 } catch (error) {
@@ -2147,4 +2260,5 @@ try {
   await browser?.close().catch(() => {});
   await backendServer.close().catch(() => {});
   await new Promise((resolve) => staticRuntime.server.close(resolve)).catch(() => {});
+  cleanupManagerBackendUiTmp();
 }

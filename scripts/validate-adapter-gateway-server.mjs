@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { createAdapterGatewayServer } from '../src/agents/adapterGatewayServer.js';
 import { verifyHttpJsonAdapterGateway } from '../src/agents/adapterGatewayClient.js';
@@ -14,6 +14,18 @@ function assert(condition, message) {
 const root = fileURLToPath(new URL('../.tmp/adapter-gateway-server-validation', import.meta.url));
 mkdirSync(root, { recursive: true });
 const storagePath = `${root}/adapter-gateway-store-${Date.now()}.json`;
+const preserveTmp = process.env.HOFS_ADAPTER_GATEWAY_PRESERVE_TMP === '1';
+function cleanupTmp() {
+  if (!preserveTmp) {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+['SIGINT', 'SIGTERM', 'SIGHUP'].forEach((signal) => {
+  process.once(signal, () => {
+    cleanupTmp();
+    process.exit(signal === 'SIGINT' ? 130 : 143);
+  });
+});
 const authToken = 'ADAPTER_GATEWAY_VALIDATION_TOKEN';
 const gateway = createAdapterGatewayServer({
   storageDriver: 'json-file',
@@ -219,4 +231,5 @@ try {
     else process.env[key] = value;
   });
   await gateway.close();
+  cleanupTmp();
 }

@@ -83,6 +83,8 @@ try {
     path: '/settings/provider-readiness',
   });
   readiness = response.body.settingsProviderReadiness;
+  assert(readiness.canSealSecrets === true, 'Readiness must continue allowing additional provider seals after one encrypted record exists.');
+  assert(readiness.actionRequired?.route === '/secret-vault/seal', 'Readiness must keep provider setup on the backend seal route after one encrypted record exists.');
   assert(readiness.providerVaultBindings?.summary?.vaultRecordCount >= 1, 'Readiness must reflect sealed Vault record metadata.');
   assert(readiness.providerVaultBindings?.redaction?.rawLeakCount === 0, 'Readiness must keep provider-vault metadata redacted.');
   assert(!JSON.stringify(readiness).includes(plaintextSecret), 'Readiness must not expose plaintext provider secrets after sealing.');

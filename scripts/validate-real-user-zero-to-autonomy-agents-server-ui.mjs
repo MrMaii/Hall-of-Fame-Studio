@@ -37,6 +37,42 @@ const configuredUiBaseUrl = normalizeBaseUrl(
   || '',
 );
 
+function localUiBaseUrlCandidates(value = '') {
+  const normalized = normalizeBaseUrl(value);
+  if (!normalized) return [];
+  const candidates = [normalized];
+  try {
+    const url = new URL(normalized);
+    if (url.hostname === '127.0.0.1') {
+      url.hostname = 'localhost';
+      candidates.push(normalizeBaseUrl(url.toString()));
+    } else if (url.hostname === 'localhost') {
+      url.hostname = '127.0.0.1';
+      candidates.push(normalizeBaseUrl(url.toString()));
+    }
+  } catch {
+    // Keep the original value as the only candidate.
+  }
+  return Array.from(new Set(candidates));
+}
+
+async function resolveExternalUiRuntime(value = '') {
+  const candidates = localUiBaseUrlCandidates(value);
+  let lastError = null;
+  for (const candidate of candidates) {
+    try {
+      const response = await fetch(candidate);
+      if (response.ok) {
+        return { server: null, url: candidate, external: true, configuredUrl: normalizeBaseUrl(value) };
+      }
+      lastError = new Error(`HTTP ${response.status}`);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw new Error(`Configured UI base URL is unreachable: ${normalizeBaseUrl(value)}. Tried: ${candidates.join(', ')}. ${lastError?.message || lastError || ''}`);
+}
+
 const mimeTypes = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
@@ -137,6 +173,13 @@ function createMockSearchServer(requests) {
             summary: 'A controlled evidence result proving the user-configured search provider path.',
             confidence: 'high',
           },
+          {
+            id: 'real-user-source-2',
+            title: 'Local product-team corroborating source',
+            url: 'https://example.test/product-team-corroboration',
+            summary: 'A second controlled result corroborating the generic product-team delivery chain.',
+            confidence: 'high',
+          },
         ],
       }));
     });
@@ -232,7 +275,11 @@ async function launchBrowserWithRetry(attempts = 3) {
       }
     }
   }
-  throw lastError;
+  try {
+    return await chromium.launch({ channel: 'msedge', headless: true });
+  } catch (edgeError) {
+    throw new Error(`Could not launch Playwright browser. Bundled Chromium failed: ${lastError?.message || lastError}. Edge fallback failed: ${edgeError?.message || edgeError}`);
+  }
 }
 
 async function assertPageContains(page, text, message = `Expected page to contain "${text}".`) {
@@ -260,6 +307,33 @@ async function waitForButtonEnabled(page, testId, message, { timeoutMs = 20000 }
   return button;
 }
 
+async function assertPanelTextIncludes(page, testId, expectedValues = [], message = `Expected ${testId} to include required values.`) {
+  await page.getByTestId(testId).scrollIntoViewIfNeeded({ timeout: 10000 });
+  await page.waitForFunction(
+    ({ selector, values }) => {
+      const text = document.querySelector(selector)?.innerText?.toLowerCase() || '';
+      return values.every((value) => text.includes(String(value).toLowerCase()));
+    },
+    { selector: `[data-testid="${testId}"]`, values: expectedValues },
+    { timeout: 25000 },
+  ).catch(() => {});
+  const text = await page.getByTestId(testId).innerText({ timeout: 10000 });
+  const normalizedText = text.toLowerCase();
+  const missing = expectedValues.filter((value) => !normalizedText.includes(String(value).toLowerCase()));
+  assert(!missing.length, `${message} Missing: ${missing.join(', ')}. Excerpt: ${text.slice(0, 900)}`);
+  return text;
+}
+
+async function fillControlledInput(page, testId, value) {
+  const input = page.getByTestId(testId);
+  await input.fill(value);
+  await page.waitForFunction(
+    ({ selector, expected }) => document.querySelector(selector)?.value === expected,
+    { selector: `[data-testid="${testId}"]`, expected: value },
+    { timeout: 10000 },
+  );
+}
+
 async function scrollDashboardToStation(page) {
   await page.getByTestId('backend-worker-station').scrollIntoViewIfNeeded({ timeout: 10000 });
   await page.waitForTimeout(250);
@@ -270,6 +344,20 @@ function missionRowsFromProject(project) {
   if (Array.isArray(project?.productTeamMissionRuns?.rows)) return project.productTeamMissionRuns.rows;
   if (project?.productTeamMissionRuns?.latestRun) return [project.productTeamMissionRuns.latestRun];
   return [];
+}
+
+function assertAutonomousHandoffOutput(project, submission, { context = 'real-user UI handoff' } = {}) {
+  const runs = Array.isArray(project?.agentAutonomousActionRunLedger) ? project.agentAutonomousActionRunLedger : [];
+  const matchingRun = runs.find((run) => run.workSubmissionId === submission?.id) || runs[0] || null;
+  const bodyText = `${submission?.title || ''}\n${submission?.summary || ''}\n${submission?.body || ''}`;
+  assert(matchingRun?.schemaVersion === 'agent-autonomous-action-run/v1', `${context} must persist an Agent autonomous action run receipt.`);
+  assert(matchingRun.workSubmissionId === submission?.id, `${context} run receipt must link to the autonomous Agent submission.`);
+  assert(matchingRun.autonomousActionDecision?.schemaVersion === 'autonomous-action-decision/v1' || matchingRun.autonomousActionDecisionChecksum, `${context} must include an autonomous action decision.`);
+  assert(matchingRun.resultMessageCount >= 1 && matchingRun.timelineLogIds?.length >= 1 && matchingRun.eventIds?.length >= 1, `${context} run receipt must carry chat, timeline, and event proof.`);
+  assert(submission?.id && submission?.messageId && submission?.timelineLogId && submission?.eventId, `${context} submission must carry proof ids.`);
+  assert(bodyText.split(/\s+/).filter(Boolean).length >= 35, `${context} submission must contain substantive Agent-authored content.`);
+  assert(/autonomous|backend Agent worker|worker cycle|proof/i.test(bodyText), `${context} submission body must identify autonomous worker provenance.`);
+  return matchingRun;
 }
 
 function findTeamAgentId(team = [], patterns = [], fallbackIndex = 0) {
@@ -344,7 +432,7 @@ await rm(tempRoot, { recursive: true, force: true });
 await mkdir(tempRoot, { recursive: true });
 
 const staticRuntime = configuredUiBaseUrl
-  ? { server: null, url: configuredUiBaseUrl, external: true }
+  ? await resolveExternalUiRuntime(configuredUiBaseUrl)
   : await listen(createStaticServer());
 const mockModelRuntime = await listen(createMockModelServer());
 const searchRequests = [];
@@ -419,18 +507,18 @@ try {
     const statusCard = document.querySelector('[data-testid="settings-secret-vault-status"]');
     return Boolean(statusCard && /ready/i.test(statusCard.textContent || ''));
   }, null, { timeout: 10000 });
-  await page.getByTestId('settings-provider-model-key-input').fill(modelPlaintext);
+  await fillControlledInput(page, 'settings-provider-model-key-input', modelPlaintext);
   const sealModelButton = await waitForButtonEnabled(page, 'settings-provider-seal-model-key', 'Real user must be able to seal a model key before project startup.');
   await sealModelButton.click();
   await page.getByTestId('settings-provider-seal-receipt').waitFor({ state: 'visible', timeout: 10000 });
-  await page.getByTestId('settings-provider-search-endpoint-input').fill(`${mockSearchRuntime.url}/search`);
-  const sealSearchEndpointButton = await waitForButtonEnabled(page, 'settings-provider-seal-search-endpoint', 'Real user must be able to seal a search endpoint before project startup.');
-  await sealSearchEndpointButton.click();
-  await page.waitForFunction(() => document.body.innerText.includes('search.endpoint'), null, { timeout: 10000 });
-  await page.getByTestId('settings-provider-search-key-input').fill(searchPlaintext);
+  await fillControlledInput(page, 'settings-provider-search-key-input', searchPlaintext);
   const sealSearchButton = await waitForButtonEnabled(page, 'settings-provider-seal-search-key', 'Real user must be able to seal a search key before project startup.');
   await sealSearchButton.click();
   await page.waitForFunction(() => document.body.innerText.includes('search.apiKey'), null, { timeout: 10000 });
+  await fillControlledInput(page, 'settings-provider-search-endpoint-input', `${mockSearchRuntime.url}/search`);
+  const sealSearchEndpointButton = await waitForButtonEnabled(page, 'settings-provider-seal-search-endpoint', 'Real user must be able to seal a search endpoint before project startup.');
+  await sealSearchEndpointButton.click();
+  await page.waitForFunction(() => document.body.innerText.includes('search.endpoint'), null, { timeout: 10000 });
 
   const modelStatus = await fetchJson(`${backendUrl}/llm/status`);
   assert(modelStatus.body.modelProvider?.apiKeySource === 'local-secret-vault' && modelStatus.body.modelProvider?.enabled === true, 'Real-user model provider must be vault-backed and enabled after Settings key seal.');
@@ -442,7 +530,7 @@ try {
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ query: 'real user autonomous product-team evidence' }),
   });
-  assert(searchTest.body.ok === true && searchTest.body.sources?.length === 1, 'Real-user search provider must return evidence from the user-configured endpoint.');
+  assert(searchTest.body.ok === true && searchTest.body.sources?.length === 2, 'Real-user search provider must return evidence from the user-configured endpoint.');
   assert(searchRequests.length >= 1 && searchRequests.at(-1).authorization === `Bearer ${searchPlaintext}`, 'Real-user search test must reach the configured search endpoint with the sealed key.');
   const records = await fetchJson(`${backendUrl}/secret-vault/records`);
   const serializedRecords = JSON.stringify(records.body);
@@ -519,6 +607,25 @@ try {
   assert(/Agent Submission/i.test(intentOutputText), 'Real-user intent run must create an Agent Submission output node.');
   assert(/Output chat proof/i.test(intentOutputText), 'Real-user intent output must expose chat proof exits.');
 
+  const agentQueueRunResponse = await fetchJson(`${backendUrl}/projects/${projectId}/agent-autonomous-action-queue/next/run`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      includeReadModels: false,
+      force: true,
+      requestBodyOverrides: {
+        submitWorkArtifact: true,
+        submitWorkArtifactOn: 'always',
+        workArtifactType: 'progress-brief',
+        workArtifactReviewStatus: 'pending-review',
+      },
+    }),
+  });
+  assert(agentQueueRunResponse.status === 200, `Real-user Agent autonomous queue returned ${agentQueueRunResponse.status}.`);
+  assert(agentQueueRunResponse.body.agentAutonomousActionRun?.schemaVersion === 'agent-autonomous-action-run/v1', 'Real-user Agent queue must persist a direct Agent action receipt.');
+  const handoffSubmission = agentQueueRunResponse.body.workSubmission || agentQueueRunResponse.body.submission || {};
+  assertAutonomousHandoffOutput(agentQueueRunResponse.body.project, handoffSubmission, { context: 'real-user UI Agent queue handoff' });
+
   const providerEvidenceResponse = await fetchJson(`${backendUrl}/projects/${projectId}/agents/${encodeURIComponent(evidenceReviewerAgentId)}/evidence-searches`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -533,7 +640,7 @@ try {
   assert(providerEvidenceResponse.status === 200, `Real-user provider-backed evidence search returned ${providerEvidenceResponse.status}.`);
   const providerEvidenceSearch = providerEvidenceResponse.body.evidenceSearch || {};
   assert(providerEvidenceSearch.id && providerEvidenceSearch.provider === 'http-json', 'Real-user Agent evidence search must use the user-configured search provider.');
-  assert(providerEvidenceSearch.sources?.length === 1, 'Real-user Agent evidence search must persist provider sources.');
+  assert(providerEvidenceSearch.sources?.length === 2, 'Real-user Agent evidence search must persist provider sources.');
   assert(providerEvidenceSearch.providerReceiptId && providerEvidenceResponse.body.providerReceipt?.id === providerEvidenceSearch.providerReceiptId, 'Real-user Agent evidence search must link to a provider receipt.');
   assert(providerEvidenceResponse.body.providerUsage?.providerVaultBindingChecksum, 'Real-user Agent evidence search must write provider usage with provider-vault proof.');
   assert(searchRequests.length >= 2 && searchRequests.at(-1).authorization === `Bearer ${searchPlaintext}`, 'Real-user Agent evidence search must reach the configured endpoint with the sealed key.');
@@ -541,8 +648,7 @@ try {
   let submissions = await fetchJson(`${backendUrl}/projects/${projectId}/submissions`);
   let submissionRows = submissions.body.submissions?.submissions || submissions.body.submissions?.rows || submissions.body.submissions || [];
   assert(Array.isArray(submissionRows) && submissionRows.length >= 1, 'Real-user backend must persist at least one Agent submission after C/A handoff run.');
-  const handoffSubmission = submissionRows[0];
-  assert(handoffSubmission?.id && handoffSubmission?.artifactType, 'Real-user Agent submission must carry id and artifact type.');
+  assert(submissionRows.some((row) => row.id === handoffSubmission.id), 'Real-user submissions route must include the Agent autonomous queue output.');
 
   const discoverySubmission = await submitArtifact(backendUrl, {
     agentId: productLeadAgentId,
@@ -731,21 +837,23 @@ try {
 
   const reviewListResponse = await fetchJson(`${backendUrl}/projects/${projectId}/submission-reviews`);
   assert(reviewListResponse.status === 200 && Array.isArray(reviewListResponse.body.submissionReviews), 'Real-user backend must list submission reviews for open-change closure.');
-  const openChangeReview = reviewListResponse.body.submissionReviews.find((review) => (
+  submissions = await fetchJson(`${backendUrl}/projects/${projectId}/submissions`);
+  submissionRows = submissions.body.submissions?.submissions || submissions.body.submissions?.rows || submissions.body.submissions || [];
+  const respondedReviewIds = new Set(submissionRows.map((row) => row.respondsToReviewId).filter(Boolean));
+  const openChangeReviews = reviewListResponse.body.submissionReviews.filter((review) => (
     review.verdict === 'changes-requested'
     && review.submissionId
-    && review.submissionId !== productBriefSubmission.id
-    && ![productBriefReview.id, finalReview.id].includes(review.id)
+    && !respondedReviewIds.has(review.id)
   ));
-  if (openChangeReview) {
+  for (const [index, openChangeReview] of openChangeReviews.entries()) {
     const openChangeRevisionResponse = await fetchJson(`${backendUrl}/projects/${projectId}/agents/${encodeURIComponent(architectAgentId)}/submissions`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         artifactType: 'revision-note',
-        title: 'Autonomous evidence packet revision closure',
-        summary: 'Linked revision closes the earlier autonomous evidence packet review request before final delivery readiness is assessed.',
-        body: '# Autonomous evidence packet revision closure\n\nThis linked revision responds to the earlier changes-requested review and keeps the final delivery chain free of open review obligations.',
+        title: `Autonomous open change revision closure ${index + 1}`,
+        summary: 'Linked revision closes an earlier autonomous review request before final delivery readiness is assessed.',
+        body: '# Autonomous open change revision closure\n\nThis linked revision responds to an earlier changes-requested review and keeps the final delivery chain free of open review obligations.',
         reviewerAgentId: openChangeReview.reviewerAgentId || evidenceReviewerAgentId,
         revisesSubmissionId: openChangeReview.submissionId,
         respondsToReviewId: openChangeReview.id,
@@ -793,6 +901,8 @@ try {
   assert(flowGraph.body.nodes?.some((node) => node.id === `product-team-mission-run-${missionRun.id}`), 'Manager Flow Graph must expose the Mission Runner receipt node.');
   assert(serializedFlowGraph.includes(handoffSubmission.id), 'Manager Flow Graph must trace the Agent submission created by the real-user handoff.');
   assert(requiredTraceIds.every((id) => serializedFlowGraph.includes(id)), 'Manager Flow Graph must trace every required generic artifact, evidence, review, revision, final, and acceptance node.');
+  const finalFlowNode = flowGraph.body.nodes?.find((node) => JSON.stringify(node).includes(finalSubmission.id)) || null;
+  assert(finalFlowNode?.id, 'Manager Flow Graph must expose a visible node for the final deliverable.');
 
   const proofMap = await fetchJson(`${backendUrl}/projects/${projectId}/readiness-proof-map`);
   const serializedProofMap = JSON.stringify(proofMap.body);
@@ -805,6 +915,7 @@ try {
   const deliveryTrace = await fetchJson(`${backendUrl}/projects/${projectId}/product-team-delivery-trace`);
   assert(deliveryTrace.status === 200 && deliveryTrace.body.productTeamDeliveryTrace?.schemaVersion === 'product-team-delivery-trace/v1', 'Real-user chain must expose the product-team delivery trace read model.');
   const traceModel = deliveryTrace.body.productTeamDeliveryTrace;
+  assert(traceModel.readyForPrivatePilotDelivery === true, `Real-user delivery trace must close all generic product-team stages. Missing: ${JSON.stringify(traceModel.missingRows || [])}`);
   const traceRows = traceModel.rows || [];
   const traceRow = (id) => traceRows.find((row) => row.id === id) || {};
   const assertTraceEvidence = (id, label) => {
@@ -828,12 +939,14 @@ try {
   );
   const draftTrace = assertTraceEvidence('draft-artifact', 'the model-backed draft stage');
   assert(
-    draftTrace.artifactIds?.includes(productBriefSubmission.id) || JSON.stringify(draftTrace).includes(productBriefSubmission.id),
+    draftTrace.ready === true
+      && (draftTrace.artifactIds?.includes(productBriefSubmission.id) || JSON.stringify(draftTrace).includes(productBriefSubmission.id)),
     `Real-user delivery trace draft stage must include the model-backed product brief. Row: ${JSON.stringify(draftTrace)}`,
   );
   const reviewTrace = assertTraceEvidence('review-and-revision', 'the review and revision stage');
   assert(
-    [productBriefReview.id, revisionSubmission.id].every((id) => JSON.stringify(reviewTrace).includes(id)),
+    reviewTrace.ready === true
+      && [productBriefReview.id, revisionSubmission.id].every((id) => JSON.stringify(reviewTrace).includes(id)),
     `Real-user delivery trace review stage must include the requested-change review and linked revision. Row: ${JSON.stringify(reviewTrace)}`,
   );
   const finalTrace = assertTraceEvidence('final-deliverable', 'the final deliverable stage');
@@ -900,6 +1013,9 @@ try {
   await page.getByTestId('backend-manager-submissions-snapshot').waitFor({ state: 'visible', timeout: 25000 });
   await page.getByTestId('backend-sync-proof-models').click();
   await page.getByTestId('backend-artifact-quality-audit-snapshot').waitFor({ state: 'visible', timeout: 25000 });
+  await page.getByTestId('backend-product-team-delivery-trace-snapshot').waitFor({ state: 'visible', timeout: 25000 });
+  await page.getByTestId('backend-submission-review-workflow-snapshot').waitFor({ state: 'visible', timeout: 25000 });
+  await page.getByTestId('backend-evidence-index-readiness-snapshot').waitFor({ state: 'visible', timeout: 25000 });
   await page.waitForFunction(
     (artifactTypes) => {
       const audit = document.querySelector('[data-testid="backend-artifact-quality-audit-snapshot"]');
@@ -917,6 +1033,52 @@ try {
   const missingManagerUiArtifactTypes = requiredGenericArtifactTypes.filter((artifactType) => !normalizedManagerArtifactUiText.includes(artifactType.toLowerCase()));
   assert(!missingManagerUiArtifactTypes.length, `Manager UI must render every required generic artifact type from backend submissions or Artifact Quality Audit. Missing: ${missingManagerUiArtifactTypes.join(', ')}. Audit excerpt: ${artifactAuditText.slice(0, 800)}`);
   assert(/9\/9/.test(artifactAuditText) || requiredGenericArtifactTypes.every((artifactType) => normalizedArtifactAuditText.includes(artifactType.toLowerCase())), `Manager UI Artifact Quality Audit must show complete generic artifact type coverage. Audit excerpt: ${artifactAuditText.slice(0, 800)}`);
+
+  await assertPanelTextIncludes(page, 'backend-product-team-delivery-trace-snapshot', [
+    'Product Team Delivery Trace',
+    'trace closed',
+    'Brainstorm Options',
+    'Evidence Searches',
+    'Generated Drafts',
+    'Review Rounds',
+    'Final Accepted',
+    '/product-team-delivery-trace',
+  ], 'Manager UI must render the complete product-team delivery trace from backend proof models.');
+  await assertPanelTextIncludes(page, 'backend-submission-review-workflow-snapshot', [
+    'Submission Review Workflow',
+    'loop closed',
+    'Open Changes',
+    'Revision Responses',
+    'Final Accepted',
+    '/submission-review-workflow',
+  ], 'Manager UI must render the review, revision, and final acceptance workflow.');
+  await assertPanelTextIncludes(page, 'backend-evidence-index-readiness-snapshot', [
+    'Evidence Index Readiness',
+    'local index ready',
+    'Evidence Searches',
+    'Submissions',
+    'Storage Proofs',
+    'Production',
+    'blocked',
+    '/evidence-index-readiness',
+  ], 'Manager UI must render evidence/artifact index readiness instead of hiding it in Settings only.');
+  await assertPanelTextIncludes(page, 'manager-proof-map', [
+    '/manager-flow-graph',
+    '/submissions',
+    '/submission-review-workflow',
+    '/product-team-delivery-trace',
+    '/readiness-proof-map',
+  ], 'Manager UI Proof Map must expose the real-user proof routes.');
+
+  await page.getByRole('button', { name: /Open Flow Graph/i }).first().click();
+  await page.getByTestId('manager-flow-graph').waitFor({ state: 'visible', timeout: 25000 });
+  const flowSourceText = await page.getByTestId('manager-flow-source-label').innerText();
+  assert(!/fallback|missing/i.test(flowSourceText), `Manager Flow Graph must use the backend read model. Source label: ${flowSourceText}`);
+  await page.getByTestId(`manager-flow-node-${finalFlowNode.id}`).waitFor({ state: 'visible', timeout: 25000 });
+  await assertPanelTextIncludes(page, 'manager-flow-graph', [
+    'Submission',
+    'final-deliverable',
+  ], 'Manager Flow Graph canvas must render a final-deliverable submission node.');
 
   console.log('Real-user zero-to-autonomy agents:server UI validation passed.');
 } catch (error) {
