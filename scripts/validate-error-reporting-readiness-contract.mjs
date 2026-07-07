@@ -8,7 +8,7 @@ function assert(condition, message) {
 }
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const tempRoot = resolve(repoRoot, '.tmp', 'error-reporting-readiness-contract-validate');
+const tempRoot = resolve(repoRoot, '.tmp', `error-reporting-readiness-contract-validate-${process.pid}`);
 const storePath = resolve(tempRoot, 'store.json');
 const projectId = 'error_reporting_readiness_validation';
 const team = [

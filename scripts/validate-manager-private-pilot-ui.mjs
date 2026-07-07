@@ -34,6 +34,45 @@ const FAKE_VAULT_MASTER_KEY = 'VAULT_MASTER_KEY_SHOULD_NOT_LEAK_12345';
 const FAKE_VAULT_ROTATED_MASTER_KEY = 'VAULT_ROTATED_MASTER_KEY_SHOULD_NOT_LEAK_12345';
 const nativeFetch = globalThis.fetch.bind(globalThis);
 
+function readCliArg(name) {
+  const inlinePrefix = `${name}=`;
+  const inline = process.argv.find((arg) => arg.startsWith(inlinePrefix));
+  if (inline) return inline.slice(inlinePrefix.length);
+  const index = process.argv.indexOf(name);
+  return index >= 0 ? process.argv[index + 1] || '' : '';
+}
+
+function normalizeBaseUrl(value = '') {
+  const trimmed = String(value || '').trim();
+  return trimmed ? trimmed.replace(/\/+$/, '') : '';
+}
+
+const configuredUiBaseUrl = normalizeBaseUrl(
+  readCliArg('--ui-base-url')
+  || process.env.HOFS_UI_BASE_URL
+  || process.env.HOFS_MANAGER_PRIVATE_PILOT_UI_BASE_URL
+  || '',
+);
+
+function localUiBaseUrlCandidates(value = '') {
+  const normalized = normalizeBaseUrl(value);
+  if (!normalized) return [];
+  const candidates = [normalized];
+  try {
+    const url = new URL(normalized);
+    if (url.hostname === '127.0.0.1') {
+      url.hostname = 'localhost';
+      candidates.push(normalizeBaseUrl(url.toString()));
+    } else if (url.hostname === 'localhost') {
+      url.hostname = '127.0.0.1';
+      candidates.push(normalizeBaseUrl(url.toString()));
+    }
+  } catch {
+    // Keep the original value as the only candidate.
+  }
+  return Array.from(new Set(candidates));
+}
+
 globalThis.fetch = async (...args) => {
   let lastError = null;
   for (let attempt = 0; attempt < 4; attempt += 1) {
@@ -66,30 +105,38 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
+function isBenignBrowserConsoleError(text = '') {
+  return /Failed to load resource:\s*net::ERR_NETWORK_CHANGED/i.test(String(text || ''));
+}
+
 function preparePrivatePilotHandoffStore() {
-  const stageScript = fileURLToPath(new URL('./run-product-team-acceptance-stage.mjs', import.meta.url));
-  const result = spawnSync(process.execPath, [stageScript, 'private-pilot-ui-launch-approval-prep'], {
+  const stageScript = fileURLToPath(new URL('./validate-private-pilot-handoff-contract.mjs', import.meta.url));
+  const result = spawnSync(process.execPath, [stageScript], {
     cwd: ROOT_DIR,
     stdio: 'inherit',
     timeout: HANDOFF_PREP_TIMEOUT_MS,
     env: {
       ...process.env,
-      HOFS_PRODUCT_TEAM_RUN_ID: ACCEPTANCE_RUN_ID,
-      HOFS_PRODUCT_TEAM_PRESERVE_TMP: '1',
+      HOFS_PRIVATE_PILOT_FOCUSED_FILE_BACKED: '1',
+      HOFS_PRIVATE_PILOT_FOCUSED_PRESERVE_TMP: '1',
+      HOFS_PRIVATE_PILOT_FOCUSED_STOP_BEFORE_EXPORT: '1',
+      HOFS_PRIVATE_PILOT_FOCUSED_TEMP_ROOT: ACCEPTANCE_ROOT,
+      HOFS_PRIVATE_PILOT_FOCUSED_PROJECT_ID: PROJECT_ID,
+      HOFS_PRIVATE_PILOT_FOCUSED_PROJECT_NAME: PROJECT_NAME,
       HOFS_PROGRESS: process.env.HOFS_PROGRESS || '0',
     },
   });
   if (result.error) {
     if (result.error.code === 'ETIMEDOUT') {
-      throw new Error(`Private-pilot launch-approval UI preparation timed out after ${HANDOFF_PREP_TIMEOUT_MS}ms for run ${ACCEPTANCE_RUN_ID}.`);
+      throw new Error(`Private-pilot focused UI preparation timed out after ${HANDOFF_PREP_TIMEOUT_MS}ms for run ${ACCEPTANCE_RUN_ID}.`);
     }
     throw result.error;
   }
   if (result.signal) {
-    throw new Error(`Private-pilot launch-approval UI preparation ended by ${result.signal} for run ${ACCEPTANCE_RUN_ID}.`);
+    throw new Error(`Private-pilot focused UI preparation ended by ${result.signal} for run ${ACCEPTANCE_RUN_ID}.`);
   }
-  assert(result.status === 0, `Private-pilot launch-approval UI preparation failed with status ${result.status}.`);
-  assert(existsSync(ACCEPTANCE_STORE), 'Private-pilot launch-approval UI prep store must exist after staged acceptance preparation.');
+  assert(result.status === 0, `Private-pilot focused UI preparation failed with status ${result.status}.`);
+  assert(existsSync(ACCEPTANCE_STORE), 'Private-pilot focused UI prep store must exist after focused handoff preparation.');
 }
 
 async function createAcceptanceRuntimeDependencies() {
@@ -234,6 +281,23 @@ async function startStaticServer() {
   throw new Error(`Could not bind static validation server on ${STATIC_PORTS.join(', ')}.`);
 }
 
+async function resolveExternalUiRuntime(value = '') {
+  const candidates = localUiBaseUrlCandidates(value);
+  let lastError = null;
+  for (const candidate of candidates) {
+    try {
+      const response = await fetch(candidate);
+      if (response.ok) {
+        return { server: null, url: candidate, external: true, configuredUrl: normalizeBaseUrl(value) };
+      }
+      lastError = new Error(`HTTP ${response.status}`);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw new Error(`Configured UI base URL is unreachable: ${normalizeBaseUrl(value)}. Tried: ${candidates.join(', ')}. ${lastError?.message || lastError || ''}`);
+}
+
 async function launchBrowserWithRetry(attempts = 3) {
   let lastError = null;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
@@ -348,6 +412,10 @@ async function recordPrivatePilotReceipt({
   return body;
 }
 
+const preResolvedUiRuntime = configuredUiBaseUrl
+  ? await resolveExternalUiRuntime(configuredUiBaseUrl)
+  : null;
+
 if (process.env.HOFS_SKIP_PRIVATE_PILOT_HANDOFF_PREP === '1') {
   assert(existsSync(ACCEPTANCE_STORE), 'Private-pilot launch-handoff store must exist when preparation is skipped.');
 } else {
@@ -361,7 +429,9 @@ const backendServer = createAgentProjectHttpServer({
   ...acceptanceDependencies,
 });
 const backendRuntime = await backendServer.listen();
-const staticRuntime = await startStaticServer();
+const staticRuntime = configuredUiBaseUrl
+  ? preResolvedUiRuntime
+  : await startStaticServer();
 let browser = null;
 let page = null;
 const diagnostics = [];
@@ -400,7 +470,9 @@ try {
   });
   page = await context.newPage();
   page.on('console', (message) => {
-    if (message.type() === 'error') diagnostics.push(`console ${message.type()}: ${message.text()}`);
+    if (message.type() === 'error' && !isBenignBrowserConsoleError(message.text())) {
+      diagnostics.push(`console ${message.type()}: ${message.text()}`);
+    }
   });
   page.on('pageerror', (error) => {
     pageErrors.push(error.stack || error.message);
@@ -685,7 +757,9 @@ try {
 } finally {
   await browser?.close().catch(() => {});
   await backendServer.close().catch(() => {});
-  await new Promise((resolve) => staticRuntime.server.close(resolve)).catch(() => {});
+  if (staticRuntime.server) {
+    await new Promise((resolve) => staticRuntime.server.close(resolve)).catch(() => {});
+  }
   if (process.env.HOFS_MANAGER_PRIVATE_PILOT_PRESERVE_TMP !== '1') {
     await rm(ACCEPTANCE_ROOT, { recursive: true, force: true }).catch(() => {});
   }

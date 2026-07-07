@@ -451,6 +451,8 @@ response = membershipApi.handle({
 });
 assert(response.status === 200 && response.body.nodes?.filter((node) => node.source === 'launchApprovals' && node.subtype === 'launch-approval' && node.importance === 'critical' && node.status === 'confirmed').length >= 3, 'Manager Flow Graph must include production launch approval nodes.');
 assert(response.body.edges?.some((edge) => edge.source === 'launchApprovals' && edge.label === 'Release governance' && edge.eventIds?.length >= 1), 'Manager Flow Graph must connect launch approval proof into release-governance evidence.');
+assert(response.body.nodes?.some((node) => node.id === 'public-production-startup-readiness' && node.status === 'blocked' && node.route === '/public-production-startup-readiness'), 'Manager Flow Graph must keep the global public-production startup blocker visible after production approvals.');
+assert(response.body.edges?.some((edge) => edge.fromNodeId === 'public-production-startup-readiness' && edge.toNodeId === 'production-launch-control-center'), 'Manager Flow Graph must route the public startup blocker into Production Launch Control Center.');
 
 assert(!JSON.stringify(response.body).includes(ACCESS_SIGNING_SECRET), 'Launch governance validator must not leak access signing secret.');
 assert(!JSON.stringify(response.body).includes(MANAGED_PRODUCTION_ATTESTATION_SIGNING_SECRET), 'Launch governance validator must not leak managed-production attestation secret.');

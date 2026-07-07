@@ -11,7 +11,7 @@ import { createLocalSecretVault } from '../src/agents/secretVault.js';
 
 const ROOT_DIR = fileURLToPath(new URL('..', import.meta.url));
 const DIST_DIR = join(ROOT_DIR, 'dist');
-const BACKEND_STORE = new URL('../.tmp/agent-manager-provider-proof-ui-store.json', import.meta.url);
+const BACKEND_STORE = new URL(`../.tmp/agent-manager-provider-proof-ui-store-${process.pid}.json`, import.meta.url);
 const BACKEND_STORAGE_KEY = 'hall_of_fame_studio.agent_backend_url.v1';
 const LANGUAGE_STORAGE_KEY = 'hall_of_fame_studio.language.v1';
 const VIEWPORT = { width: 1440, height: 1100 };
@@ -284,8 +284,8 @@ try {
   await page.getByRole('button', { name: /Close/i }).last().click();
 
   await page.getByRole('button', { name: /Load Sample Fixture.*Manager demo data/i }).click();
-  await page.waitForFunction(() => document.body.innerText.includes('Manager Demo: Autonomous Agent Studio'), null, { timeout: 10000 });
-  await page.getByTestId('project-sample-fixture-banner').waitFor({ state: 'visible', timeout: 5000 });
+  await page.getByTestId('project-sample-fixture-banner').waitFor({ state: 'visible', timeout: 30000 });
+  await assertPageContains(page, 'Manager Demo: Autonomous Agent Studio', 'Manager Demo sample fixture must be visible before provider-proof UI validation.');
 
   await scrollDashboardToStation(page);
   const station = page.getByTestId('backend-worker-station');

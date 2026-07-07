@@ -10,7 +10,7 @@ const ROOT_DIR = fileURLToPath(new URL('..', import.meta.url));
 const DIST_DIR = join(ROOT_DIR, 'dist');
 const STATIC_PORTS = [4181, 4182, 4183, 4184, 4185];
 const VIEWPORT = { width: 1440, height: 1100 };
-const BACKEND_STORE = new URL('../.tmp/agent-manager-backend-ui-store.json', import.meta.url);
+const BACKEND_STORE = new URL(`../.tmp/agent-manager-backend-ui-store-${process.pid}.json`, import.meta.url);
 const PRESERVE_BACKEND_UI_TMP = process.env.HOFS_MANAGER_BACKEND_UI_PRESERVE_TMP === '1';
 const CAPTURE_SUCCESS_SCREENSHOT = process.env.HOFS_MANAGER_BACKEND_UI_SCREENSHOT === '1';
 const BACKEND_STORAGE_KEY = 'hall_of_fame_studio.agent_backend_url.v1';

@@ -230,6 +230,17 @@ const PROJECT_WORKSPACE_CAPABILITY_ROWS = [
     productionBlocker: 'managed persistence adapter, conflict policy, and recovery audit',
   },
   {
+    id: 'local-workspace-binding',
+    label: 'Local workspace binding',
+    status: 'backend-backed',
+    category: 'local-runtime',
+    backendRouteKey: 'workspaceBind',
+    requiredBackendRoute: '/projects/:projectId/workspace/bind',
+    managerVisibleControl: 'Settings Workspace Bind Workspace',
+    detail: 'Local/private MVP projects bind a real filesystem workspace through the backend local runtime instead of storing a browser-only path.',
+    productionBlocker: 'managed workspace storage, access policy, quota controls, and audit retention',
+  },
+  {
     id: 'project-rules',
     label: 'Runtime contract rules',
     status: 'backend-backed',
@@ -8859,6 +8870,8 @@ function buildProjectWorkspaceCapabilities(project = {}) {
     backendRoutes: {
       projectSettings: projectId ? `/projects/${projectId}/project-settings` : null,
       project: projectId ? `/projects/${projectId}` : null,
+      localRuntime: projectId ? `/projects/${projectId}/local-runtime` : null,
+      workspaceBind: projectId ? `/projects/${projectId}/workspace/bind` : null,
       transcripts: projectId ? `/projects/${projectId}/transcripts` : null,
       meetingSummaries: projectId ? `/projects/${projectId}/meeting-summaries` : null,
       runtimeContracts: projectId ? `/projects/${projectId}/runtime-contracts` : null,
@@ -10134,8 +10147,10 @@ function idsFromTasks(tasks = [], fields = []) {
   return tasks.flatMap((task) => fields.flatMap((field) => task[field] || []));
 }
 
-function buildReadinessProofMap({ project = {}, messages = [] } = {}) {
+function buildReadinessProofMap({ project = {}, messages = [], managerReadyPackage = {} } = {}) {
   const projectId = project.id || null;
+  const productionLaunchGapRegister = managerReadyPackage.productionLaunchGapRegister || {};
+  const productionLaunchGapSummary = productionLaunchGapRegister.summary || {};
   const readiness = evaluateManagerScenarioReadiness({
     project,
     team: project.team || [],
@@ -11364,6 +11379,57 @@ function buildReadinessProofMap({ project = {}, messages = [] } = {}) {
     && managerUseCaseAuditTimelineLogIds.length
     && managerUseCaseAuditEventIds.length
   );
+  const managerRequirementMatrixStageIds = [
+    'kickoff-brief-understood',
+    'roles-questions-and-self-nominations',
+    'agents-hear-each-other',
+    'confirmed-team',
+    'leader-election-marker',
+    'next-actions-and-autonomy',
+    'leader-group-assignment',
+    'assignee-receives-and-starts',
+    'progress-to-timeline',
+    'group-chat-visible',
+    'fixed-continuous-routines',
+    'midproject-dual-channel-change',
+    'change-discussion-owner-confirm',
+    'owner-plan-and-team-sync',
+    'agents-mutually-manage',
+  ];
+  const managerGovernanceProofIds = uniqueStrings([
+    ...managerUseCaseAuditProofIds,
+    ...receiptProofIds,
+    ...transcriptChannelProofIds,
+    ...agentMessageProofIds,
+  ]);
+  const managerGovernanceTimelineLogIds = uniqueStrings([
+    ...managerUseCaseAuditTimelineLogIds,
+    ...transcriptChannelTimelineLogIds,
+    ...agentMessageTimelineLogIds,
+  ]);
+  const managerGovernanceEventIds = uniqueStrings([
+    ...managerUseCaseAuditEventIds,
+    ...transcriptChannelEventIds,
+    ...agentMessageEventIds,
+  ]);
+  const managerGovernanceTaskIds = uniqueStrings([
+    ...assignmentTaskIds,
+    ...tasks.map((task) => task.id),
+    ...submissionRecords.map((submission) => submission.taskId),
+    ...submissionReviewRecords.map((review) => review.taskId),
+  ].filter(Boolean));
+  const managerGovernanceAgentIds = uniqueStrings([
+    ...team.map((agent) => agent.id),
+    ...agentIds,
+    ...submissionRecords.flatMap((submission) => [submission.agentId, submission.requestedReviewAgentId]),
+    ...submissionReviewRecords.flatMap((review) => [review.reviewerAgentId, review.submitterAgentId]),
+  ].filter(Boolean));
+  const managerGovernanceReady = Boolean(
+    projectId
+    && managerGovernanceProofIds.length
+    && managerGovernanceTimelineLogIds.length
+    && managerGovernanceEventIds.length
+  );
   const teamCollaborationDiagnosticProofIds = uniqueStrings([
     ...productTeamOperatingLoopProofIds,
     ...assignmentProofIds,
@@ -12540,6 +12606,191 @@ function buildReadinessProofMap({ project = {}, messages = [] } = {}) {
         ...ledgerEventIdsForTypes(project, ['autonomous-cycle', 'autonomous-work', 'agent-work-cycle', 'agent-submission', 'submission-review']),
       ]),
     },
+    continuousWorkLoopRoutes: projectId ? [
+      {
+        proofKind: 'continuous-work-loop',
+        proofLabel: 'Continuous Work Loop',
+        apiPath: `/projects/${projectId}/continuous-work-loop`,
+        channelId: 'manager-dashboard',
+        proofIds: agentAutonomousActionQueue.proofIds || [],
+        timelineLogIds: uniqueStrings([
+          ...(agentAutonomousActionQueue.timelineLogIds || []),
+          ...workLogIds,
+          ...managementLogIds,
+        ]),
+        eventIds: uniqueStrings([
+          ...(agentAutonomousActionQueue.eventIds || []),
+          ...ledgerEventIdsForTypes(project, ['autonomous-cycle', 'autonomous-work', 'agent-work-cycle', 'agent-submission', 'submission-review']),
+        ]),
+        taskIds: uniqueStrings((agentAutonomousActionQueue.rows || []).map((row) => row.taskId).filter(Boolean)),
+        agentIds: uniqueStrings((agentAutonomousActionQueue.rows || []).map((row) => row.agentId).filter(Boolean)),
+        readyCount: agentAutonomousActionQueue.readyCount || 0,
+        dueCount: agentAutonomousActionQueue.dueCount || 0,
+        schedulerRoute: '/workers/autonomous/tick',
+        autonomousRunControlRoute: `/projects/${projectId}/autonomous-run-control`,
+        agentQueueRoute: `/projects/${projectId}/agent-autonomous-action-queue`,
+        workerQueueRoute: `/projects/${projectId}/worker-queue`,
+        managerDashboardRoute: `/projects/${projectId}/manager-dashboard`,
+        readinessProofMapRoute: `/projects/${projectId}/readiness-proof-map`,
+        readyForLocalContinuousWork: Boolean(
+          (agentAutonomousActionQueue.proofIds || []).length
+          || workLogIds.length
+          || managementLogIds.length
+        ),
+        readyForUnattendedProduction: false,
+        productionBlocker: true,
+        productionBlockerReason: 'Continuous local/private-pilot work proof does not replace managed queue/cron, centralized observability, on-call ownership, incident recovery, or provider/BYOK cost controls.',
+      },
+    ] : [],
+    continuousWorkLoopSummary: {
+      count: projectId ? 1 : 0,
+      routeReady: Boolean(projectId),
+      readyForLocalContinuousWork: Boolean(
+        (agentAutonomousActionQueue.proofIds || []).length
+        || workLogIds.length
+        || managementLogIds.length
+      ),
+      readyForUnattendedProduction: false,
+      proofIds: agentAutonomousActionQueue.proofIds || [],
+      timelineLogIds: uniqueStrings([
+        ...(agentAutonomousActionQueue.timelineLogIds || []),
+        ...workLogIds,
+        ...managementLogIds,
+      ]),
+      eventIds: uniqueStrings([
+        ...(agentAutonomousActionQueue.eventIds || []),
+        ...ledgerEventIdsForTypes(project, ['autonomous-cycle', 'autonomous-work', 'agent-work-cycle', 'agent-submission', 'submission-review']),
+      ]),
+      productionBlockerCount: 1,
+    },
+    agentStateSummaryRoutes: projectId ? [
+      {
+        proofKind: 'agent-state-summary',
+        proofLabel: 'Agent State Summary',
+        apiPath: `/projects/${projectId}/agent-state-summary`,
+        channelId: 'manager-dashboard',
+        proofIds: uniqueStrings([
+          ...(agentAutonomousActionQueue.proofIds || []),
+          ...receiptProofIds,
+        ]),
+        timelineLogIds: uniqueStrings([
+          ...(agentAutonomousActionQueue.timelineLogIds || []),
+          ...workLogIds,
+          ...managementLogIds,
+        ]),
+        eventIds: uniqueStrings([
+          ...(agentAutonomousActionQueue.eventIds || []),
+          ...ledgerEventIdsForTypes(project, ['agent-work-cycle', 'agent-submission', 'submission-review', 'agent-message']),
+        ]),
+        taskIds: allTaskEvidenceIds,
+        agentIds: uniqueStrings([
+          ...team.map((agent) => agent.id),
+          ...agentIds,
+          ...(agentAutonomousActionQueue.rows || []).map((row) => row.agentId),
+        ].filter(Boolean)),
+        continuousWorkLoopRoute: `/projects/${projectId}/continuous-work-loop`,
+        agentQueueRoute: `/projects/${projectId}/agent-autonomous-action-queue`,
+        managerDashboardRoute: `/projects/${projectId}/manager-dashboard`,
+        readinessProofMapRoute: `/projects/${projectId}/readiness-proof-map`,
+        readyForLocalAgentStateSummary: team.length > 0,
+        readyForUnattendedProduction: false,
+        productionBlocker: true,
+        productionBlockerReason: 'Agent state proof does not replace managed runtime identity, managed queue/cron, centralized audit/observability, or provider/BYOK controls.',
+      },
+    ] : [],
+    agentStateSummarySummary: {
+      count: projectId ? 1 : 0,
+      routeReady: Boolean(projectId),
+      readyForLocalAgentStateSummary: team.length > 0,
+      readyForUnattendedProduction: false,
+      proofIds: uniqueStrings([
+        ...(agentAutonomousActionQueue.proofIds || []),
+        ...receiptProofIds,
+      ]),
+      timelineLogIds: uniqueStrings([
+        ...(agentAutonomousActionQueue.timelineLogIds || []),
+        ...workLogIds,
+        ...managementLogIds,
+      ]),
+      eventIds: uniqueStrings([
+        ...(agentAutonomousActionQueue.eventIds || []),
+        ...ledgerEventIdsForTypes(project, ['agent-work-cycle', 'agent-submission', 'submission-review', 'agent-message']),
+      ]),
+      agentIds: uniqueStrings([
+        ...team.map((agent) => agent.id),
+        ...agentIds,
+      ].filter(Boolean)),
+      productionBlockerCount: 1,
+    },
+    assignmentTimelineMatrixRoutes: projectId ? [
+      {
+        proofKind: 'assignment-timeline-matrix',
+        proofLabel: 'Assignment Timeline Matrix',
+        apiPath: `/projects/${projectId}/assignment-timeline-matrix`,
+        channelId: 'manager-dashboard',
+        proofIds: assignmentProofIds,
+        timelineLogIds: assignmentLogIds,
+        eventIds: ledgerEventIdsForTypes(project, ['leader-assignment', 'assignment-acknowledged']),
+        taskIds: assignmentTaskIds,
+        agentIds: uniqueStrings(tasks
+          .filter((task) => assignmentTaskIds.includes(task.id))
+          .flatMap((task) => [task.ownerId, task.assigneeId, task.assigneeAgentId])
+          .filter(Boolean)),
+        transcriptRoute: `/projects/${projectId}/transcripts`,
+        timelineRoute: `/projects/${projectId}/timeline`,
+        eventLedgerRoute: `/projects/${projectId}/events`,
+        managerDashboardRoute: `/projects/${projectId}/manager-dashboard`,
+        readinessProofMapRoute: `/projects/${projectId}/readiness-proof-map`,
+        readyForLocalAssignmentTimeline: assignmentTaskIds.length > 0 && assignmentProofIds.length > 0 && assignmentLogIds.length > 0,
+        readyForProduction: false,
+        productionBlocker: true,
+        productionBlockerReason: 'Assignment proof still needs managed membership, durable transcript retention, immutable event audit, and customer acceptance policy before production claims.',
+      },
+    ] : [],
+    assignmentTimelineMatrixSummary: {
+      count: projectId ? 1 : 0,
+      routeReady: Boolean(projectId),
+      readyForLocalAssignmentTimeline: assignmentTaskIds.length > 0 && assignmentProofIds.length > 0 && assignmentLogIds.length > 0,
+      readyForProduction: false,
+      proofIds: assignmentProofIds,
+      timelineLogIds: assignmentLogIds,
+      eventIds: ledgerEventIdsForTypes(project, ['leader-assignment', 'assignment-acknowledged']),
+      taskIds: assignmentTaskIds,
+      productionBlockerCount: 1,
+    },
+    changeFlowRoutes: projectId ? [
+      {
+        proofKind: 'change-flow',
+        proofLabel: 'Change Flow',
+        apiPath: `/projects/${projectId}/change-flow`,
+        channelId: 'manager-dashboard',
+        proofIds: changeProofIds,
+        timelineLogIds: changeLogIds,
+        eventIds: ledgerEventIdsForTypes(project, ['change-requested', 'change-discussion', 'change-confirmed', 'change-sync']),
+        taskIds: uniqueStrings(changes.map((change) => change.taskId).filter(Boolean)),
+        agentIds: uniqueStrings(changes.flatMap((change) => [change.ownerId, change.ownerAgentId, ...(change.agentIds || [])]).filter(Boolean)),
+        transcriptRoute: `/projects/${projectId}/transcripts`,
+        timelineRoute: `/projects/${projectId}/timeline`,
+        eventLedgerRoute: `/projects/${projectId}/events`,
+        managerDashboardRoute: `/projects/${projectId}/manager-dashboard`,
+        readinessProofMapRoute: `/projects/${projectId}/readiness-proof-map`,
+        readyForLocalChangeFlow: changes.some((change) => change.confirmationMessageId && change.syncMessageId),
+        readyForProduction: false,
+        productionBlocker: true,
+        productionBlockerReason: 'Change proof still needs managed approval policy, immutable event audit, release acceptance, and rollback/incident process before production claims.',
+      },
+    ] : [],
+    changeFlowSummary: {
+      count: projectId ? 1 : 0,
+      routeReady: Boolean(projectId),
+      readyForLocalChangeFlow: changes.some((change) => change.confirmationMessageId && change.syncMessageId),
+      readyForProduction: false,
+      proofIds: changeProofIds,
+      timelineLogIds: changeLogIds,
+      eventIds: ledgerEventIdsForTypes(project, ['change-requested', 'change-discussion', 'change-confirmed', 'change-sync']),
+      taskIds: uniqueStrings(changes.map((change) => change.taskId).filter(Boolean)),
+      productionBlockerCount: 1,
+    },
     autonomousRunControlRunSummary: {
       count: autonomousRunControlRunRoutes.length,
       proofIds: uniqueStrings(autonomousRunControlRunRoutes.flatMap((route) => route.proofIds || [])),
@@ -12813,6 +13064,104 @@ function buildReadinessProofMap({ project = {}, messages = [] } = {}) {
       quarantinedCount: evidenceSourceReviewRecords.filter((review) => review.decision === 'quarantined').length,
       needsCorroborationCount: evidenceSourceReviewRecords.filter((review) => review.decision === 'needs-corroboration').length,
     },
+    evidenceQualityRoutes: projectId ? [{
+      proofKind: 'evidence-quality-audit',
+      proofLabel: 'Evidence Quality Audit',
+      apiPath: `/projects/${projectId}/evidence-quality-audit`,
+      channelId: 'main',
+      proofIds: uniqueStrings([
+        ...evidenceSearchProofIds,
+        ...evidenceSourceReviewProofIds,
+        ...evidenceProviderReceiptRecords.map((receipt) => receipt.id),
+      ].filter(Boolean)),
+      timelineLogIds: uniqueStrings([
+        ...evidenceSearchLogIds,
+        ...evidenceSourceReviewLogIds,
+      ].filter(Boolean)),
+      eventIds: uniqueStrings([
+        ...evidenceSearchEventIds,
+        ...evidenceSourceReviewEventIds,
+      ].filter(Boolean)),
+      taskIds: uniqueStrings([
+        ...evidenceSearchRecords.map((record) => record.taskId),
+        ...evidenceSourceReviewRecords.map((review) => review.taskId),
+      ].filter(Boolean)),
+      agentIds: uniqueStrings([
+        ...evidenceSearchRecords.map((record) => record.agentId),
+        ...evidenceSourceReviewRecords.flatMap((review) => [review.reviewerAgentId, review.sourceOwnerAgentId]),
+      ].filter(Boolean)),
+      evidenceSearchCount: evidenceSearchRecords.length,
+      sourceCount: evidenceSearchRecords.reduce((sum, record) => sum + (record.sources?.length || 0), 0),
+      usableEvidenceCount: evidenceSearchRecords.filter((record) => ['strong-evidence', 'usable-evidence'].includes(record.evidenceJudgement || record.qualitySummary?.judgement)).length,
+      averageQualityScore: evidenceSearchRecords.length
+        ? Math.round(evidenceSearchRecords.reduce((sum, record) => sum + (Number(record.qualityScore ?? record.qualitySummary?.averageScore) || 0), 0) / evidenceSearchRecords.length)
+        : 0,
+      sourceSafetyBlockedSourceCount: evidenceSearchRecords.reduce((sum, record) => sum + ((record.sourceSafetySummary || summarizeEvidenceSourceSafety(record.sources || [])).blockedSourceCount || 0), 0),
+      readyForDecision: Boolean(
+        evidenceSearchRecords.length
+        && evidenceSearchRecords.some((record) => ['strong-evidence', 'usable-evidence'].includes(record.evidenceJudgement || record.qualitySummary?.judgement))
+        && evidenceSearchRecords.reduce((sum, record) => sum + ((record.sourceSafetySummary || summarizeEvidenceSourceSafety(record.sources || [])).blockedSourceCount || 0), 0) === 0
+      ),
+      readyForProduction: false,
+      productionBlocker: true,
+      productionBlockerReason: 'Production evidence quality still needs calibrated source-quality policy, managed provider audit, and customer evidence acceptance controls.',
+    }] : [],
+    evidenceQualitySummary: {
+      count: projectId ? 1 : 0,
+      routeReady: Boolean(projectId),
+      evidenceSearchCount: evidenceSearchRecords.length,
+      sourceCount: evidenceSearchRecords.reduce((sum, record) => sum + (record.sources?.length || 0), 0),
+      usableEvidenceCount: evidenceSearchRecords.filter((record) => ['strong-evidence', 'usable-evidence'].includes(record.evidenceJudgement || record.qualitySummary?.judgement)).length,
+      proofIds: uniqueStrings([
+        ...evidenceSearchProofIds,
+        ...evidenceSourceReviewProofIds,
+        ...evidenceProviderReceiptRecords.map((receipt) => receipt.id),
+      ].filter(Boolean)),
+      timelineLogIds: uniqueStrings([
+        ...evidenceSearchLogIds,
+        ...evidenceSourceReviewLogIds,
+      ].filter(Boolean)),
+      eventIds: uniqueStrings([
+        ...evidenceSearchEventIds,
+        ...evidenceSourceReviewEventIds,
+      ].filter(Boolean)),
+      readyForProduction: false,
+      productionBlockerCount: 1,
+    },
+    evidenceSourceReviewWorkflowRoutes: projectId ? [{
+      proofKind: 'evidence-source-review-workflow',
+      proofLabel: 'Evidence Source Review Workflow',
+      apiPath: `/projects/${projectId}/evidence-source-review-workflow`,
+      channelId: 'main',
+      proofIds: evidenceSourceReviewProofIds,
+      timelineLogIds: evidenceSourceReviewLogIds,
+      eventIds: evidenceSourceReviewEventIds,
+      taskIds: uniqueStrings(evidenceSourceReviewRecords.map((review) => review.taskId).filter(Boolean)),
+      agentIds: uniqueStrings(evidenceSourceReviewRecords.flatMap((review) => [review.reviewerAgentId, review.sourceOwnerAgentId]).filter(Boolean)),
+      evidenceSearchIds: uniqueStrings(evidenceSourceReviewRecords.map((review) => review.evidenceSearchId).filter(Boolean)),
+      sourceReviewCount: evidenceSourceReviewRecords.length,
+      approvedCount: evidenceSourceReviewRecords.filter((review) => review.decision === 'approved').length,
+      rejectedCount: evidenceSourceReviewRecords.filter((review) => review.decision === 'rejected').length,
+      quarantinedCount: evidenceSourceReviewRecords.filter((review) => review.decision === 'quarantined').length,
+      readyForLocalPilotSourceReview: Boolean(evidenceSourceReviewRecords.length && evidenceSourceReviewRecords.every((review) => review.decision || review.status)),
+      readyForProduction: false,
+      productionBlocker: true,
+      productionBlockerReason: 'Production source review still needs human approval policy, immutable source/provider audit storage, and customer evidence acceptance controls.',
+    }] : [],
+    evidenceSourceReviewWorkflowSummary: {
+      count: projectId ? 1 : 0,
+      routeReady: Boolean(projectId),
+      sourceReviewCount: evidenceSourceReviewRecords.length,
+      approvedCount: evidenceSourceReviewRecords.filter((review) => review.decision === 'approved').length,
+      rejectedCount: evidenceSourceReviewRecords.filter((review) => review.decision === 'rejected').length,
+      quarantinedCount: evidenceSourceReviewRecords.filter((review) => review.decision === 'quarantined').length,
+      proofIds: evidenceSourceReviewProofIds,
+      timelineLogIds: evidenceSourceReviewLogIds,
+      eventIds: evidenceSourceReviewEventIds,
+      readyForLocalPilotSourceReview: Boolean(evidenceSourceReviewRecords.length && evidenceSourceReviewRecords.every((review) => review.decision || review.status)),
+      readyForProduction: false,
+      productionBlockerCount: 1,
+    },
     submissionReviewRoutes: submissionReviewRecords.map((review) => ({
       proofKind: 'submission-review',
       proofLabel: `${review.verdict || 'review'}: ${review.submissionId}`,
@@ -12971,6 +13320,124 @@ function buildReadinessProofMap({ project = {}, messages = [] } = {}) {
       revisionCount: revisionRecords.length,
       acceptedFinalDeliverableCount: productTeamOperatingLoopAcceptedFinalDeliverableCount,
     },
+    zeroToAutonomyReportRoutes: projectId ? [(() => {
+      const artifactTypes = uniqueStrings(submissionRecords.map((submission) => submission.artifactType).filter(Boolean));
+      const coveredArtifactTypes = GENERIC_PRODUCT_TEAM_ARTIFACT_TYPES.filter((type) => artifactTypes.includes(type));
+      const reportProofIds = uniqueStrings([
+        ...kickoffProofIds,
+        ...selfMarketingRoutes.flatMap((route) => route.proofIds || []),
+        ...brainstormProofIds,
+        ...evidenceSearchProofIds,
+        ...evidenceSourceReviewProofIds,
+        ...submissionProofIds,
+        ...submissionReviewProofIds,
+        ...revisionRecords.map((submission) => submission.messageId),
+        ...evidenceCustodyProofIds,
+      ]);
+      const reportTimelineLogIds = uniqueStrings([
+        ...brainstormLogIds,
+        ...evidenceSearchLogIds,
+        ...evidenceSourceReviewLogIds,
+        ...submissionLogIds,
+        ...submissionReviewLogIds,
+        ...revisionRecords.map((submission) => submission.timelineLogId),
+        ...evidenceCustodyLogIds,
+      ]);
+      const reportEventIds = uniqueStrings([
+        ...roleNegotiationRoutes.flatMap((route) => route.eventIds || []),
+        ...selfMarketingRoutes.flatMap((route) => route.eventIds || []),
+        ...brainstormEventIds,
+        ...evidenceSearchEventIds,
+        ...evidenceSourceReviewEventIds,
+        ...submissionEventIds,
+        ...submissionReviewEventIds,
+        ...revisionRecords.map((submission) => submission.eventId),
+        ...evidenceCustodyEventIds,
+      ]);
+      const readyForLocalMvpTrial = Boolean(
+        projectId
+        && kickoffProofIds.length
+        && selfMarketingRoutes.length
+        && brainstormSubmissionRecords.length
+        && evidenceSearchRecords.length
+        && evidenceSourceReviewRecords.length
+        && revisionRecords.length
+        && productTeamOperatingLoopAcceptedFinalDeliverableCount > 0
+        && coveredArtifactTypes.length === GENERIC_PRODUCT_TEAM_ARTIFACT_TYPES.length
+        && reportProofIds.length
+        && reportTimelineLogIds.length
+        && reportEventIds.length
+      );
+      return {
+        proofKind: 'zero-to-autonomy-report',
+        proofLabel: 'Project zero-to-autonomy validation report',
+        apiPath: `/projects/${projectId}/zero-to-autonomy-report`,
+        channelId: 'manager-dashboard',
+        proofIds: reportProofIds,
+        timelineLogIds: reportTimelineLogIds,
+        eventIds: reportEventIds,
+        taskIds: uniqueStrings([
+          ...submissionRecords.map((submission) => submission.taskId),
+          ...evidenceSearchRecords.map((record) => record.taskId),
+          ...submissionReviewRecords.map((review) => review.taskId),
+        ].filter(Boolean)),
+        agentIds: uniqueStrings([
+          ...agentIds,
+          ...submissionRecords.flatMap((submission) => [submission.agentId, submission.requestedReviewAgentId]),
+          ...submissionReviewRecords.flatMap((review) => [review.reviewerAgentId, review.submitterAgentId]),
+        ].filter(Boolean)),
+        stageCount: 10,
+        readyForLocalMvpTrial,
+        readyForPrivatePilotDelivery: Boolean(productTeamOperatingLoopAcceptedFinalDeliverableCount > 0),
+        readyForPublicProduction: false,
+        requiredArtifactTypeCount: GENERIC_PRODUCT_TEAM_ARTIFACT_TYPES.length,
+        submittedArtifactTypeCount: coveredArtifactTypes.length,
+        productionBlocker: true,
+        productionBlockerReason: 'Public production still needs managed identity, managed secrets, managed persistence, durable queues, centralized observability, provider controls, and acceptance/rollback policy.',
+      };
+    })()] : [],
+    zeroToAutonomyReportSummary: {
+      count: projectId ? 1 : 0,
+      routeReady: Boolean(projectId),
+      readyForPublicProduction: false,
+      requiredArtifactTypeCount: GENERIC_PRODUCT_TEAM_ARTIFACT_TYPES.length,
+      submittedArtifactTypeCount: GENERIC_PRODUCT_TEAM_ARTIFACT_TYPES.filter((type) => (
+        uniqueStrings(submissionRecords.map((submission) => submission.artifactType).filter(Boolean)).includes(type)
+      )).length,
+      stageCount: 10,
+      proofIds: uniqueStrings([
+        ...kickoffProofIds,
+        ...selfMarketingRoutes.flatMap((route) => route.proofIds || []),
+        ...brainstormProofIds,
+        ...evidenceSearchProofIds,
+        ...evidenceSourceReviewProofIds,
+        ...submissionProofIds,
+        ...submissionReviewProofIds,
+        ...revisionRecords.map((submission) => submission.messageId),
+        ...evidenceCustodyProofIds,
+      ]),
+      timelineLogIds: uniqueStrings([
+        ...brainstormLogIds,
+        ...evidenceSearchLogIds,
+        ...evidenceSourceReviewLogIds,
+        ...submissionLogIds,
+        ...submissionReviewLogIds,
+        ...revisionRecords.map((submission) => submission.timelineLogId),
+        ...evidenceCustodyLogIds,
+      ]),
+      eventIds: uniqueStrings([
+        ...roleNegotiationRoutes.flatMap((route) => route.eventIds || []),
+        ...selfMarketingRoutes.flatMap((route) => route.eventIds || []),
+        ...brainstormEventIds,
+        ...evidenceSearchEventIds,
+        ...evidenceSourceReviewEventIds,
+        ...submissionEventIds,
+        ...submissionReviewEventIds,
+        ...revisionRecords.map((submission) => submission.eventId),
+        ...evidenceCustodyEventIds,
+      ]),
+      productionBlockerCount: 1,
+    },
     productTeamAcceptanceChainRoutes,
     productTeamAcceptanceChainSummary,
     plannerExecutorReviewerStateMachineRoutes,
@@ -13011,6 +13478,293 @@ function buildReadinessProofMap({ project = {}, messages = [] } = {}) {
       readyForLocalManagerUseCaseAudit: managerUseCaseAuditReady,
       readyForProduction: false,
       stageCount: managerUseCaseAuditStageIds.length,
+      proofIds: managerUseCaseAuditProofIds,
+      timelineLogIds: managerUseCaseAuditTimelineLogIds,
+      eventIds: managerUseCaseAuditEventIds,
+      productionBlockerCount: 1,
+    },
+    governanceProtocolRoutes: projectId ? [(() => {
+      const charter = project.kickoffCharter || {};
+      const governance = charter.governance || {};
+      const protocolProofIds = uniqueStrings([
+        charter.id,
+        ...(charter.evidence?.directorBriefIds || []),
+        ...(charter.evidence?.roleTranscriptIds || []),
+        ...(charter.evidence?.leaderCampaignIds || []),
+        ...(charter.evidence?.assignmentMessageIds || []),
+        ...(charter.evidence?.acknowledgementMessageIds || []),
+      ]);
+      const protocolTimelineLogIds = uniqueStrings((project.logs || [])
+        .filter((log) => ['project-approved', 'leader-confirmed', 'leader-assignment', 'assignment-acknowledged'].includes(log.eventType))
+        .map((log) => log.id));
+      const protocolEventIds = uniqueStrings([
+        charter.ledgerEvent?.id,
+        ...(charter.ledgerEvents || []).map((event) => event.id),
+        ...ledgerEventIdsForTypes(project, [
+          'kickoff-director-brief',
+          'kickoff-role-question',
+          'kickoff-role-volunteer',
+          'kickoff-leader-campaign',
+          'kickoff-charter-approved',
+          'leader-assignment',
+          'assignment-acknowledged',
+        ]),
+      ]);
+      return {
+        proofKind: 'governance-protocol',
+        proofLabel: 'Governance Protocol',
+        apiPath: `/projects/${projectId}/governance-protocol`,
+        channelId: 'manager-dashboard',
+        proofIds: protocolProofIds,
+        timelineLogIds: protocolTimelineLogIds,
+        eventIds: protocolEventIds,
+        taskIds: uniqueStrings((charter.nextActions || []).map((action) => action.id).filter(Boolean)),
+        agentIds: uniqueStrings([governance.leaderId, governance.reviewerId].filter(Boolean)),
+        leaderId: governance.leaderId || null,
+        reviewerId: governance.reviewerId || null,
+        projectRoute: `/projects/${projectId}`,
+        managerDashboardRoute: `/projects/${projectId}/manager-dashboard`,
+        managerFlowGraphRoute: `/projects/${projectId}/manager-flow-graph`,
+        readinessProofMapRoute: `/projects/${projectId}/readiness-proof-map`,
+        transcriptRoute: `/projects/${projectId}/transcripts`,
+        timelineRoute: `/projects/${projectId}/timeline`,
+        eventLedgerRoute: `/projects/${projectId}/events`,
+        readyForLocalGovernanceProtocol: Boolean(governance.leaderId && governance.reviewerId && protocolProofIds.length),
+        readyForProduction: false,
+        productionBlocker: true,
+        productionBlockerReason: 'Kickoff governance proves local/private project responsibility only; production still needs managed membership, durable meeting retention, immutable audit, customer acceptance policy, and production governance approval.',
+      };
+    })()] : [],
+    governanceProtocolSummary: {
+      count: projectId ? 1 : 0,
+      routeReady: Boolean(projectId),
+      leaderId: project.kickoffCharter?.governance?.leaderId || null,
+      leaderName: project.kickoffCharter?.governance?.leaderName || null,
+      reviewerId: project.kickoffCharter?.governance?.reviewerId || null,
+      reviewerName: project.kickoffCharter?.governance?.reviewerName || null,
+      readyForLocalGovernanceProtocol: Boolean(project.kickoffCharter?.governance?.leaderId && project.kickoffCharter?.governance?.reviewerId),
+      readyForProduction: false,
+      proofIds: uniqueStrings([
+        project.kickoffCharter?.id,
+        ...(project.kickoffCharter?.evidence?.directorBriefIds || []),
+        ...(project.kickoffCharter?.evidence?.roleTranscriptIds || []),
+        ...(project.kickoffCharter?.evidence?.leaderCampaignIds || []),
+        ...(project.kickoffCharter?.evidence?.assignmentMessageIds || []),
+        ...(project.kickoffCharter?.evidence?.acknowledgementMessageIds || []),
+      ]),
+      eventIds: uniqueStrings([
+        project.kickoffCharter?.ledgerEvent?.id,
+        ...(project.kickoffCharter?.ledgerEvents || []).map((event) => event.id),
+      ]),
+      productionBlockerCount: 1,
+    },
+    managerCommandCenterRoutes: projectId ? [{
+      proofKind: 'manager-command-center',
+      proofLabel: 'Manager Live Command Center',
+      apiPath: `/projects/${projectId}/manager-command-center`,
+      channelId: 'manager-dashboard',
+      proofIds: managerGovernanceProofIds,
+      timelineLogIds: managerGovernanceTimelineLogIds,
+      eventIds: managerGovernanceEventIds,
+      taskIds: managerGovernanceTaskIds,
+      agentIds: managerGovernanceAgentIds,
+      managerDashboardRoute: `/projects/${projectId}/manager-dashboard`,
+      managerActionQueueRoute: `/projects/${projectId}/manager-action-queue`,
+      managerScenarioWalkthroughRoute: `/projects/${projectId}/manager-scenario-walkthrough`,
+      managerFlowGraphRoute: `/projects/${projectId}/manager-flow-graph`,
+      readinessProofMapRoute: `/projects/${projectId}/readiness-proof-map`,
+      nextRunRoute: `/projects/${projectId}/manager-command-center/run-next`,
+      readyForLocalManagerCommandCenter: managerGovernanceReady,
+      readyForProduction: false,
+      productionBlocker: true,
+      productionBlockerReason: 'Manager Command Center proves local/private orchestration visibility; production still needs managed queue policy, durable audit, customer approval rules, and incident ownership.',
+    }] : [],
+    managerCommandCenterSummary: {
+      count: projectId ? 1 : 0,
+      routeReady: Boolean(projectId),
+      readyForLocalManagerCommandCenter: managerGovernanceReady,
+      readyForProduction: false,
+      proofIds: managerGovernanceProofIds,
+      timelineLogIds: managerGovernanceTimelineLogIds,
+      eventIds: managerGovernanceEventIds,
+      taskIds: managerGovernanceTaskIds,
+      productionBlockerCount: 1,
+    },
+    managerScenarioTrailRoutes: projectId ? [{
+      proofKind: 'manager-scenario-trail',
+      proofLabel: 'Manager Scenario Trail',
+      apiPath: `/projects/${projectId}/manager-scenario-trail`,
+      channelId: 'manager-dashboard',
+      proofIds: managerUseCaseAuditProofIds,
+      timelineLogIds: managerUseCaseAuditTimelineLogIds,
+      eventIds: managerUseCaseAuditEventIds,
+      taskIds: managerGovernanceTaskIds,
+      agentIds: managerGovernanceAgentIds,
+      stageIds: managerUseCaseAuditStageIds,
+      stageCount: managerUseCaseAuditStageIds.length,
+      managerDashboardRoute: `/projects/${projectId}/manager-dashboard`,
+      managerFlowGraphRoute: `/projects/${projectId}/manager-flow-graph`,
+      readinessProofMapRoute: `/projects/${projectId}/readiness-proof-map`,
+      readyForLocalManagerScenarioTrail: managerUseCaseAuditReady,
+      readyForProduction: false,
+      productionBlocker: true,
+      productionBlockerReason: 'Scenario Trail proves the private MVP customer story; production still needs durable customer acceptance criteria and release governance.',
+    }] : [],
+    managerScenarioTrailSummary: {
+      count: projectId ? 1 : 0,
+      routeReady: Boolean(projectId),
+      readyForLocalManagerScenarioTrail: managerUseCaseAuditReady,
+      readyForProduction: false,
+      stageCount: managerUseCaseAuditStageIds.length,
+      proofIds: managerUseCaseAuditProofIds,
+      timelineLogIds: managerUseCaseAuditTimelineLogIds,
+      eventIds: managerUseCaseAuditEventIds,
+      productionBlockerCount: 1,
+    },
+    managerScenarioWalkthroughRoutes: projectId ? [{
+      proofKind: 'manager-scenario-walkthrough',
+      proofLabel: 'Manager Scenario Walkthrough',
+      apiPath: `/projects/${projectId}/manager-scenario-walkthrough`,
+      channelId: 'manager-dashboard',
+      proofIds: managerUseCaseAuditProofIds,
+      timelineLogIds: managerUseCaseAuditTimelineLogIds,
+      eventIds: managerUseCaseAuditEventIds,
+      taskIds: managerGovernanceTaskIds,
+      agentIds: managerGovernanceAgentIds,
+      stageIds: managerUseCaseAuditStageIds,
+      stageCount: managerUseCaseAuditStageIds.length,
+      managerScenarioTrailRoute: `/projects/${projectId}/manager-scenario-trail`,
+      managerActionQueueRoute: `/projects/${projectId}/manager-action-queue`,
+      managerFlowGraphRoute: `/projects/${projectId}/manager-flow-graph`,
+      readinessProofMapRoute: `/projects/${projectId}/readiness-proof-map`,
+      nextRunTemplate: `/projects/${projectId}/manager-scenario-walkthrough/:stepId/run`,
+      readyForLocalManagerScenarioWalkthrough: managerUseCaseAuditReady,
+      readyForProduction: false,
+      productionBlocker: true,
+      productionBlockerReason: 'Scenario Walkthrough can guide the private MVP story; production still needs customer-owned run approvals and rollback/incident controls.',
+    }] : [],
+    managerScenarioWalkthroughSummary: {
+      count: projectId ? 1 : 0,
+      routeReady: Boolean(projectId),
+      readyForLocalManagerScenarioWalkthrough: managerUseCaseAuditReady,
+      readyForProduction: false,
+      stageCount: managerUseCaseAuditStageIds.length,
+      proofIds: managerUseCaseAuditProofIds,
+      timelineLogIds: managerUseCaseAuditTimelineLogIds,
+      eventIds: managerUseCaseAuditEventIds,
+      productionBlockerCount: 1,
+    },
+    managerRequirementMatrixRoutes: projectId ? [{
+      proofKind: 'manager-requirement-matrix',
+      proofLabel: 'Manager Requirement Matrix',
+      apiPath: `/projects/${projectId}/manager-requirement-matrix`,
+      channelId: 'manager-dashboard',
+      proofIds: managerUseCaseAuditProofIds,
+      timelineLogIds: managerUseCaseAuditTimelineLogIds,
+      eventIds: managerUseCaseAuditEventIds,
+      taskIds: managerGovernanceTaskIds,
+      agentIds: managerGovernanceAgentIds,
+      requirementIds: managerRequirementMatrixStageIds,
+      requirementCount: managerRequirementMatrixStageIds.length,
+      managerScenarioTrailRoute: `/projects/${projectId}/manager-scenario-trail`,
+      managerUseCaseAuditRoute: `/projects/${projectId}/manager-use-case-audit`,
+      managerActionQueueRoute: `/projects/${projectId}/manager-action-queue`,
+      managerFlowGraphRoute: `/projects/${projectId}/manager-flow-graph`,
+      readinessProofMapRoute: `/projects/${projectId}/readiness-proof-map`,
+      readyForLocalManagerRequirementMatrix: managerUseCaseAuditReady,
+      readyForProduction: false,
+      productionBlocker: true,
+      productionBlockerReason: 'Requirement Matrix is a private MVP governance checklist; production still needs contractual acceptance thresholds and release ownership.',
+    }] : [],
+    managerRequirementMatrixSummary: {
+      count: projectId ? 1 : 0,
+      routeReady: Boolean(projectId),
+      readyForLocalManagerRequirementMatrix: managerUseCaseAuditReady,
+      readyForProduction: false,
+      requirementCount: managerRequirementMatrixStageIds.length,
+      proofIds: managerUseCaseAuditProofIds,
+      timelineLogIds: managerUseCaseAuditTimelineLogIds,
+      eventIds: managerUseCaseAuditEventIds,
+      productionBlockerCount: 1,
+    },
+    syncProtocolAuditRoutes: projectId ? [{
+      proofKind: 'sync-protocol-audit',
+      proofLabel: 'C/A Sync Protocol Audit',
+      apiPath: `/projects/${projectId}/sync-protocol-audit`,
+      channelId: 'manager-dashboard',
+      proofIds: uniqueStrings([
+        ...managerGovernanceProofIds,
+        ...teamCollaborationDiagnosticProofIds,
+      ]),
+      timelineLogIds: uniqueStrings([
+        ...managerGovernanceTimelineLogIds,
+        ...teamCollaborationDiagnosticTimelineLogIds,
+      ]),
+      eventIds: uniqueStrings([
+        ...managerGovernanceEventIds,
+        ...teamCollaborationDiagnosticEventIds,
+      ]),
+      taskIds: managerGovernanceTaskIds,
+      agentIds: managerGovernanceAgentIds,
+      managerDashboardRoute: `/projects/${projectId}/manager-dashboard`,
+      managerActionQueueRoute: `/projects/${projectId}/manager-action-queue`,
+      teamCollaborationDiagnosticsRoute: `/projects/${projectId}/team-collaboration-diagnostics`,
+      transcriptRoute: `/projects/${projectId}/transcripts`,
+      timelineRoute: `/projects/${projectId}/timeline`,
+      eventLedgerRoute: `/projects/${projectId}/events`,
+      readinessProofMapRoute: `/projects/${projectId}/readiness-proof-map`,
+      readyForLocalSyncProtocolAudit: Boolean(managerGovernanceReady && teamCollaborationDiagnosticsReady),
+      readyForProduction: false,
+      productionBlocker: true,
+      productionBlockerReason: 'C/A sync protocol audit proves local/private orchestration only; production still needs managed adapter policy, immutable event audit, and operator escalation rules.',
+    }] : [],
+    syncProtocolAuditSummary: {
+      count: projectId ? 1 : 0,
+      routeReady: Boolean(projectId),
+      readyForLocalSyncProtocolAudit: Boolean(managerGovernanceReady && teamCollaborationDiagnosticsReady),
+      readyForProduction: false,
+      proofIds: uniqueStrings([
+        ...managerGovernanceProofIds,
+        ...teamCollaborationDiagnosticProofIds,
+      ]),
+      timelineLogIds: uniqueStrings([
+        ...managerGovernanceTimelineLogIds,
+        ...teamCollaborationDiagnosticTimelineLogIds,
+      ]),
+      eventIds: uniqueStrings([
+        ...managerGovernanceEventIds,
+        ...teamCollaborationDiagnosticEventIds,
+      ]),
+      productionBlockerCount: 1,
+    },
+    managerActionQueueRoutes: projectId ? [{
+      proofKind: 'manager-action-queue',
+      proofLabel: 'Manager Action Queue',
+      apiPath: `/projects/${projectId}/manager-action-queue`,
+      channelId: 'manager-dashboard',
+      proofIds: managerUseCaseAuditProofIds,
+      timelineLogIds: managerUseCaseAuditTimelineLogIds,
+      eventIds: managerUseCaseAuditEventIds,
+      taskIds: managerGovernanceTaskIds,
+      agentIds: managerGovernanceAgentIds,
+      requirementIds: managerRequirementMatrixStageIds,
+      actionCount: managerRequirementMatrixStageIds.length,
+      runTemplateRoute: `/projects/${projectId}/manager-action-queue/:actionId/run`,
+      managerCommandCenterRoute: `/projects/${projectId}/manager-command-center`,
+      managerRequirementMatrixRoute: `/projects/${projectId}/manager-requirement-matrix`,
+      managerScenarioWalkthroughRoute: `/projects/${projectId}/manager-scenario-walkthrough`,
+      readinessProofMapRoute: `/projects/${projectId}/readiness-proof-map`,
+      readyForLocalManagerActionQueue: Boolean(projectId && managerRequirementMatrixStageIds.length),
+      readyForProduction: false,
+      productionBlocker: true,
+      productionBlockerReason: 'Manager Action Queue run routes are local/private orchestration controls; production still needs approval, rate-limit, audit, rollback, and incident ownership.',
+    }] : [],
+    managerActionQueueSummary: {
+      count: projectId ? 1 : 0,
+      routeReady: Boolean(projectId),
+      readyForLocalManagerActionQueue: Boolean(projectId && managerRequirementMatrixStageIds.length),
+      readyForProduction: false,
+      actionCount: managerRequirementMatrixStageIds.length,
       proofIds: managerUseCaseAuditProofIds,
       timelineLogIds: managerUseCaseAuditTimelineLogIds,
       eventIds: managerUseCaseAuditEventIds,
@@ -13386,6 +14140,163 @@ function buildReadinessProofMap({ project = {}, messages = [] } = {}) {
       timelineLogIds: evidenceCustodyLogIds,
       eventIds: evidenceCustodyEventIds,
       productionStorageReady: false,
+    },
+    evidenceIndexReadinessRoutes: projectId ? [{
+      proofKind: 'evidence-index-readiness',
+      proofLabel: 'Evidence Index Readiness',
+      apiPath: `/projects/${projectId}/evidence-index-readiness`,
+      channelId: null,
+      proofIds: uniqueStrings([
+        ...evidenceSearchProofIds,
+        ...submissionProofIds,
+        ...evidenceCustodyProofIds,
+      ].filter(Boolean)),
+      timelineLogIds: uniqueStrings([
+        ...evidenceSearchLogIds,
+        ...submissionLogIds,
+        ...evidenceCustodyLogIds,
+      ].filter(Boolean)),
+      eventIds: uniqueStrings([
+        ...evidenceSearchEventIds,
+        ...submissionEventIds,
+        ...evidenceCustodyEventIds,
+      ].filter(Boolean)),
+      taskIds: uniqueStrings([
+        ...evidenceSearchRecords.map((record) => record.taskId),
+        ...submissionRecords.map((submission) => submission.taskId),
+      ].filter(Boolean)),
+      agentIds: uniqueStrings([
+        ...evidenceSearchRecords.map((record) => record.agentId),
+        ...submissionRecords.map((submission) => submission.agentId),
+      ].filter(Boolean)),
+      evidenceSearchCount: evidenceSearchRecords.length,
+      sourceSnapshotCount: evidenceSourceSnapshotRecords.length,
+      providerReceiptCount: evidenceProviderReceiptRecords.length,
+      submissionCount: submissionRecords.length,
+      artifactStorageProofCount: submissionRecords.filter((submission) => (
+        submission.artifactStorageProof?.checksum
+        || submission.workspaceFileProof?.checksum
+        || submission.artifact?.storageProof?.checksum
+      )).length,
+      readyForLocalEvidenceIndex: Boolean(evidenceSearchRecords.length || submissionRecords.some((submission) => (
+        submission.artifactStorageProof?.checksum
+        || submission.workspaceFileProof?.checksum
+        || submission.artifact?.storageProof?.checksum
+      ))),
+      readyForProduction: false,
+      productionBlocker: true,
+      productionBlockerReason: 'Production evidence indexing still needs managed vector/object storage, retention/deletion policy, and centralized custody audit.',
+    }] : [],
+    evidenceIndexReadinessSummary: {
+      count: projectId ? 1 : 0,
+      routeReady: Boolean(projectId),
+      evidenceSearchCount: evidenceSearchRecords.length,
+      sourceSnapshotCount: evidenceSourceSnapshotRecords.length,
+      providerReceiptCount: evidenceProviderReceiptRecords.length,
+      submissionCount: submissionRecords.length,
+      artifactStorageProofCount: submissionRecords.filter((submission) => (
+        submission.artifactStorageProof?.checksum
+        || submission.workspaceFileProof?.checksum
+        || submission.artifact?.storageProof?.checksum
+      )).length,
+      proofIds: uniqueStrings([
+        ...evidenceSearchProofIds,
+        ...submissionProofIds,
+        ...evidenceCustodyProofIds,
+      ].filter(Boolean)),
+      timelineLogIds: uniqueStrings([
+        ...evidenceSearchLogIds,
+        ...submissionLogIds,
+        ...evidenceCustodyLogIds,
+      ].filter(Boolean)),
+      eventIds: uniqueStrings([
+        ...evidenceSearchEventIds,
+        ...submissionEventIds,
+        ...evidenceCustodyEventIds,
+      ].filter(Boolean)),
+      readyForProduction: false,
+      productionBlockerCount: 1,
+    },
+    projectEvidenceArchiveRoutes: projectId ? [{
+      proofKind: 'project-evidence-archive',
+      proofLabel: 'Project Evidence Archive',
+      apiPath: `/projects/${projectId}/project-evidence-archive`,
+      channelId: null,
+      proofIds: uniqueStrings([
+        ...kickoffProofIds,
+        ...submissionProofIds,
+        ...evidenceSearchProofIds,
+        ...evidenceSourceReviewProofIds,
+        ...submissionReviewProofIds,
+        ...evidenceCustodyProofIds,
+      ].filter(Boolean)),
+      timelineLogIds: uniqueStrings([
+        ...submissionLogIds,
+        ...evidenceSearchLogIds,
+        ...evidenceSourceReviewLogIds,
+        ...submissionReviewLogIds,
+        ...evidenceCustodyLogIds,
+      ].filter(Boolean)),
+      eventIds: uniqueStrings([
+        ...submissionEventIds,
+        ...evidenceSearchEventIds,
+        ...evidenceSourceReviewEventIds,
+        ...submissionReviewEventIds,
+        ...evidenceCustodyEventIds,
+      ].filter(Boolean)),
+      taskIds: uniqueStrings([
+        ...submissionRecords.map((submission) => submission.taskId),
+        ...evidenceSearchRecords.map((record) => record.taskId),
+        ...submissionReviewRecords.map((review) => review.taskId),
+      ].filter(Boolean)),
+      agentIds: uniqueStrings([
+        ...submissionRecords.flatMap((submission) => [submission.agentId, submission.requestedReviewAgentId]),
+        ...evidenceSearchRecords.map((record) => record.agentId),
+        ...evidenceSourceReviewRecords.flatMap((review) => [review.reviewerAgentId, review.sourceOwnerAgentId]),
+        ...submissionReviewRecords.flatMap((review) => [review.reviewerAgentId, review.submitterAgentId]),
+      ].filter(Boolean)),
+      submissionCount: submissionRecords.length,
+      evidenceSearchCount: evidenceSearchRecords.length,
+      sourceReviewCount: evidenceSourceReviewRecords.length,
+      submissionReviewCount: submissionReviewRecords.length,
+      custodyRecordCount: evidenceSourceSnapshotRecords.length + evidenceProviderReceiptRecords.length,
+      readyForManagerHandoff: Boolean(submissionRecords.length && evidenceSearchRecords.length && submissionReviewRecords.length),
+      readyForProduction: false,
+      productionBlocker: true,
+      productionBlockerReason: 'Production evidence archive still needs encrypted export storage, retention/deletion jobs, download audit, and data residency controls.',
+    }] : [],
+    projectEvidenceArchiveSummary: {
+      count: projectId ? 1 : 0,
+      routeReady: Boolean(projectId),
+      submissionCount: submissionRecords.length,
+      evidenceSearchCount: evidenceSearchRecords.length,
+      sourceReviewCount: evidenceSourceReviewRecords.length,
+      submissionReviewCount: submissionReviewRecords.length,
+      custodyRecordCount: evidenceSourceSnapshotRecords.length + evidenceProviderReceiptRecords.length,
+      proofIds: uniqueStrings([
+        ...kickoffProofIds,
+        ...submissionProofIds,
+        ...evidenceSearchProofIds,
+        ...evidenceSourceReviewProofIds,
+        ...submissionReviewProofIds,
+        ...evidenceCustodyProofIds,
+      ].filter(Boolean)),
+      timelineLogIds: uniqueStrings([
+        ...submissionLogIds,
+        ...evidenceSearchLogIds,
+        ...evidenceSourceReviewLogIds,
+        ...submissionReviewLogIds,
+        ...evidenceCustodyLogIds,
+      ].filter(Boolean)),
+      eventIds: uniqueStrings([
+        ...submissionEventIds,
+        ...evidenceSearchEventIds,
+        ...evidenceSourceReviewEventIds,
+        ...submissionReviewEventIds,
+        ...evidenceCustodyEventIds,
+      ].filter(Boolean)),
+      readyForProduction: false,
+      productionBlockerCount: 1,
     },
     artifactQualityRoutes: projectId ? [{
       proofKind: 'artifact-quality-audit',
@@ -14041,6 +14952,9 @@ function buildReadinessProofMap({ project = {}, messages = [] } = {}) {
       privatePilotAccepted: privatePilotAcceptanceReportRecords.some((record) => record.readyForPrivatePilotAcceptance),
       productionOperationsControlsReady: (project.productionOperationsControlReceipts || []).some((record) => record.readyForProductionOperations),
       productionDeploymentControlsReady: productionDeploymentControlReceiptRecords.some((record) => record.readyForProductionDeployment),
+      publicProductionEnvironmentSetupOpenCount: productionLaunchGapSummary.publicProductionEnvironmentSetupOpenCount || 0,
+      publicProductionEnvironmentSetupBlockedDomains: productionLaunchGapSummary.publicProductionEnvironmentSetupBlockedDomains || [],
+      publicProductionStartupReady: Boolean(productionLaunchGapSummary.publicProductionStartupReady),
       readyForProduction: false,
     }] : [],
     productionLaunchGapSummary: {
@@ -14048,6 +14962,9 @@ function buildReadinessProofMap({ project = {}, messages = [] } = {}) {
       privatePilotAccepted: privatePilotAcceptanceReportRecords.some((record) => record.readyForPrivatePilotAcceptance),
       productionOperationsControlsReady: (project.productionOperationsControlReceipts || []).some((record) => record.readyForProductionOperations),
       productionDeploymentControlsReady: productionDeploymentControlReceiptRecords.some((record) => record.readyForProductionDeployment),
+      publicProductionEnvironmentSetupOpenCount: productionLaunchGapSummary.publicProductionEnvironmentSetupOpenCount || 0,
+      publicProductionEnvironmentSetupBlockedDomains: productionLaunchGapSummary.publicProductionEnvironmentSetupBlockedDomains || [],
+      publicProductionStartupReady: Boolean(productionLaunchGapSummary.publicProductionStartupReady),
       proofIds: uniqueStrings([
         ...privatePilotReleaseCandidateProofIds,
         ...privatePilotLaunchRunProofIds,
@@ -14639,7 +15556,8 @@ function buildAgentDashboardSnapshot({ project = {}, messages = [], agentId } = 
       resultMessageIds: uniqueStrings(run.resultMessageIds || []),
     }));
   const management = agentManagementPriority({ project, agent, state: normalizedState });
-  const managerIds = uniqueStrings([normalizedState.managerId, ...(normalizedState.peerManagerIds || [])]);
+  const peerManagerIds = uniqueStrings(normalizedState.peerManagerIds || []);
+  const managerIds = uniqueStrings([normalizedState.managerId, ...peerManagerIds]);
   const managedIds = uniqueStrings([...(normalizedState.managedIds || agent.managedIds || [])]);
   const peerManagedIds = uniqueStrings(normalizedState.peerManagedIds || []);
   const ownedTasks = (project.tasks || [])
@@ -14919,8 +15837,12 @@ function buildAgentDashboardSnapshot({ project = {}, messages = [], agentId } = 
       managerNames: managerIds.map((id) => agentNameById[id] || id).filter(Boolean),
       managedIds,
       managedNames: managedIds.map((id) => agentNameById[id] || id).filter(Boolean),
+      peerManagerIds,
+      peerManagerNames: peerManagerIds.map((id) => agentNameById[id] || id).filter(Boolean),
+      peerManagerCount: peerManagerIds.length,
       peerManagedIds,
       peerManagedNames: peerManagedIds.map((id) => agentNameById[id] || id).filter(Boolean),
+      peerManagedCount: peerManagedIds.length,
     },
     latestWorker,
     autonomousRunControlRuns: {
@@ -15042,6 +15964,9 @@ function buildManagerDashboardSnapshot({ project = {}, messages = [] } = {}) {
     const latestWorker = latestAgentWorkerById[agent.id] || {};
     const latestWorklog = state.worklog?.[0] || null;
     const management = agentManagementPriority({ project, agent, state });
+    const openOwnedTasks = (project.tasks || [])
+      .filter((task) => task.status !== 'done' && taskBelongsToAgent(task, agent));
+    const currentTask = openOwnedTasks[0] || null;
     const openObligations = (state.obligations || [])
       .filter((item) => item.status !== 'done' && item.status !== 'resolved');
     return {
@@ -15049,6 +15974,14 @@ function buildManagerDashboardSnapshot({ project = {}, messages = [] } = {}) {
       name: agent.name,
       role: agent.role || agent.title || '',
       status: state.status || agent.status || 'waiting',
+      openTaskCount: openOwnedTasks.length,
+      currentTask: currentTask ? {
+        id: currentTask.id || null,
+        text: currentTask.text || currentTask.title || '',
+        status: currentTask.status || 'pending',
+        source: currentTask.source || null,
+      } : null,
+      currentTaskText: currentTask?.text || currentTask?.title || null,
       nextRunAt: state.nextAgentRunAt || latestWorker.nextRunAt || null,
       lastRunAt: latestWorker.ranAt || latestWorker.completedAt || state.lastActiveAt || latestWorklog?.at || null,
       trigger: latestWorker.trigger || latestWorklog?.source || state.status || 'waiting',
@@ -17814,6 +18747,7 @@ function buildManagerDashboardSnapshot({ project = {}, messages = [] } = {}) {
       securityAuditStream: projectId ? `/projects/${projectId}/security-audit-stream` : null,
       identitySessions: projectId ? `/projects/${projectId}/identity-sessions` : null,
       managerFlowGraph: projectId ? `/projects/${projectId}/manager-flow-graph` : null,
+      governanceProtocol: projectId ? `/projects/${projectId}/governance-protocol` : null,
       managerCommandCenter: projectId ? `/projects/${projectId}/manager-command-center` : null,
       managerScenarioTrail: projectId ? `/projects/${projectId}/manager-scenario-trail` : null,
       managerScenarioWalkthrough: projectId ? `/projects/${projectId}/manager-scenario-walkthrough` : null,
@@ -17830,6 +18764,7 @@ function buildManagerDashboardSnapshot({ project = {}, messages = [] } = {}) {
       tasks: projectId ? `/projects/${projectId}/tasks` : null,
       submissions: projectId ? `/projects/${projectId}/submissions` : null,
       productTeamDeliveryTrace: projectId ? `/projects/${projectId}/product-team-delivery-trace` : null,
+      zeroToAutonomyReport: projectId ? `/projects/${projectId}/zero-to-autonomy-report` : null,
       brainstormLayer: projectId ? `/projects/${projectId}/brainstorm-layer` : null,
       artifactQualityAudit: projectId ? `/projects/${projectId}/artifact-quality-audit` : null,
       evidenceSearches: projectId ? `/projects/${projectId}/evidence-searches` : null,
@@ -21559,6 +22494,324 @@ function buildProductTeamDeliveryTrace({
       revisionResponseCount: reviewSummary.revisionResponseCount || 0,
       acceptedFinalDeliverableCount: reviewSummary.acceptedFinalDeliverableCount || 0,
       readyForPrivatePilotDelivery,
+      checksum,
+    },
+    checksum,
+  });
+}
+
+function buildZeroToAutonomyReport({
+  project = {},
+  managerDashboard = {},
+  managerFlowGraph = {},
+  localMvpStartupReadiness = {},
+  settingsProviderReadiness = {},
+  settingsRuntimeReadiness = {},
+  settingsIntegrationReadiness = {},
+  productTeamDeliveryTrace = {},
+  artifactQualityAudit = {},
+  submissionReviewWorkflow = {},
+  evidenceSourceReviewWorkflow = {},
+  projectEvidenceArchive = {},
+  projectMemoryReadiness = {},
+  now = nowIso(),
+} = {}) {
+  const projectId = project.id || managerDashboard.projectId || productTeamDeliveryTrace.projectId || null;
+  const proofMap = managerDashboard.readinessProofMap || {};
+  const submissions = project.agentSubmissions || [];
+  const evidenceSearches = project.evidenceSearches || [];
+  const reviews = project.submissionReviews || [];
+  const latestMissionRun = (project.productTeamMissionRuns || [])[0] || {};
+  const latestMissionTranscript = latestMissionRun.transcript || [];
+  const submittedArtifactTypes = uniqueStrings(submissions.map((submission) => submission.artifactType).filter(Boolean));
+  const artifactTypes = GENERIC_PRODUCT_TEAM_ARTIFACT_TYPES.map((artifactType) => ({
+    artifactType,
+    present: submittedArtifactTypes.includes(artifactType),
+  }));
+  const allRequiredArtifactsPresent = artifactTypes.every((row) => row.present);
+  const sourceReviewSummary = evidenceSourceReviewWorkflow.summary || {};
+  const archiveSummary = projectEvidenceArchive.summary || {};
+  const selfMarketingSummary = proofMap.selfMarketingSummary || {};
+  const roleNegotiationSummary = proofMap.roleNegotiationSummary || {};
+  const kickoffProofIds = uniqueStrings([
+    ...(latestMissionRun.proofIds || []),
+    ...(selfMarketingSummary.proofIds || []),
+    ...(roleNegotiationSummary.proofIds || []),
+  ]);
+  const settingsReady = Boolean(
+    settingsProviderReadiness.canTypeApiFields
+    && settingsProviderReadiness.canSealSecrets
+    && (settingsRuntimeReadiness.readyForLocalMvpRuntime || settingsIntegrationReadiness.readyForLocalMvp)
+  );
+  const kickoffReady = Boolean(
+    latestMissionRun.schemaVersion === 'product-team-mission-run/v1'
+    && latestMissionRun.researchOnly === false
+    && (
+      latestMissionTranscript.some((turn) => turn.stage === 'leader-campaign')
+      || latestMissionRun.leaderAgentId
+      || latestMissionRun.confirmedLeaderAgentId
+      || project.leaderAgentId
+      || kickoffProofIds.some((id) => /leader/i.test(id))
+    )
+    && (
+      (selfMarketingSummary.selfNominationCount || 0) > 0
+      || (roleNegotiationSummary.count || 0) > 0
+      || kickoffProofIds.length > 0
+    )
+  );
+  const workspaceReady = Boolean(
+    project.localRuntime?.workspacePath
+    || archiveSummary.workspaceFileProofCount > 0
+    || submissions.some((submission) => submission.workspacePath || submission.artifactPath || submission.workspaceFileProof?.checksum)
+  );
+  const autonomousOutputReady = Boolean(
+    (project.collaborationIntentRunLedger || []).length
+    && (project.agentAutonomousActionRunLedger || []).length
+    && (
+      submissions.some((submission) => submission.source === 'agent-autonomous-action-run' || submission.autonomousRunId || submission.agentAutonomousActionRunId)
+      || (project.agentAutonomousActionRunLedger || []).some((run) => run.workSubmissionId || run.submissionId)
+      || (project.collaborationIntentRunLedger || []).some((run) => (run.resultSubmissionIds || []).length || run.workSubmissionId || run.submissionId)
+    )
+  );
+  const sourceReviewReady = Boolean(
+    (evidenceSearches.length || (sourceReviewSummary.sourceReviewDecisionCount || 0) > 0)
+    && sourceReviewSummary.pendingDecisionSourceCount === 0
+    && (
+      evidenceSourceReviewWorkflow.readyForLocalPilot
+      || evidenceSourceReviewWorkflow.readyForLocalMvp
+      || (sourceReviewSummary.sourceReviewDecisionCount || 0) >= 1
+    )
+  );
+  const traceReady = Boolean(productTeamDeliveryTrace.readyForPrivatePilotDelivery);
+  const artifactCoverageReady = Boolean(artifactQualityAudit.readyForLocalPilot && allRequiredArtifactsPresent);
+  const proofSurfaceReady = Boolean(
+    (managerFlowGraph.summary?.proofedNodeCount || 0) > 0
+    && (proofMap.routes?.length || 0) > 0
+    && (productTeamDeliveryTrace.summary?.proofIdCount || 0) > 0
+    && (productTeamDeliveryTrace.summary?.timelineLogIdCount || 0) > 0
+    && (productTeamDeliveryTrace.summary?.eventIdCount || 0) > 0
+  );
+  const archiveReady = Boolean(projectEvidenceArchive.readyForManagerHandoff && (archiveSummary.rawLeakCount || 0) === 0);
+  const row = ({
+    id,
+    label,
+    ready,
+    route,
+    detail,
+    proofIds = [],
+    timelineLogIds = [],
+    eventIds = [],
+  }) => ({
+    id,
+    label,
+    ready: Boolean(ready),
+    status: ready ? 'ready' : 'needs-proof',
+    route,
+    apiPath: route,
+    detail,
+    proofIds: uniqueStrings(proofIds).slice(0, 24),
+    timelineLogIds: uniqueStrings(timelineLogIds).slice(0, 24),
+    eventIds: uniqueStrings(eventIds).slice(0, 24),
+  });
+  const proofRoute = (routes = []) => Array.isArray(routes) ? routes[0] || {} : {};
+  const zeroRoute = proofRoute(proofMap.zeroToAutonomyReportRoutes);
+  const stageRows = [
+    row({
+      id: 'settings-byok-seal',
+      label: 'Settings BYOK and runtime readiness',
+      ready: settingsReady,
+      route: projectId ? `/projects/${projectId}/settings-integration-readiness` : null,
+      detail: `${settingsProviderReadiness.status || 'settings-provider-unknown'} / ${settingsRuntimeReadiness.status || 'settings-runtime-unknown'} / ${settingsIntegrationReadiness.status || 'settings-integration-unknown'}.`,
+      proofIds: proofMap.settingsProviderReadinessSummary?.proofIds || [],
+      timelineLogIds: proofMap.settingsProviderReadinessSummary?.timelineLogIds || [],
+      eventIds: proofMap.settingsProviderReadinessSummary?.eventIds || [],
+    }),
+    row({
+      id: 'startup-readiness',
+      label: 'Local MVP first-project startup readiness',
+      ready: localMvpStartupReadiness.readyForFirstProjectRun,
+      route: '/local-mvp-startup-readiness',
+      detail: localMvpStartupReadiness.nextAction?.route || localMvpStartupReadiness.status || 'startup readiness unavailable',
+      proofIds: proofMap.localMvpStartupReadinessSummary?.proofIds || [],
+      timelineLogIds: proofMap.localMvpStartupReadinessSummary?.timelineLogIds || [],
+      eventIds: proofMap.localMvpStartupReadinessSummary?.eventIds || [],
+    }),
+    row({
+      id: 'kickoff-self-marketing',
+      label: 'Kickoff meeting, role self-marketing, Leader/Reviewer confirmation',
+      ready: kickoffReady,
+      route: '/product-team-missions',
+      detail: `${latestMissionRun.missionType || 'unknown'} / researchOnly=${latestMissionRun.researchOnly === false ? 'false' : 'unknown'}.`,
+      proofIds: uniqueStrings([
+        ...(latestMissionRun.proofIds || []),
+        ...(selfMarketingSummary.proofIds || []),
+        ...(roleNegotiationSummary.proofIds || []),
+      ]),
+      timelineLogIds: latestMissionRun.timelineLogIds || [],
+      eventIds: uniqueStrings([
+        ...(latestMissionRun.eventIds || []),
+        ...(selfMarketingSummary.eventIds || []),
+        ...(roleNegotiationSummary.eventIds || []),
+      ]),
+    }),
+    row({
+      id: 'workspace-binding',
+      label: 'Local/private MVP workspace binding and file proof',
+      ready: workspaceReady,
+      route: projectId ? `/projects/${projectId}/local-runtime` : null,
+      detail: `${archiveSummary.workspaceFileProofCount || 0} workspace file proof(s), local workspace ${project.localRuntime?.workspacePath ? 'bound' : 'not bound'}.`,
+      proofIds: proofMap.projectEvidenceArchiveSummary?.proofIds || [],
+      timelineLogIds: proofMap.projectEvidenceArchiveSummary?.timelineLogIds || [],
+      eventIds: proofMap.projectEvidenceArchiveSummary?.eventIds || [],
+    }),
+    row({
+      id: 'ca-handoff-autonomous-agent-output',
+      label: 'C-side to A-side handoff and autonomous Agent output',
+      ready: autonomousOutputReady,
+      route: projectId ? `/projects/${projectId}/collaboration-intent-queue` : null,
+      detail: `${(project.collaborationIntentRunLedger || []).length} collaboration intent run(s), ${(project.agentAutonomousActionRunLedger || []).length} Agent action run(s).`,
+      proofIds: uniqueStrings([
+        ...(proofMap.collaborationIntentQueueSummary?.proofIds || []),
+        ...(proofMap.agentAutonomousActionSummary?.proofIds || []),
+      ]),
+      timelineLogIds: uniqueStrings([
+        ...(proofMap.collaborationIntentQueueSummary?.timelineLogIds || []),
+        ...(proofMap.agentAutonomousActionSummary?.timelineLogIds || []),
+      ]),
+      eventIds: uniqueStrings([
+        ...(proofMap.collaborationIntentQueueSummary?.eventIds || []),
+        ...(proofMap.agentAutonomousActionSummary?.eventIds || []),
+      ]),
+    }),
+    row({
+      id: 'provider-evidence-source-review',
+      label: 'Provider-backed evidence and Reviewer source decisions',
+      ready: sourceReviewReady,
+      route: projectId ? `/projects/${projectId}/evidence-source-review-workflow` : null,
+      detail: `${evidenceSearches.length} evidence search(es), ${sourceReviewSummary.sourceReviewDecisionCount || 0} source decision(s), ${sourceReviewSummary.pendingDecisionSourceCount || 0} pending.`,
+      proofIds: evidenceSourceReviewWorkflow.proofIds || proofMap.evidenceSourceReviewWorkflowSummary?.proofIds || [],
+      timelineLogIds: evidenceSourceReviewWorkflow.timelineLogIds || proofMap.evidenceSourceReviewWorkflowSummary?.timelineLogIds || [],
+      eventIds: evidenceSourceReviewWorkflow.eventIds || proofMap.evidenceSourceReviewWorkflowSummary?.eventIds || [],
+    }),
+    row({
+      id: 'brainstorm-draft-review-revision-final',
+      label: 'Brainstorm, model-backed draft, review, revision, and final deliverable',
+      ready: traceReady,
+      route: productTeamDeliveryTrace.backendRoutes?.productTeamDeliveryTrace || (projectId ? `/projects/${projectId}/product-team-delivery-trace` : null),
+      detail: `${productTeamDeliveryTrace.summary?.readyCount || 0}/${productTeamDeliveryTrace.summary?.rowCount || 0} delivery stage(s) ready.`,
+      proofIds: productTeamDeliveryTrace.proofIds || [],
+      timelineLogIds: productTeamDeliveryTrace.timelineLogIds || [],
+      eventIds: productTeamDeliveryTrace.eventIds || [],
+    }),
+    row({
+      id: 'generic-artifact-coverage',
+      label: 'Required generic Agent submission types',
+      ready: artifactCoverageReady,
+      route: artifactQualityAudit.backendRoutes?.artifactQualityAudit || (projectId ? `/projects/${projectId}/artifact-quality-audit` : null),
+      detail: `${artifactTypes.filter((item) => item.present).length}/${artifactTypes.length} required artifact type(s) present.`,
+      proofIds: artifactQualityAudit.proofIds || proofMap.artifactQualitySummary?.proofIds || [],
+      timelineLogIds: artifactQualityAudit.timelineLogIds || proofMap.artifactQualitySummary?.timelineLogIds || [],
+      eventIds: artifactQualityAudit.eventIds || proofMap.artifactQualitySummary?.eventIds || [],
+    }),
+    row({
+      id: 'manager-proof-surfaces',
+      label: 'Manager Flow Graph, Proof Map, transcript, timeline, event ledger, Agent Dashboard',
+      ready: proofSurfaceReady,
+      route: managerDashboard.backendRoutes?.managerFlowGraph || (projectId ? `/projects/${projectId}/manager-flow-graph` : null),
+      detail: `${managerFlowGraph.summary?.proofedNodeCount || 0} proofed graph node(s), ${proofMap.routes?.length || 0} proof route(s).`,
+      proofIds: productTeamDeliveryTrace.proofIds || zeroRoute.proofIds || [],
+      timelineLogIds: productTeamDeliveryTrace.timelineLogIds || zeroRoute.timelineLogIds || [],
+      eventIds: productTeamDeliveryTrace.eventIds || zeroRoute.eventIds || [],
+    }),
+    row({
+      id: 'project-evidence-archive',
+      label: 'Project Evidence Archive and memory readiness handoff',
+      ready: archiveReady && projectMemoryReadiness.schemaVersion === 'project-memory-readiness/v1',
+      route: projectEvidenceArchive.backendRoutes?.projectEvidenceArchive || (projectId ? `/projects/${projectId}/project-evidence-archive` : null),
+      detail: `${projectEvidenceArchive.status || 'archive-unknown'} / memory ${projectMemoryReadiness.status || 'memory-unknown'} / rawLeaks=${archiveSummary.rawLeakCount || 0}.`,
+      proofIds: projectEvidenceArchive.proofIds || proofMap.projectEvidenceArchiveSummary?.proofIds || [],
+      timelineLogIds: projectEvidenceArchive.timelineLogIds || proofMap.projectEvidenceArchiveSummary?.timelineLogIds || [],
+      eventIds: projectEvidenceArchive.eventIds || proofMap.projectEvidenceArchiveSummary?.eventIds || [],
+    }),
+  ];
+  const readyRows = stageRows.filter((item) => item.ready);
+  const missingRows = stageRows.filter((item) => !item.ready);
+  const proofIds = uniqueStrings(stageRows.flatMap((item) => item.proofIds || []));
+  const timelineLogIds = uniqueStrings(stageRows.flatMap((item) => item.timelineLogIds || []));
+  const eventIds = uniqueStrings(stageRows.flatMap((item) => item.eventIds || []));
+  const readyForLocalMvpTrial = Boolean(stageRows.length && missingRows.length === 0);
+  const readyForPrivatePilotDelivery = Boolean(readyForLocalMvpTrial && traceReady && archiveReady);
+  const checksum = persistenceChecksum({
+    schemaVersion: 'project-zero-to-autonomy-report/v1',
+    projectId,
+    stageRows: stageRows.map((item) => [item.id, item.ready, item.proofIds.length, item.timelineLogIds.length, item.eventIds.length]),
+    artifactTypes,
+    deliveryTraceChecksum: productTeamDeliveryTrace.checksum || null,
+    archiveChecksum: projectEvidenceArchive.checksum || null,
+    memoryChecksum: projectMemoryReadiness.checksum || null,
+  });
+  return redactSensitiveObject({
+    projectId,
+    generatedAt: now,
+    schemaVersion: 'project-zero-to-autonomy-report/v1',
+    status: readyForLocalMvpTrial ? 'project-zero-to-autonomy-ready' : 'project-zero-to-autonomy-incomplete',
+    readyForLocalMvpTrial,
+    readyForPrivatePilotDelivery,
+    readyForPublicProduction: false,
+    missionType: latestMissionRun.missionType || 'generic-product-team',
+    stageRows,
+    missingRows,
+    artifactTypes,
+    proofIds,
+    timelineLogIds,
+    eventIds,
+    backendRoutes: {
+      zeroToAutonomyReport: projectId ? `/projects/${projectId}/zero-to-autonomy-report` : null,
+      localMvpStartupReadiness: '/local-mvp-startup-readiness',
+      productTeamMissions: '/product-team-missions',
+      settingsProviderReadiness: projectId ? `/projects/${projectId}/settings-provider-readiness` : '/settings/provider-readiness',
+      settingsRuntimeReadiness: projectId ? `/projects/${projectId}/settings-runtime-readiness` : '/settings/runtime-readiness',
+      settingsIntegrationReadiness: projectId ? `/projects/${projectId}/settings-integration-readiness` : null,
+      localRuntime: projectId ? `/projects/${projectId}/local-runtime` : null,
+      managerFlowGraph: managerDashboard.backendRoutes?.managerFlowGraph || (projectId ? `/projects/${projectId}/manager-flow-graph` : null),
+      readinessProofMap: managerDashboard.backendRoutes?.readinessProofMap || (projectId ? `/projects/${projectId}/readiness-proof-map` : null),
+      productTeamDeliveryTrace: productTeamDeliveryTrace.backendRoutes?.productTeamDeliveryTrace || (projectId ? `/projects/${projectId}/product-team-delivery-trace` : null),
+      artifactQualityAudit: artifactQualityAudit.backendRoutes?.artifactQualityAudit || (projectId ? `/projects/${projectId}/artifact-quality-audit` : null),
+      submissionReviewWorkflow: submissionReviewWorkflow.backendRoutes?.submissionReviewWorkflow || (projectId ? `/projects/${projectId}/submission-review-workflow` : null),
+      evidenceSourceReviewWorkflow: evidenceSourceReviewWorkflow.backendRoutes?.evidenceSourceReviewWorkflow || (projectId ? `/projects/${projectId}/evidence-source-review-workflow` : null),
+      projectEvidenceArchive: projectEvidenceArchive.backendRoutes?.projectEvidenceArchive || (projectId ? `/projects/${projectId}/project-evidence-archive` : null),
+      projectMemoryReadiness: projectMemoryReadiness.backendRoutes?.projectMemoryReadiness || (projectId ? `/projects/${projectId}/memory-readiness` : null),
+    },
+    productionBlockers: [
+      'managed identity and service identity',
+      'managed KMS or Secret Manager with rotation and revocation',
+      'managed database and durable queue/cron cutover',
+      'centralized audit, observability, alerting, and incident response',
+      'provider cost controls, evals, and production provider incident process',
+      'customer production acceptance policy and rollback proof',
+    ],
+    redaction: {
+      plaintextProviderSecretsExposed: false,
+      ciphertextExposed: false,
+      archiveRawLeakCount: archiveSummary.rawLeakCount || 0,
+    },
+    summary: {
+      stageCount: stageRows.length,
+      readyStageCount: readyRows.length,
+      missingStageCount: missingRows.length,
+      requiredArtifactTypeCount: artifactTypes.length,
+      submittedArtifactTypeCount: artifactTypes.filter((item) => item.present).length,
+      submissionCount: submissions.length,
+      providerSourceCount: evidenceSearches.reduce((sum, search) => sum + (search.sources?.length || 0), 0),
+      sourceReviewDecisionCount: sourceReviewSummary.sourceReviewDecisionCount || 0,
+      reviewCount: reviews.length,
+      proofIdCount: proofIds.length,
+      timelineLogIdCount: timelineLogIds.length,
+      eventIdCount: eventIds.length,
+      archiveRawLeakCount: archiveSummary.rawLeakCount || 0,
+      readyForLocalMvpTrial,
+      readyForPrivatePilotDelivery,
+      readyForPublicProduction: false,
       checksum,
     },
     checksum,
@@ -29290,6 +30543,8 @@ function buildProductionLaunchGapRegister({
     managerReadyPackage,
     now,
   });
+  const publicProductionStartupReadiness = managerReadyPackage.publicProductionStartupReadiness || {};
+  const productionEnvironmentSetup = publicProductionStartupReadiness.productionEnvironmentSetup || {};
   const deploymentPreflight = managerReadyPackage.deploymentPreflight || {};
   const securityBoundary = managerReadyPackage.securityBoundary || {};
   const providerReadiness = managerReadyPackage.providerReadiness || {};
@@ -29350,6 +30605,44 @@ function buildProductionLaunchGapRegister({
     return row.action || row.detail || 'Attach production evidence and re-run the launch audit.';
   };
   const sourceRows = [
+    ...(productionEnvironmentSetup.rows || []).filter((row) => row.ready !== true).map((row) => {
+      const setupDomain = {
+        security: 'security-boundary',
+        infrastructure: 'managed-infrastructure',
+        'control-plane': 'managed-infrastructure',
+        providers: 'provider-rollout',
+        operations: 'operations',
+        governance: 'release-governance',
+      }[row.domain] || 'production-hardening';
+      const setupOwner = {
+        'security-boundary': 'security-admin',
+        'managed-infrastructure': 'runtime-platform',
+        'provider-rollout': 'runtime-platform',
+        operations: 'operations-owner',
+        'release-governance': 'manager',
+      }[setupDomain] || 'manager';
+      return {
+        ...row,
+        id: `public-production-environment-${row.id}`,
+        label: row.label || row.id,
+        source: 'public-production-environment-setup',
+        status: row.status || 'blocked',
+        severity: 'production-blocker',
+        owner: setupOwner,
+        domain: setupDomain,
+        detail: row.detail || row.nextAction || 'Public production environment setup is incomplete.',
+        action: row.nextAction || 'Complete this production environment setup row, then re-run public production startup readiness.',
+        envVars: uniqueStrings([
+          ...(row.allOfEnvVars || []),
+          ...(row.anyOfEnvVarGroups || []).flat(),
+        ]),
+        missingRequiredEnvVars: row.missingRequiredEnvVars || [],
+        missingAnyOfEnvVarGroups: row.missingAnyOfEnvVarGroups || [],
+        apiPath: row.apiPath || '/public-production-startup-readiness',
+        validationCommand: row.validationCommand || 'npm run agents:public-production-startup-readiness',
+        checksum: row.checksum || productionEnvironmentSetup.checksum || null,
+      };
+    }),
     ...(productionLaunchAudit.productionBlockers || []).map((row) => ({ ...row, source: row.source || 'production-launch-audit' })),
     ...(productionLaunchAudit.failedProductionGates || []).map((row) => ({ ...row, source: row.source || 'production-launch-audit', status: 'blocked' })),
     ...(productionEvidenceIntegrityAudit.readyForManagedProductionEvidence ? [] : [{
@@ -29383,6 +30676,7 @@ function buildProductionLaunchGapRegister({
     'production-operations-readiness': route('production-operations-readiness'),
     'security-boundary': route('security-boundary'),
     'production-security-control-receipts': route('production-security-control-receipts'),
+    'public-production-environment-setup': '/public-production-startup-readiness',
     'deployment-preflight': route('deployment-preflight'),
     'production-deployment-control-receipts': route('production-deployment-control-receipts'),
     'provider-readiness': route('provider-readiness'),
@@ -29411,6 +30705,9 @@ function buildProductionLaunchGapRegister({
       action: actionForGap({ ...row, id }),
       apiPath: apiPathForSource(row),
       envVars: row.envVars || [],
+      validationCommand: row.validationCommand || null,
+      missingRequiredEnvVars: row.missingRequiredEnvVars || [],
+      missingAnyOfEnvVarGroups: row.missingAnyOfEnvVarGroups || [],
       proofIds: uniqueStrings([row.id, row.checksum, ...(row.proofIds || [])].filter(Boolean)),
       checksum: row.checksum || null,
     };
@@ -29457,6 +30754,8 @@ function buildProductionLaunchGapRegister({
     productionSecurityControlReceiptWorkflow.checksum,
     productionProviderControlReceiptWorkflow.checksum,
     productionEvidenceIntegrityAudit.checksum,
+    publicProductionStartupReadiness.checksum,
+    productionEnvironmentSetup.checksum,
     deploymentPreflight.checksum,
     securityBoundary.checksum,
     providerReadiness.checksum,
@@ -29544,6 +30843,8 @@ function buildProductionLaunchGapRegister({
       productionSecurityControlReceiptWorkflow: productionSecurityControlReceiptWorkflow.checksum || null,
       productionProviderControlReceiptWorkflow: productionProviderControlReceiptWorkflow.checksum || null,
       productionEvidenceIntegrityAudit: productionEvidenceIntegrityAudit.checksum || null,
+      publicProductionStartupReadiness: publicProductionStartupReadiness.checksum || null,
+      productionEnvironmentSetup: productionEnvironmentSetup.checksum || null,
       deploymentPreflight: deploymentPreflight.checksum || null,
       providerReadiness: providerReadiness.checksum || null,
       securityBoundary: securityBoundary.checksum || null,
@@ -29560,6 +30861,9 @@ function buildProductionLaunchGapRegister({
       operationsGapCount: sortedGapRows.filter((row) => row.domain === 'operations').length,
       providerGapCount: sortedGapRows.filter((row) => row.domain === 'provider-rollout').length,
       qualityGapCount: sortedGapRows.filter((row) => row.domain === 'quality-governance').length,
+      publicProductionStartupReady: Boolean(publicProductionStartupReadiness.readyForPublicProduction),
+      publicProductionEnvironmentSetupOpenCount: sortedGapRows.filter((row) => row.source === 'public-production-environment-setup').length,
+      publicProductionEnvironmentSetupBlockedDomains: uniqueStrings(sortedGapRows.filter((row) => row.source === 'public-production-environment-setup').map((row) => row.domain)),
       managedProductionEvidenceIntegrityStatus: productionEvidenceIntegrityAudit.status,
       managedProductionEvidenceIntegrityReady: Boolean(productionEvidenceIntegrityAudit.readyForManagedProductionEvidence),
       managedProductionEvidenceGapOpen: !productionEvidenceIntegrityAudit.readyForManagedProductionEvidence,
@@ -36524,12 +37828,60 @@ function buildSecurityBoundarySnapshot({
       productionControl: 'requires authenticated project membership, role-based access enforcement, immutable proof storage, calibrated acceptance policy, and customer-specific export controls before production use',
     }),
     securityRoutePolicy({
+      routeKey: 'zero-to-autonomy-report',
+      pathTemplate: '/projects/:projectId/zero-to-autonomy-report',
+      capability: 'read the project-level zero-to-autonomy validation report',
+      sensitivity: 'project-zero-to-autonomy-readiness-and-production-boundaries',
+      currentControl: 'read-only Manager route aggregates settings, kickoff, workspace, C/A handoff, evidence, artifact, review, proof-surface, archive, and redaction status into one redacted report',
+      productionControl: 'requires authenticated project membership, role-based access enforcement, immutable proof storage, managed identity, managed secrets, managed queue/cron, provider controls, and customer acceptance/rollback policy before public production',
+    }),
+    securityRoutePolicy({
       routeKey: 'product-team-operating-loop',
       pathTemplate: '/projects/:projectId/product-team-operating-loop',
       capability: 'read the unified C-side/A-side autonomous operating loop contract',
       sensitivity: 'product-team-operating-control-and-proof-routes',
       currentControl: 'read-only Manager route aggregates C-side control, Agent autonomy queue, delivery trace, scheduler, worker queue, Proof Map, timeline, and event evidence into one redacted operating-loop status',
       productionControl: 'requires authenticated project membership, role-based control visibility, immutable audit storage, managed queue/cron, provider/BYOK policy, cost controls, and incident recovery ownership before production autonomy',
+    }),
+    securityRoutePolicy({
+      routeKey: 'continuous-work-loop',
+      pathTemplate: '/projects/:projectId/continuous-work-loop',
+      capability: 'read continuous Agent work-loop scheduler and proof rows',
+      sensitivity: 'autonomous-agent-scheduler-proof-and-production-boundaries',
+      currentControl: 'read-only Manager route exposes backend continuous-work rows, scheduler state, proofed Agent count, timeline proof count, and links back to run control, Agent queue, worker queue, Manager Dashboard, and Proof Map',
+      productionControl: 'requires authenticated project membership, managed durable queue/cron, centralized observability and alert routing, on-call ownership, incident recovery, and provider/BYOK cost controls before unattended production use',
+    }),
+    securityRoutePolicy({
+      routeKey: 'governance-protocol',
+      pathTemplate: '/projects/:projectId/governance-protocol',
+      capability: 'read kickoff-confirmed Leader/Reviewer governance protocol',
+      sensitivity: 'kickoff-governance-leader-reviewer-and-role-proof',
+      currentControl: 'read-only Manager route exposes the kickoff charter Leader, Reviewer, communication rules, next actions, proof ids, timeline ids, event ids, and links back to Project, Manager Dashboard, Flow Graph, Proof Map, transcripts, timeline, and events',
+      productionControl: 'requires authenticated project membership, durable meeting transcript retention, immutable event audit, customer acceptance policy, and production governance approval before production use',
+    }),
+    securityRoutePolicy({
+      routeKey: 'agent-state-summary',
+      pathTemplate: '/projects/:projectId/agent-state-summary',
+      capability: 'read per-Agent state, schedule, current plan, worklog, and management proof rows',
+      sensitivity: 'agent-state-current-plan-and-autonomy-proof',
+      currentControl: 'read-only Manager route exposes backend Agent state rows from the Manager Dashboard with links to continuous work, Agent queue, Manager Dashboard, and Proof Map',
+      productionControl: 'requires authenticated project membership, managed runtime identity, managed durable queue/cron, centralized audit/observability, and provider/BYOK cost controls before production use',
+    }),
+    securityRoutePolicy({
+      routeKey: 'assignment-timeline-matrix',
+      pathTemplate: '/projects/:projectId/assignment-timeline-matrix',
+      capability: 'read Leader assignment handoff from group chat to assignee acknowledgement and timeline proof',
+      sensitivity: 'assignment-transcript-task-and-agent-proof',
+      currentControl: 'read-only Manager route exposes assignment posted/received/accepted/timeline-ready rows with transcript, timeline, event, Manager Dashboard, and Proof Map links',
+      productionControl: 'requires authenticated project membership, durable transcript retention, immutable event audit, customer acceptance policy, and production assignment governance before production use',
+    }),
+    securityRoutePolicy({
+      routeKey: 'change-flow',
+      pathTemplate: '/projects/:projectId/change-flow',
+      capability: 'read feature/change intake from source message to owner plan, team sync, and owner work proof',
+      sensitivity: 'change-request-transcript-owner-plan-and-release-proof',
+      currentControl: 'read-only Manager route exposes backend change-flow rows, source intake, owner-plan readiness, team-sync readiness, owner-work readiness, and links to transcript, timeline, event, Manager Dashboard, and Proof Map',
+      productionControl: 'requires authenticated project membership, managed approval policy, immutable event audit, customer release acceptance, rollback process, and incident ownership before production use',
     }),
     securityRoutePolicy({
       routeKey: 'planner-executor-reviewer-state-machine',
@@ -39484,7 +40836,7 @@ function buildManagerFlowSubmissionArtifacts(input = {}, node = {}) {
   return { submission, attachments };
 }
 
-function buildManagerFlowGraphSnapshot({ project = {}, messages = [] } = {}) {
+function buildManagerFlowGraphSnapshot({ project = {}, messages = [], managerReadyPackage = {} } = {}) {
   const dashboard = buildManagerDashboardSnapshot({ project, messages });
   const projectId = project.id || dashboard.projectId || null;
   const team = project.team || [];
@@ -40947,6 +42299,58 @@ function buildManagerFlowGraphSnapshot({ project = {}, messages = [] } = {}) {
         });
       });
     });
+    addNode({
+      id: 'zero-to-autonomy-report',
+      category: 'decision',
+      subtype: 'zero-to-autonomy-report',
+      title: 'Zero-to-Autonomy Report',
+      summary: `${readyCount}/${stageRows.length} local validation stage(s) ready; public production remains blocked by managed runtime controls.`,
+      status: traceReady ? 'confirmed' : readyCount ? 'published' : 'blocked',
+      importance: 'critical',
+      source: 'zeroToAutonomyReport',
+      proofIds: aggregateProofIds,
+      timelineLogIds: aggregateTimelineLogIds,
+      eventIds: aggregateEventIds,
+      affectedAgentIds: uniqueStrings([
+        ...submissions.map((submission) => submission.agentId),
+        ...reviewRecords.flatMap((review) => [review.reviewerAgentId, review.submitterAgentId]),
+      ].filter(Boolean)),
+      affectedTaskIds: uniqueStrings([
+        ...submissions.map((submission) => submission.taskId),
+        ...(project.evidenceSearches || []).map((record) => record.taskId),
+        ...reviewRecords.map((review) => review.taskId),
+      ].filter(Boolean)),
+      participantIds: uniqueStrings((project.team || []).map((agent) => agent.id)),
+      relationshipRoles: Object.fromEntries((project.team || []).map((agent) => [
+        agent.id,
+        agent.id === leaderId ? 'zero-to-autonomy-owner' : 'validation-contributor',
+      ])),
+      submissionIntent: 'Submit the project-level zero-to-autonomy validation report for Manager review.',
+      attachmentType: 'zero-to-autonomy-report',
+      attachmentTitle: 'Project zero-to-autonomy report',
+      attachmentSummary: 'Aggregates settings, kickoff, workspace, C/A handoff, evidence, artifact, review, proof-surface, archive, and production-boundary status.',
+      attachments: stageRows.map((row) => ({
+        id: `zero-to-autonomy-report_${row.id}`,
+        type: 'zero-to-autonomy-stage',
+        title: row.label,
+        summary: row.ready ? 'Stage has backend proof.' : 'Stage is missing backend proof.',
+        source: 'zeroToAutonomyReport',
+        ready: row.ready,
+      })),
+      route: `/projects/${projectId}/zero-to-autonomy-report`,
+      relatedNodeIds: uniqueStrings(['product-team-delivery-trace', ...aggregateNodeIds]),
+    });
+    addEdge({
+      type: 'task_dependency',
+      fromNodeId: 'product-team-delivery-trace',
+      toNodeId: 'zero-to-autonomy-report',
+      label: 'Delivery trace feeds zero-to-autonomy report',
+      source: 'zeroToAutonomyReport',
+      proofIds: aggregateProofIds,
+      timelineLogIds: aggregateTimelineLogIds,
+      eventIds: aggregateEventIds,
+      importance: 'critical',
+    });
   }
 
   (dashboard.changeFlow?.rows || []).forEach((row) => {
@@ -41302,6 +42706,203 @@ function buildManagerFlowGraphSnapshot({ project = {}, messages = [] } = {}) {
       });
     }
   });
+
+  if (projectId) {
+    const proofMap = dashboard.readinessProofMap || {};
+    const governanceRouteSpecs = [
+      {
+        id: 'governance-protocol',
+        title: 'Governance Protocol',
+        subtype: 'governance-protocol',
+        source: 'governanceProtocol',
+        category: 'decision',
+        routeKey: 'governanceProtocolRoutes',
+        summaryKey: 'governanceProtocolSummary',
+        apiPath: dashboard.backendRoutes?.governanceProtocol || `/projects/${projectId}/governance-protocol`,
+        summary: `${proofMap.governanceProtocolSummary?.leaderName || 'Leader pending'} leads; ${proofMap.governanceProtocolSummary?.reviewerName || 'Reviewer pending'} reviews.`,
+        status: proofMap.governanceProtocolSummary?.readyForLocalGovernanceProtocol ? 'resolved' : 'draft',
+        relatedNodeIds: ['sync-protocol-audit', 'team-collaboration-diagnostics'],
+      },
+      {
+        id: 'manager-command-center',
+        title: 'Manager Live Command Center',
+        subtype: 'manager-command-center',
+        source: 'managerCommandCenter',
+        category: 'decision',
+        routeKey: 'managerCommandCenterRoutes',
+        summaryKey: 'managerCommandCenterSummary',
+        apiPath: dashboard.backendRoutes?.managerCommandCenter || `/projects/${projectId}/manager-command-center`,
+        runRoute: `${dashboard.backendRoutes?.managerCommandCenter || `/projects/${projectId}/manager-command-center`}/run-next`,
+        summary: `${dashboard.managerCommandCenter?.status || 'command-center'}; ${dashboard.managerCommandCenter?.attentionRows?.length || 0} attention row(s), ${dashboard.managerCommandCenter?.agentRows?.length || 0} Agent row(s).`,
+        status: dashboard.managerCommandCenter?.schemaVersion === 'manager-command-center/v1' ? 'published' : 'draft',
+        relatedNodeIds: ['manager-action-queue', 'product-team-operating-loop', 'autonomous-run-control'],
+      },
+      {
+        id: 'manager-scenario-trail',
+        title: 'Manager Scenario Trail',
+        subtype: 'manager-scenario-trail',
+        source: 'managerScenarioTrail',
+        category: 'monitoring',
+        routeKey: 'managerScenarioTrailRoutes',
+        summaryKey: 'managerScenarioTrailSummary',
+        apiPath: dashboard.backendRoutes?.managerScenarioTrail || `/projects/${projectId}/manager-scenario-trail`,
+        summary: `${dashboard.managerScenarioTrail?.passedCount || 0}/${dashboard.managerScenarioTrail?.count || 0} scenario rows ready.`,
+        status: dashboard.managerScenarioTrail?.count ? 'published' : 'draft',
+        relatedNodeIds: ['manager-scenario-walkthrough', 'manager-requirement-matrix', 'manager-use-case-audit'],
+      },
+      {
+        id: 'manager-scenario-walkthrough',
+        title: 'Manager Scenario Walkthrough',
+        subtype: 'manager-scenario-walkthrough',
+        source: 'managerScenarioWalkthrough',
+        category: 'execution',
+        routeKey: 'managerScenarioWalkthroughRoutes',
+        summaryKey: 'managerScenarioWalkthroughSummary',
+        apiPath: dashboard.backendRoutes?.managerScenarioWalkthrough || `/projects/${projectId}/manager-scenario-walkthrough`,
+        runRoute: `/projects/${projectId}/manager-scenario-walkthrough/:stepId/run`,
+        summary: `${dashboard.managerScenarioWalkthrough?.completedCount || 0}/${dashboard.managerScenarioWalkthrough?.count || 0} walkthrough step(s) complete; ${dashboard.managerScenarioWalkthrough?.runnableCount || 0} runnable.`,
+        status: dashboard.managerScenarioWalkthrough?.runnableCount ? 'published' : dashboard.managerScenarioWalkthrough?.completedCount ? 'resolved' : 'draft',
+        relatedNodeIds: ['manager-action-queue', 'manager-scenario-trail'],
+      },
+      {
+        id: 'manager-requirement-matrix',
+        title: 'Manager Requirement Matrix',
+        subtype: 'manager-requirement-matrix',
+        source: 'managerRequirementMatrix',
+        category: 'decision',
+        routeKey: 'managerRequirementMatrixRoutes',
+        summaryKey: 'managerRequirementMatrixSummary',
+        apiPath: dashboard.backendRoutes?.managerRequirementMatrix || `/projects/${projectId}/manager-requirement-matrix`,
+        summary: `${dashboard.managerRequirementMatrix?.passedCount || 0}/${dashboard.managerRequirementMatrix?.count || 0} requirements passed.`,
+        status: dashboard.managerRequirementMatrix?.passedCount === dashboard.managerRequirementMatrix?.count ? 'resolved' : 'published',
+        relatedNodeIds: ['manager-use-case-audit', 'manager-action-queue'],
+      },
+      {
+        id: 'sync-protocol-audit',
+        title: 'C/A Sync Protocol Audit',
+        subtype: 'sync-protocol-audit',
+        source: 'syncProtocolAudit',
+        category: 'collaboration',
+        routeKey: 'syncProtocolAuditRoutes',
+        summaryKey: 'syncProtocolAuditSummary',
+        apiPath: dashboard.backendRoutes?.syncProtocolAudit || `/projects/${projectId}/sync-protocol-audit`,
+        summary: `${dashboard.syncProtocolAudit?.passedCount || 0}/${dashboard.syncProtocolAudit?.count || 0} protocol rows passed.`,
+        status: dashboard.syncProtocolAudit?.passedCount === dashboard.syncProtocolAudit?.count ? 'resolved' : 'published',
+        relatedNodeIds: ['team-collaboration-diagnostics', 'manager-action-queue'],
+      },
+      {
+        id: 'manager-use-case-audit',
+        title: 'Manager Use Case Audit',
+        subtype: 'manager-use-case-audit',
+        source: 'managerUseCaseAudit',
+        category: 'decision',
+        routeKey: 'managerUseCaseAuditRoutes',
+        summaryKey: 'managerUseCaseAuditSummary',
+        apiPath: dashboard.backendRoutes?.managerUseCaseAudit || `/projects/${projectId}/manager-use-case-audit`,
+        summary: `${dashboard.managerUseCaseAudit?.coveredCount || 0}/${dashboard.managerUseCaseAudit?.count || 0} use cases covered.`,
+        status: dashboard.managerUseCaseAudit?.coveredCount === dashboard.managerUseCaseAudit?.count ? 'resolved' : 'published',
+        relatedNodeIds: ['manager-requirement-matrix', 'manager-action-queue', 'product-team-delivery-trace'],
+      },
+      {
+        id: 'manager-action-queue',
+        title: 'Manager Action Queue',
+        subtype: 'manager-action-queue',
+        source: 'managerActionQueue',
+        category: 'execution',
+        routeKey: 'managerActionQueueRoutes',
+        summaryKey: 'managerActionQueueSummary',
+        apiPath: dashboard.backendRoutes?.managerActionQueue || `/projects/${projectId}/manager-action-queue`,
+        runRoute: dashboard.backendRoutes?.managerActionRunTemplate || `/projects/${projectId}/manager-action-queue/:actionId/run`,
+        summary: `${dashboard.managerActionQueue?.readyCount || 0}/${dashboard.managerActionQueue?.count || 0} Manager action(s) ready.`,
+        status: dashboard.managerActionQueue?.readyCount ? 'published' : dashboard.managerActionQueue?.count ? 'resolved' : 'draft',
+        relatedNodeIds: ['manager-command-center', 'manager-scenario-walkthrough', 'autonomous-run-control'],
+      },
+    ];
+    governanceRouteSpecs.forEach((spec) => {
+      const route = (proofMap[spec.routeKey] || [])[0] || {};
+      const summary = proofMap[spec.summaryKey] || {};
+      const proofIds = uniqueStrings([
+        ...(route.proofIds || []),
+        ...(summary.proofIds || []),
+      ]);
+      const timelineLogIds = uniqueStrings([
+        ...(route.timelineLogIds || []),
+        ...(summary.timelineLogIds || []),
+      ]);
+      const eventIds = uniqueStrings([
+        ...(route.eventIds || []),
+        ...(summary.eventIds || []),
+      ]);
+      addNode({
+        id: spec.id,
+        category: spec.category,
+        subtype: spec.subtype,
+        title: spec.title,
+        summary: spec.summary,
+        status: normalizeManagerFlowStatus(spec.status),
+        importance: route.productionBlocker ? 'critical' : 'major',
+        source: spec.source,
+        sourceLabel: 'Manager governance route',
+        proofIds,
+        timelineLogIds,
+        eventIds,
+        affectedAgentIds: uniqueStrings(route.agentIds || []),
+        affectedTaskIds: uniqueStrings(route.taskIds || []),
+        participantIds: uniqueStrings(route.agentIds || []),
+        relationshipRoles: Object.fromEntries((route.agentIds || []).map((agentId) => [agentId, spec.id === 'manager-action-queue' ? 'action-target' : 'governance-participant'])),
+        submissionIntent: 'Submit this Manager governance route as a C-side control-plane proof node.',
+        attachmentType: 'manager-governance-route',
+        attachmentTitle: spec.title,
+        attachmentSummary: spec.summary,
+        attachments: [
+          {
+            id: `${spec.id}-route`,
+            type: 'manager-governance-route',
+            title: spec.title,
+            apiPath: route.apiPath || spec.apiPath,
+            runRoute: spec.runRoute || route.runTemplateRoute || route.nextRunRoute || null,
+            proofKind: route.proofKind || spec.subtype,
+            readyForProduction: route.readyForProduction === true,
+            productionBlocker: route.productionBlocker !== false,
+            productionBlockerReason: route.productionBlockerReason || null,
+            checksum: persistenceChecksum({
+              id: spec.id,
+              apiPath: route.apiPath || spec.apiPath,
+              proofIds,
+              timelineLogIds,
+              eventIds,
+            }),
+          },
+        ],
+        route: route.apiPath || spec.apiPath,
+        relatedNodeIds: (spec.relatedNodeIds || []).filter((nodeId) => nodesById.has(nodeId)),
+      });
+    });
+    [
+      ['governance-protocol', 'sync-protocol-audit', 'Defines C/A roles'],
+      ['manager-command-center', 'manager-action-queue', 'Next Manager action'],
+      ['manager-scenario-trail', 'manager-scenario-walkthrough', 'Guides scenario inspection'],
+      ['manager-scenario-walkthrough', 'manager-action-queue', 'Delegates runnable step'],
+      ['manager-requirement-matrix', 'manager-action-queue', 'Turns failed requirement into action'],
+      ['sync-protocol-audit', 'team-collaboration-diagnostics', 'Audits team sync'],
+      ['manager-use-case-audit', 'manager-requirement-matrix', 'Maps use case to requirement'],
+    ].forEach(([fromNodeId, toNodeId, label]) => {
+      if (!nodesById.has(fromNodeId) || !nodesById.has(toNodeId)) return;
+      const fromNode = nodesById.get(fromNodeId) || {};
+      const toNode = nodesById.get(toNodeId) || {};
+      addEdge({
+        type: 'task_dependency',
+        fromNodeId,
+        toNodeId,
+        label,
+        source: 'managerGovernanceRoutes',
+        proofIds: uniqueStrings([...(fromNode.proofIds || []), ...(toNode.proofIds || [])]),
+        timelineLogIds: uniqueStrings([...(fromNode.timelineLogIds || []), ...(toNode.timelineLogIds || [])]),
+        eventIds: uniqueStrings([...(fromNode.eventIds || []), ...(toNode.eventIds || [])]),
+        importance: 'major',
+      });
+    });
+  }
 
   (dashboard.agentAutonomousActionRuns?.rows || []).forEach((run) => {
     const nodeId = `agent-autonomous-action-run-${run.id}`;
@@ -43782,6 +45383,8 @@ function buildManagerFlowGraphSnapshot({ project = {}, messages = [] } = {}) {
     const latestProductionSecurityControlReceipt = (project.productionSecurityControlReceipts || [])[0] || null;
     const latestProductionProviderControlReceipt = (project.productionProviderControlReceipts || [])[0] || null;
     const productionEvidenceIntegrityAudit = buildProductionEvidenceIntegrityAudit({ project });
+    const publicProductionStartupReadiness = managerReadyPackage.publicProductionStartupReadiness || {};
+    const productionLaunchGapRegister = managerReadyPackage.productionLaunchGapRegister || {};
     const goLiveProofIds = uniqueStrings([
       latestCandidate?.id,
       latestCandidate?.checksum,
@@ -43807,6 +45410,12 @@ function buildManagerFlowGraphSnapshot({ project = {}, messages = [] } = {}) {
       latestProductionProviderControlReceipt?.id,
       latestProductionProviderControlReceipt?.checksum,
       ...(latestProductionProviderControlReceipt?.proofIds || []),
+    ].filter(Boolean));
+    const publicProductionStartupProofIds = uniqueStrings([
+      publicProductionStartupReadiness.checksum,
+      publicProductionStartupReadiness.status,
+      publicProductionStartupReadiness.nextAction?.id,
+      ...(publicProductionStartupReadiness.failedGates || []).map((gate) => gate.id),
     ].filter(Boolean));
     const goLiveLogIds = uniqueStrings([
       latestCandidate?.timelineLogId,
@@ -43971,6 +45580,54 @@ function buildManagerFlowGraphSnapshot({ project = {}, messages = [] } = {}) {
       });
     });
     addNode({
+      id: 'public-production-startup-readiness',
+      category: 'monitoring',
+      subtype: 'public-production-startup-readiness',
+      title: 'Public production startup readiness',
+      summary: publicProductionStartupReadiness.readyForPublicProduction
+        ? 'Global public-production startup gates are ready; project-level launch governance still owns final go/no-go.'
+        : `Global public-production startup is blocked by ${publicProductionStartupReadiness.nextAction?.label || publicProductionStartupReadiness.status || 'managed runtime controls'}.`,
+      status: publicProductionStartupReadiness.readyForPublicProduction ? 'confirmed' : 'blocked',
+      importance: 'critical',
+      source: 'publicProductionStartupReadiness',
+      proofIds: publicProductionStartupProofIds,
+      participantIds: uniqueStrings((project.team || []).map((agent) => agent.id)),
+      submissionIntent: 'Inspect the global startup preflight before allowing any project-level public-production launch claim.',
+      attachmentType: 'public-production-startup-readiness',
+      attachmentTitle: 'Public production startup preflight',
+      route: publicProductionStartupReadiness.backendRoutes?.publicProductionStartupReadiness || '/public-production-startup-readiness',
+      attachments: [
+        {
+          id: 'public-production-startup-readiness_gates',
+          type: 'public-production-startup-readiness',
+          title: 'Global runtime startup gates',
+          summary: `${publicProductionStartupReadiness.summary?.passedGateCount || 0}/${publicProductionStartupReadiness.summary?.gateCount || 0} gate(s) passed; next action ${publicProductionStartupReadiness.nextAction?.label || 'none'}.`,
+          failedGateIds: (publicProductionStartupReadiness.failedGates || []).map((gate) => gate.id),
+          route: publicProductionStartupReadiness.backendRoutes?.publicProductionStartupReadiness || '/public-production-startup-readiness',
+          readyForPublicProduction: Boolean(publicProductionStartupReadiness.readyForPublicProduction),
+          proofIds: publicProductionStartupProofIds,
+        },
+      ],
+    });
+    addEdge({
+      type: 'monitoring',
+      fromNodeId: 'production-infrastructure-rehearsal',
+      toNodeId: 'public-production-startup-readiness',
+      label: 'Global startup preflight',
+      source: 'publicProductionStartupReadiness',
+      proofIds: publicProductionStartupProofIds,
+      importance: 'critical',
+    });
+    addEdge({
+      type: 'decision',
+      fromNodeId: 'public-production-startup-readiness',
+      toNodeId: 'production-launch-control-center',
+      label: 'Public-production startup no-go',
+      source: 'publicProductionStartupReadiness',
+      proofIds: publicProductionStartupProofIds,
+      importance: 'critical',
+    });
+    addNode({
       id: 'production-launch-gap-register',
       category: 'decision',
       subtype: 'production-launch-gap-register',
@@ -43994,7 +45651,11 @@ function buildManagerFlowGraphSnapshot({ project = {}, messages = [] } = {}) {
           id: 'production-launch-gap-register_plan',
           type: 'production-launch-gap-register',
           title: 'Production hardening next-action map',
-          summary: 'Aggregates production launch audit, deployment preflight, operations, provider, evidence custody, artifact quality, and review governance blockers into owner-routed gaps.',
+          summary: `Aggregates production launch audit, public environment setup, deployment preflight, operations, provider, evidence custody, artifact quality, and review governance blockers into owner-routed gaps; ${productionLaunchGapRegister.summary?.publicProductionEnvironmentSetupOpenCount || 0} environment setup gap(s) remain open.`,
+          publicProductionEnvironmentSetupOpenCount: productionLaunchGapRegister.summary?.publicProductionEnvironmentSetupOpenCount || 0,
+          publicProductionEnvironmentSetupBlockedDomains: productionLaunchGapRegister.summary?.publicProductionEnvironmentSetupBlockedDomains || [],
+          nextActionId: productionLaunchGapRegister.nextAction?.id || null,
+          nextActionRoute: productionLaunchGapRegister.nextAction?.apiPath || null,
           proofIds: goLiveProofIds,
           eventIds: goLiveEventIds,
           timelineLogIds: goLiveLogIds,
@@ -45570,11 +47231,179 @@ export function createAgentProjectService({
     const signedAccessConfigured = envConfigured('AGENT_ACCESS_SIGNING_SECRET');
     const replayProtectionEnabled = envFlag(env, 'AGENT_ACCESS_REPLAY_PROTECTION');
     const auditFailClosedEnabled = envFlag(env, 'AGENT_ACCESS_AUDIT_FAIL_CLOSED');
-    const managedSecretsReady = Boolean(vaultStatus.productionReady || (
-      envConfigured('PRODUCTION_SECRET_MANAGER_ENDPOINT', 'PRODUCTION_KMS_KEY_ID', 'MANAGED_SECRET_MANAGER_ENDPOINT', 'MANAGED_KMS_KEY_ID')
+    const managedIdentityConfigEnvVars = [
+      'PRODUCTION_IDENTITY_PROVIDER',
+      'PRODUCTION_IDENTITY_ISSUER',
+      'PRODUCTION_IDENTITY_JWKS_URI',
+    ];
+    const managedServiceIdentityEnvVars = [
+      'PRODUCTION_SERVICE_IDENTITY_AUDIENCE',
+      'PRODUCTION_SERVICE_IDENTITY_SUBJECT',
+    ];
+    const managedIdentityEvidenceEnvVars = [
+      'PRODUCTION_IDENTITY_CONTROL_RECEIPT_ID',
+      'PRODUCTION_IDENTITY_CONTROL_RECEIPT_CHECKSUM',
+      'PRODUCTION_IDENTITY_CONTROL_ATTESTATION_SIGNATURE',
+    ];
+    const managedIdentityEnvVars = [
+      ...managedIdentityConfigEnvVars,
+      ...managedServiceIdentityEnvVars,
+      ...managedIdentityEvidenceEnvVars,
+    ];
+    const productionCostPolicyEnvVars = [
+      'PRODUCTION_PROVIDER_DAILY_BUDGET_CENTS',
+      'PRODUCTION_PROVIDER_HOURLY_REQUEST_LIMIT',
+    ];
+    const productionCostAuditEnvVars = [
+      'PRODUCTION_PROVIDER_USAGE_AUDIT_ENDPOINT',
+      'PRODUCTION_PROVIDER_COST_LEDGER_ENDPOINT',
+    ];
+    const productionCostAlertEnvVars = [
+      'PRODUCTION_COST_ALERT_ENDPOINT',
+      'PRODUCTION_BUDGET_ALERT_ROUTING_ENDPOINT',
+    ];
+    const productionCostEvidenceEnvVars = [
+      'PRODUCTION_COST_CONTROL_RECEIPT_ID',
+      'PRODUCTION_COST_CONTROL_RECEIPT_CHECKSUM',
+      'PRODUCTION_COST_CONTROL_ATTESTATION_SIGNATURE',
+    ];
+    const productionCostControlEnvVars = [
+      ...productionCostPolicyEnvVars,
+      ...productionCostAuditEnvVars,
+      ...productionCostAlertEnvVars,
+      ...productionCostEvidenceEnvVars,
+    ];
+    const productionDataGovernancePolicyEnvVars = [
+      'PRODUCTION_DATA_RETENTION_POLICY_ID',
+      'PRODUCTION_DATA_RESIDENCY_REGION',
+    ];
+    const productionDataGovernanceControlEnvVars = [
+      'PRODUCTION_DATA_DELETION_JOB_ENDPOINT',
+      'PRODUCTION_DATA_EXPORT_STORAGE_ENDPOINT',
+    ];
+    const productionDataGovernanceEvidenceEnvVars = [
+      'PRODUCTION_DATA_GOVERNANCE_RECEIPT_ID',
+      'PRODUCTION_DATA_GOVERNANCE_RECEIPT_CHECKSUM',
+      'PRODUCTION_DATA_GOVERNANCE_ATTESTATION_SIGNATURE',
+    ];
+    const productionDataGovernanceEnvVars = [
+      ...productionDataGovernancePolicyEnvVars,
+      ...productionDataGovernanceControlEnvVars,
+      ...productionDataGovernanceEvidenceEnvVars,
+    ];
+    const productionTrafficConfigEnvVars = [
+      'PRODUCTION_DOMAIN_NAME',
+      'PRODUCTION_TLS_CERTIFICATE_ID',
+      'PRODUCTION_TRAFFIC_GATEWAY_ENDPOINT',
+      'PRODUCTION_HEALTHCHECK_URL',
+      'PRODUCTION_RELEASE_APPROVAL_ID',
+      'PRODUCTION_ROLLBACK_RUNBOOK_ID',
+      'PRODUCTION_ROLLBACK_SMOKE_TEST_URL',
+    ];
+    const productionTrafficEvidenceEnvVars = [
+      'PRODUCTION_TRAFFIC_CONTROL_RECEIPT_ID',
+      'PRODUCTION_TRAFFIC_CONTROL_RECEIPT_CHECKSUM',
+      'PRODUCTION_TRAFFIC_CONTROL_ATTESTATION_SIGNATURE',
+    ];
+    const productionTrafficEnvVars = [
+      ...productionTrafficConfigEnvVars,
+      ...productionTrafficEvidenceEnvVars,
+    ];
+    const productionCustomerAcceptancePolicyEnvVars = [
+      'PRODUCTION_CUSTOMER_ACCEPTANCE_POLICY_ID',
+      'PRODUCTION_CUSTOMER_SUCCESS_CRITERIA_ID',
+      'PRODUCTION_CUSTOMER_ACCEPTANCE_THRESHOLD_PERCENT',
+      'PRODUCTION_CUSTOMER_ACCEPTANCE_APPROVER_ROLE',
+      'PRODUCTION_CUSTOMER_ACCEPTANCE_APPROVAL_ID',
+      'PRODUCTION_CUSTOMER_ROLLBACK_CRITERIA_ID',
+    ];
+    const productionCustomerAcceptanceEvidenceEnvVars = [
+      'PRODUCTION_CUSTOMER_ACCEPTANCE_RECEIPT_ID',
+      'PRODUCTION_CUSTOMER_ACCEPTANCE_RECEIPT_CHECKSUM',
+      'PRODUCTION_CUSTOMER_ACCEPTANCE_ATTESTATION_SIGNATURE',
+    ];
+    const productionCustomerAcceptanceEnvVars = [
+      ...productionCustomerAcceptancePolicyEnvVars,
+      ...productionCustomerAcceptanceEvidenceEnvVars,
+    ];
+    const managedSecretConfigEnvVars = [
+      'PRODUCTION_SECRET_MANAGER_ENDPOINT',
+      'PRODUCTION_KMS_KEY_ID',
+      'MANAGED_SECRET_MANAGER_ENDPOINT',
+      'MANAGED_KMS_KEY_ID',
+    ];
+    const managedSecretAttestationIdEnvVars = [
+      'MANAGED_SECRET_MANAGER_ATTESTATION_ID',
+      'PRODUCTION_KMS_ATTESTATION_ID',
+    ];
+    const managedSecretAttestationChecksumEnvVars = [
+      'MANAGED_SECRET_MANAGER_ATTESTATION_CHECKSUM',
+      'PRODUCTION_KMS_ATTESTATION_CHECKSUM',
+    ];
+    const managedSecretAttestationPairGroups = [
+      ['MANAGED_SECRET_MANAGER_ATTESTATION_ID', 'MANAGED_SECRET_MANAGER_ATTESTATION_CHECKSUM'],
+      ['PRODUCTION_KMS_ATTESTATION_ID', 'PRODUCTION_KMS_ATTESTATION_CHECKSUM'],
+    ];
+    const managedSecretEnvVars = [
+      ...managedSecretConfigEnvVars,
+      ...managedSecretAttestationIdEnvVars,
+      ...managedSecretAttestationChecksumEnvVars,
+    ];
+    const managedSecretConfigurationReady = envConfigured(...managedSecretConfigEnvVars);
+    const managedSecretAttestationReady = managedSecretAttestationPairGroups
+      .some(([idKey, checksumKey]) => envConfigured(idKey) && envConfigured(checksumKey));
+    const managedSecretProviderReady = Boolean(vaultStatus.productionReady || (
+      vaultStatus.ready
       && vaultStatus.provider !== 'local-aes-gcm'
       && vaultStatus.provider !== 'none'
+      && vaultStatus.rotationSupported
+      && vaultStatus.accessAuditSupported
     ));
+    const managedSecretRawExposureBlocked = Boolean(vaultStatus.rawSecretExposure || vaultStatus.rawSecretRecordCount > 0);
+    const managedSecretsReady = Boolean(
+      managedSecretProviderReady
+      && managedSecretConfigurationReady
+      && managedSecretAttestationReady
+      && !managedSecretRawExposureBlocked
+    );
+    const managedSecretBlockingReasons = [
+      !managedSecretProviderReady
+        ? `Secret Vault provider ${vaultStatus.provider || 'none'} is not a managed production-ready provider with rotation and access audit support.`
+        : null,
+      !managedSecretConfigurationReady
+        ? 'Managed Secret Manager/KMS endpoint or key id is missing.'
+        : null,
+      !managedSecretAttestationReady
+        ? 'Managed Secret Manager/KMS attestation id and checksum are missing as a matched pair.'
+        : null,
+      managedSecretRawExposureBlocked
+        ? 'Secret Vault status reports raw secret exposure.'
+        : null,
+    ].filter(Boolean);
+    const managedSecretManager = {
+      schemaVersion: 'managed-secret-manager-readiness/v1',
+      status: managedSecretsReady ? 'ready' : 'blocked',
+      ready: managedSecretsReady,
+      provider: vaultStatus.provider || 'none',
+      providerReady: managedSecretProviderReady,
+      configurationReady: managedSecretConfigurationReady,
+      attestationReady: managedSecretAttestationReady,
+      rawExposureBlocked: managedSecretRawExposureBlocked,
+      configuredEnvVars: managedSecretEnvVars.filter((key) => envConfigured(key)),
+      missingAnyOfEnvVarGroups: [
+        managedSecretConfigEnvVars,
+        managedSecretAttestationIdEnvVars,
+        managedSecretAttestationChecksumEnvVars,
+      ].filter((group) => !group.some((key) => envConfigured(key))),
+      requiredAttestationPairs: managedSecretAttestationPairGroups,
+      envVars: managedSecretEnvVars,
+      apiPath: '/secret-vault/status',
+      validationCommand: 'npm run agents:public-production-startup-readiness',
+      detail: managedSecretsReady
+        ? `${vaultStatus.provider || 'secret-vault'} has managed provider evidence, configuration, and attestation.`
+        : managedSecretBlockingReasons.join(' '),
+      productionRequirement: 'public production requires a managed Secret Manager/KMS provider plus redacted attestation id/checksum evidence; configured env names alone cannot promote the local vault',
+    };
     const managedPersistenceReady = Boolean(
       persistenceStatus.configured
       && persistenceStatus.requireRealAdapter
@@ -45587,6 +47416,109 @@ export function createAgentProjectService({
       && queueStatus.driver !== 'local-shadow'
       && queueStatus.productionCutoverReady
     );
+    const managedInfrastructureCutoverRow = ({
+      id,
+      label,
+      status,
+      ready,
+      configEnvVars = [],
+      requireEnvVar = '',
+      proofRoute = '',
+      validationCommand = 'npm run launch:infra',
+    }) => {
+      const localShadow = status.driver === 'local-shadow' || status.sourceKind === 'local-shadow';
+      const externalConfigured = Boolean(status.externalConfigured || (!localShadow && status.configured));
+      const requireRealAdapter = Boolean(status.requireRealAdapter);
+      const cutoverReady = Boolean(status.productionCutoverReady);
+      const blockingReasons = [
+        localShadow ? `${label} is still using the local-shadow adapter.` : null,
+        !externalConfigured ? `${label} managed endpoint or database configuration is missing.` : null,
+        !requireRealAdapter ? `${label} is not running with the real-adapter requirement enabled.` : null,
+        !cutoverReady ? `${label} has no managed-production cutover receipt.` : null,
+        status.unsupportedDriver ? `${label} driver ${status.driver || 'unknown'} is unsupported.` : null,
+      ].filter(Boolean);
+      return {
+        id,
+        label,
+        status: ready ? 'ready' : 'blocked',
+        ready: Boolean(ready),
+        driver: status.driver || 'unknown',
+        sourceKind: status.sourceKind || 'unknown',
+        configurationReady: externalConfigured,
+        requireRealAdapter,
+        cutoverReady,
+        localShadow,
+        gatewayVerificationAvailable: Boolean(status.gatewayVerificationAvailable),
+        configuredEnvVars: [...configEnvVars, requireEnvVar].filter((key) => key && envConfigured(key)),
+        missingAnyOfEnvVarGroups: [configEnvVars].filter((group) => group.length && !group.some((key) => envConfigured(key))),
+        missingRequiredEnvVars: requireEnvVar && !envConfigured(requireEnvVar) ? [requireEnvVar] : [],
+        apiPath: proofRoute,
+        validationCommand,
+        detail: ready
+          ? `${label} has managed configuration, real-adapter requirement, and cutover proof.`
+          : blockingReasons.join(' '),
+      };
+    };
+    const managedInfrastructureCutover = {
+      schemaVersion: 'managed-infrastructure-cutover-readiness/v1',
+      status: managedPersistenceReady && managedQueueReady ? 'ready' : 'blocked',
+      ready: Boolean(managedPersistenceReady && managedQueueReady),
+      rows: [
+        managedInfrastructureCutoverRow({
+          id: 'managed-persistence',
+          label: 'Managed persistence',
+          status: persistenceStatus,
+          ready: managedPersistenceReady,
+          configEnvVars: [
+            'MANAGED_PERSISTENCE_DATABASE_URL',
+            'MANAGED_PERSISTENCE_HTTP_ENDPOINT',
+            'ADAPTER_GATEWAY_HTTP_ENDPOINT',
+          ],
+          requireEnvVar: 'MANAGED_PERSISTENCE_REQUIRE_REAL_ADAPTER',
+          proofRoute: '/public-production-startup-readiness',
+          validationCommand: persistenceStatus.gatewayValidationCommand || 'npm run launch:infra',
+        }),
+        managedInfrastructureCutoverRow({
+          id: 'managed-worker-queue',
+          label: 'Managed worker queue',
+          status: queueStatus,
+          ready: managedQueueReady,
+          configEnvVars: [
+            'WORKER_QUEUE_HTTP_ENDPOINT',
+            'ADAPTER_GATEWAY_HTTP_ENDPOINT',
+          ],
+          requireEnvVar: 'WORKER_QUEUE_REQUIRE_REAL_ADAPTER',
+          proofRoute: '/public-production-startup-readiness',
+          validationCommand: queueStatus.gatewayValidationCommand || 'npm run launch:infra',
+        }),
+      ],
+      productionRequirement: 'public production requires real managed database and queue adapters plus managed-production cutover receipts; configured endpoints alone cannot approve production traffic',
+    };
+    const blockedManagedInfrastructureCutoverRows = managedInfrastructureCutover.rows.filter((row) => !row.ready);
+    managedInfrastructureCutover.summary = {
+      rowCount: managedInfrastructureCutover.rows.length,
+      readyRowCount: managedInfrastructureCutover.rows.length - blockedManagedInfrastructureCutoverRows.length,
+      blockedRowCount: blockedManagedInfrastructureCutoverRows.length,
+      configuredRowCount: managedInfrastructureCutover.rows.filter((row) => row.configurationReady).length,
+      cutoverReadyRowCount: managedInfrastructureCutover.rows.filter((row) => row.cutoverReady).length,
+      requireRealAdapterRowCount: managedInfrastructureCutover.rows.filter((row) => row.requireRealAdapter).length,
+    };
+    managedInfrastructureCutover.nextAction = blockedManagedInfrastructureCutoverRows[0]
+      ? {
+        id: blockedManagedInfrastructureCutoverRows[0].id,
+        label: blockedManagedInfrastructureCutoverRows[0].label,
+        detail: blockedManagedInfrastructureCutoverRows[0].detail,
+        apiPath: blockedManagedInfrastructureCutoverRows[0].apiPath,
+        validationCommand: blockedManagedInfrastructureCutoverRows[0].validationCommand,
+      }
+      : {
+        id: 'managed-infrastructure-cutover-ready',
+        label: 'Managed infrastructure cutover ready',
+        detail: 'Managed persistence and worker queue cutover evidence is ready.',
+        apiPath: '/public-production-startup-readiness',
+        validationCommand: 'npm run launch:gates',
+      };
+    managedInfrastructureCutover.checksum = persistenceChecksum(managedInfrastructureCutover);
     const providerRuntimeReady = Boolean(modelStatus.enabled && modelStatus.configured && searchStatus.enabled && searchStatus.configured);
     const providerVaultRedacted = providerVaultBindings.redaction?.rawLeakCount === 0;
     const gatewayReady = Boolean(
@@ -45594,16 +47526,481 @@ export function createAgentProjectService({
       && envConfigured('ADAPTER_GATEWAY_AUTH_TOKEN')
     );
     const attestationSigningReady = envConfigured('MANAGED_PRODUCTION_ATTESTATION_SIGNING_SECRET', 'PRODUCTION_ATTESTATION_SIGNING_SECRET');
-    const observabilityReady = Boolean(
+    const productionStartupEvidence = ({
+      controlId,
+      evidenceIdEnvVar,
+      evidenceChecksumEnvVar,
+      attestationSignatureEnvVar,
+      domain = 'operations',
+    }) => {
+      const evidenceId = String(env[evidenceIdEnvVar] || '').trim();
+      const evidenceChecksum = String(env[evidenceChecksumEnvVar] || '').trim();
+      const attestationSignature = String(env[attestationSignatureEnvVar] || '').trim();
+      const control = {
+        controlId,
+        evidenceId: evidenceId || null,
+        evidenceChecksum: evidenceChecksum || null,
+        evidenceEnvironment: 'managed-production',
+        attestationId: evidenceId ? `${evidenceId}:managed-production-attestation` : null,
+        attestationChecksum: evidenceChecksum || null,
+        attestationSignature: attestationSignature || null,
+        attestationProvider: 'public-production-startup',
+        attestationKind: 'startup-control-receipt',
+      };
+      const attestationVerification = verifyManagedProductionAttestation({
+        projectId: 'public-production-startup',
+        domain,
+        controlId,
+        control,
+        receipt: {
+          evidenceEnvironment: 'managed-production',
+        },
+        env,
+      });
+      const receiptConfigured = Boolean(evidenceId && evidenceChecksum);
+      const evidenceReady = Boolean(receiptConfigured && attestationVerification.ready);
+      return {
+        controlId,
+        receiptConfigured,
+        evidenceReady,
+        evidenceIdConfigured: Boolean(evidenceId),
+        evidenceChecksumConfigured: Boolean(evidenceChecksum),
+        attestationSignatureConfigured: Boolean(attestationSignature),
+        attestationSignatureReady: Boolean(attestationVerification.signatureReady),
+        attestationFailureReason: evidenceReady ? null : attestationVerification.failureReason,
+        configuredEnvVars: [
+          evidenceIdEnvVar,
+          evidenceChecksumEnvVar,
+          attestationSignatureEnvVar,
+        ].filter((key) => envConfigured(key)),
+        missingRequiredEnvVars: [
+          evidenceIdEnvVar,
+          evidenceChecksumEnvVar,
+          attestationSignatureEnvVar,
+        ].filter((key) => !envConfigured(key)),
+      };
+    };
+    const managedIdentityEvidence = productionStartupEvidence({
+      domain: 'security',
+      controlId: 'managed-identity-provider',
+      evidenceIdEnvVar: 'PRODUCTION_IDENTITY_CONTROL_RECEIPT_ID',
+      evidenceChecksumEnvVar: 'PRODUCTION_IDENTITY_CONTROL_RECEIPT_CHECKSUM',
+      attestationSignatureEnvVar: 'PRODUCTION_IDENTITY_CONTROL_ATTESTATION_SIGNATURE',
+    });
+    const productionCostEvidence = productionStartupEvidence({
+      domain: 'provider',
+      controlId: 'production-cost-controls',
+      evidenceIdEnvVar: 'PRODUCTION_COST_CONTROL_RECEIPT_ID',
+      evidenceChecksumEnvVar: 'PRODUCTION_COST_CONTROL_RECEIPT_CHECKSUM',
+      attestationSignatureEnvVar: 'PRODUCTION_COST_CONTROL_ATTESTATION_SIGNATURE',
+    });
+    const productionDataGovernanceEvidence = productionStartupEvidence({
+      domain: 'data-governance',
+      controlId: 'production-data-governance',
+      evidenceIdEnvVar: 'PRODUCTION_DATA_GOVERNANCE_RECEIPT_ID',
+      evidenceChecksumEnvVar: 'PRODUCTION_DATA_GOVERNANCE_RECEIPT_CHECKSUM',
+      attestationSignatureEnvVar: 'PRODUCTION_DATA_GOVERNANCE_ATTESTATION_SIGNATURE',
+    });
+    const productionTrafficEvidence = productionStartupEvidence({
+      domain: 'deployment',
+      controlId: 'production-traffic-control',
+      evidenceIdEnvVar: 'PRODUCTION_TRAFFIC_CONTROL_RECEIPT_ID',
+      evidenceChecksumEnvVar: 'PRODUCTION_TRAFFIC_CONTROL_RECEIPT_CHECKSUM',
+      attestationSignatureEnvVar: 'PRODUCTION_TRAFFIC_CONTROL_ATTESTATION_SIGNATURE',
+    });
+    const productionCustomerAcceptanceEvidence = productionStartupEvidence({
+      domain: 'customer-acceptance',
+      controlId: 'customer-production-acceptance-policy',
+      evidenceIdEnvVar: 'PRODUCTION_CUSTOMER_ACCEPTANCE_RECEIPT_ID',
+      evidenceChecksumEnvVar: 'PRODUCTION_CUSTOMER_ACCEPTANCE_RECEIPT_CHECKSUM',
+      attestationSignatureEnvVar: 'PRODUCTION_CUSTOMER_ACCEPTANCE_ATTESTATION_SIGNATURE',
+    });
+    const managedIdentityProviderConfigured = envConfigured(...managedIdentityConfigEnvVars);
+    const managedServiceIdentityConfigured = envConfigured(...managedServiceIdentityEnvVars);
+    const managedIdentityEvidenceReady = managedIdentityEvidence.evidenceReady;
+    const managedIdentityStartupReady = Boolean(
+      managedIdentityProviderConfigured
+      && managedServiceIdentityConfigured
+      && managedIdentityEvidenceReady
+    );
+    const managedIdentityStartup = {
+      schemaVersion: 'managed-identity-startup-readiness/v1',
+      status: managedIdentityStartupReady ? 'ready' : 'blocked',
+      ready: managedIdentityStartupReady,
+      providerConfigured: managedIdentityProviderConfigured,
+      serviceIdentityConfigured: managedServiceIdentityConfigured,
+      evidenceReady: managedIdentityEvidenceReady,
+      signedAccessOnly: Boolean(signedAccessConfigured && !managedIdentityStartupReady),
+      receiptConfigured: managedIdentityEvidence.receiptConfigured,
+      attestationSignatureReady: managedIdentityEvidence.attestationSignatureReady,
+      attestationFailureReason: managedIdentityEvidence.attestationFailureReason,
+      configuredEnvVars: managedIdentityEnvVars.filter((key) => envConfigured(key)),
+      missingRequiredEnvVars: managedIdentityEnvVars.filter((key) => !envConfigured(key)),
+      apiPath: '/public-production-startup-readiness',
+      validationCommand: 'npm run agents:public-production-startup-readiness',
+      detail: managedIdentityStartupReady
+        ? 'Managed identity provider, service identity boundary, and signed production evidence are ready.'
+        : [
+            !managedIdentityProviderConfigured ? 'Managed identity provider issuer/JWKS configuration is missing.' : null,
+            !managedServiceIdentityConfigured ? 'Service identity audience/subject boundary is missing.' : null,
+            !managedIdentityEvidenceReady
+              ? `Managed identity production evidence receipt/signature is missing or invalid${managedIdentityEvidence.attestationFailureReason ? ` (${managedIdentityEvidence.attestationFailureReason})` : ''}.`
+              : null,
+          ].filter(Boolean).join(' '),
+      productionRequirement: 'public production requires managed user identity, service identity, and signed managed-production evidence; HMAC-signed prototype headers alone are not a production identity system',
+    };
+    managedIdentityStartup.checksum = persistenceChecksum(managedIdentityStartup);
+    const productionCostPolicyConfigured = productionCostPolicyEnvVars.every((key) => envConfigured(key));
+    const productionCostAuditConfigured = envConfigured(...productionCostAuditEnvVars);
+    const productionCostAlertConfigured = envConfigured(...productionCostAlertEnvVars);
+    const productionCostEvidenceReady = productionCostEvidence.evidenceReady;
+    const productionCostControlReady = Boolean(
+      productionCostPolicyConfigured
+      && productionCostAuditConfigured
+      && productionCostAlertConfigured
+      && productionCostEvidenceReady
+    );
+    const productionCostControlStartup = {
+      schemaVersion: 'production-cost-control-startup-readiness/v1',
+      status: productionCostControlReady ? 'ready' : 'blocked',
+      ready: productionCostControlReady,
+      budgetPolicyConfigured: productionCostPolicyConfigured,
+      usageAuditConfigured: productionCostAuditConfigured,
+      alertRoutingConfigured: productionCostAlertConfigured,
+      evidenceReady: productionCostEvidenceReady,
+      receiptConfigured: productionCostEvidence.receiptConfigured,
+      attestationSignatureReady: productionCostEvidence.attestationSignatureReady,
+      attestationFailureReason: productionCostEvidence.attestationFailureReason,
+      configuredEnvVars: productionCostControlEnvVars.filter((key) => envConfigured(key)),
+      missingRequiredEnvVars: [
+        ...productionCostPolicyEnvVars,
+        ...productionCostEvidenceEnvVars,
+      ].filter((key) => !envConfigured(key)),
+      missingAnyOfEnvVarGroups: [
+        productionCostAuditEnvVars,
+        productionCostAlertEnvVars,
+      ].filter((group) => !group.some((key) => envConfigured(key))),
+      apiPath: '/public-production-startup-readiness',
+      validationCommand: 'npm run agents:public-production-startup-readiness',
+      detail: productionCostControlReady
+        ? 'Production provider budget, rate limits, usage audit, cost alerting, and signed evidence are ready.'
+        : [
+            !productionCostPolicyConfigured ? 'Production provider budget and hourly request policy are missing.' : null,
+            !productionCostAuditConfigured ? 'Production provider usage/cost audit sink is missing.' : null,
+            !productionCostAlertConfigured ? 'Production cost alert routing is missing.' : null,
+            !productionCostEvidenceReady
+              ? `Production cost-control evidence receipt/signature is missing or invalid${productionCostEvidence.attestationFailureReason ? ` (${productionCostEvidence.attestationFailureReason})` : ''}.`
+              : null,
+          ].filter(Boolean).join(' '),
+      productionRequirement: 'public production requires centralized provider usage audit, budget/rate-limit policy, cost alert routing, and signed managed-production evidence; project-local budget settings alone are not enough',
+    };
+    productionCostControlStartup.checksum = persistenceChecksum(productionCostControlStartup);
+    const productionDataPolicyConfigured = productionDataGovernancePolicyEnvVars.every((key) => envConfigured(key));
+    const productionDataDeletionConfigured = envConfigured('PRODUCTION_DATA_DELETION_JOB_ENDPOINT');
+    const productionDataExportConfigured = envConfigured('PRODUCTION_DATA_EXPORT_STORAGE_ENDPOINT');
+    const productionDataGovernanceEvidenceReady = productionDataGovernanceEvidence.evidenceReady;
+    const productionDataGovernanceReady = Boolean(
+      productionDataPolicyConfigured
+      && productionDataDeletionConfigured
+      && productionDataExportConfigured
+      && productionDataGovernanceEvidenceReady
+    );
+    const productionDataGovernanceStartup = {
+      schemaVersion: 'production-data-governance-startup-readiness/v1',
+      status: productionDataGovernanceReady ? 'ready' : 'blocked',
+      ready: productionDataGovernanceReady,
+      retentionPolicyConfigured: productionDataPolicyConfigured,
+      deletionJobConfigured: productionDataDeletionConfigured,
+      exportStorageConfigured: productionDataExportConfigured,
+      evidenceReady: productionDataGovernanceEvidenceReady,
+      receiptConfigured: productionDataGovernanceEvidence.receiptConfigured,
+      attestationSignatureReady: productionDataGovernanceEvidence.attestationSignatureReady,
+      attestationFailureReason: productionDataGovernanceEvidence.attestationFailureReason,
+      configuredEnvVars: productionDataGovernanceEnvVars.filter((key) => envConfigured(key)),
+      missingRequiredEnvVars: productionDataGovernanceEnvVars.filter((key) => !envConfigured(key)),
+      apiPath: '/public-production-startup-readiness',
+      validationCommand: 'npm run agents:public-production-startup-readiness',
+      detail: productionDataGovernanceReady
+        ? 'Production data retention, deletion, export storage, data residency, and signed evidence are ready.'
+        : [
+            !productionDataPolicyConfigured ? 'Production retention policy or data residency region is missing.' : null,
+            !productionDataDeletionConfigured ? 'Production deletion job endpoint is missing.' : null,
+            !productionDataExportConfigured ? 'Production export storage endpoint is missing.' : null,
+            !productionDataGovernanceEvidenceReady
+              ? `Production data-governance evidence receipt/signature is missing or invalid${productionDataGovernanceEvidence.attestationFailureReason ? ` (${productionDataGovernanceEvidence.attestationFailureReason})` : ''}.`
+              : null,
+          ].filter(Boolean).join(' '),
+      productionRequirement: 'public production requires customer data retention, deletion, export storage, data residency, and signed managed-production evidence; local project privacy settings alone are not enough',
+    };
+    productionDataGovernanceStartup.checksum = persistenceChecksum(productionDataGovernanceStartup);
+    const productionDomainTlsConfigured = envConfigured('PRODUCTION_DOMAIN_NAME') && envConfigured('PRODUCTION_TLS_CERTIFICATE_ID');
+    const productionTrafficGatewayConfigured = envConfigured('PRODUCTION_TRAFFIC_GATEWAY_ENDPOINT') && envConfigured('PRODUCTION_HEALTHCHECK_URL');
+    const productionReleaseApprovalConfigured = envConfigured('PRODUCTION_RELEASE_APPROVAL_ID');
+    const productionRollbackConfigured = envConfigured('PRODUCTION_ROLLBACK_RUNBOOK_ID') && envConfigured('PRODUCTION_ROLLBACK_SMOKE_TEST_URL');
+    const productionTrafficEvidenceReady = productionTrafficEvidence.evidenceReady;
+    const productionTrafficStartupReady = Boolean(
+      productionDomainTlsConfigured
+      && productionTrafficGatewayConfigured
+      && productionReleaseApprovalConfigured
+      && productionRollbackConfigured
+      && productionTrafficEvidenceReady
+    );
+    const productionTrafficStartup = {
+      schemaVersion: 'production-traffic-startup-readiness/v1',
+      status: productionTrafficStartupReady ? 'ready' : 'blocked',
+      ready: productionTrafficStartupReady,
+      domainTlsConfigured: productionDomainTlsConfigured,
+      trafficGatewayConfigured: productionTrafficGatewayConfigured,
+      releaseApprovalConfigured: productionReleaseApprovalConfigured,
+      rollbackConfigured: productionRollbackConfigured,
+      evidenceReady: productionTrafficEvidenceReady,
+      receiptConfigured: productionTrafficEvidence.receiptConfigured,
+      attestationSignatureReady: productionTrafficEvidence.attestationSignatureReady,
+      attestationFailureReason: productionTrafficEvidence.attestationFailureReason,
+      configuredEnvVars: productionTrafficEnvVars.filter((key) => envConfigured(key)),
+      missingRequiredEnvVars: productionTrafficEnvVars.filter((key) => !envConfigured(key)),
+      apiPath: '/public-production-startup-readiness',
+      validationCommand: 'npm run agents:public-production-startup-readiness',
+      detail: productionTrafficStartupReady
+        ? 'Production domain/TLS, traffic gateway, health check, release approval, rollback smoke test, and signed evidence are ready.'
+        : [
+            !productionDomainTlsConfigured ? 'Production domain or TLS certificate configuration is missing.' : null,
+            !productionTrafficGatewayConfigured ? 'Production traffic gateway or health check URL is missing.' : null,
+            !productionReleaseApprovalConfigured ? 'Production release approval id is missing.' : null,
+            !productionRollbackConfigured ? 'Production rollback runbook or smoke-test URL is missing.' : null,
+            !productionTrafficEvidenceReady
+              ? `Production traffic-control evidence receipt/signature is missing or invalid${productionTrafficEvidence.attestationFailureReason ? ` (${productionTrafficEvidence.attestationFailureReason})` : ''}.`
+              : null,
+          ].filter(Boolean).join(' '),
+      productionRequirement: 'public production requires controlled traffic entry, domain/TLS, health checks, release approval, rollback smoke testing, and signed managed-production evidence; a running local server or configured URL alone cannot approve customer traffic',
+    };
+    productionTrafficStartup.checksum = persistenceChecksum(productionTrafficStartup);
+    const productionCustomerAcceptancePolicyConfigured = productionCustomerAcceptancePolicyEnvVars
+      .every((key) => envConfigured(key));
+    const productionCustomerAcceptanceEvidenceReady = productionCustomerAcceptanceEvidence.evidenceReady;
+    const productionCustomerAcceptanceReady = Boolean(
+      productionCustomerAcceptancePolicyConfigured
+      && productionCustomerAcceptanceEvidenceReady
+    );
+    const productionCustomerAcceptanceStartup = {
+      schemaVersion: 'production-customer-acceptance-startup-readiness/v1',
+      status: productionCustomerAcceptanceReady ? 'ready' : 'blocked',
+      ready: productionCustomerAcceptanceReady,
+      policyConfigured: productionCustomerAcceptancePolicyConfigured,
+      successCriteriaConfigured: envConfigured('PRODUCTION_CUSTOMER_SUCCESS_CRITERIA_ID'),
+      thresholdConfigured: envConfigured('PRODUCTION_CUSTOMER_ACCEPTANCE_THRESHOLD_PERCENT'),
+      approvalConfigured: envConfigured('PRODUCTION_CUSTOMER_ACCEPTANCE_APPROVER_ROLE')
+        && envConfigured('PRODUCTION_CUSTOMER_ACCEPTANCE_APPROVAL_ID'),
+      rollbackCriteriaConfigured: envConfigured('PRODUCTION_CUSTOMER_ROLLBACK_CRITERIA_ID'),
+      evidenceReady: productionCustomerAcceptanceEvidenceReady,
+      receiptConfigured: productionCustomerAcceptanceEvidence.receiptConfigured,
+      attestationSignatureReady: productionCustomerAcceptanceEvidence.attestationSignatureReady,
+      attestationFailureReason: productionCustomerAcceptanceEvidence.attestationFailureReason,
+      configuredEnvVars: productionCustomerAcceptanceEnvVars.filter((key) => envConfigured(key)),
+      missingRequiredEnvVars: productionCustomerAcceptanceEnvVars.filter((key) => !envConfigured(key)),
+      apiPath: '/public-production-startup-readiness',
+      validationCommand: 'npm run agents:public-production-startup-readiness',
+      detail: productionCustomerAcceptanceReady
+        ? 'Customer production acceptance policy, thresholds, approval, rollback criteria, and signed evidence are ready.'
+        : [
+            !productionCustomerAcceptancePolicyConfigured
+              ? 'Customer production acceptance policy, success criteria, threshold, approval, or rollback criteria are missing.'
+              : null,
+            !productionCustomerAcceptanceEvidenceReady
+              ? `Customer production acceptance evidence receipt/signature is missing or invalid${productionCustomerAcceptanceEvidence.attestationFailureReason ? ` (${productionCustomerAcceptanceEvidence.attestationFailureReason})` : ''}.`
+              : null,
+          ].filter(Boolean).join(' '),
+      productionRequirement: 'public production requires customer-specific acceptance criteria, success thresholds, human approval, rollback criteria, and signed managed-production evidence; private-pilot acceptance alone is not a production launch certificate',
+    };
+    productionCustomerAcceptanceStartup.checksum = persistenceChecksum(productionCustomerAcceptanceStartup);
+    const observabilityEvidence = productionStartupEvidence({
+      controlId: 'centralized-observability',
+      evidenceIdEnvVar: 'PRODUCTION_OBSERVABILITY_CONTROL_RECEIPT_ID',
+      evidenceChecksumEnvVar: 'PRODUCTION_OBSERVABILITY_CONTROL_RECEIPT_CHECKSUM',
+      attestationSignatureEnvVar: 'PRODUCTION_OBSERVABILITY_CONTROL_ATTESTATION_SIGNATURE',
+    });
+    const auditRetentionEvidence = productionStartupEvidence({
+      controlId: 'centralized-audit-retention',
+      evidenceIdEnvVar: 'PRODUCTION_AUDIT_RETENTION_RECEIPT_ID',
+      evidenceChecksumEnvVar: 'PRODUCTION_AUDIT_RETENTION_RECEIPT_CHECKSUM',
+      attestationSignatureEnvVar: 'PRODUCTION_AUDIT_RETENTION_ATTESTATION_SIGNATURE',
+    });
+    const incidentResponseEvidence = productionStartupEvidence({
+      controlId: 'incident-response',
+      evidenceIdEnvVar: 'PRODUCTION_INCIDENT_RESPONSE_RECEIPT_ID',
+      evidenceChecksumEnvVar: 'PRODUCTION_INCIDENT_RESPONSE_RECEIPT_CHECKSUM',
+      attestationSignatureEnvVar: 'PRODUCTION_INCIDENT_RESPONSE_ATTESTATION_SIGNATURE',
+    });
+    const restoreDrillEvidence = productionStartupEvidence({
+      controlId: 'restore-drill',
+      evidenceIdEnvVar: 'PRODUCTION_RESTORE_DRILL_RECEIPT_ID',
+      evidenceChecksumEnvVar: 'PRODUCTION_RESTORE_DRILL_RECEIPT_CHECKSUM',
+      attestationSignatureEnvVar: 'PRODUCTION_RESTORE_DRILL_ATTESTATION_SIGNATURE',
+    });
+    const observabilityConfigReady = Boolean(
       envConfigured('PRODUCTION_LOGS_ENDPOINT', 'PRODUCTION_OBSERVABILITY_ENDPOINT')
       && envConfigured('PRODUCTION_METRICS_ENDPOINT', 'PRODUCTION_OBSERVABILITY_ENDPOINT')
       && envConfigured('PRODUCTION_TRACES_ENDPOINT', 'PRODUCTION_OBSERVABILITY_ENDPOINT')
     );
-    const alertRoutingReady = envConfigured('PRODUCTION_ALERT_ROUTING_ENDPOINT', 'PRODUCTION_PAGERDUTY_ROUTING_KEY', 'PRODUCTION_OPSGENIE_ROUTING_KEY');
+    const observabilityEvidenceReady = observabilityEvidence.evidenceReady;
+    const alertRoutingConfigReady = envConfigured('PRODUCTION_ALERT_ROUTING_ENDPOINT', 'PRODUCTION_PAGERDUTY_ROUTING_KEY', 'PRODUCTION_OPSGENIE_ROUTING_KEY');
     const onCallReady = envConfigured('PRODUCTION_ONCALL_SCHEDULE_ID') && envConfigured('PRODUCTION_ONCALL_OWNER');
-    const incidentSystemReady = envConfigured('PRODUCTION_INCIDENT_SYSTEM_ENDPOINT') && envConfigured('PRODUCTION_INCIDENT_PROJECT_KEY');
-    const restoreDrillReady = envConfigured('PRODUCTION_RESTORE_DRILL_RECEIPT_ID') && envConfigured('PRODUCTION_RESTORE_DRILL_COMPLETED_AT');
-    const auditSinkReady = envConfigured('PRODUCTION_SECURITY_AUDIT_SINK', 'PRODUCTION_AUDIT_LOG_ENDPOINT');
+    const incidentSystemConfigReady = envConfigured('PRODUCTION_INCIDENT_SYSTEM_ENDPOINT') && envConfigured('PRODUCTION_INCIDENT_PROJECT_KEY');
+    const incidentResponseEvidenceReady = incidentResponseEvidence.evidenceReady;
+    const restoreDrillConfigReady = envConfigured('PRODUCTION_RESTORE_DRILL_RECEIPT_ID') && envConfigured('PRODUCTION_RESTORE_DRILL_COMPLETED_AT');
+    const restoreDrillEvidenceReady = restoreDrillConfigReady && restoreDrillEvidence.evidenceReady;
+    const auditSinkConfigReady = envConfigured('PRODUCTION_SECURITY_AUDIT_SINK', 'PRODUCTION_AUDIT_LOG_ENDPOINT');
+    const auditRetentionEvidenceReady = auditRetentionEvidence.evidenceReady;
+    const observabilityReady = Boolean(observabilityConfigReady && observabilityEvidenceReady);
+    const alertRoutingReady = Boolean(alertRoutingConfigReady && incidentResponseEvidenceReady);
+    const incidentSystemReady = Boolean(incidentSystemConfigReady && incidentResponseEvidenceReady);
+    const restoreDrillReady = Boolean(restoreDrillConfigReady && restoreDrillEvidenceReady);
+    const auditSinkReady = Boolean(auditSinkConfigReady && auditRetentionEvidenceReady);
+    const productionOperationsStartupRow = ({
+      id,
+      label,
+      configReady,
+      evidenceReady,
+      evidence = {},
+      ready,
+      configEnvGroups = [],
+      evidenceEnvVars = [],
+      apiPath = '/public-production-startup-readiness',
+      validationCommand = 'npm run agents:public-production-startup-readiness',
+    }) => {
+      const blockingReasons = [
+        !configReady ? `${label} configuration is missing.` : null,
+        !evidenceReady
+          ? `${label} managed-production evidence receipt/signature is missing or invalid${evidence.attestationFailureReason ? ` (${evidence.attestationFailureReason})` : ''}.`
+          : null,
+      ].filter(Boolean);
+      return {
+        id,
+        label,
+        status: ready ? 'ready' : 'blocked',
+        ready: Boolean(ready),
+        configurationReady: Boolean(configReady),
+        evidenceReady: Boolean(evidenceReady),
+        receiptConfigured: Boolean(evidence.receiptConfigured),
+        attestationSignatureReady: Boolean(evidence.attestationSignatureReady),
+        attestationFailureReason: evidence.attestationFailureReason || null,
+        configuredEnvVars: [
+          ...configEnvGroups.flat(),
+          ...evidenceEnvVars,
+          ...(evidence.configuredEnvVars || []),
+        ].filter((key, index, rows) => rows.indexOf(key) === index && envConfigured(key)),
+        missingAnyOfEnvVarGroups: configEnvGroups.filter((group) => !group.some((key) => envConfigured(key))),
+        missingRequiredEnvVars: [
+          ...evidenceEnvVars,
+          ...(evidence.missingRequiredEnvVars || []),
+        ].filter((key, index, rows) => rows.indexOf(key) === index && !envConfigured(key)),
+        apiPath,
+        validationCommand,
+        detail: ready
+          ? `${label} has configuration and managed-production evidence.`
+          : blockingReasons.join(' '),
+      };
+    };
+    const productionOperationsStartup = {
+      schemaVersion: 'production-operations-startup-readiness/v1',
+      status: observabilityReady && alertRoutingReady && onCallReady && incidentSystemReady && restoreDrillReady && auditSinkReady ? 'ready' : 'blocked',
+      ready: Boolean(observabilityReady && alertRoutingReady && onCallReady && incidentSystemReady && restoreDrillReady && auditSinkReady),
+      rows: [
+        productionOperationsStartupRow({
+          id: 'observability',
+          label: 'Centralized observability',
+          configReady: observabilityConfigReady,
+          evidenceReady: observabilityEvidenceReady,
+          evidence: observabilityEvidence,
+          ready: observabilityReady,
+          configEnvGroups: [
+            ['PRODUCTION_LOGS_ENDPOINT', 'PRODUCTION_OBSERVABILITY_ENDPOINT'],
+            ['PRODUCTION_METRICS_ENDPOINT', 'PRODUCTION_OBSERVABILITY_ENDPOINT'],
+            ['PRODUCTION_TRACES_ENDPOINT', 'PRODUCTION_OBSERVABILITY_ENDPOINT'],
+          ],
+          evidenceEnvVars: [
+            'PRODUCTION_OBSERVABILITY_CONTROL_RECEIPT_ID',
+            'PRODUCTION_OBSERVABILITY_CONTROL_RECEIPT_CHECKSUM',
+            'PRODUCTION_OBSERVABILITY_CONTROL_ATTESTATION_SIGNATURE',
+          ],
+        }),
+        productionOperationsStartupRow({
+          id: 'audit-retention',
+          label: 'Centralized audit retention',
+          configReady: auditSinkConfigReady,
+          evidenceReady: auditRetentionEvidenceReady,
+          evidence: auditRetentionEvidence,
+          ready: auditSinkReady,
+          configEnvGroups: [['PRODUCTION_SECURITY_AUDIT_SINK', 'PRODUCTION_AUDIT_LOG_ENDPOINT']],
+          evidenceEnvVars: [
+            'PRODUCTION_AUDIT_RETENTION_RECEIPT_ID',
+            'PRODUCTION_AUDIT_RETENTION_RECEIPT_CHECKSUM',
+            'PRODUCTION_AUDIT_RETENTION_ATTESTATION_SIGNATURE',
+          ],
+        }),
+        productionOperationsStartupRow({
+          id: 'incident-response',
+          label: 'Incident response',
+          configReady: Boolean(alertRoutingConfigReady && onCallReady && incidentSystemConfigReady),
+          evidenceReady: incidentResponseEvidenceReady,
+          evidence: incidentResponseEvidence,
+          ready: Boolean(alertRoutingReady && onCallReady && incidentSystemReady),
+          configEnvGroups: [
+            ['PRODUCTION_ALERT_ROUTING_ENDPOINT', 'PRODUCTION_PAGERDUTY_ROUTING_KEY', 'PRODUCTION_OPSGENIE_ROUTING_KEY'],
+            ['PRODUCTION_ONCALL_SCHEDULE_ID'],
+            ['PRODUCTION_ONCALL_OWNER'],
+            ['PRODUCTION_INCIDENT_SYSTEM_ENDPOINT'],
+            ['PRODUCTION_INCIDENT_PROJECT_KEY'],
+          ],
+          evidenceEnvVars: [
+            'PRODUCTION_INCIDENT_RESPONSE_RECEIPT_ID',
+            'PRODUCTION_INCIDENT_RESPONSE_RECEIPT_CHECKSUM',
+            'PRODUCTION_INCIDENT_RESPONSE_ATTESTATION_SIGNATURE',
+          ],
+        }),
+        productionOperationsStartupRow({
+          id: 'restore-drill',
+          label: 'Restore drill',
+          configReady: restoreDrillConfigReady,
+          evidenceReady: restoreDrillEvidenceReady,
+          evidence: restoreDrillEvidence,
+          ready: restoreDrillReady,
+          configEnvGroups: [
+            ['PRODUCTION_RESTORE_DRILL_RECEIPT_ID'],
+            ['PRODUCTION_RESTORE_DRILL_COMPLETED_AT'],
+          ],
+          evidenceEnvVars: [
+            'PRODUCTION_RESTORE_DRILL_RECEIPT_CHECKSUM',
+            'PRODUCTION_RESTORE_DRILL_ATTESTATION_SIGNATURE',
+          ],
+        }),
+      ],
+      productionRequirement: 'public production requires configured observability, audit, incident, and restore systems plus managed-production evidence receipts; endpoints alone cannot approve public traffic',
+    };
+    const blockedProductionOperationsStartupRows = productionOperationsStartup.rows.filter((row) => !row.ready);
+    productionOperationsStartup.summary = {
+      rowCount: productionOperationsStartup.rows.length,
+      readyRowCount: productionOperationsStartup.rows.length - blockedProductionOperationsStartupRows.length,
+      blockedRowCount: blockedProductionOperationsStartupRows.length,
+      configuredRowCount: productionOperationsStartup.rows.filter((row) => row.configurationReady).length,
+      evidenceReadyRowCount: productionOperationsStartup.rows.filter((row) => row.evidenceReady).length,
+    };
+    productionOperationsStartup.nextAction = blockedProductionOperationsStartupRows[0]
+      ? {
+        id: blockedProductionOperationsStartupRows[0].id,
+        label: blockedProductionOperationsStartupRows[0].label,
+        detail: blockedProductionOperationsStartupRows[0].detail,
+        apiPath: blockedProductionOperationsStartupRows[0].apiPath,
+        validationCommand: blockedProductionOperationsStartupRows[0].validationCommand,
+      }
+      : {
+        id: 'production-operations-startup-ready',
+        label: 'Production operations startup ready',
+        detail: 'Observability, audit, incident response, and restore evidence are ready.',
+        apiPath: '/public-production-startup-readiness',
+        validationCommand: 'npm run launch:gates',
+      };
+    productionOperationsStartup.checksum = persistenceChecksum(productionOperationsStartup);
     const gate = ({ id, label, passed, detail, apiPath = null, envVars = [], severity = 'blocker' }) => ({
       id,
       label,
@@ -45614,6 +48011,41 @@ export function createAgentProjectService({
       apiPath,
       envVars,
     });
+    const envSetupRow = ({
+      id,
+      domain,
+      label,
+      ready,
+      detail,
+      allOfEnvVars = [],
+      anyOfEnvVarGroups = [],
+      apiPath = null,
+      validationCommand = null,
+      nextAction = '',
+    }) => {
+      const configuredEnvVars = [
+        ...allOfEnvVars,
+        ...anyOfEnvVarGroups.flat(),
+      ].filter((key, index, rows) => rows.indexOf(key) === index && envConfigured(key));
+      const missingRequiredEnvVars = allOfEnvVars.filter((key) => !envConfigured(key));
+      const missingAnyOfEnvVarGroups = anyOfEnvVarGroups.filter((group) => !group.some((key) => envConfigured(key)));
+      return {
+        id,
+        domain,
+        label,
+        status: ready ? 'ready' : 'blocked',
+        ready: Boolean(ready),
+        detail,
+        allOfEnvVars,
+        anyOfEnvVarGroups,
+        configuredEnvVars,
+        missingRequiredEnvVars,
+        missingAnyOfEnvVarGroups,
+        apiPath,
+        validationCommand,
+        nextAction: ready ? 'No action required for this domain.' : nextAction,
+      };
+    };
     const gates = [
       gate({
         id: 'backend-api-reachable',
@@ -45635,14 +48067,20 @@ export function createAgentProjectService({
         ],
       }),
       gate({
+        id: 'managed-identity-provider',
+        label: 'Managed identity provider and service identity are ready',
+        passed: managedIdentityStartupReady,
+        detail: managedIdentityStartup.detail,
+        apiPath: '/public-production-startup-readiness',
+        envVars: managedIdentityEnvVars,
+      }),
+      gate({
         id: 'managed-secret-manager-or-kms',
         label: 'Managed Secret Manager or KMS is ready',
         passed: managedSecretsReady,
-        detail: managedSecretsReady
-          ? `${vaultStatus.provider || 'secret-vault'} reports production-ready secret storage.`
-          : 'The local envelope vault is acceptable for MVP/private pilot, but public production needs managed KMS or Secret Manager.',
+        detail: managedSecretManager.detail,
         apiPath: '/secret-vault/status',
-        envVars: ['PRODUCTION_SECRET_MANAGER_ENDPOINT', 'PRODUCTION_KMS_KEY_ID', 'MANAGED_SECRET_MANAGER_ENDPOINT', 'MANAGED_KMS_KEY_ID'],
+        envVars: managedSecretManager.envVars,
       }),
       gate({
         id: 'managed-persistence-real-adapter',
@@ -45666,6 +48104,22 @@ export function createAgentProjectService({
         apiPath: '/provider-vault-bindings',
       }),
       gate({
+        id: 'production-cost-controls',
+        label: 'Production provider cost controls are proven',
+        passed: productionCostControlReady,
+        detail: productionCostControlStartup.detail,
+        apiPath: '/public-production-startup-readiness',
+        envVars: productionCostControlEnvVars,
+      }),
+      gate({
+        id: 'production-data-governance',
+        label: 'Production customer data governance is proven',
+        passed: productionDataGovernanceReady,
+        detail: productionDataGovernanceStartup.detail,
+        apiPath: '/public-production-startup-readiness',
+        envVars: productionDataGovernanceEnvVars,
+      }),
+      gate({
         id: 'adapter-gateway-and-attestation',
         label: 'Adapter gateway and managed-production attestation are configured',
         passed: gatewayReady && attestationSigningReady,
@@ -45678,18 +48132,50 @@ export function createAgentProjectService({
         ],
       }),
       gate({
+        id: 'production-traffic-controls',
+        label: 'Production traffic, health check, approval, and rollback are proven',
+        passed: productionTrafficStartupReady,
+        detail: productionTrafficStartup.detail,
+        apiPath: '/public-production-startup-readiness',
+        envVars: productionTrafficEnvVars,
+      }),
+      gate({
+        id: 'customer-production-acceptance-policy',
+        label: 'Customer production acceptance policy is proven',
+        passed: productionCustomerAcceptanceReady,
+        detail: productionCustomerAcceptanceStartup.detail,
+        apiPath: '/public-production-startup-readiness',
+        envVars: productionCustomerAcceptanceEnvVars,
+      }),
+      gate({
         id: 'centralized-observability',
-        label: 'Centralized logs, metrics, and traces are configured',
+        label: 'Centralized logs, metrics, and traces are proven',
         passed: observabilityReady,
-        detail: 'Public production needs centralized logs, metrics, and traces for API, worker, provider, queue, and security events.',
-        envVars: ['PRODUCTION_LOGS_ENDPOINT', 'PRODUCTION_METRICS_ENDPOINT', 'PRODUCTION_TRACES_ENDPOINT', 'PRODUCTION_OBSERVABILITY_ENDPOINT'],
+        detail: productionOperationsStartup.rows.find((row) => row.id === 'observability')?.detail
+          || 'Public production needs centralized logs, metrics, and traces plus managed-production evidence.',
+        envVars: [
+          'PRODUCTION_LOGS_ENDPOINT',
+          'PRODUCTION_METRICS_ENDPOINT',
+          'PRODUCTION_TRACES_ENDPOINT',
+          'PRODUCTION_OBSERVABILITY_ENDPOINT',
+          'PRODUCTION_OBSERVABILITY_CONTROL_RECEIPT_ID',
+          'PRODUCTION_OBSERVABILITY_CONTROL_RECEIPT_CHECKSUM',
+          'PRODUCTION_OBSERVABILITY_CONTROL_ATTESTATION_SIGNATURE',
+        ],
       }),
       gate({
         id: 'production-alert-routing',
-        label: 'Production alert routing is configured',
+        label: 'Production alert routing is proven',
         passed: alertRoutingReady,
-        detail: 'Critical production failures must route to a managed paging or escalation target.',
-        envVars: ['PRODUCTION_ALERT_ROUTING_ENDPOINT', 'PRODUCTION_PAGERDUTY_ROUTING_KEY', 'PRODUCTION_OPSGENIE_ROUTING_KEY'],
+        detail: 'Critical production failures must route to a managed paging or escalation target with incident-response evidence.',
+        envVars: [
+          'PRODUCTION_ALERT_ROUTING_ENDPOINT',
+          'PRODUCTION_PAGERDUTY_ROUTING_KEY',
+          'PRODUCTION_OPSGENIE_ROUTING_KEY',
+          'PRODUCTION_INCIDENT_RESPONSE_RECEIPT_ID',
+          'PRODUCTION_INCIDENT_RESPONSE_RECEIPT_CHECKSUM',
+          'PRODUCTION_INCIDENT_RESPONSE_ATTESTATION_SIGNATURE',
+        ],
       }),
       gate({
         id: 'production-on-call',
@@ -45700,30 +48186,289 @@ export function createAgentProjectService({
       }),
       gate({
         id: 'production-incident-system',
-        label: 'Managed incident system is configured',
+        label: 'Managed incident system is proven',
         passed: incidentSystemReady,
-        detail: 'Production incidents need durable records outside the local project store.',
-        envVars: ['PRODUCTION_INCIDENT_SYSTEM_ENDPOINT', 'PRODUCTION_INCIDENT_PROJECT_KEY'],
+        detail: productionOperationsStartup.rows.find((row) => row.id === 'incident-response')?.detail
+          || 'Production incidents need durable records and managed-production incident response evidence.',
+        envVars: [
+          'PRODUCTION_INCIDENT_SYSTEM_ENDPOINT',
+          'PRODUCTION_INCIDENT_PROJECT_KEY',
+          'PRODUCTION_INCIDENT_RESPONSE_RECEIPT_ID',
+          'PRODUCTION_INCIDENT_RESPONSE_RECEIPT_CHECKSUM',
+        ],
       }),
       gate({
         id: 'restore-drill-receipt',
-        label: 'Restore drill receipt is available',
+        label: 'Restore drill receipt is verified',
         passed: restoreDrillReady,
-        detail: 'A real restore drill must cover managed database, queue, audit, and artifact storage.',
-        envVars: ['PRODUCTION_RESTORE_DRILL_RECEIPT_ID', 'PRODUCTION_RESTORE_DRILL_COMPLETED_AT'],
+        detail: productionOperationsStartup.rows.find((row) => row.id === 'restore-drill')?.detail
+          || 'A real restore drill must cover managed database, queue, audit, and artifact storage.',
+        envVars: [
+          'PRODUCTION_RESTORE_DRILL_RECEIPT_ID',
+          'PRODUCTION_RESTORE_DRILL_COMPLETED_AT',
+          'PRODUCTION_RESTORE_DRILL_RECEIPT_CHECKSUM',
+          'PRODUCTION_RESTORE_DRILL_ATTESTATION_SIGNATURE',
+        ],
       }),
       gate({
         id: 'centralized-audit-retention',
-        label: 'Centralized audit retention is configured',
+        label: 'Centralized audit retention is proven',
         passed: auditSinkReady,
-        detail: 'Security, provider, and operator events need a centralized immutable audit sink before public production.',
-        envVars: ['PRODUCTION_SECURITY_AUDIT_SINK', 'PRODUCTION_AUDIT_LOG_ENDPOINT'],
+        detail: productionOperationsStartup.rows.find((row) => row.id === 'audit-retention')?.detail
+          || 'Security, provider, and operator events need a centralized immutable audit sink plus retention evidence.',
+        envVars: [
+          'PRODUCTION_SECURITY_AUDIT_SINK',
+          'PRODUCTION_AUDIT_LOG_ENDPOINT',
+          'PRODUCTION_AUDIT_RETENTION_RECEIPT_ID',
+          'PRODUCTION_AUDIT_RETENTION_RECEIPT_CHECKSUM',
+          'PRODUCTION_AUDIT_RETENTION_ATTESTATION_SIGNATURE',
+        ],
       }),
     ];
     const failedGates = gates.filter((row) => !row.passed);
     const failedBlockerGates = failedGates.filter((row) => row.severity === 'blocker');
     const readyForPublicProduction = failedBlockerGates.length === 0;
     const nextFailedGate = failedBlockerGates[0] || failedGates[0] || null;
+    const productionEnvironmentSetup = {
+      schemaVersion: 'production-environment-setup/v1',
+      status: readyForPublicProduction ? 'ready' : 'blocked',
+      readyForPublicProduction,
+      rows: [
+        envSetupRow({
+          id: 'access-control',
+          domain: 'security',
+          label: 'Access control and request signing',
+          ready: accessControlEnforced && signedAccessConfigured && replayProtectionEnabled && auditFailClosedEnabled,
+          detail: 'Require signed access headers, replay protection, and fail-closed access audit before accepting public traffic.',
+          allOfEnvVars: [
+            'AGENT_ACCESS_CONTROL_MODE',
+            'AGENT_ACCESS_SIGNING_SECRET',
+            'AGENT_ACCESS_REPLAY_PROTECTION',
+            'AGENT_ACCESS_AUDIT_FAIL_CLOSED',
+          ],
+          apiPath: '/public-production-startup-readiness',
+          validationCommand: 'npm run agents:public-production-startup-readiness',
+          nextAction: 'Set strict/enforced access mode, configure the signing secret, enable replay protection, and enable audit fail-closed.',
+        }),
+        envSetupRow({
+          id: 'managed-identity',
+          domain: 'security',
+          label: 'Managed identity and service identity',
+          ready: managedIdentityStartupReady,
+          detail: managedIdentityStartup.detail,
+          allOfEnvVars: managedIdentityEnvVars,
+          apiPath: '/public-production-startup-readiness',
+          validationCommand: 'npm run agents:public-production-startup-readiness',
+          nextAction: 'Connect managed identity provider metadata, configure service identity audience/subject, and attach a signed managed-production identity receipt.',
+        }),
+        envSetupRow({
+          id: 'managed-secrets',
+          domain: 'security',
+          label: 'Managed Secret Manager or KMS',
+          ready: managedSecretsReady,
+          detail: managedSecretManager.detail,
+          anyOfEnvVarGroups: [
+            managedSecretConfigEnvVars,
+            managedSecretAttestationIdEnvVars,
+            managedSecretAttestationChecksumEnvVars,
+          ],
+          apiPath: '/secret-vault/status',
+          validationCommand: 'npm run agents:public-production-startup-readiness',
+          nextAction: 'Connect a managed Secret Manager/KMS provider, expose rotation/access-audit support, and provide a matched attestation id/checksum pair.',
+        }),
+        envSetupRow({
+          id: 'managed-persistence',
+          domain: 'infrastructure',
+          label: 'Managed database persistence',
+          ready: managedPersistenceReady,
+          detail: persistenceStatus.status || 'Managed persistence adapter status is unavailable.',
+          allOfEnvVars: [
+            'MANAGED_PERSISTENCE_ADAPTER_DRIVER',
+            'MANAGED_PERSISTENCE_REQUIRE_REAL_ADAPTER',
+          ],
+          anyOfEnvVarGroups: [[
+            'MANAGED_PERSISTENCE_DATABASE_URL',
+            'MANAGED_PERSISTENCE_HTTP_ENDPOINT',
+            'ADAPTER_GATEWAY_HTTP_ENDPOINT',
+          ]],
+          apiPath: '/public-production-startup-readiness',
+          validationCommand: persistenceStatus.gatewayValidationCommand || 'npm run launch:infra',
+          nextAction: 'Connect a real managed database or private adapter gateway, require the real adapter, then record cutover evidence.',
+        }),
+        envSetupRow({
+          id: 'managed-worker-queue',
+          domain: 'infrastructure',
+          label: 'Durable worker queue and scheduler',
+          ready: managedQueueReady,
+          detail: queueStatus.status || 'Worker queue adapter status is unavailable.',
+          allOfEnvVars: [
+            'WORKER_QUEUE_ADAPTER_DRIVER',
+            'WORKER_QUEUE_REQUIRE_REAL_ADAPTER',
+          ],
+          anyOfEnvVarGroups: [[
+            'WORKER_QUEUE_HTTP_ENDPOINT',
+            'ADAPTER_GATEWAY_HTTP_ENDPOINT',
+          ]],
+          apiPath: '/public-production-startup-readiness',
+          validationCommand: queueStatus.gatewayValidationCommand || 'npm run launch:infra',
+          nextAction: 'Connect a durable queue or private queue gateway, require the real adapter, then prove lease/dead-letter recovery.',
+        }),
+        envSetupRow({
+          id: 'provider-runtime',
+          domain: 'providers',
+          label: 'Provider runtime and vault binding',
+          ready: providerRuntimeReady && providerVaultRedacted,
+          detail: `model=${modelStatus.enabled ? 'enabled' : 'disabled'}, search=${searchStatus.enabled ? 'enabled' : 'disabled'}, rawLeaks=${providerVaultBindings.redaction?.rawLeakCount || 0}.`,
+          apiPath: '/provider-vault-bindings',
+          validationCommand: 'npm run agents:settings-contracts',
+          nextAction: 'Seal model/search credentials through the backend vault and verify provider readiness without exposing plaintext.',
+        }),
+        envSetupRow({
+          id: 'production-cost-controls',
+          domain: 'providers',
+          label: 'Production provider cost controls',
+          ready: productionCostControlReady,
+          detail: productionCostControlStartup.detail,
+          allOfEnvVars: [
+            ...productionCostPolicyEnvVars,
+            ...productionCostEvidenceEnvVars,
+          ],
+          anyOfEnvVarGroups: [
+            productionCostAuditEnvVars,
+            productionCostAlertEnvVars,
+          ],
+          apiPath: '/public-production-startup-readiness',
+          validationCommand: 'npm run agents:public-production-startup-readiness',
+          nextAction: 'Connect centralized provider usage audit, cost alert routing, budget/rate-limit policy, and a signed managed-production cost-control receipt.',
+        }),
+        envSetupRow({
+          id: 'production-data-governance',
+          domain: 'governance',
+          label: 'Production data governance',
+          ready: productionDataGovernanceReady,
+          detail: productionDataGovernanceStartup.detail,
+          allOfEnvVars: productionDataGovernanceEnvVars,
+          apiPath: '/public-production-startup-readiness',
+          validationCommand: 'npm run agents:public-production-startup-readiness',
+          nextAction: 'Connect retention/deletion/export/data-residency controls and attach a signed managed-production data-governance receipt.',
+        }),
+        envSetupRow({
+          id: 'adapter-gateway-attestation',
+          domain: 'control-plane',
+          label: 'Adapter gateway and managed-production attestation signing',
+          ready: gatewayReady && attestationSigningReady,
+          detail: `gateway=${gatewayReady ? 'configured' : 'missing'}, attestationSigning=${attestationSigningReady ? 'configured' : 'missing'}.`,
+          allOfEnvVars: ['ADAPTER_GATEWAY_AUTH_TOKEN'],
+          anyOfEnvVarGroups: [
+            ['ADAPTER_GATEWAY_HTTP_ENDPOINT', 'MANAGED_PERSISTENCE_HTTP_ENDPOINT', 'WORKER_QUEUE_HTTP_ENDPOINT'],
+            ['MANAGED_PRODUCTION_ATTESTATION_SIGNING_SECRET', 'PRODUCTION_ATTESTATION_SIGNING_SECRET'],
+          ],
+          apiPath: '/public-production-startup-readiness',
+          validationCommand: 'npm run launch:infra',
+          nextAction: 'Configure the private adapter gateway plus attestation signing secret, then rerun the infrastructure rehearsal.',
+        }),
+        envSetupRow({
+          id: 'production-traffic',
+          domain: 'deployment',
+          label: 'Production traffic, health check, release approval, and rollback',
+          ready: productionTrafficStartupReady,
+          detail: productionTrafficStartup.detail,
+          allOfEnvVars: productionTrafficEnvVars,
+          apiPath: '/public-production-startup-readiness',
+          validationCommand: 'npm run agents:public-production-startup-readiness',
+          nextAction: 'Connect production domain/TLS, traffic gateway, health check, release approval, rollback smoke test, and signed managed-production traffic-control receipt.',
+        }),
+        envSetupRow({
+          id: 'customer-production-acceptance',
+          domain: 'governance',
+          label: 'Customer production acceptance policy',
+          ready: productionCustomerAcceptanceReady,
+          detail: productionCustomerAcceptanceStartup.detail,
+          allOfEnvVars: productionCustomerAcceptanceEnvVars,
+          apiPath: '/public-production-startup-readiness',
+          validationCommand: 'npm run agents:public-production-startup-readiness',
+          nextAction: 'Configure customer production acceptance policy, success criteria, threshold, human approval, rollback criteria, and a signed managed-production customer-acceptance receipt.',
+        }),
+        envSetupRow({
+          id: 'observability',
+          domain: 'operations',
+          label: 'Centralized logs, metrics, traces, and audit',
+          ready: observabilityReady && auditSinkReady,
+          detail: 'Public production needs centralized observability plus immutable audit retention and managed-production evidence receipts.',
+          allOfEnvVars: [
+            'PRODUCTION_OBSERVABILITY_CONTROL_RECEIPT_ID',
+            'PRODUCTION_OBSERVABILITY_CONTROL_RECEIPT_CHECKSUM',
+            'PRODUCTION_OBSERVABILITY_CONTROL_ATTESTATION_SIGNATURE',
+            'PRODUCTION_AUDIT_RETENTION_RECEIPT_ID',
+            'PRODUCTION_AUDIT_RETENTION_RECEIPT_CHECKSUM',
+            'PRODUCTION_AUDIT_RETENTION_ATTESTATION_SIGNATURE',
+          ],
+          anyOfEnvVarGroups: [
+            ['PRODUCTION_LOGS_ENDPOINT', 'PRODUCTION_OBSERVABILITY_ENDPOINT'],
+            ['PRODUCTION_METRICS_ENDPOINT', 'PRODUCTION_OBSERVABILITY_ENDPOINT'],
+            ['PRODUCTION_TRACES_ENDPOINT', 'PRODUCTION_OBSERVABILITY_ENDPOINT'],
+            ['PRODUCTION_SECURITY_AUDIT_SINK', 'PRODUCTION_AUDIT_LOG_ENDPOINT'],
+          ],
+          apiPath: '/public-production-startup-readiness',
+          validationCommand: 'npm run agents:public-production-startup-readiness',
+          nextAction: 'Connect centralized log, metric, trace, and audit sinks before approving public traffic.',
+        }),
+        envSetupRow({
+          id: 'incident-response',
+          domain: 'operations',
+          label: 'Alert routing, on-call, incidents, and restore drill',
+          ready: alertRoutingReady && onCallReady && incidentSystemReady && restoreDrillReady,
+          detail: 'Public production needs real alert routing, accountable on-call ownership, managed incident records, restore-drill evidence, and managed-production control receipts.',
+          allOfEnvVars: [
+            'PRODUCTION_ONCALL_SCHEDULE_ID',
+            'PRODUCTION_ONCALL_OWNER',
+            'PRODUCTION_INCIDENT_SYSTEM_ENDPOINT',
+            'PRODUCTION_INCIDENT_PROJECT_KEY',
+            'PRODUCTION_RESTORE_DRILL_RECEIPT_ID',
+            'PRODUCTION_RESTORE_DRILL_COMPLETED_AT',
+            'PRODUCTION_INCIDENT_RESPONSE_RECEIPT_ID',
+            'PRODUCTION_INCIDENT_RESPONSE_RECEIPT_CHECKSUM',
+            'PRODUCTION_INCIDENT_RESPONSE_ATTESTATION_SIGNATURE',
+            'PRODUCTION_RESTORE_DRILL_RECEIPT_CHECKSUM',
+            'PRODUCTION_RESTORE_DRILL_ATTESTATION_SIGNATURE',
+          ],
+          anyOfEnvVarGroups: [[
+            'PRODUCTION_ALERT_ROUTING_ENDPOINT',
+            'PRODUCTION_PAGERDUTY_ROUTING_KEY',
+            'PRODUCTION_OPSGENIE_ROUTING_KEY',
+          ]],
+          apiPath: '/public-production-startup-readiness',
+          validationCommand: 'npm run agents:public-production-startup-readiness',
+          nextAction: 'Configure paging/escalation, on-call ownership, incident tracking, completed restore-drill evidence, and incident/restore control receipts.',
+        }),
+      ],
+    };
+    const blockedSetupRows = productionEnvironmentSetup.rows.filter((row) => !row.ready);
+    productionEnvironmentSetup.summary = {
+      rowCount: productionEnvironmentSetup.rows.length,
+      readyRowCount: productionEnvironmentSetup.rows.length - blockedSetupRows.length,
+      blockedRowCount: blockedSetupRows.length,
+      domains: [...new Set(productionEnvironmentSetup.rows.map((row) => row.domain))],
+      configuredEnvVarCount: new Set(productionEnvironmentSetup.rows.flatMap((row) => row.configuredEnvVars || [])).size,
+      blockedDomains: [...new Set(blockedSetupRows.map((row) => row.domain))],
+      readyForPublicProduction,
+    };
+    productionEnvironmentSetup.nextAction = blockedSetupRows[0]
+      ? {
+        id: blockedSetupRows[0].id,
+        label: blockedSetupRows[0].label,
+        detail: blockedSetupRows[0].nextAction,
+        apiPath: blockedSetupRows[0].apiPath,
+        validationCommand: blockedSetupRows[0].validationCommand,
+      }
+      : {
+        id: 'start-public-production-traffic',
+        label: 'Start controlled public production traffic',
+        detail: 'All production environment setup rows are ready. Continue with production launch governance.',
+        apiPath: '/public-production-startup-readiness',
+        validationCommand: 'npm run launch:gates',
+      };
+    productionEnvironmentSetup.checksum = persistenceChecksum(productionEnvironmentSetup);
     const snapshot = {
       schemaVersion: 'public-production-startup-readiness/v1',
       generatedAt: nowIso(),
@@ -45755,9 +48500,37 @@ export function createAgentProjectService({
         signedAccessConfigured,
         replayProtectionEnabled,
         auditFailClosedEnabled,
+        managedIdentityStartupReady,
+        managedIdentityProviderConfigured,
+        managedServiceIdentityConfigured,
+        managedIdentityEvidenceReady,
+        productionCostControlReady,
+        productionCostPolicyConfigured,
+        productionCostAuditConfigured,
+        productionCostAlertConfigured,
+        productionCostEvidenceReady,
+        productionDataGovernanceReady,
+        productionDataPolicyConfigured,
+        productionDataDeletionConfigured,
+        productionDataExportConfigured,
+        productionDataGovernanceEvidenceReady,
+        productionTrafficStartupReady,
+        productionDomainTlsConfigured,
+        productionTrafficGatewayConfigured,
+        productionReleaseApprovalConfigured,
+        productionRollbackConfigured,
+        productionTrafficEvidenceReady,
+        productionCustomerAcceptanceReady,
+        productionCustomerAcceptancePolicyConfigured,
+        productionCustomerAcceptanceEvidenceReady,
         managedSecretsReady,
+        managedSecretProviderReady,
+        managedSecretConfigurationReady,
+        managedSecretAttestationReady,
         managedPersistenceReady,
         managedQueueReady,
+        managedInfrastructureCutoverReady: managedInfrastructureCutover.ready,
+        productionOperationsStartupReady: productionOperationsStartup.ready,
         providerRuntimeReady,
         providerVaultRedacted,
         gatewayReady,
@@ -45773,9 +48546,26 @@ export function createAgentProjectService({
       deploymentRuntime: {
         persistenceAdapter: persistenceStatus,
         workerQueueAdapter: queueStatus,
+        managedSecretManager,
+        managedIdentityStartup,
+        productionCostControlStartup,
+        productionDataGovernanceStartup,
+        productionTrafficStartup,
+        productionCustomerAcceptanceStartup,
+        managedInfrastructureCutover,
+        productionOperationsStartup,
         adapterGatewayConfigured: gatewayReady,
         managedProductionAttestationSigningConfigured: attestationSigningReady,
       },
+      productionEnvironmentSetup,
+      managedIdentityStartup,
+      productionCostControlStartup,
+      productionDataGovernanceStartup,
+      productionTrafficStartup,
+      productionCustomerAcceptanceStartup,
+      managedSecretManager,
+      managedInfrastructureCutover,
+      productionOperationsStartup,
       providerRuntime: {
         model: modelStatus,
         search: searchStatus,
@@ -45898,6 +48688,15 @@ export function createAgentProjectService({
         route: '/workers/autonomous/status',
       },
       {
+        id: 'workflow-smoke-route',
+        label: 'Workflow Smoke',
+        status: startupReadiness.readyForFirstProjectRun ? 'pending' : 'fail',
+        detail: startupReadiness.readyForFirstProjectRun
+          ? 'Ready for explicit POST /settings/workflow-smoke. This read-only health contract does not create the probe project.'
+          : 'Complete local MVP startup readiness before running the explicit Workflow Smoke probe.',
+        route: '/settings/workflow-smoke',
+      },
+      {
         id: 'project-catalog',
         label: 'Project catalog',
         status: Array.isArray(projectCatalog) ? 'pass' : 'fail',
@@ -45951,6 +48750,7 @@ export function createAgentProjectService({
         modelTest: '/llm/test',
         searchStatus: '/search/status',
         searchTest: '/search/test',
+        settingsWorkflowSmoke: '/settings/workflow-smoke',
         secretVaultStatus: '/secret-vault/status',
         workerStatus: '/workers/autonomous/status',
         projects: '/projects',
@@ -46688,6 +49488,230 @@ export function createAgentProjectService({
     getSettingsHealthReadiness() {
       return buildSettingsHealthReadiness();
     },
+    runSettingsWorkflowSmoke(input = {}) {
+      const now = input.now || nowIso();
+      const projectId = input.projectId || `settings_workflow_smoke_${Date.parse(now) || Date.now()}`;
+      const language = input.language || 'en';
+      const team = Array.isArray(input.team) && input.team.length ? input.team : [
+        { id: 'turing', name: 'Alan Turing', role: 'Leader', skill: 'systems decomposition' },
+        { id: 'curie', name: 'Marie Curie', role: 'Researcher', skill: 'evidence review' },
+        { id: 'jobs', name: 'Steve Jobs', role: 'Reviewer', skill: 'product framing' },
+      ];
+      const smokeBase = (overrides = {}) => {
+        const base = {
+          id: input.id || `settings_workflow_smoke_${projectId}`,
+          projectId,
+          schemaVersion: 'settings-workflow-smoke/v1',
+          generatedAt: now,
+          source: input.source || 'settings-workflow-smoke-api',
+          status: 'failed',
+          readyForLocalMvpWorkflowSmoke: false,
+          readyForProduction: false,
+          localProbeCreated: false,
+          requiredArtifactType: 'product-brief',
+          backendRoutes: {
+            settingsWorkflowSmoke: '/settings/workflow-smoke',
+            projectInitiation: '/projects/initiate',
+            groupChat: `/projects/${projectId}/chat`,
+            agentWorkCycle: `/projects/${projectId}/agents/curie/work-cycle`,
+            managerFlowGraph: `/projects/${projectId}/manager-flow-graph`,
+            readinessProofMap: `/projects/${projectId}/readiness-proof-map`,
+          },
+          productionBlockers: [
+            'managed Secret Manager or KMS',
+            'managed database and worker queue',
+            'centralized audit and observability',
+            'production provider/cost/incident controls',
+          ],
+          ...overrides,
+        };
+        base.checksum = persistenceChecksum(base);
+        return base;
+      };
+      try {
+        const projectName = input.name || 'Settings Health Product-Team Probe';
+        const initiateResult = this.initiateProject({
+          projectId,
+          name: projectName,
+          brief: input.brief || 'Smoke-test whether the backend can drive a compact product-team workflow through Group Chat, Agent output, Flow Graph, and Proof Map evidence.',
+          team,
+          selectedLeaderId: input.selectedLeaderId || 'turing',
+          reviewerId: input.reviewerId || 'jobs',
+          tasks: Array.isArray(input.tasks) && input.tasks.length ? input.tasks : [
+            {
+              id: `${projectId}_brief`,
+              text: 'Draft the first-page product-team brief and list evidence gaps.',
+              assignee: 'Marie Curie',
+              status: 'pending',
+            },
+          ],
+          autonomy: input.autonomy || { enabled: false, cadence: 'manual' },
+          now,
+          language,
+        });
+        const chatResult = this.submitChatMessage({
+          projectId,
+          text: input.chatText || '@Alan Turing assign Marie Curie to produce the first product-team timeline artifact, then ask Steve Jobs to review framing.',
+          author: input.author || 'Director',
+          authorId: input.authorId || 'director',
+          channelId: input.channelId || 'main',
+          now,
+          language,
+        });
+        const workResult = this.runAgentWorkCycle({
+          projectId,
+          agentId: input.agentId || 'curie',
+          trigger: 'settings-workflow-smoke',
+          cadence: 'manual',
+          source: 'settings-workflow-smoke',
+          submitWorkArtifact: true,
+          workArtifactType: 'product-brief',
+          submitWorkArtifactOn: 'always',
+          includeReadModels: false,
+          now,
+          language,
+        });
+        const submission = workResult.submission
+          || workResult.workSubmission
+          || (workResult.project?.agentSubmissions || []).find((item) => item.artifactType === 'product-brief')
+          || null;
+        const managerFlowGraph = this.getManagerFlowGraph(projectId, { language, fresh: true });
+        const readinessProofMap = this.getReadinessProofMap(projectId, { language, fresh: true });
+        const channelId = input.channelId || 'main';
+        const channelTranscript = this.getChannelTranscript(projectId, channelId);
+        const timeline = this.getTimeline(projectId);
+        const eventLedger = this.getEventLedger(projectId);
+        const graphText = JSON.stringify(managerFlowGraph || {});
+        const transcriptText = JSON.stringify(channelTranscript || {});
+        const timelineText = JSON.stringify(timeline || {});
+        const eventLedgerText = JSON.stringify(eventLedger || {});
+        const submissionRoutes = Array.isArray(readinessProofMap?.submissionRoutes) ? readinessProofMap.submissionRoutes : [];
+        const submissionId = submission?.id || null;
+        const submissionProofIds = uniqueStrings([
+          submissionId,
+          submission?.messageId,
+          submission?.logId,
+          submission?.timelineLogId,
+          submission?.eventId,
+          submission?.artifactStorageProof?.id,
+          submission?.artifactStorageProof?.checksum,
+          ...(submission?.proofIds || []),
+          ...(submission?.timelineLogIds || []),
+          ...(submission?.eventIds || []),
+        ].filter(Boolean));
+        const proofTextIncludesSubmission = (text = '') => submissionProofIds.some((id) => id && text.includes(id));
+        const graphHasSubmission = Boolean(submissionId && graphText.includes(submissionId) && graphText.includes('product-brief'));
+        const proofMapHasSubmission = submissionRoutes.some((route) => (
+          (submissionId && (route.submissionId === submissionId || route.id === submissionId || String(route.apiPath || '').includes(submissionId)))
+          || route.artifactType === 'product-brief'
+        ));
+        const transcriptHasSubmission = Boolean(submissionId && proofTextIncludesSubmission(transcriptText));
+        const timelineHasSubmission = Boolean(submissionId && proofTextIncludesSubmission(timelineText));
+        const eventLedgerHasSubmission = Boolean(submissionId && proofTextIncludesSubmission(eventLedgerText));
+        const passed = Boolean(
+          submission?.artifactType === 'product-brief'
+            && graphHasSubmission
+            && proofMapHasSubmission
+            && transcriptHasSubmission
+            && timelineHasSubmission
+            && eventLedgerHasSubmission,
+        );
+        const settingsWorkflowSmoke = smokeBase({
+          status: passed ? 'passed' : 'failed',
+          readyForLocalMvpWorkflowSmoke: passed,
+          localProbeCreated: true,
+          project: {
+            id: workResult.project?.id || initiateResult.project?.id || projectId,
+            name: workResult.project?.name || initiateResult.project?.name || projectName,
+          },
+          submission: submission ? {
+            id: submission.id,
+            artifactType: submission.artifactType,
+            title: submission.title || null,
+            route: `/projects/${projectId}/submissions/${encodeURIComponent(submission.id)}`,
+            proofIds: uniqueStrings([
+              submission.id,
+              submission.artifactStorageProof?.id,
+              submission.artifactStorageProof?.checksum,
+              ...(submission.proofIds || []),
+            ].filter(Boolean)),
+            timelineLogIds: uniqueStrings([
+              submission.logId,
+              submission.timelineLogId,
+              ...(submission.timelineLogIds || []),
+            ].filter(Boolean)),
+            eventIds: uniqueStrings([
+              submission.eventId,
+              ...(submission.eventIds || []),
+            ].filter(Boolean)),
+          } : null,
+          graphProof: {
+            nodeCount: managerFlowGraph?.nodes?.length || managerFlowGraph?.summary?.nodeCount || 0,
+            hasSubmission: graphHasSubmission,
+            route: `/projects/${projectId}/manager-flow-graph`,
+          },
+          proofMapProof: {
+            submissionRouteCount: submissionRoutes.length,
+            hasSubmission: proofMapHasSubmission,
+            route: `/projects/${projectId}/readiness-proof-map`,
+          },
+          transcriptProof: {
+            channelId,
+            messageCount: channelTranscript.messages?.length || 0,
+            hasSubmission: transcriptHasSubmission,
+            route: `/projects/${projectId}/transcripts/${channelId}`,
+          },
+          timelineProof: {
+            logCount: timeline.logCount || timeline.logs?.length || 0,
+            hasSubmission: timelineHasSubmission,
+            route: `/projects/${projectId}/timeline`,
+          },
+          eventLedgerProof: {
+            eventCount: eventLedger.eventLedger?.length || 0,
+            hasSubmission: eventLedgerHasSubmission,
+            route: `/projects/${projectId}/events`,
+          },
+          summary: {
+            detail: passed
+              ? `Backend Workflow Smoke produced product-brief submission ${submissionId} with transcript, timeline, event ledger, Flow Graph, and Proof Map proof.`
+              : 'Backend Workflow Smoke did not produce the expected product-brief submission across transcript, timeline, event ledger, Flow Graph, and Proof Map proof.',
+            initiatedProject: Boolean(initiateResult.project?.id),
+            chatProofCreated: Boolean(chatResult.messages?.length || chatResult.message?.id),
+            agentWorkCreated: Boolean(workResult.cycle?.id || workResult.log?.id),
+            submissionCreated: Boolean(submissionId),
+            graphHasSubmission,
+            proofMapHasSubmission,
+            transcriptHasSubmission,
+            timelineHasSubmission,
+            eventLedgerHasSubmission,
+          },
+        });
+        return {
+          settingsWorkflowSmoke,
+          submission: settingsWorkflowSmoke.submission,
+        };
+      } catch (error) {
+        return {
+          settingsWorkflowSmoke: smokeBase({
+            status: 'failed',
+            error: error?.message || String(error),
+            summary: {
+              detail: error?.message || String(error),
+              initiatedProject: false,
+              chatProofCreated: false,
+              agentWorkCreated: false,
+              submissionCreated: false,
+              graphHasSubmission: false,
+              proofMapHasSubmission: false,
+              transcriptHasSubmission: false,
+              timelineHasSubmission: false,
+              eventLedgerHasSubmission: false,
+            },
+          }),
+          submission: null,
+        };
+      }
+    },
     async sealSecretVaultRecord(input = {}) {
       if (typeof resolvedSecretVault?.seal !== 'function') {
         throw new Error('secret-vault-not-configured');
@@ -47304,10 +50328,25 @@ export function createAgentProjectService({
       });
     },
     getReadinessProofMap(projectId) {
-      return cachedReadModel('readiness-proof-map', projectId, {}, () => buildReadinessProofMap({
-        project: store.getProject(projectId),
-        messages: store.getMessages(projectId),
-      }));
+      return cachedReadModel('readiness-proof-map', projectId, {}, () => {
+        const project = store.getProject(projectId);
+        const publicProductionStartupReadiness = buildPublicProductionStartupReadiness();
+        const productionLaunchGapRegister = buildProductionLaunchGapRegister({
+          project,
+          managerReadyPackage: {
+            publicProductionStartupReadiness,
+            summary: null,
+          },
+        });
+        return buildReadinessProofMap({
+          project,
+          messages: store.getMessages(projectId),
+          managerReadyPackage: {
+            publicProductionStartupReadiness,
+            productionLaunchGapRegister,
+          },
+        });
+      });
     },
     listProductTeamMissionRuns(projectId) {
       return (store.getProject(projectId).productTeamMissionRuns || []).map((run) => ({
@@ -47329,10 +50368,25 @@ export function createAgentProjectService({
         }), options.language || store.getProject(projectId)?.language || 'en'));
     },
     getManagerFlowGraph(projectId, options = {}) {
-      return cachedReadModel('manager-flow-graph', projectId, options, () => localizeReadModel(buildManagerFlowGraphSnapshot({
-          project: store.getProject(projectId),
+      return cachedReadModel('manager-flow-graph', projectId, options, () => {
+        const project = store.getProject(projectId);
+        const publicProductionStartupReadiness = buildPublicProductionStartupReadiness();
+        const productionLaunchGapRegister = buildProductionLaunchGapRegister({
+          project,
+          managerReadyPackage: {
+            publicProductionStartupReadiness,
+            summary: null,
+          },
+        });
+        return localizeReadModel(buildManagerFlowGraphSnapshot({
+          project,
           messages: store.getMessages(projectId),
-        }), options.language || store.getProject(projectId)?.language || 'en'));
+          managerReadyPackage: {
+            publicProductionStartupReadiness,
+            productionLaunchGapRegister,
+          },
+        }), options.language || project?.language || 'en');
+      });
     },
     confirmManagerFlowGraphNode({
       projectId,
@@ -47343,9 +50397,21 @@ export function createAgentProjectService({
       now = nowIso(),
     } = {}) {
       const project = store.getProject(projectId);
+      const publicProductionStartupReadiness = buildPublicProductionStartupReadiness();
+      const productionLaunchGapRegister = buildProductionLaunchGapRegister({
+        project,
+        managerReadyPackage: {
+          publicProductionStartupReadiness,
+          summary: null,
+        },
+      });
       const graph = buildManagerFlowGraphSnapshot({
         project,
         messages: store.getMessages(projectId),
+        managerReadyPackage: {
+          publicProductionStartupReadiness,
+          productionLaunchGapRegister,
+        },
       });
       const node = (graph.nodes || []).find((item) => item.id === nodeId);
       if (!node) throw new Error(`Manager flow graph node not found: ${nodeId}`);
@@ -47411,6 +50477,9 @@ export function createAgentProjectService({
         managerFlowGraph: buildManagerFlowGraphSnapshot({
           project: updatedProject,
           messages: store.getMessages(projectId),
+          managerReadyPackage: {
+            publicProductionStartupReadiness: buildPublicProductionStartupReadiness(),
+          },
         }),
       };
     },
@@ -47687,6 +50756,242 @@ export function createAgentProjectService({
     getManagerActionQueue(projectId, options = {}) {
       return this.getManagerDashboard(projectId, options).managerActionQueue;
     },
+    getGovernanceProtocol(projectId, options = {}) {
+      return cachedReadModel('governance-protocol', projectId, options, () => {
+        const project = store.getProject(projectId) || {};
+        const language = options.language || project.language || 'en';
+        const team = project.team || [];
+        const charter = project.kickoffCharter || null;
+        const governance = charter?.governance || {};
+        const agentById = new Map(team.map((agent) => [String(agent.id || ''), agent]));
+        const resolveGovernanceAgent = (agentId, agentName) => {
+          const agent = agentById.get(String(agentId || ''))
+            || team.find((item) => item.name === agentName)
+            || null;
+          if (!agent && !agentId && !agentName) return null;
+          return {
+            id: agent?.id || agentId || agentName || null,
+            name: agent?.name || agentName || agentId || null,
+            role: agent?.role || agent?.title || null,
+            skill: agent?.skill || null,
+          };
+        };
+        const proofIds = uniqueStrings([
+          charter?.id,
+          ...(charter?.evidence?.directorBriefIds || []),
+          ...(charter?.evidence?.roleTranscriptIds || []),
+          ...(charter?.evidence?.leaderCampaignIds || []),
+          ...(charter?.evidence?.assignmentMessageIds || []),
+          ...(charter?.evidence?.acknowledgementMessageIds || []),
+        ]);
+        const timelineLogIds = uniqueStrings((project.logs || [])
+          .filter((log) => ['project-approved', 'leader-confirmed', 'leader-assignment', 'assignment-acknowledged'].includes(log.eventType))
+          .map((log) => log.id));
+        const eventIds = uniqueStrings([
+          charter?.ledgerEvent?.id,
+          ...(charter?.ledgerEvents || []).map((event) => event.id),
+          ...ledgerEventIdsForTypes(project, [
+            'kickoff-director-brief',
+            'kickoff-role-question',
+            'kickoff-role-volunteer',
+            'kickoff-leader-campaign',
+            'kickoff-charter-approved',
+            'leader-assignment',
+            'assignment-acknowledged',
+          ]),
+        ]);
+        const readyForLocalGovernanceProtocol = Boolean(governance.leaderId && governance.reviewerId && proofIds.length);
+        const protocol = {
+          schemaVersion: 'governance-protocol/v1',
+          projectId,
+          route: projectId ? `/projects/${projectId}/governance-protocol` : null,
+          dataSource: 'backend-backed',
+          status: readyForLocalGovernanceProtocol ? 'charter-governance-ready' : 'charter-governance-missing',
+          charterId: charter?.id || null,
+          lead: resolveGovernanceAgent(governance.leaderId, governance.leaderName),
+          reviewer: resolveGovernanceAgent(governance.reviewerId, governance.reviewerName),
+          governance: governance || null,
+          meeting: charter?.meeting || null,
+          communicationRules: charter?.communicationRules || [],
+          nextActions: charter?.nextActions || [],
+          proofIds,
+          timelineLogIds,
+          eventIds,
+          backendRoutes: {
+            governanceProtocol: projectId ? `/projects/${projectId}/governance-protocol` : null,
+            project: projectId ? `/projects/${projectId}` : null,
+            managerDashboard: projectId ? `/projects/${projectId}/manager-dashboard` : null,
+            managerFlowGraph: projectId ? `/projects/${projectId}/manager-flow-graph` : null,
+            readinessProofMap: projectId ? `/projects/${projectId}/readiness-proof-map` : null,
+            transcripts: projectId ? `/projects/${projectId}/transcripts` : null,
+            timeline: projectId ? `/projects/${projectId}/timeline` : null,
+            events: projectId ? `/projects/${projectId}/events` : null,
+          },
+          readyForLocalGovernanceProtocol,
+          readyForProduction: false,
+          productionBlockers: [
+            'managed project membership',
+            'durable kickoff transcript retention',
+            'immutable event audit',
+            'customer acceptance policy',
+            'production governance approval',
+          ],
+        };
+        return localizeReadModel({
+          ...protocol,
+          checksum: persistenceChecksum({
+            schemaVersion: protocol.schemaVersion,
+            projectId,
+            charterId: protocol.charterId,
+            leaderId: governance.leaderId || null,
+            reviewerId: governance.reviewerId || null,
+            proofIds,
+            eventIds,
+          }),
+        }, language);
+      });
+    },
+    getAgentStateSummary(projectId, options = {}) {
+      return cachedReadModel('agent-state-summary', projectId, options, () => {
+        const language = options.language || store.getProject(projectId)?.language || 'en';
+        const managerDashboard = this.getManagerDashboard(projectId, { language });
+        const rows = managerDashboard.agents?.states || [];
+        return localizeReadModel({
+          schemaVersion: 'agent-state-summary/v1',
+          projectId,
+          route: projectId ? `/projects/${projectId}/agent-state-summary` : null,
+          dataSource: 'backend-backed',
+          count: rows.length,
+          rows,
+          backendRoutes: {
+            agentStateSummary: projectId ? `/projects/${projectId}/agent-state-summary` : null,
+            managerDashboard: projectId ? `/projects/${projectId}/manager-dashboard` : null,
+            continuousWorkLoop: projectId ? `/projects/${projectId}/continuous-work-loop` : null,
+            agentAutonomousActionQueue: projectId ? `/projects/${projectId}/agent-autonomous-action-queue` : null,
+            readinessProofMap: projectId ? `/projects/${projectId}/readiness-proof-map` : null,
+          },
+          readyForLocalAgentStateSummary: rows.length > 0,
+          readyForUnattendedProduction: false,
+          productionBlockers: [
+            'managed runtime identity',
+            'managed durable queue/cron',
+            'centralized audit and observability',
+            'provider/BYOK cost controls',
+          ],
+        }, language);
+      });
+    },
+    getAssignmentTimelineMatrix(projectId, options = {}) {
+      return cachedReadModel('assignment-timeline-matrix', projectId, options, () => {
+        const language = options.language || store.getProject(projectId)?.language || 'en';
+        const managerDashboard = this.getManagerDashboard(projectId, { language });
+        return localizeReadModel({
+          schemaVersion: 'assignment-timeline-matrix/v1',
+          projectId,
+          route: projectId ? `/projects/${projectId}/assignment-timeline-matrix` : null,
+          dataSource: 'backend-backed',
+          ...(managerDashboard.assignmentTimelineMatrix || {
+            count: 0,
+            timelineReadyCount: 0,
+            rows: [],
+          }),
+          backendRoutes: {
+            assignmentTimelineMatrix: projectId ? `/projects/${projectId}/assignment-timeline-matrix` : null,
+            managerDashboard: projectId ? `/projects/${projectId}/manager-dashboard` : null,
+            transcripts: projectId ? `/projects/${projectId}/transcripts` : null,
+            timeline: projectId ? `/projects/${projectId}/timeline` : null,
+            events: projectId ? `/projects/${projectId}/events` : null,
+            readinessProofMap: projectId ? `/projects/${projectId}/readiness-proof-map` : null,
+          },
+          readyForLocalAssignmentTimeline: Boolean((managerDashboard.assignmentTimelineMatrix?.timelineReadyCount || 0) > 0),
+          readyForProduction: false,
+          productionBlockers: [
+            'managed project membership',
+            'durable transcript retention',
+            'immutable event audit',
+            'customer acceptance policy',
+          ],
+        }, language);
+      });
+    },
+    getChangeFlow(projectId, options = {}) {
+      return cachedReadModel('change-flow', projectId, options, () => {
+        const language = options.language || store.getProject(projectId)?.language || 'en';
+        const managerDashboard = this.getManagerDashboard(projectId, { language });
+        const rows = managerDashboard.changeFlow?.rows || [];
+        return localizeReadModel({
+          schemaVersion: 'change-flow/v1',
+          projectId,
+          route: projectId ? `/projects/${projectId}/change-flow` : null,
+          dataSource: 'backend-backed',
+          ...(managerDashboard.changeFlow || {
+            count: 0,
+            rows: [],
+          }),
+          sourceIntake: managerDashboard.changeSourceIntake || {
+            count: 0,
+            dualChannelCount: 0,
+            sourceReadyCount: 0,
+            rows: [],
+          },
+          ownerPlanReadyCount: rows.filter((row) => row.ownerPlanLinked).length,
+          teamSyncReadyCount: rows.filter((row) => row.teamSyncCount > 0).length,
+          ownerWorkReadyCount: rows.filter((row) => row.ownerWorkStarted).length,
+          backendRoutes: {
+            changeFlow: projectId ? `/projects/${projectId}/change-flow` : null,
+            managerDashboard: projectId ? `/projects/${projectId}/manager-dashboard` : null,
+            transcripts: projectId ? `/projects/${projectId}/transcripts` : null,
+            timeline: projectId ? `/projects/${projectId}/timeline` : null,
+            events: projectId ? `/projects/${projectId}/events` : null,
+            readinessProofMap: projectId ? `/projects/${projectId}/readiness-proof-map` : null,
+          },
+          readyForLocalChangeFlow: rows.some((row) => row.ownerPlanLinked && row.teamSyncCount > 0),
+          readyForProduction: false,
+          productionBlockers: [
+            'managed change approval policy',
+            'immutable event audit',
+            'customer release acceptance',
+            'incident and rollback process',
+          ],
+        }, language);
+      });
+    },
+    getContinuousWorkLoop(projectId, options = {}) {
+      return cachedReadModel('continuous-work-loop', projectId, options, () => {
+        const language = options.language || store.getProject(projectId)?.language || 'en';
+        const managerDashboard = this.getManagerDashboard(projectId, { language });
+        return localizeReadModel({
+          schemaVersion: 'continuous-work-loop/v1',
+          projectId,
+          route: projectId ? `/projects/${projectId}/continuous-work-loop` : null,
+          dataSource: 'backend-backed',
+          ...(managerDashboard.continuousWorkLoop || {
+            schedulerState: 'missing',
+            nextProjectPulseAt: null,
+            scheduledAgentCount: 0,
+            proofedAgentCount: 0,
+            timelineProofCount: 0,
+            rows: [],
+          }),
+          backendRoutes: {
+            continuousWorkLoop: projectId ? `/projects/${projectId}/continuous-work-loop` : null,
+            managerDashboard: projectId ? `/projects/${projectId}/manager-dashboard` : null,
+            autonomousRunControl: projectId ? `/projects/${projectId}/autonomous-run-control` : null,
+            agentAutonomousActionQueue: projectId ? `/projects/${projectId}/agent-autonomous-action-queue` : null,
+            workerQueue: projectId ? `/projects/${projectId}/worker-queue` : null,
+            readinessProofMap: projectId ? `/projects/${projectId}/readiness-proof-map` : null,
+          },
+          readyForLocalContinuousWork: Boolean((managerDashboard.continuousWorkLoop?.proofedAgentCount || 0) > 0),
+          readyForUnattendedProduction: false,
+          productionBlockers: [
+            'managed durable queue/cron',
+            'centralized observability and alert routing',
+            'on-call ownership and incident recovery',
+            'provider/BYOK cost controls',
+          ],
+        }, language);
+      });
+    },
     getAutonomousRunControl(projectId, options = {}) {
       return cachedReadModel('autonomous-run-control', projectId, options, () => {
         const language = options.language || store.getProject(projectId)?.language || 'en';
@@ -47782,6 +51087,30 @@ export function createAgentProjectService({
         || autopilotTargetControl?.targetStageId
         || autopilotTargetSelection?.targetStageId
         || null;
+      const projectForAgentAutonomyTarget = store.getProject(projectId) || {};
+      const targetedAgentIdForAgentAutonomy = (() => {
+        if (action.agentId || requestBody.agentId) return action.agentId || requestBody.agentId;
+        const reviewSubmissionId = requestBody.reviewSubmissionId || autopilotTargetControl?.reviewSubmissionId || null;
+        if ((requestBody.reviewPendingSubmission || requestBody.reviewPendingSubmissions) && reviewSubmissionId) {
+          const submission = (projectForAgentAutonomyTarget.agentSubmissions || [])
+            .find((item) => String(item.id || '') === String(reviewSubmissionId));
+          return submission?.requestedReviewAgentId
+            || submission?.reviewerAgentId
+            || submission?.requestedReviewerAgentId
+            || projectForAgentAutonomyTarget.kickoffCharter?.governance?.reviewerId
+            || projectForAgentAutonomyTarget.initiation?.kickoffCharter?.governance?.reviewerId
+            || null;
+        }
+        const reviewResponseId = requestBody.reviewResponseId || autopilotTargetControl?.reviewResponseId || null;
+        if ((requestBody.respondToReviewObligation || requestBody.respondToReviewObligations) && reviewResponseId) {
+          const review = (projectForAgentAutonomyTarget.submissionReviews || [])
+            .find((item) => String(item.id || '') === String(reviewResponseId));
+          const submission = (projectForAgentAutonomyTarget.agentSubmissions || [])
+            .find((item) => String(item.id || '') === String(review?.submissionId || ''));
+          return review?.submitterAgentId || submission?.agentId || null;
+        }
+        return null;
+      })();
       let result;
       let delegatedRunKind = action.lane || 'unknown';
 
@@ -47789,7 +51118,7 @@ export function createAgentProjectService({
         delegatedRunKind = 'agent-autonomous-action-queue';
         result = this.runAgentAutonomousActionQueueItem({
           projectId,
-          agentId: action.agentId || 'next',
+          agentId: targetedAgentIdForAgentAutonomy || 'next',
           requestBodyOverrides: requestBody,
           now,
           force,
@@ -50935,6 +54264,21 @@ export function createAgentProjectService({
         workerQueueSnapshot,
         includeContents: false,
       });
+      const zeroToAutonomyReport = buildZeroToAutonomyReport({
+        project: store.getProject(projectId),
+        managerDashboard,
+        managerFlowGraph,
+        localMvpStartupReadiness,
+        settingsProviderReadiness,
+        settingsRuntimeReadiness,
+        settingsIntegrationReadiness,
+        productTeamDeliveryTrace,
+        artifactQualityAudit,
+        submissionReviewWorkflow,
+        evidenceSourceReviewWorkflow,
+        projectEvidenceArchive,
+        projectMemoryReadiness,
+      });
       const projectEvidenceExportWorkflow = buildProjectEvidenceExportWorkflowSnapshot({
         project: store.getProject(projectId),
         archive: projectEvidenceArchive,
@@ -51083,6 +54427,7 @@ export function createAgentProjectService({
         productionSecurityControlReceiptWorkflow,
         productionProviderControlReceiptWorkflow,
         productionEvidenceIntegrityAudit,
+        publicProductionStartupReadiness,
         privatePilotGoLiveReadiness,
         summary: null,
       };
@@ -51212,6 +54557,7 @@ export function createAgentProjectService({
         artifactQualityAudit,
         submissionReviewWorkflow,
         productTeamDeliveryTrace,
+        zeroToAutonomyReport,
         evidenceQualityAudit,
         evidenceSourceReviewWorkflow,
         evidenceCustodyReadiness,
@@ -51394,6 +54740,15 @@ export function createAgentProjectService({
           productTeamDeliveryTraceRowCount: productTeamDeliveryTrace.summary?.rowCount || 0,
           productTeamDeliveryTraceMissingCount: productTeamDeliveryTrace.summary?.missingCount || 0,
           productTeamDeliveryTraceChecksum: productTeamDeliveryTrace.checksum || null,
+          zeroToAutonomyReportStatus: zeroToAutonomyReport.status || 'unknown',
+          zeroToAutonomyReportReady: Boolean(zeroToAutonomyReport.readyForLocalMvpTrial),
+          zeroToAutonomyReportPrivatePilotReady: Boolean(zeroToAutonomyReport.readyForPrivatePilotDelivery),
+          zeroToAutonomyReportPublicProductionReady: Boolean(zeroToAutonomyReport.readyForPublicProduction),
+          zeroToAutonomyReportReadyStageCount: zeroToAutonomyReport.summary?.readyStageCount || 0,
+          zeroToAutonomyReportStageCount: zeroToAutonomyReport.summary?.stageCount || 0,
+          zeroToAutonomyReportRequiredArtifactTypeCount: zeroToAutonomyReport.summary?.requiredArtifactTypeCount || 0,
+          zeroToAutonomyReportSubmittedArtifactTypeCount: zeroToAutonomyReport.summary?.submittedArtifactTypeCount || 0,
+          zeroToAutonomyReportChecksum: zeroToAutonomyReport.checksum || null,
           productTeamOperatingLoopStatus: productTeamOperatingLoop.status || 'unknown',
           productTeamOperatingLoopReady: Boolean(productTeamOperatingLoop.readyForLocalPilotOperatingLoop),
           productTeamOperatingLoopAgentInitiativeCount: productTeamOperatingLoop.summary?.agentInitiativeCount || 0,
@@ -53128,6 +56483,13 @@ export function createAgentProjectService({
           artifactQualityAudit,
           submissionReviewWorkflow,
         }), language);
+      });
+    },
+    getZeroToAutonomyReport(projectId, options = {}) {
+      return cachedReadModel('zero-to-autonomy-report', projectId, options, () => {
+        const language = options.language || store.getProject(projectId)?.language || 'en';
+        const managerReadyPackage = this.getManagerReadyPackage(projectId, { language });
+        return localizeReadModel(managerReadyPackage.zeroToAutonomyReport, language);
       });
     },
     getProductTeamOperatingLoop(projectId, options = {}) {
@@ -54872,6 +58234,137 @@ export function createAgentProjectService({
         project: savedProject,
         identitySession: publicIdentitySession(revokedSession, now),
         identitySessions: this.getIdentitySessions(projectId, { now }),
+        log,
+      };
+    },
+    recordTimelineAction({
+      projectId,
+      timelineLogId = '',
+      action = 'note',
+      note = '',
+      actor = 'Director',
+      actorId = 'director',
+      source = 'manager-timeline-action',
+      now = nowIso(),
+    } = {}) {
+      const project = store.getProject(projectId);
+      const targetTimelineLogId = String(timelineLogId || '').trim();
+      const targetLog = (project.logs || []).find((item) => String(item.id || '') === targetTimelineLogId);
+      if (!targetLog) throw new Error(`Timeline log not found: ${targetTimelineLogId || 'missing'}`);
+      const normalizedAction = String(action || 'note').toLowerCase();
+      const actionVerbById = {
+        note: 'noted',
+        acknowledge: 'acknowledged',
+        complete: 'marked complete',
+        edit: 'edited',
+      };
+      if (!Object.prototype.hasOwnProperty.call(actionVerbById, normalizedAction)) {
+        throw new Error(`Unsupported timeline action: ${action}`);
+      }
+      const safeNote = redactSensitiveText(compactPreview(note || '', 360));
+      if (['note', 'edit'].includes(normalizedAction) && !safeNote) {
+        throw new Error(`Timeline ${normalizedAction} action requires note text.`);
+      }
+      const timestamp = Date.parse(now) || Date.now();
+      const timelineActionId = `timeline_action_${projectId}_${normalizedAction}_${targetTimelineLogId}_${timestamp}`;
+      const timelineActionLogId = `log_${timelineActionId}`;
+      const eventId = `evt_${timelineActionId}`;
+      const targetLabel = compactPreview(targetLog.log || targetLog.text || targetLog.eventType || targetTimelineLogId, 120);
+      const actionLabel = actionVerbById[normalizedAction];
+      const summary = safeNote
+        ? `${actor || 'Director'} ${actionLabel} timeline item "${targetLabel}": ${safeNote}`
+        : `${actor || 'Director'} ${actionLabel} timeline item "${targetLabel}".`;
+      const receiptBase = {
+        schemaVersion: 'timeline-action-receipt/v1',
+        id: timelineActionId,
+        projectId,
+        action: normalizedAction,
+        status: 'recorded',
+        actor: actor || 'Director',
+        actorId: actorId || null,
+        source,
+        createdAt: now,
+        note: safeNote,
+        targetTimelineLogId,
+        targetEventType: targetLog.eventType || null,
+        targetAgentId: targetLog.agentId || null,
+        targetTaskId: targetLog.taskId || null,
+        timelineLogId: timelineActionLogId,
+        eventId,
+        backendRoutes: {
+          timeline: `/projects/${projectId}/timeline`,
+          events: `/projects/${projectId}/events`,
+          timelineActions: `/projects/${projectId}/timeline/actions`,
+        },
+      };
+      const timelineActionReceipt = {
+        ...receiptBase,
+        checksum: persistenceChecksum(receiptBase),
+      };
+      const log = {
+        id: timelineActionLogId,
+        time: now,
+        agent: actor || 'Director',
+        actor: actor || 'Director',
+        agentId: actorId || null,
+        eventType: `timeline-action-${normalizedAction}`,
+        source,
+        channelId: 'timeline',
+        timelineActionId,
+        targetTimelineLogId,
+        targetEventType: targetLog.eventType || null,
+        log: summary,
+        evidence: [
+          `Timeline action receipt ${timelineActionReceipt.id}`,
+          `Target timeline log ${targetTimelineLogId}`,
+          `Receipt checksum ${timelineActionReceipt.checksum}`,
+        ],
+        checksum: timelineActionReceipt.checksum,
+      };
+      const updatedProject = appendProjectEvents({
+        ...project,
+        timelineActionReceipts: [
+          timelineActionReceipt,
+          ...(project.timelineActionReceipts || []),
+        ].slice(0, 240),
+        logs: [log, ...(project.logs || [])],
+      }, [
+        createProjectLedgerEvent({
+          id: eventId,
+          type: log.eventType,
+          time: now,
+          actor: actor || 'Director',
+          summary,
+          source,
+          channelId: 'timeline',
+          evidenceIds: [
+            timelineActionReceipt.id,
+            timelineActionReceipt.checksum,
+            timelineActionLogId,
+            targetTimelineLogId,
+          ].filter(Boolean),
+          entityIds: {
+            projectId,
+            timelineActionId,
+            logId: timelineActionLogId,
+            targetTimelineLogId,
+            targetEventType: targetLog.eventType || null,
+            agentId: actorId || null,
+          },
+          payload: {
+            schemaVersion: timelineActionReceipt.schemaVersion,
+            action: timelineActionReceipt.action,
+            targetTimelineLogId,
+            receiptChecksum: timelineActionReceipt.checksum,
+          },
+        }),
+      ]);
+      const savedProject = saveProject(updatedProject);
+      return {
+        route: 'timeline-action-recorded',
+        project: savedProject,
+        messages: [],
+        timelineActionReceipt,
         log,
       };
     },

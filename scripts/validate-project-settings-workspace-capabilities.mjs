@@ -2,14 +2,17 @@ import { mkdir, readFile, rm } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createFileBackedAgentProjectApi } from '../src/agents/agentProjectApi.js';
+import { createLocalProjectRuntime } from '../src/agents/localProjectRuntime.js';
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const tempRoot = resolve(repoRoot, '.tmp', 'project-settings-workspace-capabilities-validate');
+const tempRoot = resolve(repoRoot, '.tmp', `project-settings-workspace-capabilities-validate-${process.pid}`);
 const storePath = resolve(tempRoot, 'store.json');
+const runtimeRoot = resolve(tempRoot, 'runtime');
+const boundWorkspaceRoot = resolve(tempRoot, 'bound-workspace');
 const projectId = 'project_settings_workspace_capabilities_validation';
 const team = [
   { id: 'jobs', name: 'Steve Jobs', title: 'Product Lead' },
@@ -24,6 +27,9 @@ try {
   const api = createFileBackedAgentProjectApi({
     filePath: storePath,
     replaceWithSeed: true,
+    projectRuntime: createLocalProjectRuntime({
+      rootPath: runtimeRoot,
+    }),
   });
 
   let response = api.handle({
@@ -67,7 +73,7 @@ try {
   assert(workspacePolicy.readyForProduction === false, 'Workspace policy must not overclaim production readiness.');
   const capabilities = response.body.projectSettings?.workspaceCapabilities;
   assert(capabilities?.schemaVersion === 'project-workspace-capabilities/v1', 'Project settings must expose workspace capability rows.');
-  assert(capabilities.summary?.backendBackedCount >= 7, 'Workspace capabilities must mark project language, workspace policy controls, runtime contracts, memory readiness, and meeting summaries backend-backed.');
+  assert(capabilities.summary?.backendBackedCount >= 8, 'Workspace capabilities must mark project language, workspace policy controls, local workspace binding, runtime contracts, memory readiness, and meeting summaries backend-backed.');
   assert(capabilities.summary?.browserLocalCount >= 1, 'Workspace capabilities must explicitly mark global language browser-local.');
   assert(capabilities.summary?.backendRequiredCount === 0, 'Workspace capabilities must not show route-backed Workspace controls as missing backend APIs.');
   assert(capabilities.rows?.some((row) => row.id === 'project-language' && row.status === 'backend-backed' && row.editable), 'Project language row must be backend-backed and editable.');
@@ -78,6 +84,10 @@ try {
     assert(row.requiredBackendRoute === `/projects/${projectId}/project-settings`, `${id} must write through the project settings route.`);
     assert(row.readyForProduction === false, `${id} must not overclaim production readiness.`);
   }
+  const localWorkspaceBindingRow = capabilities.rows.find((item) => item.id === 'local-workspace-binding');
+  assert(localWorkspaceBindingRow?.status === 'backend-backed' && localWorkspaceBindingRow.editable === true, 'Local workspace binding must be backend-backed and editable through the local runtime route.');
+  assert(localWorkspaceBindingRow.requiredBackendRoute === `/projects/${projectId}/workspace/bind`, 'Local workspace binding must point to the project workspace bind route.');
+  assert(localWorkspaceBindingRow.readyForLocalMvp === true && localWorkspaceBindingRow.readyForProduction === false, 'Local workspace binding must prove local MVP readiness without claiming production managed workspace readiness.');
   const projectRulesRow = capabilities.rows.find((item) => item.id === 'project-rules');
   assert(projectRulesRow?.status === 'backend-backed' && projectRulesRow.editable === false, 'Project rules must expose the backend runtime contract manifest without pretending to be editable.');
   assert(projectRulesRow.requiredBackendRoute === `/projects/${projectId}/runtime-contracts`, 'Project rules must point to the real runtime contracts route.');
@@ -91,6 +101,8 @@ try {
   assert(meetingSummariesRow.requiredBackendRoute === `/projects/${projectId}/meeting-summaries`, 'Meeting summaries must expose the project-scoped backend summary route.');
   assert(meetingSummariesRow.readyForProduction === false, 'Meeting summaries must not overclaim production readiness.');
   assert(capabilities.backendRoutes?.projectSettings === `/projects/${projectId}/project-settings`, 'Workspace capabilities must expose the project settings route.');
+  assert(capabilities.backendRoutes?.workspaceBind === `/projects/${projectId}/workspace/bind`, 'Workspace capabilities must expose the workspace bind route.');
+  assert(capabilities.backendRoutes?.localRuntime === `/projects/${projectId}/local-runtime`, 'Workspace capabilities must expose the local runtime route.');
   assert(capabilities.backendRoutes?.transcripts === `/projects/${projectId}/transcripts`, 'Workspace capabilities must expose the transcript route for meeting-summary readiness.');
   assert(capabilities.backendRoutes?.meetingSummaries === `/projects/${projectId}/meeting-summaries`, 'Workspace capabilities must expose the meeting summaries route.');
   assert(capabilities.backendRoutes?.persistenceAdapterPlan === `/projects/${projectId}/persistence-adapter-plan`, 'Workspace capabilities must expose the persistence adapter route for memory readiness.');
@@ -176,6 +188,27 @@ try {
   assert(response.body.projectSettings?.workspacePolicy?.interfaceDensity === 'compact', 'GET project-settings must return the persisted workspace policy.');
 
   response = api.handle({
+    method: 'POST',
+    path: `/projects/${projectId}/workspace/bind`,
+    body: {
+      workspacePath: boundWorkspaceRoot,
+      createIfMissing: true,
+      now: '2026-06-01T10:20:00.000Z',
+    },
+  });
+  assert(response.status === 200, `Workspace bind route returned ${response.status}.`);
+  assert(response.body.route === 'workspace-bound', 'Workspace bind route must return a workspace-bound receipt.');
+  assert(response.body.localRuntime?.workspacePath === boundWorkspaceRoot, 'Workspace bind route must return the bound absolute workspace path.');
+  assert(response.body.project?.localRuntime?.workspacePath === boundWorkspaceRoot, 'Workspace bind route must persist the bound path onto the project snapshot.');
+
+  response = api.handle({
+    method: 'GET',
+    path: `/projects/${projectId}/local-runtime`,
+  });
+  assert(response.status === 200, `Local runtime route returned ${response.status}.`);
+  assert(response.body.localRuntime?.workspacePath === boundWorkspaceRoot, 'Local runtime route must read back the Settings-bound workspace path.');
+
+  response = api.handle({
     method: 'GET',
     path: `/projects/${projectId}/timeline`,
   });
@@ -193,7 +226,21 @@ try {
   const storedProject = store.projects.find((project) => project.id === projectId);
   assert(storedProject?.projectSettings?.workspacePolicy?.defaultVisibility === 'manager-only', 'File-backed store must persist the workspace policy.');
   assert(storedProject?.projectSettings?.workspaceCapabilities?.checksum === capabilities.checksum, 'File-backed store must persist the workspace capability contract.');
+  assert(storedProject?.localRuntime?.workspacePath === boundWorkspaceRoot, 'File-backed store must persist the Settings-bound local workspace path.');
   assert(storedProject?.projectSettingsAudit?.some((entry) => entry.workspaceCapabilities?.checksum === capabilities.checksum), 'File-backed store must persist the workspace capability audit entry.');
+
+  const appSource = await readFile(resolve(repoRoot, 'src', 'App.jsx'), 'utf8');
+  assert(appSource.includes('settings-workspace-bind-contract'), 'Settings Workspace UI must render the backend workspace bind contract.');
+  assert(appSource.includes('settings-workspace-bind-path-input'), 'Settings Workspace UI must expose a workspace path input.');
+  assert(appSource.includes('settings-workspace-bind-submit'), 'Settings Workspace UI must expose a backend workspace bind action.');
+  assert(appSource.includes('/workspace/bind') && appSource.includes('/local-runtime'), 'Settings Workspace UI must show the workspace bind and local runtime routes.');
+  assert(appSource.includes('bindProjectWorkspaceFromSettings') && appSource.includes('requestAgentBackend(`/projects/${encodeURIComponent(activeProject.id)}/workspace/bind`'), 'Settings Workspace bind action must call the backend workspace bind route.');
+
+  const apiSource = await readFile(resolve(repoRoot, 'src', 'agents', 'agentProjectApi.js'), 'utf8');
+  assert(apiSource.includes("route.action === 'workspace'") && apiSource.includes("route.tail[0] === 'bind'") && apiSource.includes('service.bindProjectWorkspace'), 'Agent project API must expose the workspace bind route.');
+
+  const serviceSource = await readFile(resolve(repoRoot, 'src', 'agents', 'agentProjectService.js'), 'utf8');
+  assert(serviceSource.includes("id: 'local-workspace-binding'") && serviceSource.includes("workspaceBind: projectId ? `/projects/${projectId}/workspace/bind`"), 'Agent project service must include local workspace binding in the workspace capability contract.');
 
   console.log('Project settings workspace capabilities validation passed.');
 } finally {

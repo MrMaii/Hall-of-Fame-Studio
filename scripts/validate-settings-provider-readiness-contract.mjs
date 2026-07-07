@@ -9,7 +9,7 @@ function assert(condition, message) {
 }
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const tempRoot = resolve(repoRoot, '.tmp', 'settings-provider-readiness-contract-validate');
+const tempRoot = resolve(repoRoot, '.tmp', `settings-provider-readiness-contract-validate-${process.pid}`);
 const plaintextSecret = 'SETTINGS_PROVIDER_READINESS_SECRET_SHOULD_NOT_LEAK';
 
 await rm(tempRoot, { recursive: true, force: true });

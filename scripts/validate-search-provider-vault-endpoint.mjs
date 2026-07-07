@@ -5,7 +5,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const tempRoot = resolve(repoRoot, '.tmp', 'search-provider-vault-endpoint-validate');
+const tempRoot = resolve(repoRoot, '.tmp', `search-provider-vault-endpoint-validate-${process.pid}`);
 const serverScript = resolve(repoRoot, 'scripts', 'agent-project-server.mjs');
 const secretVaultRecordsFile = resolve(tempRoot, 'secret-vault-records.json');
 const searchPlaintext = 'SEARCH_ENDPOINT_VALIDATION_KEY_SHOULD_NOT_LEAK';

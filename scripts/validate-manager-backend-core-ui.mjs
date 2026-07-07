@@ -8,11 +8,61 @@ import { createAgentProjectHttpServer } from '../src/agents/agentProjectHttpServ
 
 const ROOT_DIR = fileURLToPath(new URL('..', import.meta.url));
 const DIST_DIR = join(ROOT_DIR, 'dist');
-const BACKEND_STORE = new URL('../.tmp/agent-manager-backend-core-ui-store.json', import.meta.url);
+const BACKEND_STORE = new URL(`../.tmp/agent-manager-backend-core-ui-store-${process.pid}.json`, import.meta.url);
 const BACKEND_STORAGE_KEY = 'hall_of_fame_studio.agent_backend_url.v1';
 const LANGUAGE_STORAGE_KEY = 'hall_of_fame_studio.language.v1';
 const VIEWPORT = { width: 1440, height: 1100 };
 const nativeFetch = globalThis.fetch.bind(globalThis);
+
+function readCliArg(name) {
+  const index = process.argv.indexOf(name);
+  if (index >= 0 && process.argv[index + 1]) return process.argv[index + 1];
+  const prefixed = process.argv.find((arg) => arg.startsWith(`${name}=`));
+  return prefixed ? prefixed.slice(name.length + 1) : '';
+}
+
+function normalizeBaseUrl(value = '') {
+  const trimmed = String(value || '').trim();
+  return trimmed ? trimmed.replace(/\/+$/, '') : '';
+}
+
+const configuredUiBaseUrl = normalizeBaseUrl(readCliArg('--ui-base-url') || process.env.HOFS_UI_BASE_URL || '');
+
+function localUiBaseUrlCandidates(value = '') {
+  const normalized = normalizeBaseUrl(value);
+  if (!normalized) return [];
+  const candidates = [normalized];
+  try {
+    const url = new URL(normalized);
+    if (url.hostname === '127.0.0.1') {
+      url.hostname = 'localhost';
+      candidates.push(normalizeBaseUrl(url.toString()));
+    } else if (url.hostname === 'localhost') {
+      url.hostname = '127.0.0.1';
+      candidates.push(normalizeBaseUrl(url.toString()));
+    }
+  } catch {
+    // Keep the original value as the only candidate.
+  }
+  return Array.from(new Set(candidates));
+}
+
+async function resolveExternalUiRuntime(value = '') {
+  const candidates = localUiBaseUrlCandidates(value);
+  let lastError = null;
+  for (const candidate of candidates) {
+    try {
+      const response = await fetch(candidate);
+      if (response.ok) {
+        return { server: null, url: candidate, external: true, configuredUrl: normalizeBaseUrl(value) };
+      }
+      lastError = new Error(`HTTP ${response.status}`);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw new Error(`Configured UI base URL is unreachable: ${normalizeBaseUrl(value)}. Tried: ${candidates.join(', ')}. ${lastError?.message || lastError || ''}`);
+}
 
 globalThis.fetch = async (...args) => {
   let lastError = null;
@@ -161,8 +211,9 @@ const backendServer = createAgentProjectHttpServer({
   replaceWithSeed: true,
 });
 const backendRuntime = await backendServer.listen();
-const staticServer = createStaticServer();
-const staticRuntime = await listen(staticServer);
+const staticRuntime = configuredUiBaseUrl
+  ? await resolveExternalUiRuntime(configuredUiBaseUrl)
+  : await listen(createStaticServer());
 let browser = null;
 const backendResponses = [];
 const consoleDiagnostics = [];
@@ -408,5 +459,7 @@ try {
 } finally {
   await browser?.close().catch(() => {});
   await backendServer.close().catch(() => {});
-  await new Promise((resolve) => staticRuntime.server.close(resolve)).catch(() => {});
+  if (staticRuntime.server) {
+    await new Promise((resolve) => staticRuntime.server.close(resolve)).catch(() => {});
+  }
 }

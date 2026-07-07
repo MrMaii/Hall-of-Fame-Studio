@@ -5,14 +5,18 @@ import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 import { createAgentProjectHttpServer } from '../src/agents/agentProjectHttpServer.js';
+import { createModelProvider } from '../src/agents/modelProvider.js';
+import { createSearchProvider } from '../src/agents/searchProvider.js';
+import { createSecretVaultFromEnv } from '../src/agents/secretVault.js';
 
 const ROOT_DIR = fileURLToPath(new URL('..', import.meta.url));
 const DIST_DIR = join(ROOT_DIR, 'dist');
-const BACKEND_STORE = new URL('../.tmp/agent-manager-mission-runner-ui-store.json', import.meta.url);
+const BACKEND_STORE = new URL(`../.tmp/agent-manager-mission-runner-ui-store-${process.pid}.json`, import.meta.url);
 const BACKEND_STORAGE_KEY = 'hall_of_fame_studio.agent_backend_url.v1';
 const LANGUAGE_STORAGE_KEY = 'hall_of_fame_studio.language.v1';
 const VIEWPORT = { width: 1440, height: 1100 };
 const nativeFetch = globalThis.fetch.bind(globalThis);
+const SECRET_VAULT_RECORDS_FILE = new URL(`../.tmp/agent-manager-mission-runner-ui-vault-records-${process.pid}.json`, import.meta.url);
 
 globalThis.fetch = async (...args) => {
   let lastError = null;
@@ -182,9 +186,54 @@ function missionRowsFromProject(project) {
   return [];
 }
 
+const secretVault = createSecretVaultFromEnv({
+  SECRET_VAULT_ENABLED: 'true',
+  SECRET_VAULT_KEY: 'manager-mission-runner-ui-local-vault-key',
+  SECRET_VAULT_KEY_ID: 'manager-mission-runner-ui',
+  SECRET_VAULT_RECORDS_FILE: fileURLToPath(SECRET_VAULT_RECORDS_FILE),
+});
+const secretVaultStatus = secretVault.status();
+const llmProvider = createModelProvider({
+  provider: 'openai-compatible',
+  apiKey: 'mission-runner-ui-model-key',
+  apiKeySource: 'local-secret-vault',
+  secretVaultStatus,
+  baseURL: 'https://model.local.test/v1',
+  model: 'mission-runner-ui-model',
+  enabled: true,
+  fetchImpl: async () => new Response(JSON.stringify({
+    id: 'mission-runner-ui-model-response',
+    model: 'mission-runner-ui-model',
+    choices: [{
+      message: {
+        role: 'assistant',
+        content: JSON.stringify({
+          ok: true,
+          message: 'Local model fixture confirmed the Mission Runner UI backend provider path.',
+          intent: 'continue generic product-team mission startup',
+        }),
+      },
+    }],
+    usage: { prompt_tokens: 12, completion_tokens: 12, total_tokens: 24 },
+  }), {
+    status: 200,
+    headers: { 'content-type': 'application/json' },
+  }),
+});
+const searchProvider = createSearchProvider({
+  provider: 'deterministic',
+  apiKey: 'mission-runner-ui-search-key',
+  apiKeySource: 'local-secret-vault',
+  secretVaultStatus,
+  enabled: true,
+});
+
 const backendServer = createAgentProjectHttpServer({
   filePath: BACKEND_STORE,
   replaceWithSeed: true,
+  secretVault,
+  llmProvider,
+  searchProvider,
 });
 const backendRuntime = await backendServer.listen();
 const staticServer = createStaticServer();
@@ -228,6 +277,9 @@ try {
   await page.getByTestId('initiation-start-meeting').click();
   await assertPageContains(page, 'INITIATION ROUNDTABLE', 'Initiation flow must reach the kickoff meeting step.');
   await page.getByTestId('initiation-meeting-session-proof').waitFor({ state: 'visible', timeout: 8000 });
+  await page.getByTestId('initiation-meeting-leader-candidate-claim-turing').waitFor({ state: 'visible', timeout: 8000 });
+  const turingLeaderClaimText = await page.getByTestId('initiation-meeting-leader-candidate-claim-turing').innerText();
+  assert(turingLeaderClaimText.trim().length >= 30, 'Kickoff meeting must show the Agent self-marketing claim before Leader confirmation.');
   await page.getByTestId('initiation-meeting-director-clarification').waitFor({ state: 'visible', timeout: 8000 });
   await page.getByTestId('initiation-meeting-clarification-input').fill('Manager clarified during kickoff: Turing owns backend mission proof and Curie reviews delivery evidence.');
   await page.getByTestId('initiation-meeting-save-clarification').click();

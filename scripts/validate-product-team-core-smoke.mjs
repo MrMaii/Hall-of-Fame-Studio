@@ -117,6 +117,12 @@ assert(response.body.productTeamMissionRun?.schemaVersion === 'product-team-miss
 assert(response.body.productTeamMissionRun.researchOnly === false && response.body.productTeamMissionRun.missionType === 'generic-product-team', 'Mission Runner must keep Research as a validation sample, not a research-only workflow.');
 assert(response.body.meeting?.transcript?.some((turn) => turn.stage === 'role-clarification'), 'Kickoff meeting must include role self-marketing / clarification turns.');
 assert(response.body.meeting?.transcript?.some((turn) => turn.stage === 'leader-campaign'), 'Kickoff meeting must include Leader campaign turns.');
+const governanceProtocol = request({ method: 'GET', path: `/projects/${projectId}/governance-protocol` });
+assert(governanceProtocol.status === 200, `Governance Protocol returned ${governanceProtocol.status}.`);
+assert(governanceProtocol.body.governanceProtocol?.schemaVersion === 'governance-protocol/v1', 'Governance Protocol must be exposed as a standalone backend read model.');
+assert(governanceProtocol.body.governanceProtocol.lead?.id === 'jobs' && governanceProtocol.body.governanceProtocol.reviewer?.id === 'curie', 'Governance Protocol must read the kickoff-confirmed Leader and Reviewer from backend charter proof.');
+assert(governanceProtocol.body.governanceProtocol.proofIds?.length && governanceProtocol.body.governanceProtocol.eventIds?.length, 'Governance Protocol must carry proof and event ids.');
+assert(governanceProtocol.body.governanceProtocol.backendRoutes?.readinessProofMap === `/projects/${projectId}/readiness-proof-map`, 'Governance Protocol must link back to the backend Readiness Proof Map.');
 const selfNominationTurns = response.body.meeting?.transcript?.filter((turn) => turn.stage === 'self-nomination') || [];
 const professionalLabels = Object.values(PROFESSIONAL_SKILLS).flatMap((skill) => [skill.label, skill.zh]).filter(Boolean);
 let personaBlendSelfNominationCount = 0;
@@ -498,6 +504,18 @@ const requiredTraceIds = [
 ];
 assert(flowGraph.status === 200 && requiredTraceIds.every((id) => flowText.includes(id)), 'Manager Flow Graph must trace all required generic submission/evidence/review nodes.');
 assert(flowText.includes('planner-executor-reviewer-state-machine'), 'Manager Flow Graph must expose the Planner / Executor / Reviewer state machine node.');
+[
+  'governance-protocol',
+  'manager-command-center',
+  'manager-scenario-trail',
+  'manager-scenario-walkthrough',
+  'manager-requirement-matrix',
+  'sync-protocol-audit',
+  'manager-use-case-audit',
+  'manager-action-queue',
+].forEach((nodeId) => {
+  assert(flowText.includes(nodeId), `Manager Flow Graph must expose ${nodeId} as a C-side governance/action route node.`);
+});
 
 const proofMap = request({ method: 'GET', path: `/projects/${projectId}/readiness-proof-map` });
 const proofText = asText(proofMap.body);
@@ -505,6 +523,26 @@ assert(proofMap.status === 200 && requiredTraceIds.filter((id) => id !== product
 assert(proofMap.body.projectMemoryReadinessRoutes?.[0]?.apiPath === `/projects/${projectId}/memory-readiness`, 'Readiness Proof Map must expose the project memory readiness proof route.');
 assert(proofMap.body.plannerExecutorReviewerStateMachineRoutes?.[0]?.apiPath === `/projects/${projectId}/planner-executor-reviewer-state-machine`, 'Readiness Proof Map must expose the Planner / Executor / Reviewer state machine proof route.');
 assert(proofMap.body.plannerExecutorReviewerStateMachineSummary?.readyForLocalProductTeamStateMachine === true, 'Readiness Proof Map must mark the Planner / Executor / Reviewer state machine local-ready.');
+const governanceProofMapRoutes = [
+  ['governanceProtocolRoutes', `/projects/${projectId}/governance-protocol`],
+  ['managerCommandCenterRoutes', `/projects/${projectId}/manager-command-center`],
+  ['managerScenarioTrailRoutes', `/projects/${projectId}/manager-scenario-trail`],
+  ['managerScenarioWalkthroughRoutes', `/projects/${projectId}/manager-scenario-walkthrough`],
+  ['managerRequirementMatrixRoutes', `/projects/${projectId}/manager-requirement-matrix`],
+  ['syncProtocolAuditRoutes', `/projects/${projectId}/sync-protocol-audit`],
+  ['managerUseCaseAuditRoutes', `/projects/${projectId}/manager-use-case-audit`],
+  ['managerActionQueueRoutes', `/projects/${projectId}/manager-action-queue`],
+];
+for (const [routeKey, apiPath] of governanceProofMapRoutes) {
+  const route = proofMap.body[routeKey]?.[0];
+  assert(route?.apiPath === apiPath, `Readiness Proof Map must expose ${routeKey} at ${apiPath}.`);
+  assert(route.readinessProofMapRoute === `/projects/${projectId}/readiness-proof-map`, `${routeKey} must link back to the Readiness Proof Map.`);
+  assert(route.readyForProduction === false && route.productionBlocker === true, `${routeKey} must keep production readiness blocked.`);
+}
+assert(
+  proofMap.body.managerActionQueueRoutes?.[0]?.runTemplateRoute === `/projects/${projectId}/manager-action-queue/:actionId/run`,
+  'Readiness Proof Map must expose the Manager Action Queue run template route.',
+);
 
 const transcript = request({ method: 'GET', path: `/projects/${projectId}/transcripts/main` });
 const transcriptText = asText(transcript.body);
@@ -522,16 +560,26 @@ assert(agentDashboard.status === 200 && [productBriefSubmission.id, implementati
 const evidenceIndex = request({ method: 'GET', path: `/projects/${projectId}/evidence-index-readiness` });
 assert(evidenceIndex.status === 200 && asText(evidenceIndex.body).includes(evidenceSearch.id) && asText(evidenceIndex.body).includes(finalSubmission.id), 'Evidence Index readiness must trace evidence and final-deliverable ids.');
 
+const sourceReviewWorkflow = request({ method: 'GET', path: `/projects/${projectId}/evidence-source-review-workflow` });
+assert(sourceReviewWorkflow.status === 200 && sourceReviewWorkflow.body.evidenceSourceReviewWorkflow?.schemaVersion === 'evidence-source-review-workflow/v1', 'Evidence Source Review Workflow must expose the reviewer source-decision contract.');
+assert(sourceReviewWorkflow.body.evidenceSourceReviewWorkflow.readyForLocalPilot === true, 'Evidence Source Review Workflow must be local-ready after Reviewer source decisions.');
+assert(sourceReviewWorkflow.body.evidenceSourceReviewWorkflow.summary?.sourceReviewDecisionCount >= 2, 'Evidence Source Review Workflow must count submitted Reviewer source decisions.');
+assert(sourceReviewWorkflow.body.evidenceSourceReviewWorkflow.summary?.pendingDecisionSourceCount === 0, 'Evidence Source Review Workflow must have no pending source decisions before archive handoff.');
+
 const projectEvidenceArchive = request({ method: 'GET', path: `/projects/${projectId}/project-evidence-archive` });
 const archive = projectEvidenceArchive.body.projectEvidenceArchive;
 const archiveArtifactProofManifest = archive?.manifest?.find((entry) => entry.id === 'artifact-storage-proofs');
 const archiveFinalDeliverablesManifest = archive?.manifest?.find((entry) => entry.id === 'final-deliverables');
 const archiveArtifactQualityManifest = archive?.manifest?.find((entry) => entry.id === 'artifact-quality-audit');
 const archiveTranscriptManifest = archive?.manifest?.find((entry) => entry.id === 'group-chat-transcripts');
+const archiveSourceReviewWorkflowManifest = archive?.manifest?.find((entry) => entry.id === 'evidence-source-review-workflow');
+const archiveSourceReviewDecisionsManifest = archive?.manifest?.find((entry) => entry.id === 'evidence-source-review-decisions');
 assert(projectEvidenceArchive.status === 200 && archive?.schemaVersion === 'project-evidence-archive/v1', 'Project Evidence Archive must expose the backend archive contract.');
+assert(archive.status === 'archive-ready' && archive.readyForManagerHandoff === true, `Project Evidence Archive must be ready for Manager handoff after source decisions and final delivery. failed=${JSON.stringify(archive.integrity?.failedGates || [])}`);
 assert(archive.readyForProduction === false, 'Project Evidence Archive must not overclaim production readiness.');
 assert(archive.summary?.rawLeakCount === 0, 'Project Evidence Archive must not leak raw secrets.');
 assert(archive.summary?.finalDeliverableCount >= 1, 'Project Evidence Archive summary must include the final deliverable.');
+assert(archive.summary?.evidenceSourceReviewDecisionCount >= 2 && archive.summary?.evidenceSourceReviewPendingDecisionCount === 0, 'Project Evidence Archive summary must include closed Reviewer source decisions.');
 assert(archive.summary?.artifactQualityReady === true, 'Project Evidence Archive summary must include local-ready artifact quality.');
 assert(
   archive.summary?.transcriptProofCoverageReady === true
@@ -557,6 +605,8 @@ assert(
 );
 assert(archiveFinalDeliverablesManifest?.ready, 'Project Evidence Archive manifest must include ready final-deliverable evidence.');
 assert(archiveArtifactQualityManifest?.ready, 'Project Evidence Archive manifest must include ready artifact quality audit evidence.');
+assert(archiveSourceReviewWorkflowManifest?.ready, 'Project Evidence Archive manifest must include ready evidence source review workflow evidence.');
+assert(archiveSourceReviewDecisionsManifest?.ready, 'Project Evidence Archive manifest must include Reviewer source decision evidence.');
 assert(
   archiveTranscriptManifest?.ready
     && archiveTranscriptManifest.missingTranscriptProofIdCount === 0,

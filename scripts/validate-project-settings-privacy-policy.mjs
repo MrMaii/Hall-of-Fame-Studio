@@ -8,7 +8,7 @@ function assert(condition, message) {
 }
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const tempRoot = resolve(repoRoot, '.tmp', 'project-settings-privacy-policy-validate');
+const tempRoot = resolve(repoRoot, '.tmp', `project-settings-privacy-policy-validate-${process.pid}`);
 const storePath = resolve(tempRoot, 'store.json');
 const projectId = 'project_settings_privacy_policy_validation';
 const team = [

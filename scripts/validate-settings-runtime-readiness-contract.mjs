@@ -9,7 +9,7 @@ function assert(condition, message) {
 }
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const tempRoot = resolve(repoRoot, '.tmp', 'settings-runtime-readiness-contract-validate');
+const tempRoot = resolve(repoRoot, '.tmp', `settings-runtime-readiness-contract-validate-${process.pid}`);
 const plaintextSecret = 'SETTINGS_RUNTIME_SECRET_SHOULD_NOT_LEAK';
 const runtimeProjectId = 'settings_runtime_readiness_project';
 

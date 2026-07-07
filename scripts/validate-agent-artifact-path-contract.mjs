@@ -25,7 +25,7 @@ function assertBoundedArtifactPath(artifact = {}, label = 'artifact') {
 }
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const tempRoot = resolve(repoRoot, '.tmp', 'agent-artifact-path-contract-validate');
+const tempRoot = resolve(repoRoot, '.tmp', `agent-artifact-path-contract-validate-${process.pid}`);
 const storePath = resolve(tempRoot, 'store.json');
 const runtimeRoot = resolve(tempRoot, 'runtime');
 const projectId = 'artifact_path_contract_project_with_realistic_long_local_mvp_id';

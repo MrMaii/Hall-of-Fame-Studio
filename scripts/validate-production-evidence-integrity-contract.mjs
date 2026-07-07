@@ -313,6 +313,7 @@ function postReceiptBatch(batch, {
   suffix = 'local',
   evidenceEnvironment,
   signed = false,
+  invalidSignature = false,
   offsetMs = 0,
 } = {}) {
   const now = new Date(Date.parse(batch.now) + offsetMs).toISOString();
@@ -357,6 +358,8 @@ function postReceiptBatch(batch, {
           attestationProvider: control.attestationProvider,
           attestationKind: control.attestationKind,
         });
+      } else if (invalidSignature) {
+        control.attestationSignature = `sig_hmac_sha256_v1_invalid_${batch.prefix}_${controlId}_${suffix}`;
       }
       return control;
     }),
@@ -437,6 +440,28 @@ assert(response.status === 200 && response.body.productionEvidenceIntegrityAudit
 assert(response.body.productionEvidenceIntegrityAudit.summary?.managedProductionControlCount === 0, 'Unsigned managed-production claims must not count as managed-production controls.');
 assert(response.body.productionEvidenceIntegrityAudit.rows?.every((row) => row.evidenceTier === 'external-unattested' && row.attestationSignatureReady === false), 'Unsigned managed-production rows must expose missing signatures.');
 progress('unattested evidence integrity audit completed');
+
+for (const batch of receiptBatches) {
+  progress(`invalid-signature receipt ${batch.domain} starting`);
+  postReceiptBatch(batch, {
+    suffix: 'invalid-signature',
+    evidenceEnvironment: 'managed-production',
+    invalidSignature: true,
+    offsetMs: 90_000,
+  });
+  progress(`invalid-signature receipt ${batch.domain} completed`);
+}
+
+progress('invalid-signature evidence integrity audit starting');
+response = membershipApi.handle({
+  method: 'GET',
+  path: productionEvidenceIntegrityAuditPath,
+  headers: signedHeadersFor({ path: productionEvidenceIntegrityAuditPath }),
+});
+assert(response.status === 200 && response.body.productionEvidenceIntegrityAudit.summary?.externalUnattestedControlCount === totalProductionControlCount, 'Evidence-integrity audit must classify invalid managed-production signatures as external-unattested.');
+assert(response.body.productionEvidenceIntegrityAudit.summary?.managedProductionControlCount === 0, 'Invalid managed-production signatures must not count as managed-production controls.');
+assert(response.body.productionEvidenceIntegrityAudit.rows?.every((row) => row.evidenceTier === 'external-unattested' && row.attestationSignatureReady === false && row.attestationFailureReason === 'managed-production-attestation-signature-invalid'), 'Invalid managed-production signature rows must expose signature-invalid failure reasons.');
+progress('invalid-signature evidence integrity audit completed');
 
 for (const batch of receiptBatches) {
   progress(`managed receipt ${batch.domain} starting`);

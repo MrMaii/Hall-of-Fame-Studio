@@ -4,7 +4,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const tempRoot = resolve(repoRoot, '.tmp', 'agent-project-server-secret-vault-validate');
+const tempRoot = resolve(repoRoot, '.tmp', `agent-project-server-secret-vault-validate-${process.pid}`);
 const serverScript = resolve(repoRoot, 'scripts', 'agent-project-server.mjs');
 const plaintextSecret = 'SERVER_VALIDATE_MODEL_KEY_SHOULD_NOT_LEAK';
 const secretVaultRecordsFile = resolve(tempRoot, 'secret-vault-records.json');

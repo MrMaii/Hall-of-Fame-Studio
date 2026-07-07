@@ -1,3 +1,6 @@
+import { existsSync, readdirSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   PERSON_SKILL_COUNT,
   buildPersonaProfessionalBrief,
@@ -12,14 +15,25 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const personaPackageRoot = resolve(repoRoot, 'skills/hall-of-fame-personas/personas');
+const personaSkillDocs = readdirSync(personaPackageRoot, { withFileTypes: true })
+  .filter((entry) => entry.isDirectory())
+  .filter((entry) => existsSync(resolve(personaPackageRoot, entry.name, 'SKILL.md')));
+
 const productMarketTask = '做一个本地 AI Agent 产品的市场调研、痛点分析和产品设计';
 const inferred = inferProfessionalSkillsForTask(productMarketTask, 3).map((item) => item.id);
 assert(inferred.includes('market_research'), 'Market task must infer market_research.');
 assert(inferred.includes('product_design'), 'Product task must infer product_design.');
+assert(personaSkillDocs.length === PERSON_SKILL_COUNT, 'Every canonical persona must expose a package Skill document.');
 
 const buffettMarket = buildPersonaSkillBlend('buffett', productMarketTask);
 const jobsProduct = buildPersonaSkillBlend('jobs', productMarketTask);
 const turingProduct = buildPersonaSkillBlend('turing', productMarketTask);
+assert(
+  ['buffett', 'jobs', 'turing'].every((slug) => existsSync(resolve(personaPackageRoot, slug, 'SKILL.md'))),
+  'Representative personas must provide package Skill documents.',
+);
 
 assert(buffettMarket.selectedSkill.id === 'market_research', 'Buffett should use market_research for product-market research.');
 assert(/moats|opportunity cost|pain-to-value/i.test(buffettMarket.edge), 'Buffett blend must expose his market/business edge.');

@@ -19,6 +19,7 @@ import {
 const ROOT_DIR = fileURLToPath(new URL('..', import.meta.url));
 const DIST_DIR = join(ROOT_DIR, 'dist');
 const PROGRESS_LOG = join(ROOT_DIR, '.tmp', 'language-validation-progress.log');
+const SHOULD_WRITE_PROGRESS_LOG = process.env.HOFS_PROGRESS_LOG === '1';
 const DEFAULT_PORTS = [4191, 4192, 4193, 4194, 4195];
 const LANGUAGE_STORAGE_KEY = 'hall_of_fame_studio.language.v1';
 const VIEWPORT = { width: 1440, height: 1100 };
@@ -504,10 +505,14 @@ const { server, url } = await startServer();
 const browser = await chromium.launch({ headless: true });
 
 try {
-  mkdirSync(join(ROOT_DIR, '.tmp'), { recursive: true });
-  rmSync(PROGRESS_LOG, { force: true });
+  if (SHOULD_WRITE_PROGRESS_LOG) {
+    mkdirSync(join(ROOT_DIR, '.tmp'), { recursive: true });
+    rmSync(PROGRESS_LOG, { force: true });
+  }
   const runStep = async (name, fn) => {
-    appendFileSync(PROGRESS_LOG, `[language] ${name}\n`);
+    if (SHOULD_WRITE_PROGRESS_LOG) {
+      appendFileSync(PROGRESS_LOG, `[language] ${name}\n`);
+    }
     console.log(`[language] ${name}`);
     await fn();
   };

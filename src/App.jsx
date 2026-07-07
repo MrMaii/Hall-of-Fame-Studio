@@ -54,6 +54,9 @@ import {
 } from './agents/agentProjectService.js';
 
 const DEFAULT_AGENT_BACKEND_URL = import.meta.env?.VITE_AGENT_BACKEND_URL || 'http://127.0.0.1:8787';
+const normalizeBackendBaseUrl = (value = DEFAULT_AGENT_BACKEND_URL) => (
+  String(value || DEFAULT_AGENT_BACKEND_URL).trim().replace(/\/+$/, '')
+);
 const AGENT_WORKBENCH_ARTIFACT_TYPES = [
   { id: 'discovery-report', label: 'Discovery Report' },
   { id: 'brainstorm-board', label: 'Brainstorm Board' },
@@ -843,8 +846,25 @@ const isManagerDemoProject = (project = {}) => (
   || project.initiation?.source === 'manager_demo_seed'
 );
 
+const isDevelopmentFallbackProject = (project = {}) => (
+  project.dataSource === 'development-fallback'
+  || project.sampleFixture?.id === 'development-fallback'
+  || project.initiation?.source === 'local-kickoff-development-fallback'
+  || project.initiation?.generationProvenance?.mode === 'development-fallback'
+  || project.kickoffCharter?.evidence?.generationProvenance?.mode === 'development-fallback'
+);
+
 const sampleFixtureMeta = (project = {}) => (
   project.sampleFixture
+    || (isDevelopmentFallbackProject(project)
+      ? {
+          id: 'development-fallback',
+          label: 'Development Fallback',
+          status: 'development-fallback',
+          realProject: false,
+          purpose: 'Explicit developer fallback only; not a real backend project path.',
+        }
+      : null)
     || (isManagerDemoProject(project)
       ? {
           id: 'manager-demo',
@@ -854,6 +874,16 @@ const sampleFixtureMeta = (project = {}) => (
           purpose: 'Validation and demo data only; create real work through initiation.',
         }
       : null)
+);
+
+const hasBackendManagedProjectMarker = (project = {}) => (
+  project.backendSyncStatus === 'online'
+  || project.dataSource === 'backend-backed'
+  || project.dataSource === 'backend-managed'
+  || project.managerDashboard?.projectId === project.id
+  || project.managerReadyPackage?.projectId === project.id
+  || project.readinessProofMap?.projectId === project.id
+  || project.managerFlowGraph?.projectId === project.id
 );
 
 const isManagerDemoMessage = (message = {}) => (
@@ -1053,9 +1083,9 @@ const writeStoredJson = (key, value) => {
 
 const loadBackendBaseUrl = () => {
   if (typeof window !== 'undefined' && window.__AGENT_BACKEND_URL__) {
-    return window.__AGENT_BACKEND_URL__;
+    return normalizeBackendBaseUrl(window.__AGENT_BACKEND_URL__);
   }
-  return readStoredJson(STORAGE_KEYS.backendUrl, DEFAULT_AGENT_BACKEND_URL);
+  return normalizeBackendBaseUrl(readStoredJson(STORAGE_KEYS.backendUrl, DEFAULT_AGENT_BACKEND_URL));
 };
 
 const isDevelopmentFallbackSwitchEnabled = (windowFlag, storageKey, envFlag) => {
@@ -1133,8 +1163,8 @@ const readStoredProjectArray = () => {
 const isBackendManagedBrowserCacheProject = (project = {}) => (
   Boolean(project?.id)
   && !isManagerDemoProject(project)
-  && !isDevelopmentLocalRuntimeFallbackEnabled()
-  && isBackendKickoffProject(project)
+  && !isDevelopmentFallbackProject(project)
+  && (isBackendKickoffProject(project) || hasBackendManagedProjectMarker(project))
 );
 
 const cachedBackendManagedProjectIds = () => new Set(
@@ -1582,6 +1612,7 @@ export default function EngineWorkspace() {
     rows: [],
     summary: null,
     error: null,
+    workflowSmoke: null,
   });
   const [providerRuntimeStatus, setProviderRuntimeStatus] = useState({
     running: false,
@@ -1596,6 +1627,7 @@ export default function EngineWorkspace() {
     settingsRuntimeReadiness: null,
     settingsIntegrationReadiness: null,
     localMvpStartupReadiness: null,
+    projectId: null,
     modelTest: null,
     searchTest: null,
     error: null,
@@ -1608,6 +1640,19 @@ export default function EngineWorkspace() {
     lastReceipt: null,
     error: null,
   });
+  const [privacyPolicySaving, setPrivacyPolicySaving] = useState(false);
+  const [workspacePolicySaving, setWorkspacePolicySaving] = useState(false);
+  const [workspaceBindDraft, setWorkspaceBindDraft] = useState({
+    path: '',
+    createIfMissing: false,
+    saving: false,
+    receipt: null,
+    error: null,
+  });
+  const [providerBudgetPolicySaving, setProviderBudgetPolicySaving] = useState(false);
+  const [toolGrantPolicySaving, setToolGrantPolicySaving] = useState(false);
+  const [, setProjectSettingsDraftRevision] = useState(0);
+  const bumpProjectSettingsDraftRevision = () => setProjectSettingsDraftRevision(revision => revision + 1);
 
   const [marketSearch, setMarketSearch] = useState('');
   const [marketCategory, setMarketCategory] = useState('All');
@@ -1673,6 +1718,7 @@ export default function EngineWorkspace() {
   const [focusedChatProofIdDrafts, setFocusedChatProofIdDrafts] = useState({});
   const [focusedTimelineProofIdDrafts, setFocusedTimelineProofIdDrafts] = useState({});
   const [selectedTimelineEventDrafts, setSelectedTimelineEventDrafts] = useState({});
+  const [timelineActionDrafts, setTimelineActionDrafts] = useState({});
   const [timelineScale, setTimelineScale] = useState('day');
   const [tlPan, setTlPan] = useState({ x: 0, y: 0 });
   const [tlZoom, setTlZoom] = useState(1);
@@ -1685,6 +1731,7 @@ export default function EngineWorkspace() {
   const [tlVisibleLines, setTlVisibleLines] = useState(new Set());
   const [tlEntranceDone, setTlEntranceDone] = useState(false);
   const [tlDetailClosing, setTlDetailClosing] = useState(false);
+  const projectSettingsDraftRef = useRef({});
   const [backendStation, setBackendStation] = useState({
     baseUrl: loadBackendBaseUrl(),
     draftBaseUrl: loadBackendBaseUrl(),
@@ -1697,6 +1744,7 @@ export default function EngineWorkspace() {
     projectSyncCount: 0,
     managerReadyPackage: null,
     mvpReadinessOperatorActionRun: null,
+    managedInfrastructureCutoverAttestationRun: null,
     lastManagerReadyPackageSyncAt: null,
     managerReadyPackageSyncCount: 0,
     managerDashboard: null,
@@ -1729,6 +1777,11 @@ export default function EngineWorkspace() {
     managerUseCaseAuditSyncCount: 0,
     managerActionQueue: null,
     agentAutonomousActionQueue: null,
+    governanceProtocol: null,
+    agentStateSummary: null,
+    assignmentTimelineMatrix: null,
+    changeFlow: null,
+    continuousWorkLoop: null,
     autonomousRunControl: null,
     productTeamOperatingLoop: null,
     teamCollaborationDiagnostics: null,
@@ -1759,6 +1812,16 @@ export default function EngineWorkspace() {
     managerActionQueueSyncCount: 0,
     lastAgentAutonomousActionQueueSyncAt: null,
     agentAutonomousActionQueueSyncCount: 0,
+    lastGovernanceProtocolSyncAt: null,
+    governanceProtocolSyncCount: 0,
+    lastAgentStateSummarySyncAt: null,
+    agentStateSummarySyncCount: 0,
+    lastAssignmentTimelineMatrixSyncAt: null,
+    assignmentTimelineMatrixSyncCount: 0,
+    lastChangeFlowSyncAt: null,
+    changeFlowSyncCount: 0,
+    lastContinuousWorkLoopSyncAt: null,
+    continuousWorkLoopSyncCount: 0,
     lastAutonomousRunControlSyncAt: null,
     autonomousRunControlSyncCount: 0,
     lastProductTeamOperatingLoopSyncAt: null,
@@ -1790,6 +1853,7 @@ export default function EngineWorkspace() {
     projectMemoryReadinessSyncCount: 0,
     timelineReadModel: null,
     eventLedgerReadModel: null,
+    timelineActionReceipt: null,
     lastTimelineEventSyncAt: null,
     timelineEventSyncCount: 0,
     readyPackageSubmodels: {},
@@ -1825,6 +1889,8 @@ export default function EngineWorkspace() {
   const settingsAutoProviderSyncRef = useRef({});
   const settingsAutoIntegrationSyncRef = useRef({});
   const settingsAutoWorkspaceSyncRef = useRef({});
+  const dashboardStartupSyncRef = useRef({});
+  const initiationStartupSyncRef = useRef({});
 
   const projectInputUiStateKey = selectedProjectId || DEFAULT_CHAT_PROJECT_ID;
   const activeChannelId = activeChannelDrafts[projectInputUiStateKey] || 'main';
@@ -1905,11 +1971,23 @@ export default function EngineWorkspace() {
       };
     });
   };
+  const timelineActionDraftKey = `${projectInputUiStateKey}:${selectedTimelineEventId || 'none'}`;
+  const timelineActionDraft = timelineActionDrafts[timelineActionDraftKey] || '';
+  const setTimelineActionDraft = (value) => {
+    setTimelineActionDrafts(prev => {
+      const current = prev[timelineActionDraftKey] || '';
+      const nextValue = typeof value === 'function' ? value(current) : value;
+      return {
+        ...prev,
+        [timelineActionDraftKey]: nextValue || '',
+      };
+    });
+  };
   const isBackendManagedRealProject = (project = {}) => (
     Boolean(project?.id)
     && !isManagerDemoProject(project)
-    && !isDevelopmentLocalRuntimeFallbackEnabled()
-    && (isBackendKickoffProject(project) || projectHasBackendSyncEvidence(project))
+    && !isDevelopmentFallbackProject(project)
+    && (isBackendKickoffProject(project) || hasBackendManagedProjectMarker(project) || projectHasBackendSyncEvidence(project))
   );
   const canPersistProjectToBrowserCache = (project = {}) => (
     Boolean(project?.id)
@@ -2018,40 +2096,54 @@ export default function EngineWorkspace() {
     const projectId = String(project?.id || '').toLowerCase();
     const projectSeenInBackendCatalog = Boolean(projectId) && (backendStation.projectCatalog || [])
       .some(item => String(item?.id || '').toLowerCase() === projectId);
+    const projectMatchedLastProjectSync = Boolean(projectId && backendStation.lastProjectSyncProjectId)
+      && String(backendStation.lastProjectSyncProjectId || '').toLowerCase() === projectId;
+    const projectMatchedReadModel = Boolean(projectId) && [
+      backendStation.managerDashboard?.projectId,
+      backendStation.managerReadyPackage?.projectId,
+      backendStation.managerFlowGraph?.projectId,
+      backendStation.readinessProofMap?.projectId,
+      backendStation.timelineReadModel?.projectId,
+      backendStation.eventLedgerReadModel?.projectId,
+      backendStation.readyPackageSubmodelsProjectId,
+    ].filter(Boolean).some(id => String(id || '').toLowerCase() === projectId);
     return Boolean(
       projectSeenInBackendCatalog
-      || (backendStation.lastProjectSyncAt && activeProject?.id === project?.id)
-      || (backendStation.lastManagerDashboardSyncAt && activeProject?.id === project?.id)
+      || projectMatchedLastProjectSync
+      || projectMatchedReadModel
     );
   };
 
   const shouldRequireBackendProofTranscript = (project = activeProject) => {
     const projectSyncedFromBackend = projectHasBackendSyncEvidence(project);
+    const projectMarkedBackendManaged = hasBackendManagedProjectMarker(project);
     return (
       Boolean(project?.id)
       && !isManagerDemoProject(project)
-      && !isDevelopmentLocalRuntimeFallbackEnabled()
-      && (backendStation.connectionStatus === 'online' || projectSyncedFromBackend)
+      && !isDevelopmentFallbackProject(project)
+      && (backendStation.connectionStatus === 'online' || projectSyncedFromBackend || projectMarkedBackendManaged)
     );
   };
 
   const shouldRequireBackendTimelineProof = (project = activeProject) => {
     const projectSyncedFromBackend = projectHasBackendSyncEvidence(project);
+    const projectMarkedBackendManaged = hasBackendManagedProjectMarker(project);
     return (
       Boolean(project?.id)
       && !isManagerDemoProject(project)
-      && !isDevelopmentLocalRuntimeFallbackEnabled()
-      && (backendStation.connectionStatus === 'online' || projectSyncedFromBackend)
+      && !isDevelopmentFallbackProject(project)
+      && (backendStation.connectionStatus === 'online' || projectSyncedFromBackend || projectMarkedBackendManaged)
     );
   };
 
   const shouldRequireBackendAgentDashboard = (project = activeProject) => {
     const projectSyncedFromBackend = projectHasBackendSyncEvidence(project);
+    const projectMarkedBackendManaged = hasBackendManagedProjectMarker(project);
     return (
       Boolean(project?.id)
       && !isManagerDemoProject(project)
-      && !isDevelopmentLocalRuntimeFallbackEnabled()
-      && (backendStation.connectionStatus === 'online' || projectSyncedFromBackend)
+      && !isDevelopmentFallbackProject(project)
+      && (backendStation.connectionStatus === 'online' || projectSyncedFromBackend || projectMarkedBackendManaged)
     );
   };
 
@@ -2258,13 +2350,42 @@ export default function EngineWorkspace() {
     setProjectLanguage(activeProject?.language || null);
   }, [activeProject?.id, activeProject?.language, setProjectLanguage]);
 
+  useEffect(() => {
+    const localRuntime = activeProject?.localRuntime || null;
+    setWorkspaceBindDraft(prev => ({
+      ...prev,
+      path: localRuntime?.workspacePath || '',
+      saving: false,
+      receipt: localRuntime?.workspacePath
+        ? {
+            projectId: activeProject?.id || null,
+            route: 'local-runtime-current',
+            workspacePath: localRuntime.workspacePath,
+            workspaceBoundAt: localRuntime.workspaceBoundAt || null,
+          }
+        : null,
+      error: null,
+    }));
+  }, [activeProject?.id, activeProject?.localRuntime?.workspacePath, activeProject?.localRuntime?.workspaceBoundAt]);
+
   const allowLocalRuntimeFallbackForActiveProject = (project = activeProject) => (
     (
       backendStation.connectionStatus !== 'online'
       && !projectHasBackendSyncEvidence(project)
+      && !hasBackendManagedProjectMarker(project)
+      && !isBackendKickoffProject(project)
     )
     || isManagerDemoProject(project)
-    || isDevelopmentLocalRuntimeFallbackEnabled()
+    || (
+      isDevelopmentLocalRuntimeFallbackEnabled()
+      && !isBackendKickoffProject(project)
+      && !projectHasBackendSyncEvidence(project)
+      && !hasBackendManagedProjectMarker(project)
+    )
+  );
+
+  const backendFailureConnectionStatusFor = (project = activeProject, previousStatus = backendStation.connectionStatus) => (
+    isBackendManagedRealProject(project) ? previousStatus : 'offline'
   );
 
   const formatBackendCommandError = (error, timeoutMessage) => (
@@ -2396,26 +2517,44 @@ export default function EngineWorkspace() {
       : error?.message || String(error)
   );
 
-  const syncSettingsProviderRuntime = async ({ runTests = false } = {}) => {
+  const syncSettingsProviderRuntime = async ({ runTests = false, baseUrlOverride = null } = {}) => {
     if (providerRuntimeStatus.running) return;
-    const baseUrl = (backendStation.draftBaseUrl || backendStation.baseUrl || DEFAULT_AGENT_BACKEND_URL).trim().replace(/\/+$/, '');
-    const settingsProjectId = activeProject?.id ? encodeURIComponent(activeProject.id) : '';
+    const baseUrl = normalizeBackendBaseUrl(baseUrlOverride || backendStation.draftBaseUrl || backendStation.baseUrl || DEFAULT_AGENT_BACKEND_URL);
+    const settingsProjectRawId = activeProject?.id || null;
+    const settingsProjectId = settingsProjectRawId ? encodeURIComponent(settingsProjectRawId) : '';
     const providerVaultBindingsRoute = settingsProjectId ? `/projects/${settingsProjectId}/provider-vault-bindings` : '/provider-vault-bindings';
     const settingsProviderReadinessRoute = settingsProjectId ? `/projects/${settingsProjectId}/settings-provider-readiness` : '/settings/provider-readiness';
     const settingsRuntimeReadinessRoute = settingsProjectId ? `/projects/${settingsProjectId}/settings-runtime-readiness` : '/settings/runtime-readiness';
     const now = new Date().toISOString();
+    const matchesSettingsRuntimeScope = (state = {}) => (
+      normalizeBackendBaseUrl(state.baseUrl || DEFAULT_AGENT_BACKEND_URL) === baseUrl
+      && String(state.projectId || '') === String(settingsProjectRawId || '')
+    );
     setProviderRuntimeStatus(prev => ({
       ...prev,
       running: true,
       lastRunAt: now,
       baseUrl,
+      projectId: settingsProjectRawId,
       error: null,
-      ...(runTests ? { modelTest: null, searchTest: null } : {}),
+      modelProvider: null,
+      searchProvider: null,
+      secretVaultStatus: null,
+      secretVaultRecords: null,
+      providerVaultBindings: null,
+      settingsProviderReadiness: null,
+      settingsRuntimeReadiness: null,
+      settingsIntegrationReadiness: matchesSettingsRuntimeScope(prev) ? prev.settingsIntegrationReadiness : null,
+      localMvpStartupReadiness: normalizeBackendBaseUrl(prev.baseUrl || DEFAULT_AGENT_BACKEND_URL) === baseUrl
+        ? prev.localMvpStartupReadiness
+        : null,
+      modelTest: null,
+      searchTest: null,
     }));
 
-    const readStatus = async (path, key) => {
+    const readStatus = async (path, key, timeoutMs = 2500) => {
       try {
-        const payload = await requestAgentBackend(path, { baseUrl, timeoutMs: 2500 });
+        const payload = await requestAgentBackend(path, { baseUrl, timeoutMs });
         return payload?.[key] || { provider: 'unknown', enabled: false, configured: false };
       } catch (error) {
         return {
@@ -2441,14 +2580,14 @@ export default function EngineWorkspace() {
 
     try {
       const [modelProvider, searchProvider, secretVaultStatus, secretVaultRecords, providerVaultBindings, settingsProviderReadiness, settingsRuntimeReadiness, localMvpStartupReadiness] = await Promise.all([
-        readStatus('/llm/status', 'modelProvider'),
-        readStatus('/search/status', 'searchProvider'),
-        readStatus('/secret-vault/status', 'secretVaultStatus'),
-        readStatus('/secret-vault/records', 'secretVaultRecords'),
-        readStatus(providerVaultBindingsRoute, 'providerVaultBindings'),
-        readStatus(settingsProviderReadinessRoute, 'settingsProviderReadiness'),
-        readStatus(settingsRuntimeReadinessRoute, 'settingsRuntimeReadiness'),
-        readStatus('/local-mvp-startup-readiness', 'localMvpStartupReadiness'),
+        readStatus('/llm/status', 'modelProvider', 7000),
+        readStatus('/search/status', 'searchProvider', 7000),
+        readStatus('/secret-vault/status', 'secretVaultStatus', 7000),
+        readStatus('/secret-vault/records', 'secretVaultRecords', 7000),
+        readStatus(providerVaultBindingsRoute, 'providerVaultBindings', 7000),
+        readStatus(settingsProviderReadinessRoute, 'settingsProviderReadiness', 7000),
+        readStatus(settingsRuntimeReadinessRoute, 'settingsRuntimeReadiness', 7000),
+        readStatus('/local-mvp-startup-readiness', 'localMvpStartupReadiness', 10000),
       ]);
       const modelReady = Boolean(modelProvider.enabled && modelProvider.configured);
       const searchReady = Boolean(searchProvider.enabled && searchProvider.configured);
@@ -2458,19 +2597,23 @@ export default function EngineWorkspace() {
               prompt: 'Return compact JSON only: {"ok":true,"message":"settings provider runtime ready"}',
             }, 60000)
           : { ok: false, skipped: true, reason: 'model-provider-not-configured' })
-        : providerRuntimeStatus.modelTest;
+        : null;
       const searchTest = runTests
         ? (searchReady
           ? await runProviderTest('/search/test', {
               query: 'product team provider readiness proof',
             }, 25000)
           : { ok: false, skipped: true, reason: 'search-provider-not-configured' })
-        : providerRuntimeStatus.searchTest;
+        : null;
+      const syncedLocalMvpStartupReadiness = localMvpStartupReadiness?.schemaVersion === 'local-mvp-startup-readiness/v1'
+        ? localMvpStartupReadiness
+        : null;
 
-      setProviderRuntimeStatus({
+      setProviderRuntimeStatus(prev => ({
         running: false,
         lastRunAt: now,
         baseUrl,
+        projectId: settingsProjectRawId,
         modelProvider,
         searchProvider,
         secretVaultStatus,
@@ -2478,17 +2621,34 @@ export default function EngineWorkspace() {
         providerVaultBindings,
         settingsProviderReadiness,
         settingsRuntimeReadiness,
-        settingsIntegrationReadiness: providerRuntimeStatus.settingsIntegrationReadiness,
-        localMvpStartupReadiness,
+        settingsIntegrationReadiness: matchesSettingsRuntimeScope(prev) ? prev.settingsIntegrationReadiness : null,
+        localMvpStartupReadiness: syncedLocalMvpStartupReadiness
+          || (normalizeBackendBaseUrl(prev.baseUrl || DEFAULT_AGENT_BACKEND_URL) === baseUrl
+            ? prev.localMvpStartupReadiness
+            : null),
         modelTest,
         searchTest,
         error: modelProvider.error || searchProvider.error || null,
-      });
+      }));
     } catch (error) {
       setProviderRuntimeStatus(prev => ({
         ...prev,
         running: false,
         baseUrl,
+        projectId: settingsProjectRawId,
+        modelProvider: null,
+        searchProvider: null,
+        secretVaultStatus: null,
+        secretVaultRecords: null,
+        providerVaultBindings: null,
+        settingsProviderReadiness: null,
+        settingsRuntimeReadiness: null,
+        settingsIntegrationReadiness: null,
+        localMvpStartupReadiness: normalizeBackendBaseUrl(prev.baseUrl || DEFAULT_AGENT_BACKEND_URL) === baseUrl
+          ? prev.localMvpStartupReadiness
+          : null,
+        modelTest: null,
+        searchTest: null,
         error: providerRuntimeErrorDetail(error),
       }));
     }
@@ -2496,7 +2656,7 @@ export default function EngineWorkspace() {
 
   const syncSettingsIntegrationReadiness = async () => {
     if (!activeProject?.id || providerRuntimeStatus.running) return;
-    const baseUrl = (backendStation.draftBaseUrl || backendStation.baseUrl || DEFAULT_AGENT_BACKEND_URL).trim().replace(/\/+$/, '');
+    const baseUrl = normalizeBackendBaseUrl(backendStation.draftBaseUrl || backendStation.baseUrl || DEFAULT_AGENT_BACKEND_URL);
     const projectId = encodeURIComponent(activeProject.id);
     const now = new Date().toISOString();
     setProviderRuntimeStatus(prev => ({
@@ -2504,6 +2664,8 @@ export default function EngineWorkspace() {
       running: true,
       lastRunAt: now,
       baseUrl,
+      projectId: activeProject.id,
+      settingsIntegrationReadiness: null,
       error: null,
     }));
     try {
@@ -2517,6 +2679,7 @@ export default function EngineWorkspace() {
         running: false,
         lastRunAt: now,
         baseUrl,
+        projectId: activeProject.id,
         settingsIntegrationReadiness,
         error: null,
       }));
@@ -2536,6 +2699,8 @@ export default function EngineWorkspace() {
         ...prev,
         running: false,
         baseUrl,
+        projectId: activeProject.id,
+        settingsIntegrationReadiness: null,
         error: providerRuntimeErrorDetail(error),
       }));
     }
@@ -2587,10 +2752,11 @@ export default function EngineWorkspace() {
       }));
       return null;
     }
-    const baseUrl = (backendStation.draftBaseUrl || backendStation.baseUrl || DEFAULT_AGENT_BACKEND_URL).trim().replace(/\/+$/, '');
+    const baseUrl = normalizeBackendBaseUrl(backendStation.draftBaseUrl || backendStation.baseUrl || DEFAULT_AGENT_BACKEND_URL);
     setProviderSecretDrafts(prev => ({
       ...prev,
       running: true,
+      lastReceipt: null,
       error: null,
     }));
     try {
@@ -2629,6 +2795,7 @@ export default function EngineWorkspace() {
       setProviderSecretDrafts(prev => ({
         ...prev,
         running: false,
+        lastReceipt: null,
         error: providerRuntimeErrorDetail(error),
       }));
       return null;
@@ -2638,7 +2805,7 @@ export default function EngineWorkspace() {
   useEffect(() => {
     const providerSettingsTabs = new Set(['deployment', 'keys', 'models', 'health']);
     if (!settingsOpen || !providerSettingsTabs.has(settingsTab) || providerRuntimeStatus.running) return;
-    const baseUrl = (backendStation.draftBaseUrl || backendStation.baseUrl || DEFAULT_AGENT_BACKEND_URL).trim().replace(/\/+$/, '');
+    const baseUrl = normalizeBackendBaseUrl(backendStation.draftBaseUrl || backendStation.baseUrl || DEFAULT_AGENT_BACKEND_URL);
     const syncKey = `${settingsTab}:${activeProject?.id || 'global'}:${baseUrl}`;
     if (settingsAutoProviderSyncRef.current[syncKey]) return;
     settingsAutoProviderSyncRef.current[syncKey] = true;
@@ -2646,21 +2813,52 @@ export default function EngineWorkspace() {
   }, [settingsOpen, settingsTab, selectedProjectId, backendStation.draftBaseUrl, backendStation.baseUrl, providerRuntimeStatus.running]);
 
   useEffect(() => {
+    if (activeRoute !== 'dashboard' || providerRuntimeStatus.running) return;
+    const baseUrl = normalizeBackendBaseUrl(backendStation.draftBaseUrl || backendStation.baseUrl || DEFAULT_AGENT_BACKEND_URL);
+    const syncKey = `dashboard-startup:${baseUrl}`;
+    if (dashboardStartupSyncRef.current[syncKey]) return;
+    dashboardStartupSyncRef.current[syncKey] = true;
+    syncSettingsProviderRuntime({ runTests: false });
+  }, [activeRoute, backendStation.draftBaseUrl, backendStation.baseUrl, providerRuntimeStatus.running]);
+
+  useEffect(() => {
+    if (activeRoute !== 'project_initiation' || providerRuntimeStatus.running) return;
+    const startupReadiness = providerRuntimeStatus.localMvpStartupReadiness;
+    if (startupReadiness?.schemaVersion === 'local-mvp-startup-readiness/v1' && startupReadiness.readyForFirstProjectRun === true) return;
+    const baseUrl = normalizeBackendBaseUrl(backendStation.draftBaseUrl || backendStation.baseUrl || DEFAULT_AGENT_BACKEND_URL);
+    const syncKey = `initiation-startup:${baseUrl}`;
+    if (initiationStartupSyncRef.current[syncKey]) return;
+    initiationStartupSyncRef.current[syncKey] = true;
+    refreshLocalMvpStartupReadiness({ silent: true });
+  }, [
+    activeRoute,
+    backendStation.draftBaseUrl,
+    backendStation.baseUrl,
+    providerRuntimeStatus.running,
+    providerRuntimeStatus.localMvpStartupReadiness?.schemaVersion,
+    providerRuntimeStatus.localMvpStartupReadiness?.readyForFirstProjectRun,
+  ]);
+
+  useEffect(() => {
     if (!settingsOpen || settingsTab !== 'integrations' || !activeProject?.id || providerRuntimeStatus.running) return;
-    const baseUrl = (backendStation.draftBaseUrl || backendStation.baseUrl || DEFAULT_AGENT_BACKEND_URL).trim().replace(/\/+$/, '');
+    const baseUrl = normalizeBackendBaseUrl(backendStation.draftBaseUrl || backendStation.baseUrl || DEFAULT_AGENT_BACKEND_URL);
     const syncKey = `${activeProject.id}:${baseUrl}`;
     if (settingsAutoIntegrationSyncRef.current[syncKey]) return;
     settingsAutoIntegrationSyncRef.current[syncKey] = true;
-    syncSettingsIntegrationReadiness();
+    Promise.allSettled([
+      syncBackendProjectState({ silent: true }),
+      syncSettingsIntegrationReadiness(),
+    ]);
   }, [settingsOpen, settingsTab, selectedProjectId, backendStation.draftBaseUrl, backendStation.baseUrl, providerRuntimeStatus.running]);
 
   useEffect(() => {
     if (!settingsOpen || settingsTab !== 'workspace' || !activeProject?.id || backendStation.loading) return;
-    const baseUrl = (backendStation.draftBaseUrl || backendStation.baseUrl || DEFAULT_AGENT_BACKEND_URL).trim().replace(/\/+$/, '');
+    const baseUrl = normalizeBackendBaseUrl(backendStation.draftBaseUrl || backendStation.baseUrl || DEFAULT_AGENT_BACKEND_URL);
     const syncKey = `${activeProject.id}:${baseUrl}`;
     if (settingsAutoWorkspaceSyncRef.current[syncKey]) return;
     settingsAutoWorkspaceSyncRef.current[syncKey] = true;
     Promise.allSettled([
+      syncBackendProjectState({ silent: true }),
       syncBackendProjectMemoryReadiness({ silent: true }),
       syncBackendMeetingSummaries({ silent: true }),
     ]);
@@ -2669,11 +2867,20 @@ export default function EngineWorkspace() {
   const shouldAttemptBackendProjectWrite = (project = activeProject) => (
     Boolean(project?.id)
     && Boolean((backendStation.baseUrl || '').trim())
+    && !isDevelopmentFallbackProject(project)
+  );
+
+  const canUseDevelopmentSnapshotSeed = (project = activeProject) => (
+    isDevelopmentLocalRuntimeFallbackEnabled()
+    && isDevelopmentFallbackProject(project)
+    && !isBackendKickoffProject(project)
+    && !hasBackendManagedProjectMarker(project)
+    && !projectHasBackendSyncEvidence(project)
   );
 
   const canSeedActiveProjectSnapshotToBackend = (project = activeProject) => (
     isManagerDemoProject(project)
-    || isDevelopmentLocalRuntimeFallbackEnabled()
+    || canUseDevelopmentSnapshotSeed(project)
   );
 
   const normalizeBackendProjects = (projectList = []) => (
@@ -3255,8 +3462,12 @@ export default function EngineWorkspace() {
 
   const runSettingsHealthCheck = async ({ workflow = false } = {}) => {
     if (healthCheck.running) return;
-    const baseUrl = (backendStation.draftBaseUrl || backendStation.baseUrl || DEFAULT_AGENT_BACKEND_URL).trim().replace(/\/+$/, '');
+    const baseUrl = normalizeBackendBaseUrl(backendStation.draftBaseUrl || backendStation.baseUrl || DEFAULT_AGENT_BACKEND_URL);
     const now = new Date().toISOString();
+    const matchesSettingsRuntimeScope = (state = {}) => (
+      normalizeBackendBaseUrl(state.baseUrl || DEFAULT_AGENT_BACKEND_URL) === baseUrl
+      && String(state.projectId || '') === String(activeProject?.id || '')
+    );
     if (!workflow) {
       setHealthCheck({
         running: true,
@@ -3267,13 +3478,35 @@ export default function EngineWorkspace() {
         ],
         summary: null,
         error: null,
+        workflowSmoke: null,
       });
+      setProviderRuntimeStatus(prev => ({
+        ...prev,
+        baseUrl,
+        modelProvider: null,
+        searchProvider: null,
+        secretVaultStatus: null,
+        secretVaultRecords: null,
+        providerVaultBindings: null,
+        settingsProviderReadiness: null,
+        settingsRuntimeReadiness: null,
+        settingsIntegrationReadiness: matchesSettingsRuntimeScope(prev) ? prev.settingsIntegrationReadiness : null,
+        localMvpStartupReadiness: normalizeBackendBaseUrl(prev.baseUrl || DEFAULT_AGENT_BACKEND_URL) === baseUrl
+          ? prev.localMvpStartupReadiness
+          : null,
+        modelTest: null,
+        searchTest: null,
+        error: null,
+      }));
       try {
         const payload = await requestAgentBackend('/settings/health-readiness', { baseUrl, timeoutMs: 5000 });
         const readiness = payload.settingsHealthReadiness || {};
         if (readiness.schemaVersion !== 'settings-health-readiness/v1') {
           throw new Error('Settings health readiness schema missing.');
         }
+        const syncedStartupReadiness = readiness.startupReadiness?.schemaVersion === 'local-mvp-startup-readiness/v1'
+          ? readiness.startupReadiness
+          : null;
         setHealthCheck({
           running: false,
           lastRunAt: readiness.generatedAt || now,
@@ -3283,16 +3516,19 @@ export default function EngineWorkspace() {
           error: null,
           backendRoutes: readiness.backendRoutes || {},
           checksum: readiness.checksum || null,
+          workflowSmoke: null,
         });
         setProviderRuntimeStatus(prev => ({
           ...prev,
           baseUrl,
-          modelProvider: readiness.providerStatus?.model || prev.modelProvider,
-          searchProvider: readiness.providerStatus?.search || prev.searchProvider,
-          secretVaultStatus: readiness.secretVaultStatus || prev.secretVaultStatus,
-          localMvpStartupReadiness: readiness.startupReadiness?.schemaVersion === 'local-mvp-startup-readiness/v1'
-            ? readiness.startupReadiness
-            : prev.localMvpStartupReadiness,
+          modelProvider: readiness.providerStatus?.model || null,
+          searchProvider: readiness.providerStatus?.search || null,
+          secretVaultStatus: readiness.secretVaultStatus || null,
+          settingsIntegrationReadiness: matchesSettingsRuntimeScope(prev) ? prev.settingsIntegrationReadiness : null,
+          localMvpStartupReadiness: syncedStartupReadiness
+            || (normalizeBackendBaseUrl(prev.baseUrl || DEFAULT_AGENT_BACKEND_URL) === baseUrl
+              ? prev.localMvpStartupReadiness
+              : null),
           lastRunAt: readiness.generatedAt || now,
           error: null,
         }));
@@ -3309,7 +3545,26 @@ export default function EngineWorkspace() {
           ],
           summary: 'failed',
           error: detail,
+          workflowSmoke: null,
         });
+        setProviderRuntimeStatus(prev => ({
+          ...prev,
+          baseUrl,
+          modelProvider: null,
+          searchProvider: null,
+          secretVaultStatus: null,
+          secretVaultRecords: null,
+          providerVaultBindings: null,
+          settingsProviderReadiness: null,
+          settingsRuntimeReadiness: null,
+          settingsIntegrationReadiness: null,
+          localMvpStartupReadiness: normalizeBackendBaseUrl(prev.baseUrl || DEFAULT_AGENT_BACKEND_URL) === baseUrl
+            ? prev.localMvpStartupReadiness
+            : null,
+          modelTest: null,
+          searchTest: null,
+          error: detail,
+        }));
       }
       return;
     }
@@ -3339,6 +3594,7 @@ export default function EngineWorkspace() {
         running: false,
         summary: 'failed',
         error: detail,
+        workflowSmoke: null,
       }));
     };
 
@@ -3349,9 +3605,11 @@ export default function EngineWorkspace() {
       rows,
       summary: null,
       error: null,
+      workflowSmoke: null,
     });
 
     let currentHealthStep = 'backend';
+    let settingsWorkflowSmokeResult = null;
     try {
       currentHealthStep = 'backend';
       updateRow('backend', { status: 'running', detail: `GET ${baseUrl}/workers/autonomous/status` });
@@ -3429,76 +3687,35 @@ export default function EngineWorkspace() {
 
       if (workflow) {
         currentHealthStep = 'workflow';
-        updateRow('workflow', { status: 'running', detail: 'Creating probe project.' });
-        const probeId = `ui_health_${Date.now()}`;
-        const team = [
-          { id: 'turing', name: 'Alan Turing', role: 'Leader', skill: 'systems decomposition' },
-          { id: 'curie', name: 'Marie Curie', role: 'Researcher', skill: 'evidence review' },
-          { id: 'jobs', name: 'Steve Jobs', role: 'Reviewer', skill: 'product framing' },
-        ];
-        const initiate = await requestAgentBackend('/projects/initiate', {
+        updateRow('workflow', { status: 'running', detail: `POST ${baseUrl}/settings/workflow-smoke` });
+        const workflowSmokeResponse = await requestAgentBackend('/settings/workflow-smoke', {
           method: 'POST',
           baseUrl,
-          timeoutMs: 70000,
+          timeoutMs: 90000,
           body: {
-            projectId: probeId,
-            name: 'UI Health Product-Team Probe',
-            brief: 'Smoke-test whether the Harness backend can drive a compact product-team workflow through model intent, group chat, and timeline evidence.',
-            team,
-            selectedLeaderId: 'turing',
-            reviewerId: 'jobs',
-            tasks: [
-              {
-                id: `${probeId}_brief`,
-                text: 'Draft the first-page product-team brief and list evidence gaps.',
-                assignee: 'Marie Curie',
-                status: 'pending',
-              },
-            ],
-            autonomy: { enabled: false, cadence: 'manual' },
-          },
-        });
-        updateRow('workflow', { status: 'running', detail: 'Submitting leader assignment into group chat.' });
-        await requestAgentBackend(`/projects/${encodeURIComponent(probeId)}/chat`, {
-          method: 'POST',
-          baseUrl,
-          timeoutMs: 70000,
-          body: {
-            text: '@Alan Turing assign Marie Curie to produce the first product-team timeline artifact, then ask Steve Jobs to review framing.',
-            author: 'Director',
-            authorId: 'director',
-            channelId: 'main',
-          },
-        });
-        updateRow('workflow', { status: 'running', detail: 'Running one agent work-cycle and loading manager flow graph.' });
-        const work = await requestAgentBackend(`/projects/${encodeURIComponent(probeId)}/agents/${encodeURIComponent('curie')}/work-cycle`, {
-          method: 'POST',
-          baseUrl,
-          timeoutMs: 70000,
-          body: {
-            trigger: 'ui-health-smoke',
-            cadence: 'manual',
             source: 'settings-health-check',
           },
         });
-        const graph = await requestAgentBackend(`/projects/${encodeURIComponent(probeId)}/manager-flow-graph`, {
-          baseUrl,
-          timeoutMs: 6000,
-        });
-        const project = work?.project || initiate?.project || {};
-        const modelIntentCount = project.modelIntentLedger?.length || 0;
-        const workLedgerCount = project.agentWorkerLedger?.length || 0;
-        const latestTimelineTool = project.logs?.[0]?.timelineSubmission?.tool || null;
-        const graphNodeCount = graph?.nodes?.length || graph?.summary?.nodeCount || 0;
-        const workflowOk = modelIntentCount > 0
-          && workLedgerCount > 0
-          && latestTimelineTool === 'manager-flow-timeline'
-          && graphNodeCount > 0;
+        const workflowSmoke = workflowSmokeResponse.settingsWorkflowSmoke || workflowSmokeResponse;
+        settingsWorkflowSmokeResult = workflowSmoke?.schemaVersion === 'settings-workflow-smoke/v1' ? workflowSmoke : null;
+        const submissionId = workflowSmoke?.submission?.id || workflowSmokeResponse.submission?.id || null;
+        const graphNodeCount = workflowSmoke?.graphProof?.nodeCount || 0;
+        const transcriptMessageCount = workflowSmoke?.transcriptProof?.messageCount || 0;
+        const timelineLogCount = workflowSmoke?.timelineProof?.logCount || 0;
+        const eventLedgerCount = workflowSmoke?.eventLedgerProof?.eventCount || 0;
+        const workflowOk = workflowSmoke?.schemaVersion === 'settings-workflow-smoke/v1'
+          && workflowSmoke?.readyForLocalMvpWorkflowSmoke === true
+          && workflowSmoke?.submission?.artifactType === 'product-brief'
+          && workflowSmoke?.transcriptProof?.hasSubmission === true
+          && workflowSmoke?.timelineProof?.hasSubmission === true
+          && workflowSmoke?.eventLedgerProof?.hasSubmission === true
+          && workflowSmoke?.graphProof?.hasSubmission === true
+          && workflowSmoke?.proofMapProof?.hasSubmission === true;
         updateRow('workflow', {
           status: workflowOk ? 'pass' : 'fail',
           detail: workflowOk
-            ? `Intent ${modelIntentCount}, agent work ${workLedgerCount}, flow nodes ${graphNodeCount}.`
-            : 'Workflow ran but did not produce the expected intent/work/timeline evidence.',
+            ? `Backend Workflow Smoke passed: product-brief submission ${submissionId}, transcript messages ${transcriptMessageCount}, timeline logs ${timelineLogCount}, event ledger events ${eventLedgerCount}, flow nodes ${graphNodeCount}.`
+            : (workflowSmoke?.summary?.detail || 'Backend Workflow Smoke did not produce the expected submission, transcript, timeline, event ledger, Flow Graph, and Proof Map evidence.'),
         });
         if (!workflowOk) throw new Error('Workflow smoke did not produce expected evidence.');
       }
@@ -3508,6 +3725,7 @@ export default function EngineWorkspace() {
         running: false,
         summary: workflow ? 'workflow-pass' : 'quick-pass',
         error: null,
+        workflowSmoke: settingsWorkflowSmokeResult,
       }));
     } catch (error) {
       failRun(currentHealthStep || (workflow ? 'workflow' : 'request'), error);
@@ -3529,6 +3747,24 @@ export default function EngineWorkspace() {
     const requirementMatrixPayload = payload.managerReadyPackage?.managerRequirementMatrix || managerDashboardPayload.managerRequirementMatrix || null;
     const useCaseAuditPayload = payload.managerReadyPackage?.managerUseCaseAudit || managerDashboardPayload.managerUseCaseAudit || null;
     const actionQueuePayload = payload.managerReadyPackage?.managerActionQueue || managerDashboardPayload.managerActionQueue || null;
+    const governanceProtocolPayload = payload.governanceProtocol || null;
+    const agentStateSummaryPayload = payload.agentStateSummary || (
+      Array.isArray(managerDashboardPayload.agents?.states)
+        ? {
+            schemaVersion: 'agent-state-summary/v1',
+            projectId: managerDashboardPayload.projectId,
+            dataSource: 'backend-backed',
+            count: managerDashboardPayload.agents.states.length,
+            rows: managerDashboardPayload.agents.states,
+          }
+        : null
+    );
+    const assignmentTimelineMatrixPayload = payload.assignmentTimelineMatrix || managerDashboardPayload.assignmentTimelineMatrix || null;
+    const changeFlowPayload = payload.changeFlow || (managerDashboardPayload.changeFlow ? {
+      ...managerDashboardPayload.changeFlow,
+      sourceIntake: managerDashboardPayload.changeSourceIntake || managerDashboardPayload.changeFlow.sourceIntake || null,
+    } : null);
+    const continuousWorkLoopPayload = payload.continuousWorkLoop || managerDashboardPayload.continuousWorkLoop || null;
     const agentAutonomousActionQueuePayload = payload.agentAutonomousActionQueue || managerDashboardPayload.agentAutonomousActionQueue || null;
     const autonomousRunControlPayload = payload.autonomousRunControl
       || payload.managerReadyPackage?.autonomousRunControl
@@ -3556,6 +3792,11 @@ export default function EngineWorkspace() {
       managerRequirementMatrix: requirementMatrixPayload || prev.managerRequirementMatrix,
       managerUseCaseAudit: useCaseAuditPayload || prev.managerUseCaseAudit,
       managerActionQueue: actionQueuePayload || prev.managerActionQueue,
+      governanceProtocol: governanceProtocolPayload || prev.governanceProtocol,
+      agentStateSummary: agentStateSummaryPayload || prev.agentStateSummary,
+      assignmentTimelineMatrix: assignmentTimelineMatrixPayload || prev.assignmentTimelineMatrix,
+      changeFlow: changeFlowPayload || prev.changeFlow,
+      continuousWorkLoop: continuousWorkLoopPayload || prev.continuousWorkLoop,
       agentAutonomousActionQueue: agentAutonomousActionQueuePayload || prev.agentAutonomousActionQueue,
       autonomousRunControl: autonomousRunControlPayload || prev.autonomousRunControl,
       collaborationIntentQueue: collaborationIntentQueuePayload || prev.collaborationIntentQueue,
@@ -3582,6 +3823,16 @@ export default function EngineWorkspace() {
       managerUseCaseAuditSyncCount: useCaseAuditPayload ? (prev.managerUseCaseAuditSyncCount || 0) + 1 : prev.managerUseCaseAuditSyncCount,
       lastManagerActionQueueSyncAt: actionQueuePayload ? new Date().toISOString() : prev.lastManagerActionQueueSyncAt,
       managerActionQueueSyncCount: actionQueuePayload ? (prev.managerActionQueueSyncCount || 0) + 1 : prev.managerActionQueueSyncCount,
+      lastGovernanceProtocolSyncAt: governanceProtocolPayload ? new Date().toISOString() : prev.lastGovernanceProtocolSyncAt,
+      governanceProtocolSyncCount: governanceProtocolPayload ? (prev.governanceProtocolSyncCount || 0) + 1 : prev.governanceProtocolSyncCount,
+      lastAgentStateSummarySyncAt: agentStateSummaryPayload ? new Date().toISOString() : prev.lastAgentStateSummarySyncAt,
+      agentStateSummarySyncCount: agentStateSummaryPayload ? (prev.agentStateSummarySyncCount || 0) + 1 : prev.agentStateSummarySyncCount,
+      lastAssignmentTimelineMatrixSyncAt: assignmentTimelineMatrixPayload ? new Date().toISOString() : prev.lastAssignmentTimelineMatrixSyncAt,
+      assignmentTimelineMatrixSyncCount: assignmentTimelineMatrixPayload ? (prev.assignmentTimelineMatrixSyncCount || 0) + 1 : prev.assignmentTimelineMatrixSyncCount,
+      lastChangeFlowSyncAt: changeFlowPayload ? new Date().toISOString() : prev.lastChangeFlowSyncAt,
+      changeFlowSyncCount: changeFlowPayload ? (prev.changeFlowSyncCount || 0) + 1 : prev.changeFlowSyncCount,
+      lastContinuousWorkLoopSyncAt: continuousWorkLoopPayload ? new Date().toISOString() : prev.lastContinuousWorkLoopSyncAt,
+      continuousWorkLoopSyncCount: continuousWorkLoopPayload ? (prev.continuousWorkLoopSyncCount || 0) + 1 : prev.continuousWorkLoopSyncCount,
       lastAgentAutonomousActionQueueSyncAt: agentAutonomousActionQueuePayload ? new Date().toISOString() : prev.lastAgentAutonomousActionQueueSyncAt,
       agentAutonomousActionQueueSyncCount: agentAutonomousActionQueuePayload ? (prev.agentAutonomousActionQueueSyncCount || 0) + 1 : prev.agentAutonomousActionQueueSyncCount,
       lastAutonomousRunControlSyncAt: autonomousRunControlPayload ? new Date().toISOString() : prev.lastAutonomousRunControlSyncAt,
@@ -3607,7 +3858,7 @@ export default function EngineWorkspace() {
     try {
       await ensureBackendProjectSeedForReadModelSync(projectId);
       const payload = await requestAgentBackend(`/projects/${encodeURIComponent(projectId)}/manager-dashboard`, {
-        timeoutMs: silent ? 1100 : 1600,
+        timeoutMs: silent ? 1100 : 10000,
       });
       setBackendStation(prev => ({
         ...prev,
@@ -3620,6 +3871,19 @@ export default function EngineWorkspace() {
         managerRequirementMatrix: payload.managerRequirementMatrix || prev.managerRequirementMatrix,
         managerUseCaseAudit: payload.managerUseCaseAudit || prev.managerUseCaseAudit,
         managerActionQueue: payload.managerActionQueue || prev.managerActionQueue,
+        agentStateSummary: Array.isArray(payload.agents?.states) ? {
+          schemaVersion: 'agent-state-summary/v1',
+          projectId: payload.projectId,
+          dataSource: 'backend-backed',
+          count: payload.agents.states.length,
+          rows: payload.agents.states,
+        } : prev.agentStateSummary,
+        assignmentTimelineMatrix: payload.assignmentTimelineMatrix || prev.assignmentTimelineMatrix,
+        changeFlow: payload.changeFlow ? {
+          ...payload.changeFlow,
+          sourceIntake: payload.changeSourceIntake || payload.changeFlow.sourceIntake || null,
+        } : prev.changeFlow,
+        continuousWorkLoop: payload.continuousWorkLoop || prev.continuousWorkLoop,
         agentAutonomousActionQueue: payload.agentAutonomousActionQueue || prev.agentAutonomousActionQueue,
         autonomousRunControl: payload.autonomousRunControl || prev.autonomousRunControl,
         lastManagerDashboardSyncAt: new Date().toISOString(),
@@ -3634,6 +3898,14 @@ export default function EngineWorkspace() {
         managerUseCaseAuditSyncCount: payload.managerUseCaseAudit ? (prev.managerUseCaseAuditSyncCount || 0) + 1 : prev.managerUseCaseAuditSyncCount,
         lastManagerActionQueueSyncAt: payload.managerActionQueue ? new Date().toISOString() : prev.lastManagerActionQueueSyncAt,
         managerActionQueueSyncCount: payload.managerActionQueue ? (prev.managerActionQueueSyncCount || 0) + 1 : prev.managerActionQueueSyncCount,
+        lastAgentStateSummarySyncAt: Array.isArray(payload.agents?.states) ? new Date().toISOString() : prev.lastAgentStateSummarySyncAt,
+        agentStateSummarySyncCount: Array.isArray(payload.agents?.states) ? (prev.agentStateSummarySyncCount || 0) + 1 : prev.agentStateSummarySyncCount,
+        lastAssignmentTimelineMatrixSyncAt: payload.assignmentTimelineMatrix ? new Date().toISOString() : prev.lastAssignmentTimelineMatrixSyncAt,
+        assignmentTimelineMatrixSyncCount: payload.assignmentTimelineMatrix ? (prev.assignmentTimelineMatrixSyncCount || 0) + 1 : prev.assignmentTimelineMatrixSyncCount,
+        lastChangeFlowSyncAt: payload.changeFlow ? new Date().toISOString() : prev.lastChangeFlowSyncAt,
+        changeFlowSyncCount: payload.changeFlow ? (prev.changeFlowSyncCount || 0) + 1 : prev.changeFlowSyncCount,
+        lastContinuousWorkLoopSyncAt: payload.continuousWorkLoop ? new Date().toISOString() : prev.lastContinuousWorkLoopSyncAt,
+        continuousWorkLoopSyncCount: payload.continuousWorkLoop ? (prev.continuousWorkLoopSyncCount || 0) + 1 : prev.continuousWorkLoopSyncCount,
         lastAgentAutonomousActionQueueSyncAt: payload.agentAutonomousActionQueue ? new Date().toISOString() : prev.lastAgentAutonomousActionQueueSyncAt,
         agentAutonomousActionQueueSyncCount: payload.agentAutonomousActionQueue ? (prev.agentAutonomousActionQueueSyncCount || 0) + 1 : prev.agentAutonomousActionQueueSyncCount,
         lastAutonomousRunControlSyncAt: payload.autonomousRunControl ? new Date().toISOString() : prev.lastAutonomousRunControlSyncAt,
@@ -3648,7 +3920,7 @@ export default function EngineWorkspace() {
     } catch (error) {
       try {
         const fallbackDashboard = await requestAgentBackend(`/projects/${encodeURIComponent(projectId)}/manager-dashboard`, {
-          timeoutMs: silent ? 1100 : 1600,
+          timeoutMs: silent ? 1100 : 10000,
         });
         if (fallbackDashboard.managerScenarioTrail) {
           setBackendStation(prev => ({
@@ -3662,6 +3934,19 @@ export default function EngineWorkspace() {
             managerRequirementMatrix: fallbackDashboard.managerRequirementMatrix || prev.managerRequirementMatrix,
             managerUseCaseAudit: fallbackDashboard.managerUseCaseAudit || prev.managerUseCaseAudit,
             managerActionQueue: fallbackDashboard.managerActionQueue || prev.managerActionQueue,
+            agentStateSummary: Array.isArray(fallbackDashboard.agents?.states) ? {
+              schemaVersion: 'agent-state-summary/v1',
+              projectId: fallbackDashboard.projectId,
+              dataSource: 'backend-backed',
+              count: fallbackDashboard.agents.states.length,
+              rows: fallbackDashboard.agents.states,
+            } : prev.agentStateSummary,
+            assignmentTimelineMatrix: fallbackDashboard.assignmentTimelineMatrix || prev.assignmentTimelineMatrix,
+            changeFlow: fallbackDashboard.changeFlow ? {
+              ...fallbackDashboard.changeFlow,
+              sourceIntake: fallbackDashboard.changeSourceIntake || fallbackDashboard.changeFlow.sourceIntake || null,
+            } : prev.changeFlow,
+            continuousWorkLoop: fallbackDashboard.continuousWorkLoop || prev.continuousWorkLoop,
             agentAutonomousActionQueue: fallbackDashboard.agentAutonomousActionQueue || prev.agentAutonomousActionQueue,
             autonomousRunControl: fallbackDashboard.autonomousRunControl || prev.autonomousRunControl,
             lastManagerDashboardSyncAt: new Date().toISOString(),
@@ -3678,6 +3963,14 @@ export default function EngineWorkspace() {
             managerUseCaseAuditSyncCount: fallbackDashboard.managerUseCaseAudit ? (prev.managerUseCaseAuditSyncCount || 0) + 1 : prev.managerUseCaseAuditSyncCount,
             lastManagerActionQueueSyncAt: fallbackDashboard.managerActionQueue ? new Date().toISOString() : prev.lastManagerActionQueueSyncAt,
             managerActionQueueSyncCount: fallbackDashboard.managerActionQueue ? (prev.managerActionQueueSyncCount || 0) + 1 : prev.managerActionQueueSyncCount,
+            lastAgentStateSummarySyncAt: Array.isArray(fallbackDashboard.agents?.states) ? new Date().toISOString() : prev.lastAgentStateSummarySyncAt,
+            agentStateSummarySyncCount: Array.isArray(fallbackDashboard.agents?.states) ? (prev.agentStateSummarySyncCount || 0) + 1 : prev.agentStateSummarySyncCount,
+            lastAssignmentTimelineMatrixSyncAt: fallbackDashboard.assignmentTimelineMatrix ? new Date().toISOString() : prev.lastAssignmentTimelineMatrixSyncAt,
+            assignmentTimelineMatrixSyncCount: fallbackDashboard.assignmentTimelineMatrix ? (prev.assignmentTimelineMatrixSyncCount || 0) + 1 : prev.assignmentTimelineMatrixSyncCount,
+            lastChangeFlowSyncAt: fallbackDashboard.changeFlow ? new Date().toISOString() : prev.lastChangeFlowSyncAt,
+            changeFlowSyncCount: fallbackDashboard.changeFlow ? (prev.changeFlowSyncCount || 0) + 1 : prev.changeFlowSyncCount,
+            lastContinuousWorkLoopSyncAt: fallbackDashboard.continuousWorkLoop ? new Date().toISOString() : prev.lastContinuousWorkLoopSyncAt,
+            continuousWorkLoopSyncCount: fallbackDashboard.continuousWorkLoop ? (prev.continuousWorkLoopSyncCount || 0) + 1 : prev.continuousWorkLoopSyncCount,
             lastAgentAutonomousActionQueueSyncAt: fallbackDashboard.agentAutonomousActionQueue ? new Date().toISOString() : prev.lastAgentAutonomousActionQueueSyncAt,
             agentAutonomousActionQueueSyncCount: fallbackDashboard.agentAutonomousActionQueue ? (prev.agentAutonomousActionQueueSyncCount || 0) + 1 : prev.agentAutonomousActionQueueSyncCount,
             lastAutonomousRunControlSyncAt: fallbackDashboard.autonomousRunControl ? new Date().toISOString() : prev.lastAutonomousRunControlSyncAt,
@@ -3709,6 +4002,19 @@ export default function EngineWorkspace() {
       const payload = await requestAgentBackend(`/projects/${encodeURIComponent(projectId)}/manager-ready-package`, {
         timeoutMs: silent ? 1200 : 10000,
       });
+      const readyPackageAgentStateSummary = payload.agentStateSummary || (Array.isArray(payload.managerDashboard?.agents?.states) ? {
+        schemaVersion: 'agent-state-summary/v1',
+        projectId,
+        dataSource: 'backend-backed',
+        count: payload.managerDashboard.agents.states.length,
+        rows: payload.managerDashboard.agents.states,
+      } : null);
+      const readyPackageAssignmentTimelineMatrix = payload.assignmentTimelineMatrix || payload.managerDashboard?.assignmentTimelineMatrix || null;
+      const readyPackageChangeFlow = payload.changeFlow || (payload.managerDashboard?.changeFlow ? {
+        ...payload.managerDashboard.changeFlow,
+        sourceIntake: payload.managerDashboard.changeSourceIntake || payload.managerDashboard.changeFlow.sourceIntake || null,
+      } : null);
+      const readyPackageContinuousWorkLoop = payload.continuousWorkLoop || payload.managerDashboard?.continuousWorkLoop || null;
       setBackendStation(prev => ({
         ...prev,
         connectionStatus: 'online',
@@ -3726,6 +4032,10 @@ export default function EngineWorkspace() {
         autonomousRunControl: payload.autonomousRunControl || payload.managerDashboard?.autonomousRunControl || prev.autonomousRunControl,
         collaborationIntentQueue: payload.collaborationIntentQueue || prev.collaborationIntentQueue,
         runtimeAutonomyStatus: payload.runtimeAutonomyStatus || prev.runtimeAutonomyStatus,
+        agentStateSummary: readyPackageAgentStateSummary || prev.agentStateSummary,
+        assignmentTimelineMatrix: readyPackageAssignmentTimelineMatrix || prev.assignmentTimelineMatrix,
+        changeFlow: readyPackageChangeFlow || prev.changeFlow,
+        continuousWorkLoop: readyPackageContinuousWorkLoop || prev.continuousWorkLoop,
         lastManagerReadyPackageSyncAt: new Date().toISOString(),
         managerReadyPackageSyncCount: (prev.managerReadyPackageSyncCount || 0) + 1,
         lastManagerDashboardSyncAt: payload.managerDashboard ? new Date().toISOString() : prev.lastManagerDashboardSyncAt,
@@ -3752,6 +4062,14 @@ export default function EngineWorkspace() {
         collaborationIntentQueueSyncCount: payload.collaborationIntentQueue ? (prev.collaborationIntentQueueSyncCount || 0) + 1 : prev.collaborationIntentQueueSyncCount,
         lastRuntimeAutonomyStatusSyncAt: payload.runtimeAutonomyStatus ? new Date().toISOString() : prev.lastRuntimeAutonomyStatusSyncAt,
         runtimeAutonomyStatusSyncCount: payload.runtimeAutonomyStatus ? (prev.runtimeAutonomyStatusSyncCount || 0) + 1 : prev.runtimeAutonomyStatusSyncCount,
+        lastAgentStateSummarySyncAt: readyPackageAgentStateSummary ? new Date().toISOString() : prev.lastAgentStateSummarySyncAt,
+        agentStateSummarySyncCount: readyPackageAgentStateSummary ? (prev.agentStateSummarySyncCount || 0) + 1 : prev.agentStateSummarySyncCount,
+        lastAssignmentTimelineMatrixSyncAt: readyPackageAssignmentTimelineMatrix ? new Date().toISOString() : prev.lastAssignmentTimelineMatrixSyncAt,
+        assignmentTimelineMatrixSyncCount: readyPackageAssignmentTimelineMatrix ? (prev.assignmentTimelineMatrixSyncCount || 0) + 1 : prev.assignmentTimelineMatrixSyncCount,
+        lastChangeFlowSyncAt: readyPackageChangeFlow ? new Date().toISOString() : prev.lastChangeFlowSyncAt,
+        changeFlowSyncCount: readyPackageChangeFlow ? (prev.changeFlowSyncCount || 0) + 1 : prev.changeFlowSyncCount,
+        lastContinuousWorkLoopSyncAt: readyPackageContinuousWorkLoop ? new Date().toISOString() : prev.lastContinuousWorkLoopSyncAt,
+        continuousWorkLoopSyncCount: readyPackageContinuousWorkLoop ? (prev.continuousWorkLoopSyncCount || 0) + 1 : prev.continuousWorkLoopSyncCount,
         lastAction: silent ? prev.lastAction || 'BACKEND MANAGER READY PACKAGE SYNCED' : 'BACKEND MANAGER READY PACKAGE SYNCED',
         error: null,
       }));
@@ -3767,6 +4085,11 @@ export default function EngineWorkspace() {
       }));
       return null;
     }
+  };
+
+  const runSettingsFooterConnectionTest = () => {
+    setSettingsTab('health');
+    runSettingsHealthCheck({ workflow: false });
   };
 
   const syncBackendReadinessProofMap = async ({ silent = true, projectId = activeProject?.id } = {}) => {
@@ -3828,6 +4151,7 @@ export default function EngineWorkspace() {
       ['artifactQualityAudit', `/projects/${encodeURIComponent(projectId)}/artifact-quality-audit`, 'artifactQualityAudit'],
       ['submissionReviewWorkflow', `/projects/${encodeURIComponent(projectId)}/submission-review-workflow`, 'submissionReviewWorkflow'],
       ['productTeamDeliveryTrace', `/projects/${encodeURIComponent(projectId)}/product-team-delivery-trace`, 'productTeamDeliveryTrace'],
+      ['zeroToAutonomyReport', `/projects/${encodeURIComponent(projectId)}/zero-to-autonomy-report`, 'zeroToAutonomyReport'],
       ['evidenceQualityAudit', `/projects/${encodeURIComponent(projectId)}/evidence-quality-audit`, 'evidenceQualityAudit'],
       ['evidenceIndexReadiness', `/projects/${encodeURIComponent(projectId)}/evidence-index-readiness`, 'evidenceIndexReadiness'],
       ['evidenceSourceReviewWorkflow', `/projects/${encodeURIComponent(projectId)}/evidence-source-review-workflow`, 'evidenceSourceReviewWorkflow'],
@@ -3965,10 +4289,11 @@ export default function EngineWorkspace() {
     const routeSpecs = [
       ['managerDashboard', readRoutes.managerDashboardRoute, 'managerDashboard', 5000],
       ['managerReadyPackage', readRoutes.managerReadyPackageRoute, null, 7000],
-      ['managerFlowGraph', readRoutes.managerFlowGraphRoute, null, 5000],
+      ['managerFlowGraph', readRoutes.managerFlowGraphRoute, null, 10000],
       ['readinessProofMap', readRoutes.readinessProofMapRoute, null, 5000],
       ['transcriptIndex', readRoutes.transcriptsRoute, null, 3600],
       ['mainTranscript', readRoutes.mainTranscriptRoute, null, 3600],
+      ['transcriptChannel', readRoutes.transcriptChannelRoute, null, 3600],
       ['timeline', readRoutes.timelineRoute, null, 3600],
       ['events', readRoutes.eventsRoute, null, 3600],
       ['brainstormLayer', readRoutes.brainstormLayerRoute, 'brainstormLayer', 4200],
@@ -3988,6 +4313,12 @@ export default function EngineWorkspace() {
       ['runtimeAutonomyStatus', readRoutes.runtimeAutonomyStatusRoute, 'runtimeAutonomyStatus', 4200],
       ['autonomousRunControl', readRoutes.autonomousRunControlRoute, 'autonomousRunControl', 4200],
       ['agentAutonomousActionQueue', readRoutes.agentAutonomousActionQueueRoute, 'agentAutonomousActionQueue', 4200],
+      ['governanceProtocol', readRoutes.governanceProtocolRoute, 'governanceProtocol', 4200],
+      ['agentStateSummary', readRoutes.agentStateSummaryRoute, 'agentStateSummary', 4200],
+      ['assignmentTimelineMatrix', readRoutes.assignmentTimelineMatrixRoute, 'assignmentTimelineMatrix', 4200],
+      ['changeFlow', readRoutes.changeFlowRoute, 'changeFlow', 4200],
+      ['continuousWorkLoop', readRoutes.continuousWorkLoopRoute, 'continuousWorkLoop', 4200],
+      ['mvpReadiness', readRoutes.mvpReadinessRoute, 'mvpReadiness', 5200],
       ['pilotLaunchReadiness', readRoutes.pilotLaunchReadinessRoute, 'pilotLaunchReadiness', 4200],
       ['productionLaunchAudit', readRoutes.productionLaunchAuditRoute, 'productionLaunchAudit', 5200],
       ['projectEvidenceArchive', readRoutes.projectEvidenceArchiveRoute, 'projectEvidenceArchive', 5200],
@@ -4026,9 +4357,14 @@ export default function EngineWorkspace() {
       const [key,, payloadKey] = routeSpecs[index];
       refreshed[key] = payloadKey ? (result.value[payloadKey] || result.value) : result.value;
     });
-    if (refreshed.mainTranscript?.channelId) {
-      const messages = transcriptMessagesFromBackendChannels(targetProjectId, [refreshed.mainTranscript]);
+    const refreshedTranscriptChannels = [
+      refreshed.mainTranscript,
+      refreshed.transcriptChannel,
+    ].filter(channel => channel?.channelId);
+    if (refreshedTranscriptChannels.length) {
+      const messages = transcriptMessagesFromBackendChannels(targetProjectId, refreshedTranscriptChannels);
       if (messages.length) setChatMessages(prev => mergeProjectMessages(prev, messages));
+      setChatChannels(prev => mergeTranscriptChannelsIntoUi(prev, refreshedTranscriptChannels));
     }
     if (refreshed.timeline || refreshed.events) {
       applyBackendTimelineEventReadModels({
@@ -4046,7 +4382,7 @@ export default function EngineWorkspace() {
       });
     }
     const readyPackageSubmodels = Object.fromEntries(Object.entries(refreshed).filter(([key]) => (
-      !['managerDashboard', 'managerReadyPackage', 'managerFlowGraph', 'readinessProofMap', 'transcriptIndex', 'mainTranscript', 'timeline', 'events'].includes(key)
+      !['managerDashboard', 'managerReadyPackage', 'managerFlowGraph', 'readinessProofMap', 'transcriptIndex', 'mainTranscript', 'transcriptChannel', 'timeline', 'events', 'governanceProtocol', 'agentStateSummary', 'assignmentTimelineMatrix', 'changeFlow', 'continuousWorkLoop'].includes(key)
     )));
     if (workflowKey && payload[workflowKey]) readyPackageSubmodels[workflowKey] = payload[workflowKey];
     setBackendStation(prev => ({
@@ -4057,11 +4393,11 @@ export default function EngineWorkspace() {
       managerFlowGraph: refreshed.managerFlowGraph || prev.managerFlowGraph,
       readinessProofMap: refreshed.readinessProofMap || prev.readinessProofMap,
       transcriptIndex: refreshed.transcriptIndex || prev.transcriptIndex,
-      transcriptChannels: refreshed.mainTranscript?.channelId ? {
+      transcriptChannels: refreshedTranscriptChannels.length ? {
         ...(prev.transcriptChannels || {}),
         [targetProjectId]: {
           ...((prev.transcriptChannels || {})[targetProjectId] || {}),
-          [refreshed.mainTranscript.channelId]: refreshed.mainTranscript,
+          ...Object.fromEntries(refreshedTranscriptChannels.map(channel => [channel.channelId, channel])),
         },
       } : prev.transcriptChannels,
       timelineReadModel: refreshed.timeline || prev.timelineReadModel,
@@ -4075,6 +4411,11 @@ export default function EngineWorkspace() {
       runtimeAutonomyStatus: refreshed.runtimeAutonomyStatus || prev.runtimeAutonomyStatus,
       autonomousRunControl: refreshed.autonomousRunControl || prev.autonomousRunControl,
       agentAutonomousActionQueue: refreshed.agentAutonomousActionQueue || prev.agentAutonomousActionQueue,
+      governanceProtocol: refreshed.governanceProtocol || prev.governanceProtocol,
+      agentStateSummary: refreshed.agentStateSummary || prev.agentStateSummary,
+      assignmentTimelineMatrix: refreshed.assignmentTimelineMatrix || prev.assignmentTimelineMatrix,
+      changeFlow: refreshed.changeFlow || prev.changeFlow,
+      continuousWorkLoop: refreshed.continuousWorkLoop || prev.continuousWorkLoop,
       readyPackageSubmodels: {
         ...(String(prev.readyPackageSubmodelsProjectId || '').toLowerCase() === String(targetProjectId).toLowerCase() ? (prev.readyPackageSubmodels || {}) : {}),
         ...readyPackageSubmodels,
@@ -4088,8 +4429,8 @@ export default function EngineWorkspace() {
       managerReadyPackageSyncCount: refreshed.managerReadyPackage ? (prev.managerReadyPackageSyncCount || 0) + 1 : prev.managerReadyPackageSyncCount,
       lastManagerFlowGraphSyncAt: refreshed.managerFlowGraph ? new Date().toISOString() : prev.lastManagerFlowGraphSyncAt,
       managerFlowGraphSyncCount: refreshed.managerFlowGraph ? (prev.managerFlowGraphSyncCount || 0) + 1 : prev.managerFlowGraphSyncCount,
-      lastTranscriptSyncAt: (refreshed.transcriptIndex || refreshed.mainTranscript) ? new Date().toISOString() : prev.lastTranscriptSyncAt,
-      transcriptSyncCount: (refreshed.transcriptIndex || refreshed.mainTranscript) ? (prev.transcriptSyncCount || 0) + 1 : prev.transcriptSyncCount,
+      lastTranscriptSyncAt: (refreshed.transcriptIndex || refreshedTranscriptChannels.length) ? new Date().toISOString() : prev.lastTranscriptSyncAt,
+      transcriptSyncCount: (refreshed.transcriptIndex || refreshedTranscriptChannels.length) ? (prev.transcriptSyncCount || 0) + 1 : prev.transcriptSyncCount,
       lastTimelineEventSyncAt: (refreshed.timeline || refreshed.events) ? new Date().toISOString() : prev.lastTimelineEventSyncAt,
       timelineEventSyncCount: (refreshed.timeline || refreshed.events) ? (prev.timelineEventSyncCount || 0) + 1 : prev.timelineEventSyncCount,
       lastReadyPackageSubmodelSyncAt: Object.keys(readyPackageSubmodels).length ? new Date().toISOString() : prev.lastReadyPackageSubmodelSyncAt,
@@ -4112,6 +4453,16 @@ export default function EngineWorkspace() {
       autonomousRunControlSyncCount: refreshed.autonomousRunControl ? (prev.autonomousRunControlSyncCount || 0) + 1 : prev.autonomousRunControlSyncCount,
       lastAgentAutonomousActionQueueSyncAt: refreshed.agentAutonomousActionQueue ? new Date().toISOString() : prev.lastAgentAutonomousActionQueueSyncAt,
       agentAutonomousActionQueueSyncCount: refreshed.agentAutonomousActionQueue ? (prev.agentAutonomousActionQueueSyncCount || 0) + 1 : prev.agentAutonomousActionQueueSyncCount,
+      lastGovernanceProtocolSyncAt: refreshed.governanceProtocol ? new Date().toISOString() : prev.lastGovernanceProtocolSyncAt,
+      governanceProtocolSyncCount: refreshed.governanceProtocol ? (prev.governanceProtocolSyncCount || 0) + 1 : prev.governanceProtocolSyncCount,
+      lastAgentStateSummarySyncAt: refreshed.agentStateSummary ? new Date().toISOString() : prev.lastAgentStateSummarySyncAt,
+      agentStateSummarySyncCount: refreshed.agentStateSummary ? (prev.agentStateSummarySyncCount || 0) + 1 : prev.agentStateSummarySyncCount,
+      lastAssignmentTimelineMatrixSyncAt: refreshed.assignmentTimelineMatrix ? new Date().toISOString() : prev.lastAssignmentTimelineMatrixSyncAt,
+      assignmentTimelineMatrixSyncCount: refreshed.assignmentTimelineMatrix ? (prev.assignmentTimelineMatrixSyncCount || 0) + 1 : prev.assignmentTimelineMatrixSyncCount,
+      lastChangeFlowSyncAt: refreshed.changeFlow ? new Date().toISOString() : prev.lastChangeFlowSyncAt,
+      changeFlowSyncCount: refreshed.changeFlow ? (prev.changeFlowSyncCount || 0) + 1 : prev.changeFlowSyncCount,
+      lastContinuousWorkLoopSyncAt: refreshed.continuousWorkLoop ? new Date().toISOString() : prev.lastContinuousWorkLoopSyncAt,
+      continuousWorkLoopSyncCount: refreshed.continuousWorkLoop ? (prev.continuousWorkLoopSyncCount || 0) + 1 : prev.continuousWorkLoopSyncCount,
       lastAction: actionLabel || (includeLaunchControls ? 'Receipt proof and launch routes refreshed' : 'Receipt proof routes refreshed'),
       error: null,
     }));
@@ -4160,7 +4511,7 @@ export default function EngineWorkspace() {
     if (!silent) setBackendStation(prev => ({ ...prev, loading: true }));
     try {
       const payload = await requestAgentBackend(`/projects/${encodeURIComponent(projectId)}/manager-flow-graph`, {
-        timeoutMs: silent ? 1200 : 1800,
+        timeoutMs: silent ? 8000 : 12000,
       });
       setBackendStation(prev => ({
         ...prev,
@@ -4511,6 +4862,158 @@ export default function EngineWorkspace() {
     }
   };
 
+  const syncBackendCockpitReadModel = async ({
+    silent = true,
+    projectId = activeProject?.id,
+    routeAction,
+    payloadKey,
+    stationKey,
+    lastSyncKey,
+    countKey,
+    label,
+    fallbackFromDashboard,
+  } = {}) => {
+    if (!projectId || !routeAction || !payloadKey || !stationKey) return null;
+    if (!silent) setBackendStation(prev => ({ ...prev, loading: true }));
+    try {
+      await ensureBackendProjectSeedForReadModelSync(projectId);
+      const response = await requestAgentBackend(`/projects/${encodeURIComponent(projectId)}/${routeAction}`, {
+        timeoutMs: silent ? 900 : 1400,
+      });
+      const payload = response[payloadKey] || response;
+      setBackendStation(prev => ({
+        ...prev,
+        connectionStatus: 'online',
+        loading: silent ? prev.loading : false,
+        [stationKey]: payload,
+        [lastSyncKey]: new Date().toISOString(),
+        [countKey]: (prev[countKey] || 0) + 1,
+        lastAction: silent ? prev.lastAction || `Backend ${label} synced` : `Backend ${label} synced`,
+        error: null,
+      }));
+      return payload;
+    } catch (error) {
+      try {
+        const dashboard = await requestAgentBackend(`/projects/${encodeURIComponent(projectId)}/manager-dashboard`, {
+          timeoutMs: silent ? 1100 : 1600,
+        });
+        const fallbackPayload = typeof fallbackFromDashboard === 'function' ? fallbackFromDashboard(dashboard) : null;
+        if (fallbackPayload) {
+          setBackendStation(prev => ({
+            ...prev,
+            connectionStatus: 'online',
+            loading: silent ? prev.loading : false,
+            managerDashboard: dashboard,
+            [stationKey]: fallbackPayload,
+            lastManagerDashboardSyncAt: new Date().toISOString(),
+            managerDashboardSyncCount: (prev.managerDashboardSyncCount || 0) + 1,
+            [lastSyncKey]: new Date().toISOString(),
+            [countKey]: (prev[countKey] || 0) + 1,
+            lastAction: silent ? prev.lastAction || `Backend ${label} synced from dashboard` : `Backend ${label} synced from dashboard`,
+            error: null,
+          }));
+          return fallbackPayload;
+        }
+      } catch {
+        // Fall through to the visible sync error below.
+      }
+      setBackendStation(prev => ({
+        ...prev,
+        connectionStatus: silent ? prev.connectionStatus : 'offline',
+        loading: silent ? prev.loading : false,
+        lastAction: silent ? prev.lastAction : `Backend ${label} sync failed`,
+        error: silent ? prev.error : error.name === 'AbortError' ? `Backend ${label} sync timed out.` : error.message || String(error),
+      }));
+      return null;
+    }
+  };
+
+  const syncBackendAgentStateSummary = (options = {}) => syncBackendCockpitReadModel({
+    ...options,
+    routeAction: 'agent-state-summary',
+    payloadKey: 'agentStateSummary',
+    stationKey: 'agentStateSummary',
+    lastSyncKey: 'lastAgentStateSummarySyncAt',
+    countKey: 'agentStateSummarySyncCount',
+    label: 'Agent State Summary',
+    fallbackFromDashboard: (dashboard) => (Array.isArray(dashboard?.agents?.states) ? {
+      schemaVersion: 'agent-state-summary/v1',
+      projectId: dashboard.projectId || options.projectId || activeProject?.id || null,
+      dataSource: 'backend-backed',
+      count: dashboard.agents.states.length,
+      rows: dashboard.agents.states,
+    } : null),
+  });
+
+  const syncBackendGovernanceProtocol = (options = {}) => syncBackendCockpitReadModel({
+    ...options,
+    routeAction: 'governance-protocol',
+    payloadKey: 'governanceProtocol',
+    stationKey: 'governanceProtocol',
+    lastSyncKey: 'lastGovernanceProtocolSyncAt',
+    countKey: 'governanceProtocolSyncCount',
+    label: 'Governance Protocol',
+  });
+
+  const syncBackendAssignmentTimelineMatrix = (options = {}) => syncBackendCockpitReadModel({
+    ...options,
+    routeAction: 'assignment-timeline-matrix',
+    payloadKey: 'assignmentTimelineMatrix',
+    stationKey: 'assignmentTimelineMatrix',
+    lastSyncKey: 'lastAssignmentTimelineMatrixSyncAt',
+    countKey: 'assignmentTimelineMatrixSyncCount',
+    label: 'Assignment Timeline Matrix',
+    fallbackFromDashboard: (dashboard) => dashboard?.assignmentTimelineMatrix || null,
+  });
+
+  const syncBackendChangeFlow = (options = {}) => syncBackendCockpitReadModel({
+    ...options,
+    routeAction: 'change-flow',
+    payloadKey: 'changeFlow',
+    stationKey: 'changeFlow',
+    lastSyncKey: 'lastChangeFlowSyncAt',
+    countKey: 'changeFlowSyncCount',
+    label: 'Change Flow',
+    fallbackFromDashboard: (dashboard) => dashboard?.changeFlow ? {
+      ...dashboard.changeFlow,
+      sourceIntake: dashboard.changeSourceIntake || dashboard.changeFlow.sourceIntake || null,
+    } : null,
+  });
+
+  const syncBackendContinuousWorkLoop = (options = {}) => syncBackendCockpitReadModel({
+    ...options,
+    routeAction: 'continuous-work-loop',
+    payloadKey: 'continuousWorkLoop',
+    stationKey: 'continuousWorkLoop',
+    lastSyncKey: 'lastContinuousWorkLoopSyncAt',
+    countKey: 'continuousWorkLoopSyncCount',
+    label: 'Continuous Work Loop',
+    fallbackFromDashboard: (dashboard) => dashboard?.continuousWorkLoop || null,
+  });
+
+  const syncBackendCockpitReadModels = async ({ silent = true, projectId = activeProject?.id } = {}) => {
+    if (!projectId) return [];
+    if (!silent) setBackendStation(prev => ({ ...prev, loading: true }));
+    const results = await Promise.allSettled([
+      syncBackendGovernanceProtocol({ silent: true, projectId }),
+      syncBackendAgentStateSummary({ silent: true, projectId }),
+      syncBackendAssignmentTimelineMatrix({ silent: true, projectId }),
+      syncBackendChangeFlow({ silent: true, projectId }),
+      syncBackendContinuousWorkLoop({ silent: true, projectId }),
+    ]);
+    if (!silent) {
+      const fulfilledCount = results.filter(result => result.status === 'fulfilled' && result.value).length;
+      setBackendStation(prev => ({
+        ...prev,
+        loading: false,
+        connectionStatus: fulfilledCount > 0 ? 'online' : prev.connectionStatus,
+        lastAction: fulfilledCount > 0 ? `Backend cockpit models synced (${fulfilledCount}/5)` : 'Backend cockpit model sync failed',
+        error: fulfilledCount > 0 ? null : prev.error || 'Backend cockpit model sync failed.',
+      }));
+    }
+    return results.map(result => result.status === 'fulfilled' ? result.value : null).filter(Boolean);
+  };
+
   const syncBackendManagerActionQueue = async ({ silent = true, projectId = activeProject?.id } = {}) => {
     if (!projectId) return null;
     if (!silent) setBackendStation(prev => ({ ...prev, loading: true }));
@@ -4805,11 +5308,17 @@ export default function EngineWorkspace() {
 
   const refreshBackendManagerView = async () => {
     const readyPackage = await syncBackendManagerReadyPackage({ silent: false });
-    if (readyPackage) return;
-    const flowGraph = await syncBackendManagerFlowGraph({ silent: false });
-    if (flowGraph) return;
-    const dashboard = await syncBackendManagerDashboard({ silent: false });
-    if (dashboard) await syncBackendManagerScenarioTrail({ silent: false });
+    const dashboard = await syncBackendManagerDashboard({ silent: Boolean(readyPackage) });
+    await syncBackendManagerFlowGraph({ silent: Boolean(readyPackage || dashboard) });
+    if (dashboard) await syncBackendManagerScenarioTrail({ silent: true });
+  };
+
+  const openManagerFlowGraphScene = async () => {
+    const projectId = activeProject?.id;
+    if (projectId && (shouldAttemptBackendProjectWrite(activeProject) || projectHasBackendSyncEvidence(activeProject))) {
+      await syncBackendManagerFlowGraph({ silent: true, projectId });
+    }
+    enterProjectScene('timeline');
   };
 
   const refreshBackendSchedulerStatus = async (baseUrlOverride, { silent = false } = {}) => {
@@ -4873,6 +5382,35 @@ export default function EngineWorkspace() {
   const saveBackendBaseUrl = () => {
     const nextUrl = (backendStation.draftBaseUrl || DEFAULT_AGENT_BACKEND_URL).trim().replace(/\/+$/, '');
     writeStoredJson(STORAGE_KEYS.backendUrl, nextUrl);
+    setProviderRuntimeStatus(prev => ({
+      ...prev,
+      running: false,
+      lastRunAt: null,
+      baseUrl: nextUrl,
+      projectId: activeProject?.id || null,
+      modelProvider: null,
+      searchProvider: null,
+      secretVaultStatus: null,
+      secretVaultRecords: null,
+      providerVaultBindings: null,
+      settingsProviderReadiness: null,
+      settingsRuntimeReadiness: null,
+      settingsIntegrationReadiness: null,
+      localMvpStartupReadiness: null,
+      modelTest: null,
+      searchTest: null,
+      error: null,
+    }));
+    setHealthCheck(prev => ({
+      ...prev,
+      running: false,
+      lastRunAt: null,
+      baseUrl: nextUrl,
+      rows: [],
+      summary: null,
+      backendRoutes: null,
+      error: null,
+    }));
     setBackendStation(prev => ({
       ...prev,
       baseUrl: nextUrl,
@@ -4895,6 +5433,11 @@ export default function EngineWorkspace() {
       managerRequirementMatrix: null,
       managerActionQueue: null,
       agentAutonomousActionQueue: null,
+      governanceProtocol: null,
+      agentStateSummary: null,
+      assignmentTimelineMatrix: null,
+      changeFlow: null,
+      continuousWorkLoop: null,
       autonomousRunControl: null,
       productTeamOperatingLoop: null,
       teamCollaborationDiagnostics: null,
@@ -4914,6 +5457,16 @@ export default function EngineWorkspace() {
       autonomousRunControlEvidenceSearch: null,
       autonomousRunControlProviderUsage: null,
       agentAutonomousActionRun: null,
+      lastGovernanceProtocolSyncAt: null,
+      governanceProtocolSyncCount: 0,
+      lastAgentStateSummarySyncAt: null,
+      agentStateSummarySyncCount: 0,
+      lastAssignmentTimelineMatrixSyncAt: null,
+      assignmentTimelineMatrixSyncCount: 0,
+      lastChangeFlowSyncAt: null,
+      changeFlowSyncCount: 0,
+      lastContinuousWorkLoopSyncAt: null,
+      continuousWorkLoopSyncCount: 0,
       lastAutonomousRunControlSyncAt: null,
       autonomousRunControlSyncCount: 0,
       lastProductTeamOperatingLoopSyncAt: null,
@@ -4949,11 +5502,19 @@ export default function EngineWorkspace() {
       error: null,
     }));
     setTimeout(() => refreshBackendSchedulerStatus(nextUrl), 0);
+    setTimeout(() => syncSettingsProviderRuntime({ runTests: false, baseUrlOverride: nextUrl }), 0);
   };
 
   const runBackendSchedulerAction = async (action) => {
-    const activeAutopilotSessionId = backendStation.autonomousRunControlSession?.id
-      || backendStation.autonomousRunControlSessions?.activeSession?.id
+    const activeProjectId = String(activeProject?.id || '').toLowerCase();
+    const scopedAutopilotSession = String(backendStation.autonomousRunControlSession?.projectId || '').toLowerCase() === activeProjectId
+      ? backendStation.autonomousRunControlSession
+      : null;
+    const scopedAutopilotSessions = String(backendStation.autonomousRunControlSessions?.projectId || '').toLowerCase() === activeProjectId
+      ? backendStation.autonomousRunControlSessions
+      : null;
+    const activeAutopilotSessionId = scopedAutopilotSession?.id
+      || scopedAutopilotSessions?.activeSession?.id
       || null;
     setBackendStation(prev => ({
       ...prev,
@@ -5044,7 +5605,7 @@ export default function EngineWorkspace() {
     } catch (error) {
       setBackendStation(prev => ({
         ...prev,
-        connectionStatus: 'offline',
+        connectionStatus: backendFailureConnectionStatusFor(activeProject, prev.connectionStatus),
         loading: false,
         scheduler: action === 'start'
           ? {
@@ -5062,7 +5623,19 @@ export default function EngineWorkspace() {
   const applyBackendProjectSnapshot = (payload = {}) => {
     if (!payload.project?.id) return;
     const snapshotProjectId = String(payload.project.id);
-    const backendProject = hydrateProject(payload.project);
+    const backendProject = hydrateProject(
+      isManagerDemoProject(payload.project) || isDevelopmentFallbackProject(payload.project)
+        ? payload.project
+        : {
+            ...payload.project,
+            backendSyncStatus: payload.project.backendSyncStatus || 'online',
+            dataSource: payload.project.dataSource || 'backend-backed',
+          }
+    );
+    setBackendStation(prev => ({
+      ...prev,
+      lastProjectSyncProjectId: backendProject.id || snapshotProjectId,
+    }));
     setProjects(prev => {
       let replaced = false;
       const nextProjects = prev.map(project => {
@@ -5084,6 +5657,24 @@ export default function EngineWorkspace() {
     if (incomingMessages.length) {
       setChatMessages(prev => mergeProjectMessages(prev, incomingMessages));
     }
+  };
+
+  const readBackendProjectSnapshotForWrite = async ({ projectId = activeProject?.id, timeoutMs = 8000 } = {}) => {
+    if (!projectId) return null;
+    const payload = await requestAgentBackend(`/projects/${encodeURIComponent(projectId)}`, {
+      timeoutMs,
+    });
+    if (!payload.project?.id) return null;
+    applyBackendProjectSnapshot(payload);
+    setBackendStation(prev => ({
+      ...prev,
+      connectionStatus: 'online',
+      lastProjectSyncAt: new Date().toISOString(),
+      lastProjectSyncProjectId: payload.project.id,
+      projectSyncCount: (prev.projectSyncCount || 0) + 1,
+      error: null,
+    }));
+    return payload;
   };
 
   const loadBackendProjectSnapshot = async (projectId, { silent = true } = {}) => {
@@ -5118,7 +5709,7 @@ export default function EngineWorkspace() {
     } catch (error) {
       setBackendStation(prev => ({
         ...prev,
-        connectionStatus: silent ? prev.connectionStatus : 'offline',
+        connectionStatus: silent ? prev.connectionStatus : backendFailureConnectionStatusFor({ id: projectId }, prev.connectionStatus),
         loading: silent ? prev.loading : false,
         lastAction: silent ? prev.lastAction : 'Backend project load failed',
         error: silent ? prev.error : error.name === 'AbortError' ? 'Backend project load timed out.' : error.message || String(error),
@@ -5167,7 +5758,7 @@ export default function EngineWorkspace() {
     } catch (error) {
       setBackendStation(prev => ({
         ...prev,
-        connectionStatus: 'offline',
+        connectionStatus: backendFailureConnectionStatusFor(activeProject, prev.connectionStatus),
         loading: silent ? prev.loading : false,
         lastAction: silent ? prev.lastAction : 'Project save failed',
         error: error.name === 'AbortError' ? 'Backend project save timed out.' : error.message || String(error),
@@ -5205,7 +5796,7 @@ export default function EngineWorkspace() {
     } catch (error) {
       setBackendStation(prev => ({
         ...prev,
-        connectionStatus: 'offline',
+        connectionStatus: backendFailureConnectionStatusFor(activeProject, prev.connectionStatus),
         loading: silent ? prev.loading : false,
         lastAction: silent ? prev.lastAction : 'Backend sync failed',
         error: error.name === 'AbortError' ? 'Backend project sync timed out.' : error.message || String(error),
@@ -5242,6 +5833,8 @@ export default function EngineWorkspace() {
     if (!applyBackendManagerDashboardPayload(payload)) {
       syncBackendManagerDashboard({ silent: true, projectId: payload.project?.id || activeProject.id });
     }
+    setTimeout(() => syncBackendManagerFlowGraph({ silent: true, projectId: payload.project?.id || activeProject.id }), 0);
+    setTimeout(() => syncBackendReadinessProofMap({ silent: true, projectId: payload.project?.id || activeProject.id }), 0);
     setTimeout(() => syncBackendProjectTranscripts({
       silent: true,
       projectId: payload.project?.id || activeProject.id,
@@ -5250,6 +5843,58 @@ export default function EngineWorkspace() {
     setTimeout(() => syncBackendTimelineAndEvents({ silent: true, projectId: payload.project?.id || activeProject.id }), 0);
     setTimeout(() => syncBackendReadyPackageSubmodels({ silent: true, projectId: payload.project?.id || activeProject.id }), 0);
     return payload;
+  };
+
+  const recordTimelineAction = async ({
+    timelineLogId = '',
+    action = 'note',
+    note = '',
+  } = {}) => {
+    if (!activeProject || !timelineLogId) return null;
+    await ensureBackendProjectSeed();
+    setBackendStation(prev => ({ ...prev, loading: true, lastAction: 'Timeline action running', error: null }));
+    try {
+      const payload = await requestAgentBackend(`/projects/${encodeURIComponent(activeProject.id)}/timeline/actions`, {
+        method: 'POST',
+        body: {
+          includeReadModels: false,
+          timelineLogId,
+          action,
+          note,
+          actor: 'Director',
+          actorId: 'director',
+          source: 'manager-timeline-detail',
+        },
+        timeoutMs: backendStation.connectionStatus === 'online' ? 8_000 : 4_000,
+      });
+      applyBackendProjectSnapshot(payload);
+      const projectId = payload.project?.id || activeProject.id;
+      setBackendStation(prev => ({
+        ...prev,
+        connectionStatus: 'online',
+        loading: false,
+        timelineActionReceipt: payload.timelineActionReceipt
+          ? { ...payload.timelineActionReceipt, projectId: payload.timelineActionReceipt.projectId || projectId }
+          : prev.timelineActionReceipt,
+        lastAction: 'Timeline action saved through backend',
+        lastProjectSyncAt: new Date().toISOString(),
+        projectSyncCount: (prev.projectSyncCount || 0) + 1,
+        error: null,
+      }));
+      setTimeout(() => syncBackendManagerFlowGraph({ silent: true, projectId }), 0);
+      setTimeout(() => syncBackendReadinessProofMap({ silent: true, projectId }), 0);
+      setTimeout(() => syncBackendTimelineAndEvents({ silent: true, projectId }), 0);
+      setTimeout(() => syncBackendReadyPackageSubmodels({ silent: true, projectId }), 0);
+      return payload;
+    } catch (error) {
+      setBackendStation(prev => ({
+        ...prev,
+        loading: false,
+        lastAction: 'Timeline action failed',
+        error: error.name === 'AbortError' ? 'Backend timeline action timed out.' : error.message || String(error),
+      }));
+      return null;
+    }
   };
 
   const updateProjectLanguageSetting = async (nextLanguage = null) => {
@@ -5315,24 +5960,33 @@ export default function EngineWorkspace() {
 
   const updateProjectPrivacyPolicySetting = async (patch = {}) => {
     if (!activeProject) return null;
-    const currentPolicy = activeProject.projectSettings?.privacyPolicy || {};
-    const nextPrivacyPolicy = {
+    const currentProjectDraft = projectSettingsDraftRef.current[activeProject.id] || {};
+    const currentPolicy = currentProjectDraft.privacyPolicy || activeProject.projectSettings?.privacyPolicy || {};
+    const previousPrivacyPolicy = {
       schemaVersion: 'project-privacy-policy/v1',
       retentionMode: currentPolicy.retentionMode || 'project-local',
       modelTrainingAllowed: currentPolicy.modelTrainingAllowed === true,
       providerLogMode: currentPolicy.providerLogMode || 'redacted',
       evidenceExportRequiresApproval: currentPolicy.evidenceExportRequiresApproval !== false,
       readyForProduction: false,
+    };
+    const nextPrivacyPolicy = {
+      schemaVersion: 'project-privacy-policy/v1',
+      retentionMode: previousPrivacyPolicy.retentionMode,
+      modelTrainingAllowed: previousPrivacyPolicy.modelTrainingAllowed,
+      providerLogMode: previousPrivacyPolicy.providerLogMode,
+      evidenceExportRequiresApproval: previousPrivacyPolicy.evidenceExportRequiresApproval,
+      readyForProduction: false,
       ...patch,
     };
-    const applyLocalPrivacyPolicy = () => {
+    const applyLocalPrivacyPolicy = (privacyPolicyDraft = nextPrivacyPolicy) => {
       setProjects(prev => prev.map(project => (
         project.id === activeProject.id
           ? {
               ...project,
               projectSettings: {
                 ...(project.projectSettings || {}),
-                privacyPolicy: nextPrivacyPolicy,
+                privacyPolicy: privacyPolicyDraft,
               },
             }
           : project
@@ -5340,6 +5994,7 @@ export default function EngineWorkspace() {
     };
 
     if (shouldAttemptBackendProjectWrite(activeProject)) {
+      setPrivacyPolicySaving(true);
       try {
         await ensureBackendProjectSeed();
         const now = new Date().toISOString();
@@ -5355,6 +6010,12 @@ export default function EngineWorkspace() {
           timeoutMs: backendStation.connectionStatus === 'online' ? 8_000 : 4_000,
         });
         applyBackendProjectSnapshot(payload);
+        const savedPrivacyPolicy = payload.projectSettings?.privacyPolicy || payload.project?.projectSettings?.privacyPolicy || nextPrivacyPolicy;
+        applyLocalPrivacyPolicy(savedPrivacyPolicy);
+        projectSettingsDraftRef.current[payload.project?.id || activeProject.id] = {
+          ...(projectSettingsDraftRef.current[payload.project?.id || activeProject.id] || {}),
+          privacyPolicy: savedPrivacyPolicy,
+        };
         setBackendStation(prev => ({
           ...prev,
           connectionStatus: 'online',
@@ -5379,34 +6040,54 @@ export default function EngineWorkspace() {
           error,
           allowFallback,
         });
-        if (!allowFallback) return null;
+        if (!allowFallback) {
+          const nextDraft = { ...(projectSettingsDraftRef.current[activeProject.id] || {}) };
+          delete nextDraft.privacyPolicy;
+          projectSettingsDraftRef.current[activeProject.id] = nextDraft;
+          return null;
+        }
+      } finally {
+        setPrivacyPolicySaving(false);
       }
     }
 
+    projectSettingsDraftRef.current[activeProject.id] = {
+      ...currentProjectDraft,
+      privacyPolicy: nextPrivacyPolicy,
+    };
     applyLocalPrivacyPolicy();
     return null;
   };
 
   const updateProjectProviderBudgetPolicySetting = async (patch = {}) => {
     if (!activeProject) return null;
-    const currentPolicy = activeProject.projectSettings?.providerBudgetPolicy || {};
-    const nextProviderBudgetPolicy = {
+    const currentProjectDraft = projectSettingsDraftRef.current[activeProject.id] || {};
+    const currentPolicy = currentProjectDraft.providerBudgetPolicy || activeProject.projectSettings?.providerBudgetPolicy || {};
+    const previousProviderBudgetPolicy = {
       schemaVersion: 'project-provider-budget-policy/v1',
       dailyBudgetCents: Number(currentPolicy.dailyBudgetCents) || 0,
       maxRequestsPerProjectHour: Number(currentPolicy.maxRequestsPerProjectHour) || 0,
       currency: currentPolicy.currency || 'USD',
       enforcementMode: currentPolicy.enforcementMode || 'enforced',
       readyForProduction: false,
+    };
+    const nextProviderBudgetPolicy = {
+      schemaVersion: 'project-provider-budget-policy/v1',
+      dailyBudgetCents: previousProviderBudgetPolicy.dailyBudgetCents,
+      maxRequestsPerProjectHour: previousProviderBudgetPolicy.maxRequestsPerProjectHour,
+      currency: previousProviderBudgetPolicy.currency,
+      enforcementMode: previousProviderBudgetPolicy.enforcementMode,
+      readyForProduction: false,
       ...patch,
     };
-    const applyLocalProviderBudgetPolicy = () => {
+    const applyLocalProviderBudgetPolicy = (providerBudgetPolicyDraft = nextProviderBudgetPolicy) => {
       setProjects(prev => prev.map(project => (
         project.id === activeProject.id
           ? {
               ...project,
               projectSettings: {
                 ...(project.projectSettings || {}),
-                providerBudgetPolicy: nextProviderBudgetPolicy,
+                providerBudgetPolicy: providerBudgetPolicyDraft,
               },
             }
           : project
@@ -5414,6 +6095,7 @@ export default function EngineWorkspace() {
     };
 
     if (shouldAttemptBackendProjectWrite(activeProject)) {
+      setProviderBudgetPolicySaving(true);
       try {
         await ensureBackendProjectSeed();
         const now = new Date().toISOString();
@@ -5429,6 +6111,12 @@ export default function EngineWorkspace() {
           timeoutMs: backendStation.connectionStatus === 'online' ? 8_000 : 4_000,
         });
         applyBackendProjectSnapshot(payload);
+        const savedProviderBudgetPolicy = payload.projectSettings?.providerBudgetPolicy || payload.project?.projectSettings?.providerBudgetPolicy || nextProviderBudgetPolicy;
+        applyLocalProviderBudgetPolicy(savedProviderBudgetPolicy);
+        projectSettingsDraftRef.current[payload.project?.id || activeProject.id] = {
+          ...(projectSettingsDraftRef.current[payload.project?.id || activeProject.id] || {}),
+          providerBudgetPolicy: savedProviderBudgetPolicy,
+        };
         setBackendStation(prev => ({
           ...prev,
           connectionStatus: 'online',
@@ -5453,33 +6141,52 @@ export default function EngineWorkspace() {
           error,
           allowFallback,
         });
-        if (!allowFallback) return null;
+        if (!allowFallback) {
+          const nextDraft = { ...(projectSettingsDraftRef.current[activeProject.id] || {}) };
+          delete nextDraft.providerBudgetPolicy;
+          projectSettingsDraftRef.current[activeProject.id] = nextDraft;
+          return null;
+        }
+      } finally {
+        setProviderBudgetPolicySaving(false);
       }
     }
 
+    projectSettingsDraftRef.current[activeProject.id] = {
+      ...currentProjectDraft,
+      providerBudgetPolicy: nextProviderBudgetPolicy,
+    };
     applyLocalProviderBudgetPolicy();
     return null;
   };
 
   const updateProjectWorkspacePolicySetting = async (patch = {}) => {
     if (!activeProject) return null;
-    const currentPolicy = activeProject.projectSettings?.workspacePolicy || {};
-    const nextWorkspacePolicy = {
+    const currentProjectDraft = projectSettingsDraftRef.current[activeProject.id] || {};
+    const currentPolicy = currentProjectDraft.workspacePolicy || activeProject.projectSettings?.workspacePolicy || {};
+    const previousWorkspacePolicy = {
       schemaVersion: 'project-workspace-policy/v1',
       interfaceDensity: currentPolicy.interfaceDensity || 'comfortable',
       defaultVisibility: currentPolicy.defaultVisibility || 'team',
       autosaveCadenceSeconds: Number(currentPolicy.autosaveCadenceSeconds) || 60,
       readyForProduction: false,
+    };
+    const nextWorkspacePolicy = {
+      schemaVersion: 'project-workspace-policy/v1',
+      interfaceDensity: previousWorkspacePolicy.interfaceDensity,
+      defaultVisibility: previousWorkspacePolicy.defaultVisibility,
+      autosaveCadenceSeconds: previousWorkspacePolicy.autosaveCadenceSeconds,
+      readyForProduction: false,
       ...patch,
     };
-    const applyLocalWorkspacePolicy = () => {
+    const applyLocalWorkspacePolicy = (workspacePolicyDraft = nextWorkspacePolicy) => {
       setProjects(prev => prev.map(project => (
         project.id === activeProject.id
           ? {
               ...project,
               projectSettings: {
                 ...(project.projectSettings || {}),
-                workspacePolicy: nextWorkspacePolicy,
+                workspacePolicy: workspacePolicyDraft,
               },
             }
           : project
@@ -5487,6 +6194,7 @@ export default function EngineWorkspace() {
     };
 
     if (shouldAttemptBackendProjectWrite(activeProject)) {
+      setWorkspacePolicySaving(true);
       try {
         await ensureBackendProjectSeed();
         const now = new Date().toISOString();
@@ -5502,6 +6210,12 @@ export default function EngineWorkspace() {
           timeoutMs: backendStation.connectionStatus === 'online' ? 8_000 : 4_000,
         });
         applyBackendProjectSnapshot(payload);
+        const savedWorkspacePolicy = payload.projectSettings?.workspacePolicy || payload.project?.projectSettings?.workspacePolicy || nextWorkspacePolicy;
+        applyLocalWorkspacePolicy(savedWorkspacePolicy);
+        projectSettingsDraftRef.current[payload.project?.id || activeProject.id] = {
+          ...(projectSettingsDraftRef.current[payload.project?.id || activeProject.id] || {}),
+          workspacePolicy: savedWorkspacePolicy,
+        };
         setBackendStation(prev => ({
           ...prev,
           connectionStatus: 'online',
@@ -5526,36 +6240,141 @@ export default function EngineWorkspace() {
           error,
           allowFallback,
         });
-        if (!allowFallback) return null;
+        if (!allowFallback) {
+          const nextDraft = { ...(projectSettingsDraftRef.current[activeProject.id] || {}) };
+          delete nextDraft.workspacePolicy;
+          projectSettingsDraftRef.current[activeProject.id] = nextDraft;
+          return null;
+        }
+      } finally {
+        setWorkspacePolicySaving(false);
       }
     }
 
+    projectSettingsDraftRef.current[activeProject.id] = {
+      ...currentProjectDraft,
+      workspacePolicy: nextWorkspacePolicy,
+    };
     applyLocalWorkspacePolicy();
     return null;
   };
 
+  const bindProjectWorkspaceFromSettings = async () => {
+    if (!activeProject?.id) return null;
+    const workspacePath = String(workspaceBindDraft.path || '').trim();
+    if (!workspacePath) {
+      setWorkspaceBindDraft(prev => ({
+        ...prev,
+        receipt: null,
+        error: 'Workspace path is required.',
+      }));
+      return null;
+    }
+    if (!shouldAttemptBackendProjectWrite(activeProject)) {
+      const message = 'Backend project route is required before binding a real workspace.';
+      setWorkspaceBindDraft(prev => ({
+        ...prev,
+        receipt: null,
+        error: message,
+      }));
+      setBackendStation(prev => ({
+        ...prev,
+        lastAction: 'Workspace bind blocked by backend route boundary',
+        error: message,
+      }));
+      return null;
+    }
+
+    setWorkspaceBindDraft(prev => ({
+      ...prev,
+      saving: true,
+      receipt: null,
+      error: null,
+    }));
+    try {
+      await ensureBackendProjectSeed();
+      const now = new Date().toISOString();
+      const payload = await requestAgentBackend(`/projects/${encodeURIComponent(activeProject.id)}/workspace/bind`, {
+        method: 'POST',
+        body: {
+          workspacePath,
+          createIfMissing: Boolean(workspaceBindDraft.createIfMissing),
+          now,
+        },
+        timeoutMs: backendStation.connectionStatus === 'online' ? 8_000 : 4_000,
+      });
+      if (payload.project) applyBackendProjectSnapshot(payload);
+      const localRuntime = payload.localRuntime || payload.project?.localRuntime || {};
+      const boundPath = localRuntime.workspacePath || workspacePath;
+      setWorkspaceBindDraft(prev => ({
+        ...prev,
+        path: boundPath,
+        saving: false,
+        receipt: {
+          projectId: payload.project?.id || activeProject.id,
+          route: payload.route || 'workspace-bound',
+          workspacePath: boundPath,
+          workspaceBoundAt: localRuntime.workspaceBoundAt || now,
+        },
+        error: null,
+      }));
+      setBackendStation(prev => ({
+        ...prev,
+        connectionStatus: 'online',
+        lastAction: 'Project workspace bound through backend local runtime',
+        lastProjectSyncAt: new Date().toISOString(),
+        lastProjectSyncProjectId: payload.project?.id || activeProject.id,
+        projectSyncCount: (prev.projectSyncCount || 0) + 1,
+        error: null,
+      }));
+      return payload;
+    } catch (error) {
+      setWorkspaceBindDraft(prev => ({
+        ...prev,
+        saving: false,
+        receipt: null,
+        error: error.name === 'AbortError' ? 'Backend workspace bind timed out.' : error.message || String(error),
+      }));
+      markBackendCommandFailure({
+        lastAction: 'Backend workspace bind failed; no local binding was created',
+        timeoutMessage: 'Backend workspace bind timed out.',
+        error,
+        allowFallback: false,
+      });
+      return null;
+    }
+  };
+
   const updateProjectToolGrantPolicySetting = async (patch = {}) => {
     if (!activeProject) return null;
-    const currentPolicy = activeProject.projectSettings?.toolGrantPolicy || {};
+    const currentProjectDraft = projectSettingsDraftRef.current[activeProject.id] || {};
+    const currentPolicy = currentProjectDraft.toolGrantPolicy || activeProject.projectSettings?.toolGrantPolicy || {};
     const currentGrants = Array.isArray(currentPolicy.defaultToolGrants)
       ? currentPolicy.defaultToolGrants
       : DEFAULT_SETTINGS_TOOL_GRANTS;
-    const nextToolGrantPolicy = {
+    const previousToolGrantPolicy = {
       schemaVersion: 'project-tool-grant-policy/v1',
       defaultToolGrants: currentGrants,
       agentToolGrants: currentPolicy.agentToolGrants || {},
       enforcementMode: currentPolicy.enforcementMode || 'enforced',
       readyForProduction: false,
+    };
+    const nextToolGrantPolicy = {
+      schemaVersion: 'project-tool-grant-policy/v1',
+      defaultToolGrants: previousToolGrantPolicy.defaultToolGrants,
+      agentToolGrants: previousToolGrantPolicy.agentToolGrants,
+      enforcementMode: previousToolGrantPolicy.enforcementMode,
+      readyForProduction: false,
       ...patch,
     };
-    const applyLocalToolGrantPolicy = () => {
+    const applyLocalToolGrantPolicy = (toolGrantPolicyDraft = nextToolGrantPolicy) => {
       setProjects(prev => prev.map(project => (
         project.id === activeProject.id
           ? {
               ...project,
               projectSettings: {
                 ...(project.projectSettings || {}),
-                toolGrantPolicy: nextToolGrantPolicy,
+                toolGrantPolicy: toolGrantPolicyDraft,
               },
             }
           : project
@@ -5563,6 +6382,7 @@ export default function EngineWorkspace() {
     };
 
     if (shouldAttemptBackendProjectWrite(activeProject)) {
+      setToolGrantPolicySaving(true);
       try {
         await ensureBackendProjectSeed();
         const now = new Date().toISOString();
@@ -5578,6 +6398,13 @@ export default function EngineWorkspace() {
           timeoutMs: backendStation.connectionStatus === 'online' ? 8_000 : 4_000,
         });
         applyBackendProjectSnapshot(payload);
+        const savedToolGrantPolicy = payload.projectSettings?.toolGrantPolicy || payload.project?.projectSettings?.toolGrantPolicy || nextToolGrantPolicy;
+        applyLocalToolGrantPolicy(savedToolGrantPolicy);
+        projectSettingsDraftRef.current[payload.project?.id || activeProject.id] = {
+          ...(projectSettingsDraftRef.current[payload.project?.id || activeProject.id] || {}),
+          toolGrantPolicy: savedToolGrantPolicy,
+        };
+        bumpProjectSettingsDraftRevision();
         setBackendStation(prev => ({
           ...prev,
           connectionStatus: 'online',
@@ -5602,23 +6429,36 @@ export default function EngineWorkspace() {
           error,
           allowFallback,
         });
-        if (!allowFallback) return null;
+        if (!allowFallback) {
+          const nextDraft = { ...(projectSettingsDraftRef.current[activeProject.id] || {}) };
+          delete nextDraft.toolGrantPolicy;
+          projectSettingsDraftRef.current[activeProject.id] = nextDraft;
+          bumpProjectSettingsDraftRevision();
+          return null;
+        }
+      } finally {
+        setToolGrantPolicySaving(false);
       }
     }
 
+    projectSettingsDraftRef.current[activeProject.id] = {
+      ...currentProjectDraft,
+      toolGrantPolicy: nextToolGrantPolicy,
+    };
+    bumpProjectSettingsDraftRevision();
     applyLocalToolGrantPolicy();
     return null;
   };
 
-  const toggleProjectToolGrantSetting = (toolId) => {
+  const setProjectToolGrantSetting = (toolId, enabled) => {
     if (!activeProject) return null;
-    const currentPolicy = activeProject.projectSettings?.toolGrantPolicy || {};
+    const currentPolicy = projectSettingsDraftRef.current[activeProject.id]?.toolGrantPolicy || activeProject.projectSettings?.toolGrantPolicy || {};
     const currentGrants = Array.isArray(currentPolicy.defaultToolGrants)
       ? currentPolicy.defaultToolGrants
       : DEFAULT_SETTINGS_TOOL_GRANTS;
-    const nextGrants = currentGrants.includes(toolId)
-      ? currentGrants.filter(grant => grant !== toolId)
-      : [...currentGrants, toolId];
+    const nextGrants = enabled
+      ? Array.from(new Set([...currentGrants, toolId]))
+      : currentGrants.filter(grant => grant !== toolId);
     return updateProjectToolGrantPolicySetting({ defaultToolGrants: nextGrants });
   };
 
@@ -5851,7 +6691,7 @@ export default function EngineWorkspace() {
     } catch (error) {
       setBackendStation(prev => ({
         ...prev,
-        connectionStatus: 'offline',
+        connectionStatus: backendFailureConnectionStatusFor(activeProject, prev.connectionStatus),
         loading: updateLoading ? false : prev.loading,
         lastAction: `${lastActionPrefix} failed`,
         error: error.name === 'AbortError' ? 'Backend server pulse timed out.' : error.message || String(error),
@@ -5941,7 +6781,7 @@ export default function EngineWorkspace() {
     } catch (error) {
       setBackendStation(prev => ({
         ...prev,
-        connectionStatus: 'offline',
+        connectionStatus: backendFailureConnectionStatusFor(activeProject, prev.connectionStatus),
         loading: false,
         lastAction: `${lastActionPrefix} failed`,
         error: error.name === 'AbortError' ? 'Backend scheduler tick timed out.' : error.message || String(error),
@@ -6173,14 +7013,26 @@ export default function EngineWorkspace() {
     const runtimeAutonomyStatus = agentWriteReadModelSubmodels.runtimeAutonomyStatus || readyPackage?.runtimeAutonomyStatus || null;
     const agentAutonomousActionQueue = agentWriteReadModelSubmodels.agentAutonomousActionQueue || dashboard?.agentAutonomousActionQueue || null;
     if (projectPayload?.project) applyBackendProjectSnapshot(projectPayload);
+    const readinessProofMapAppliedThroughManagerPayload = Boolean(readinessProofMap && (dashboard || readyPackage?.managerDashboard));
     if (dashboard || readinessProofMap) applyBackendManagerDashboardPayload({
       managerDashboard: dashboard ? {
         ...dashboard,
         readinessProofMap: readinessProofMap || dashboard.readinessProofMap,
       } : null,
-      managerReadyPackage: readyPackage || null,
+      managerReadyPackage: readyPackage ? { ...readyPackage, readinessProofMap: readinessProofMap || readyPackage.readinessProofMap } : null,
       managerFlowGraph: flowGraph || null,
+      readinessProofMap,
     });
+    if (readinessProofMap && !readinessProofMapAppliedThroughManagerPayload) {
+      setBackendStation(prev => ({
+        ...prev,
+        connectionStatus: 'online',
+        readinessProofMap,
+        lastReadinessProofMapSyncAt: new Date().toISOString(),
+        readinessProofMapSyncCount: (prev.readinessProofMapSyncCount || 0) + 1,
+        error: null,
+      }));
+    }
     if (agentDashboard) applyBackendAgentDashboardPayload(agentId, agentDashboard, targetProjectId);
     if (transcriptIndex || mainTranscript) {
       const channelPayloads = [mainTranscript].filter(channel => channel?.channelId);
@@ -6305,6 +7157,7 @@ export default function EngineWorkspace() {
       collaborationIntentQueueResult,
       cycleConsistencyResult,
       runtimeAutonomyStatusResult,
+      readinessProofMapResult,
       timelineResult,
       eventsResult,
     ] = await Promise.allSettled([
@@ -6319,6 +7172,7 @@ export default function EngineWorkspace() {
       fetchReadModel(readRoutes.collaborationIntentQueueRoute, `/projects/${encodeURIComponent(targetProjectId)}/collaboration-intent-queue`, 8000),
       fetchReadModel(readRoutes.autonomousCycleConsistencyRoute, `/projects/${encodeURIComponent(targetProjectId)}/autonomous-cycle-consistency`, 8000),
       fetchReadModel(readRoutes.runtimeAutonomyStatusRoute, `/projects/${encodeURIComponent(targetProjectId)}/runtime-autonomy-status`, 8000),
+      fetchReadModel(readRoutes.readinessProofMapRoute, `/projects/${encodeURIComponent(targetProjectId)}/readiness-proof-map`, 8000),
       fetchReadModel(readRoutes.timelineRoute, `/projects/${encodeURIComponent(targetProjectId)}/timeline`, 5000),
       fetchReadModel(readRoutes.eventsRoute, `/projects/${encodeURIComponent(targetProjectId)}/events`, 5000),
     ]);
@@ -6334,6 +7188,8 @@ export default function EngineWorkspace() {
     const collaborationIntentQueuePayload = collaborationIntentQueueResult.status === 'fulfilled' ? collaborationIntentQueueResult.value : null;
     const cycleConsistencyPayload = cycleConsistencyResult.status === 'fulfilled' ? cycleConsistencyResult.value : null;
     const runtimeAutonomyStatusPayload = runtimeAutonomyStatusResult.status === 'fulfilled' ? runtimeAutonomyStatusResult.value : null;
+    const readinessProofMap = readinessProofMapResult.status === 'fulfilled' ? readinessProofMapResult.value : null;
+    const readinessProofMapAppliedThroughManagerPayload = Boolean(readinessProofMap && (dashboard || readyPackage?.managerDashboard));
     const timeline = timelineResult.status === 'fulfilled' ? timelineResult.value : null;
     const events = eventsResult.status === 'fulfilled' ? eventsResult.value : null;
 
@@ -6353,8 +7209,9 @@ export default function EngineWorkspace() {
     if (dashboard || readyPackage || flowGraph) {
       applyBackendManagerDashboardPayload({
         managerDashboard: dashboard || null,
-        managerReadyPackage: readyPackage || null,
+        managerReadyPackage: readyPackage ? { ...readyPackage, readinessProofMap: readinessProofMap || readyPackage.readinessProofMap } : null,
         managerFlowGraph: flowGraph || null,
+        readinessProofMap,
       });
     }
     if (timeline || events) {
@@ -6367,7 +7224,8 @@ export default function EngineWorkspace() {
       ...prev,
       connectionStatus: 'online',
       managerDashboard: dashboard || readyPackage?.managerDashboard || prev.managerDashboard,
-      managerReadyPackage: readyPackage || prev.managerReadyPackage,
+      managerReadyPackage: readyPackage ? { ...readyPackage, readinessProofMap: readinessProofMap || readyPackage.readinessProofMap } : prev.managerReadyPackage,
+      readinessProofMap: readinessProofMap || prev.readinessProofMap,
       managerFlowGraph: flowGraph || prev.managerFlowGraph,
       autonomousRunControlSessions: autonomousRunControlSessions || prev.autonomousRunControlSessions,
       autonomousRunControlSession: autonomousRunControlSessions?.activeSession || autonomousRunControlSessions?.latestSession || prev.autonomousRunControlSession,
@@ -6383,6 +7241,8 @@ export default function EngineWorkspace() {
       managerDashboardSyncCount: dashboard ? (prev.managerDashboardSyncCount || 0) + 1 : prev.managerDashboardSyncCount,
       lastManagerReadyPackageSyncAt: readyPackage ? new Date().toISOString() : prev.lastManagerReadyPackageSyncAt,
       managerReadyPackageSyncCount: readyPackage ? (prev.managerReadyPackageSyncCount || 0) + 1 : prev.managerReadyPackageSyncCount,
+      lastReadinessProofMapSyncAt: readinessProofMap && !readinessProofMapAppliedThroughManagerPayload ? new Date().toISOString() : prev.lastReadinessProofMapSyncAt,
+      readinessProofMapSyncCount: readinessProofMap && !readinessProofMapAppliedThroughManagerPayload ? (prev.readinessProofMapSyncCount || 0) + 1 : prev.readinessProofMapSyncCount,
       lastManagerFlowGraphSyncAt: flowGraph ? new Date().toISOString() : prev.lastManagerFlowGraphSyncAt,
       managerFlowGraphSyncCount: flowGraph ? (prev.managerFlowGraphSyncCount || 0) + 1 : prev.managerFlowGraphSyncCount,
       lastAgentAutonomousActionQueueSyncAt: agentAutonomousActionQueue ? new Date().toISOString() : prev.lastAgentAutonomousActionQueueSyncAt,
@@ -6413,6 +7273,7 @@ export default function EngineWorkspace() {
       collaborationIntentQueue,
       autonomousCycleConsistency,
       runtimeAutonomyStatus,
+      readinessProofMap,
       timeline,
       events,
     };
@@ -6652,7 +7513,7 @@ export default function EngineWorkspace() {
     } catch (error) {
       setBackendStation(prev => ({
         ...prev,
-        connectionStatus: 'offline',
+        connectionStatus: backendFailureConnectionStatusFor(dashboardProject, prev.connectionStatus),
         loading: silent ? prev.loading : false,
         lastAction: silent ? prev.lastAction : 'Agent dashboard sync failed',
         error: error.name === 'AbortError' ? 'Backend Agent dashboard timed out.' : error.message || String(error),
@@ -6717,26 +7578,25 @@ export default function EngineWorkspace() {
     };
     let readError = null;
     try {
-      const payload = await requestAgentBackend(`/projects/${encodeURIComponent(activeProject.id)}`, {
-        timeoutMs: 1800,
-      });
-      if (payload.project?.id) {
-        applyBackendProjectSnapshot(payload);
-        setBackendStation(prev => ({
-          ...prev,
-          connectionStatus: 'online',
-          lastProjectSyncAt: new Date().toISOString(),
-          lastProjectSyncProjectId: payload.project.id,
-          projectSyncCount: (prev.projectSyncCount || 0) + 1,
-          error: null,
-        }));
-        return payload;
-      }
+      const payload = await readBackendProjectSnapshotForWrite({ projectId: activeProject.id, timeoutMs: 8000 });
+      if (payload) return payload;
     } catch (error) {
       if (error.name === 'AbortError' || (error.status && error.status !== 404)) {
         throw error;
       }
       readError = error;
+    }
+    if (readError?.status === 404 && activeProjectSeenByBackend()) {
+      await syncBackendProjectCatalog({ silent: true });
+      try {
+        const payload = await readBackendProjectSnapshotForWrite({ projectId: activeProject.id, timeoutMs: 8000 });
+        if (payload) return payload;
+      } catch (error) {
+        if (error.name === 'AbortError' || (error.status && error.status !== 404)) {
+          throw error;
+        }
+        readError = error;
+      }
     }
     if (!canSeedActiveProjectSnapshotToBackend(activeProject) || activeProjectSeenByBackend()) {
       const error = new Error(activeProjectSeenByBackend()
@@ -6780,24 +7640,41 @@ export default function EngineWorkspace() {
     }
   };
 
+  const AGENT_WORKBENCH_BACKEND_DASHBOARD_REQUIRED_MESSAGE = 'Backend Agent Dashboard is required before this real project can create Agent Workbench proof. No local workbench proof was created.';
+  const agentWorkbenchBackendDashboardMissing = (agentId, project = activeProject) => Boolean(
+    project?.id
+    && agentId
+    && shouldRequireBackendAgentDashboard(project)
+    && !agentDashboardSnapshotFor(agentId, project.id)
+  );
+
   const agentWorkbenchTaskId = (agentId, draft = {}) => {
-    if (draft.taskId) return draft.taskId;
+    if (agentWorkbenchBackendDashboardMissing(agentId)) return null;
     const agent = activeProject?.team?.find(member => member.id === agentId);
-    const ownedTask = (activeProject?.tasks || []).find(task => (
+    const dashboard = agentDashboardSnapshotFor(agentId, activeProject?.id);
+    const backendDashboardRequired = shouldRequireBackendAgentDashboard(activeProject);
+    const localTaskFallbackAllowed = Boolean(dashboard) || !backendDashboardRequired;
+    const taskRows = dashboard?.ownedTasks?.length
+      ? dashboard.ownedTasks
+      : localTaskFallbackAllowed ? activeProject?.tasks || [] : [];
+    if (draft.taskId && taskRows.some(task => String(task.id) === String(draft.taskId))) return draft.taskId;
+    const ownedTask = taskRows.find(task => (
       task.ownerId === agentId
       || task.assignee === agentId
       || task.assignee === agent?.name
       || task.ownerName === agent?.name
     ));
-    return ownedTask?.id || activeProject?.tasks?.[0]?.id || null;
+    return ownedTask?.id || taskRows[0]?.id || null;
   };
 
   const agentWorkbenchReviewOptions = (agentId) => {
-    const dashboardRows = agentDashboardSnapshotFor(agentId)?.ownedSubmissionReviews || [];
-    const projectRows = (activeProject?.submissionReviews || []).filter(review => (
+    const dashboard = agentDashboardSnapshotFor(agentId, activeProject?.id);
+    const dashboardRows = dashboard?.ownedSubmissionReviews || [];
+    const localReviewFallbackAllowed = Boolean(dashboard) || !shouldRequireBackendAgentDashboard(activeProject);
+    const projectRows = localReviewFallbackAllowed ? (activeProject?.submissionReviews || []).filter(review => (
       review.reviewerAgentId === agentId
       || review.submitterAgentId === agentId
-    ));
+    )) : [];
     const seen = new Set();
     return [...dashboardRows, ...projectRows]
       .filter((review) => {
@@ -6809,11 +7686,13 @@ export default function EngineWorkspace() {
   };
 
   const agentWorkbenchSubmissionOptions = (agentId) => {
-    const dashboardRows = agentDashboardSnapshotFor(agentId)?.ownedSubmissions || [];
-    const projectRows = (activeProject?.agentSubmissions || []).filter(submission => (
+    const dashboard = agentDashboardSnapshotFor(agentId, activeProject?.id);
+    const dashboardRows = dashboard?.ownedSubmissions || [];
+    const localSubmissionFallbackAllowed = Boolean(dashboard) || !shouldRequireBackendAgentDashboard(activeProject);
+    const projectRows = localSubmissionFallbackAllowed ? (activeProject?.agentSubmissions || []).filter(submission => (
       submission.agentId === agentId
       || submission.submitterAgentId === agentId
-    ));
+    )) : [];
     const seen = new Set();
     return [...dashboardRows, ...projectRows]
       .filter((submission) => {
@@ -6821,6 +7700,15 @@ export default function EngineWorkspace() {
         seen.add(String(submission.id));
         return true;
       })
+      .slice(0, 20);
+  };
+
+  const agentWorkbenchEvidenceOptions = (agentId) => {
+    const dashboard = agentDashboardSnapshotFor(agentId, activeProject?.id);
+    if (dashboard) return (dashboard.ownedEvidenceSearches || []).slice(0, 20);
+    if (shouldRequireBackendAgentDashboard(activeProject)) return [];
+    return (activeProject?.evidenceSearches || [])
+      .filter(record => record.agentId === agentId)
       .slice(0, 20);
   };
 
@@ -6877,6 +7765,18 @@ export default function EngineWorkspace() {
       localProofCreated: false,
     },
   });
+
+  const failAgentWorkbenchBackendDashboardRequired = (agentId, action) => {
+    updateAgentWorkDraft(agentId, {
+      ...agentWorkbenchFailurePatch(action, AGENT_WORKBENCH_BACKEND_DASHBOARD_REQUIRED_MESSAGE),
+    });
+    setBackendStation(prev => ({
+      ...prev,
+      loading: false,
+      lastAction: 'Agent Workbench backend dashboard required',
+      error: AGENT_WORKBENCH_BACKEND_DASHBOARD_REQUIRED_MESSAGE,
+    }));
+  };
 
   const runBackendSubmissionReview = async (submission = {}) => {
     if (!activeProject?.id || !submission?.id || !shouldAttemptBackendProjectWrite(activeProject)) return;
@@ -6970,11 +7870,12 @@ export default function EngineWorkspace() {
           submissionId: submission.id,
           readModels: null,
           error: errorMessage,
+          localProofCreated: false,
         },
       });
       setBackendStation(prev => ({
         ...prev,
-        connectionStatus: 'offline',
+        connectionStatus: backendFailureConnectionStatusFor(activeProject, prev.connectionStatus),
         loading: false,
         lastAction: 'Submission review failed',
         error: errorMessage,
@@ -6985,6 +7886,10 @@ export default function EngineWorkspace() {
   const runBackendAgentEvidenceSearch = async (agentId) => {
     if (!activeProject || !agentId || !shouldAttemptBackendProjectWrite(activeProject)) return;
     const draft = agentWorkDraftFor(agentId, activeProject.id);
+    if (agentWorkbenchBackendDashboardMissing(agentId)) {
+      failAgentWorkbenchBackendDashboardRequired(agentId, 'agent-workbench-backend-dashboard-required');
+      return;
+    }
     const agent = activeProject.team.find(member => member.id === agentId);
     const now = new Date().toISOString();
     const taskId = agentWorkbenchTaskId(agentId, draft);
@@ -7044,7 +7949,7 @@ export default function EngineWorkspace() {
         });
         setBackendStation(prev => ({
           ...prev,
-          connectionStatus: 'offline',
+          connectionStatus: backendFailureConnectionStatusFor(activeProject, prev.connectionStatus),
           loading: false,
           lastAction: 'Agent provider evidence failed; local source note blocked',
           error: errorMessage,
@@ -7100,7 +8005,7 @@ export default function EngineWorkspace() {
         });
         setBackendStation(prev => ({
           ...prev,
-          connectionStatus: 'offline',
+          connectionStatus: backendFailureConnectionStatusFor(activeProject, prev.connectionStatus),
           loading: false,
           lastAction: 'Agent evidence failed',
           error: errorMessage,
@@ -7112,13 +8017,15 @@ export default function EngineWorkspace() {
   const runBackendAgentArtifactSubmission = async (agentId) => {
     if (!activeProject || !agentId || !shouldAttemptBackendProjectWrite(activeProject)) return;
     const draft = agentWorkDraftFor(agentId, activeProject.id);
+    if (agentWorkbenchBackendDashboardMissing(agentId)) {
+      failAgentWorkbenchBackendDashboardRequired(agentId, 'agent-workbench-backend-dashboard-required');
+      return;
+    }
     const agent = activeProject.team.find(member => member.id === agentId);
     const now = new Date().toISOString();
     const artifactType = draft.artifactType || 'discovery-report';
     const taskId = agentWorkbenchTaskId(agentId, draft);
-    const ownedEvidence = (activeProject.evidenceSearches || [])
-      .filter(record => record.agentId === agentId)
-      .slice(0, 3);
+    const ownedEvidence = agentWorkbenchEvidenceOptions(agentId).slice(0, 3);
     const title = (draft.title || `${agent?.name || 'Agent'} ${artifactType.replace(/-/g, ' ')}`).trim();
     const summary = (draft.summary || `Submitted ${artifactType.replace(/-/g, ' ')} for ${activeProject.name}.`).trim();
     const revisionDefaults = agentWorkbenchRevisionDefaults(agentId, draft, artifactType);
@@ -7201,7 +8108,7 @@ export default function EngineWorkspace() {
       });
       setBackendStation(prev => ({
         ...prev,
-        connectionStatus: 'offline',
+        connectionStatus: backendFailureConnectionStatusFor(activeProject, prev.connectionStatus),
         loading: false,
         lastAction: 'Agent submission failed',
         error: errorMessage,
@@ -7212,6 +8119,10 @@ export default function EngineWorkspace() {
   const runBackendAgentArtifactDraft = async (agentId) => {
     if (!activeProject || !agentId || !shouldAttemptBackendProjectWrite(activeProject)) return;
     const draft = agentWorkDraftFor(agentId, activeProject.id);
+    if (agentWorkbenchBackendDashboardMissing(agentId)) {
+      failAgentWorkbenchBackendDashboardRequired(agentId, 'agent-workbench-backend-dashboard-required');
+      return;
+    }
     const agent = activeProject.team.find(member => member.id === agentId);
     const now = new Date().toISOString();
     const artifactType = draft.artifactType || 'product-brief';
@@ -7263,7 +8174,7 @@ export default function EngineWorkspace() {
       });
       setBackendStation(prev => ({
         ...prev,
-        connectionStatus: 'offline',
+        connectionStatus: backendFailureConnectionStatusFor(activeProject, prev.connectionStatus),
         loading: false,
         lastAction: 'Agent draft failed',
         error: errorMessage,
@@ -7305,7 +8216,7 @@ export default function EngineWorkspace() {
     } catch (error) {
       setBackendStation(prev => ({
         ...prev,
-        connectionStatus: 'offline',
+        connectionStatus: backendFailureConnectionStatusFor(activeProject, prev.connectionStatus),
         loading: false,
         lastAction: 'Agent pulse failed',
         error: error.name === 'AbortError' ? 'Backend Agent pulse timed out.' : error.message || String(error),
@@ -7462,7 +8373,7 @@ export default function EngineWorkspace() {
     } catch (error) {
       setBackendStation(prev => ({
         ...prev,
-        connectionStatus: 'offline',
+        connectionStatus: backendFailureConnectionStatusFor(activeProject, prev.connectionStatus),
         loading: false,
         lastAction: 'Agent message failed',
         error: error.name === 'AbortError' ? 'Backend Agent message timed out.' : error.message || String(error),
@@ -7504,7 +8415,7 @@ export default function EngineWorkspace() {
     } catch (error) {
       setBackendStation(prev => ({
         ...prev,
-        connectionStatus: 'offline',
+        connectionStatus: backendFailureConnectionStatusFor(activeProject, prev.connectionStatus),
         loading: false,
         lastAction: 'Manager flow node confirmation failed',
         error: error.name === 'AbortError' ? 'Manager flow node confirmation timed out.' : error.message || String(error),
@@ -7597,6 +8508,7 @@ export default function EngineWorkspace() {
       syncBackendManagerRequirementMatrix({ silent: true, projectId: activeProject.id }),
       syncBackendSyncProtocolAudit({ silent: true, projectId: activeProject.id }),
       syncBackendManagerUseCaseAudit({ silent: true, projectId: activeProject.id }),
+      syncBackendCockpitReadModels({ silent: true, projectId: activeProject.id }),
     ]);
   }, [activeRoute, projectMode, selectedProjectId, backendStation.draftBaseUrl, backendStation.baseUrl, backendStation.loading]);
 
@@ -8193,7 +9105,92 @@ export default function EngineWorkspace() {
     };
   };
 
+  const getLocalMvpStartupReadiness = () => (
+    providerRuntimeStatus.localMvpStartupReadiness?.schemaVersion === 'local-mvp-startup-readiness/v1'
+      ? providerRuntimeStatus.localMvpStartupReadiness
+      : null
+  );
+
+  const refreshLocalMvpStartupReadiness = async ({ silent = true } = {}) => {
+    if (providerRuntimeStatus.running) return getLocalMvpStartupReadiness();
+    const baseUrl = normalizeBackendBaseUrl(backendStation.draftBaseUrl || backendStation.baseUrl || DEFAULT_AGENT_BACKEND_URL);
+    const now = new Date().toISOString();
+    setProviderRuntimeStatus(prev => ({
+      ...prev,
+      running: true,
+      lastRunAt: now,
+      baseUrl,
+      error: null,
+      localMvpStartupReadiness: normalizeBackendBaseUrl(prev.baseUrl || DEFAULT_AGENT_BACKEND_URL) === baseUrl
+        ? prev.localMvpStartupReadiness
+        : null,
+    }));
+
+    try {
+      const payload = await requestAgentBackend('/local-mvp-startup-readiness', {
+        baseUrl,
+        timeoutMs: 10000,
+      });
+      const startupReadiness = payload.localMvpStartupReadiness || null;
+      if (startupReadiness?.schemaVersion !== 'local-mvp-startup-readiness/v1') {
+        throw new Error('Local MVP startup readiness schema missing.');
+      }
+      setProviderRuntimeStatus(prev => ({
+        ...prev,
+        running: false,
+        lastRunAt: startupReadiness.generatedAt || now,
+        baseUrl,
+        localMvpStartupReadiness: startupReadiness,
+        error: null,
+      }));
+      if (!silent) {
+        setBackendStation(prev => ({
+          ...prev,
+          connectionStatus: 'online',
+          lastAction: 'Local MVP startup readiness synced',
+          error: null,
+        }));
+      }
+      return startupReadiness;
+    } catch (error) {
+      const detail = providerRuntimeErrorDetail(error);
+      setProviderRuntimeStatus(prev => ({
+        ...prev,
+        running: false,
+        baseUrl,
+        error: detail,
+      }));
+      if (!silent) {
+        setBackendStation(prev => ({
+          ...prev,
+          connectionStatus: 'offline',
+          lastAction: 'Local MVP startup readiness sync failed',
+          error: detail,
+        }));
+      }
+      return null;
+    }
+  };
+
+  const ensureInitiationStartupReady = async (actionLabel = 'starting a real kickoff') => {
+    let startupReadiness = getLocalMvpStartupReadiness();
+    if (startupReadiness?.readyForFirstProjectRun !== true) {
+      startupReadiness = await refreshLocalMvpStartupReadiness({ silent: true });
+    }
+    if (startupReadiness?.readyForFirstProjectRun === true || isDevelopmentInitiationFallbackEnabled()) {
+      return true;
+    }
+    const nextAction = startupReadiness?.nextAction?.label || 'Sync backend startup readiness and complete Settings provider/Vault setup';
+    setBackendStation(prev => ({
+      ...prev,
+      lastAction: 'Project initiation startup blocked',
+      error: `${nextAction} before ${actionLabel}. No backend kickoff or local fallback project was created.`,
+    }));
+    return false;
+  };
+
   const startInitiationMeetingSession = async () => {
+    if (!(await ensureInitiationStartupReady('starting a real kickoff'))) return;
     const sessionStartedAt = new Date().toISOString();
     const kickoffPayload = buildInitiationKickoffPayload(sessionStartedAt);
     const meetingPayload = {
@@ -8222,8 +9219,8 @@ export default function EngineWorkspace() {
         connectionStatus: 'offline',
         lastAction: 'Kickoff meeting failed',
         error: error.name === 'AbortError'
-          ? 'Backend or model provider timed out. No local mock meeting was created.'
-          : `${error.message || String(error)} No local mock meeting was created.`,
+          ? 'Backend or model provider timed out. Browser-local meeting fallback was suppressed.'
+          : `${error.message || String(error)} Browser-local meeting fallback was suppressed.`,
       }));
       return;
     }
@@ -8294,8 +9291,8 @@ export default function EngineWorkspace() {
         connectionStatus: 'offline',
         lastAction: 'Kickoff clarification failed',
         error: error.name === 'AbortError'
-          ? 'Backend clarification timed out. No local mock clarification was saved.'
-          : `${error.message || String(error)} No local mock clarification was saved.`,
+          ? 'Backend clarification timed out. Browser-local clarification fallback was suppressed.'
+          : `${error.message || String(error)} Browser-local clarification fallback was suppressed.`,
       }));
       return;
     }
@@ -8309,6 +9306,19 @@ export default function EngineWorkspace() {
   };
 
   const approveInitiationProject = async () => {
+    if (!(await ensureInitiationStartupReady('approving the project'))) {
+      setInitiationPhase('decision');
+      return;
+    }
+    if (!initiationMeetingSession && !isDevelopmentInitiationFallbackEnabled()) {
+      setBackendStation(prev => ({
+        ...prev,
+        lastAction: 'Project initiation approval blocked',
+        error: 'Create a backend kickoff meeting session before approving. No local fallback project was created.',
+      }));
+      setInitiationPhase('decision');
+      return;
+    }
     const approvedAt = new Date().toISOString();
     const kickoffPayload = buildInitiationKickoffPayload(approvedAt);
     const selectedTeamIds = Array.from(new Set([
@@ -8417,6 +9427,22 @@ export default function EngineWorkspace() {
           ...kickoffResult.meeting,
           status: 'approved-development-fallback',
         });
+      }
+      if (kickoffResult.project) {
+        kickoffResult = {
+          ...kickoffResult,
+          project: {
+            ...kickoffResult.project,
+            dataSource: 'development-fallback',
+            sampleFixture: kickoffResult.project.sampleFixture || {
+              id: 'development-fallback',
+              label: 'Development Fallback',
+              status: 'development-fallback',
+              realProject: false,
+              purpose: 'Explicit developer fallback only; not a real backend project path.',
+            },
+          },
+        };
       }
       setBackendStation(prev => ({
         ...prev,
@@ -8592,7 +9618,7 @@ export default function EngineWorkspace() {
             now: contractedAt,
             includeReadModels: false,
           },
-          timeoutMs: 8000,
+          timeoutMs: 30_000,
         });
         applyBackendProjectSnapshot(payload);
         setBackendStation(prev => ({
@@ -8746,7 +9772,7 @@ export default function EngineWorkspace() {
   const blockMissingBackendMeetingTurns = ({
     project = activeProject,
     lastAction = 'Backend meeting returned no Agent turns; local simulation blocked',
-    error = 'Backend meeting response lacked meetingAgentTurns; no local mock meeting was created.',
+    error = 'Backend meeting response lacked meetingAgentTurns; browser-local meeting fallback was suppressed.',
   } = {}) => {
     setBackendStation(prev => ({
       ...prev,
@@ -8928,7 +9954,7 @@ export default function EngineWorkspace() {
             blockMissingBackendMeetingTurns({
               project: nextProject,
               lastAction: 'Backend meeting returned no Agent turns; local simulation blocked; draft restored',
-              error: 'Backend meeting response lacked meetingAgentTurns; no local mock meeting was created. Your meeting draft was restored.',
+              error: 'Backend meeting response lacked meetingAgentTurns; browser-local meeting fallback was suppressed. Your meeting draft was restored.',
             });
             return;
           }
@@ -8988,6 +10014,16 @@ export default function EngineWorkspace() {
     const text = chatInput.trim();
     if (!text) return;
     if (!activeProject) return;
+    const shouldUseBackendChat = shouldAttemptBackendProjectWrite(activeProject);
+    const canUseLocalChatFallback = allowLocalRuntimeFallbackForActiveProject(activeProject);
+    if (!shouldUseBackendChat && !canUseLocalChatFallback) {
+      setBackendStation(prev => ({
+        ...prev,
+        lastAction: 'Backend chat route required',
+        error: 'Chat for backend-online projects must use the backend project command route. Configure Backend URL in Settings Deployment.',
+      }));
+      return;
+    }
     const submittedAt = new Date().toISOString();
     const messageId = `m_${Date.now()}`;
     setChatInput('');
@@ -8995,7 +10031,7 @@ export default function EngineWorkspace() {
     setMentionFilter('');
     setFocusedChatProofIds([]);
 
-    if (shouldAttemptBackendProjectWrite(activeProject)) {
+    if (shouldUseBackendChat) {
       try {
         await runBackendProjectCommand('chat', {
           text,
@@ -9005,7 +10041,7 @@ export default function EngineWorkspace() {
         });
         return;
       } catch (error) {
-        const allowFallback = allowLocalRuntimeFallbackForActiveProject(activeProject);
+        const allowFallback = canUseLocalChatFallback;
         markBackendCommandFailure({
           lastAction: allowFallback
             ? 'Backend chat failed, used allowed local runtime fallback'
@@ -9058,6 +10094,11 @@ export default function EngineWorkspace() {
         const backendChannel = payload?.transcriptChannel || channelDraft;
         setChatChannels(prev => mergeTranscriptChannelsIntoUi(prev, [backendChannel]));
         setActiveChannelId(backendChannel.channelId || backendChannel.id || id);
+        await refreshReceiptReadModels({
+          payload,
+          projectId: activeProject.id,
+          actionLabel: 'Backend transcript channel proof refreshed',
+        });
         setBackendStation(prev => ({
           ...prev,
           lastAction: 'Backend transcript channel created',
@@ -9164,6 +10205,11 @@ export default function EngineWorkspace() {
             type: 'system',
             text: 'BACKEND SESSION RECORDED; NO AGENT TURN RETURNED',
           }]);
+          blockMissingBackendMeetingTurns({
+            project: activeProject,
+            lastAction: 'Backend meeting start returned no Agent turns; local simulation blocked',
+            error: 'Backend meeting start response lacked meetingAgentTurns; browser-local meeting fallback was suppressed.',
+          });
         }
         setTimeout(() => setSpeakingAgent(null), Math.max(3500, 1200 + backendTurns.length * 950));
         return;
@@ -9305,7 +10351,7 @@ export default function EngineWorkspace() {
               blockMissingBackendMeetingTurns({
                 project: activeProject,
                 lastAction: 'Backend legacy terminal meeting returned no Agent turns; local route simulation blocked',
-                error: 'Backend legacy terminal meeting response lacked meetingAgentTurns; no local mock meeting was created.',
+                error: 'Backend legacy terminal meeting response lacked meetingAgentTurns; browser-local meeting fallback was suppressed.',
               });
               return;
             }
@@ -9522,7 +10568,10 @@ export default function EngineWorkspace() {
 
     const fieldClass = 'w-full border border-[#d1d0c9] bg-[#f8f6ee] px-3 py-2 font-mono text-xs text-[#1a1a1a] outline-none transition-colors focus:border-[#1a1a1a]';
     const labelClass = 'font-mono text-[10px] uppercase tracking-[0.16em] text-[#7d786b]';
-    const activePrivacyPolicy = activeProject?.projectSettings?.privacyPolicy || {};
+    const activeProjectSettingsDraft = activeProject?.id
+      ? (projectSettingsDraftRef.current[activeProject.id] || {})
+      : {};
+    const activePrivacyPolicy = activeProjectSettingsDraft.privacyPolicy || activeProject?.projectSettings?.privacyPolicy || {};
     const privacyPolicy = {
       retentionMode: activePrivacyPolicy.retentionMode || 'project-local',
       modelTrainingAllowed: activePrivacyPolicy.modelTrainingAllowed === true,
@@ -9530,14 +10579,14 @@ export default function EngineWorkspace() {
       evidenceExportRequiresApproval: activePrivacyPolicy.evidenceExportRequiresApproval !== false,
       readyForProduction: activePrivacyPolicy.readyForProduction === true,
     };
-    const activeProviderBudgetPolicy = activeProject?.projectSettings?.providerBudgetPolicy || {};
+    const activeProviderBudgetPolicy = activeProjectSettingsDraft.providerBudgetPolicy || activeProject?.projectSettings?.providerBudgetPolicy || {};
     const providerBudgetPolicy = {
       dailyBudgetCents: Number(activeProviderBudgetPolicy.dailyBudgetCents) || 0,
       maxRequestsPerProjectHour: Number(activeProviderBudgetPolicy.maxRequestsPerProjectHour) || 0,
       currency: activeProviderBudgetPolicy.currency || 'USD',
       readyForProduction: activeProviderBudgetPolicy.readyForProduction === true,
     };
-    const activeToolGrantPolicy = activeProject?.projectSettings?.toolGrantPolicy || {};
+    const activeToolGrantPolicy = activeProjectSettingsDraft.toolGrantPolicy || activeProject?.projectSettings?.toolGrantPolicy || {};
     const toolGrantPolicy = {
       defaultToolGrants: Array.isArray(activeToolGrantPolicy.defaultToolGrants)
         ? activeToolGrantPolicy.defaultToolGrants
@@ -9545,7 +10594,7 @@ export default function EngineWorkspace() {
       agentToolGrants: activeToolGrantPolicy.agentToolGrants || {},
       readyForProduction: activeToolGrantPolicy.readyForProduction === true,
     };
-    const activeWorkspacePolicy = activeProject?.projectSettings?.workspacePolicy || {};
+    const activeWorkspacePolicy = activeProjectSettingsDraft.workspacePolicy || activeProject?.projectSettings?.workspacePolicy || {};
     const workspacePolicy = {
       interfaceDensity: activeWorkspacePolicy.interfaceDensity || 'comfortable',
       defaultVisibility: activeWorkspacePolicy.defaultVisibility || 'team',
@@ -9563,6 +10612,9 @@ export default function EngineWorkspace() {
       ? workspaceCapabilities.rows
       : [];
     const workspaceCapabilitySummary = workspaceCapabilities?.summary || {};
+    const currentWorkspaceRuntime = activeProject?.localRuntime || {};
+    const currentWorkspacePath = currentWorkspaceRuntime.workspacePath || workspaceBindDraft.receipt?.workspacePath || '';
+    const currentWorkspaceBoundAt = currentWorkspaceRuntime.workspaceBoundAt || workspaceBindDraft.receipt?.workspaceBoundAt || null;
     const backendMeetingSummaries = backendStation.meetingSummaries?.projectId === activeProject?.id
       ? backendStation.meetingSummaries
       : null;
@@ -9589,8 +10641,21 @@ export default function EngineWorkspace() {
     const budgetAlertCapability = integrationCapabilityRows.find(row => row.id === 'budget-alerts') || null;
     const errorReportingCapability = integrationCapabilityRows.find(row => row.id === 'error-reporting') || null;
     const integrationRouteStatusFallback = integrationCapabilities ? 'contract-row-missing' : 'sync-required';
-    const backendSettingsIntegrationReadiness = providerRuntimeStatus.settingsIntegrationReadiness?.schemaVersion === 'settings-integration-readiness/v1'
-      ? providerRuntimeStatus.settingsIntegrationReadiness
+    const settingsActiveProjectIdKey = String(activeProject?.id || '').toLowerCase();
+    const scopedProviderRuntimeReadModel = (readModel = null) => {
+      if (!readModel) return null;
+      const readModelProjectId = String(
+        readModel.projectId
+        || readModel.project?.id
+        || providerRuntimeStatus.projectId
+        || ''
+      ).toLowerCase();
+      return !settingsActiveProjectIdKey || !readModelProjectId || readModelProjectId === settingsActiveProjectIdKey
+        ? readModel
+        : null;
+    };
+    const backendSettingsIntegrationReadiness = scopedProviderRuntimeReadModel(providerRuntimeStatus.settingsIntegrationReadiness)?.schemaVersion === 'settings-integration-readiness/v1'
+      ? scopedProviderRuntimeReadModel(providerRuntimeStatus.settingsIntegrationReadiness)
       : (
           String(backendStation.readyPackageSubmodelsProjectId || '').toLowerCase() === String(activeProject?.id || '').toLowerCase()
             ? backendStation.readyPackageSubmodels?.settingsIntegrationReadiness || null
@@ -9608,11 +10673,12 @@ export default function EngineWorkspace() {
       </div>
     );
 
-    const SmallButton = ({ children, onClick, disabled = false }) => (
+    const SmallButton = ({ children, onClick, disabled = false, ...buttonProps }) => (
       <button
         type="button"
         onClick={onClick}
         disabled={disabled}
+        {...buttonProps}
         className={`border border-[#1a1a1a] bg-[#1a1a1a] px-3 py-2 font-mono text-[10px] uppercase tracking-widest text-[#f5f4f0] transition-colors ${disabled ? 'cursor-not-allowed opacity-50' : 'hover:bg-[#3a3429]'}`}
       >
         {children}
@@ -9640,20 +10706,39 @@ export default function EngineWorkspace() {
       pending: 'Queued',
       idle: 'Idle',
     };
-    const settingsProviderReadiness = providerRuntimeStatus.settingsProviderReadiness?.schemaVersion === 'settings-provider-readiness/v1'
-      ? providerRuntimeStatus.settingsProviderReadiness
+    const settingsProviderReadiness = scopedProviderRuntimeReadModel(providerRuntimeStatus.settingsProviderReadiness)?.schemaVersion === 'settings-provider-readiness/v1'
+      ? scopedProviderRuntimeReadModel(providerRuntimeStatus.settingsProviderReadiness)
       : null;
-    const settingsRuntimeReadiness = providerRuntimeStatus.settingsRuntimeReadiness?.schemaVersion === 'settings-runtime-readiness/v1'
-      ? providerRuntimeStatus.settingsRuntimeReadiness
+    const settingsRuntimeReadiness = scopedProviderRuntimeReadModel(providerRuntimeStatus.settingsRuntimeReadiness)?.schemaVersion === 'settings-runtime-readiness/v1'
+      ? scopedProviderRuntimeReadModel(providerRuntimeStatus.settingsRuntimeReadiness)
       : null;
     const settingsRuntimeRows = Array.isArray(settingsRuntimeReadiness?.rows)
       ? settingsRuntimeReadiness.rows
       : [];
+    const settingsProviderVaultBindings = scopedProviderRuntimeReadModel(providerRuntimeStatus.providerVaultBindings);
     const localMvpStartupReadiness = providerRuntimeStatus.localMvpStartupReadiness?.schemaVersion === 'local-mvp-startup-readiness/v1'
       ? providerRuntimeStatus.localMvpStartupReadiness
       : null;
     const settingsSecretVaultReady = Boolean(settingsProviderReadiness?.canSealSecrets ?? providerRuntimeStatus.secretVaultStatus?.ready);
-    const settingsSecretVaultUnavailableMessage = providerRuntimeStatus.secretVaultStatus
+    const settingsSecretVaultUnreachable = providerRuntimeStatus.secretVaultStatus?.provider === 'unreachable';
+    const settingsSecretVaultStatusSynced = Boolean(providerRuntimeStatus.secretVaultStatus) && !settingsSecretVaultUnreachable;
+    const settingsSecretVaultBadgeLabel = settingsSecretVaultReady
+      ? 'ready'
+      : settingsSecretVaultUnreachable
+        ? 'backend unreachable'
+        : settingsSecretVaultStatusSynced
+          ? 'vault required'
+          : 'sync required';
+    const settingsSecretVaultBadgeClass = settingsSecretVaultReady
+      ? healthStatusClass.pass
+      : settingsSecretVaultUnreachable
+        ? healthStatusClass.fail
+        : settingsSecretVaultStatusSynced
+          ? healthStatusClass.fail
+          : healthStatusClass.pending;
+    const settingsSecretVaultUnavailableMessage = settingsSecretVaultUnreachable
+      ? 'API fields are editable, but the backend status route is unreachable. Start agents:server with Secret Vault env, then Sync status before sealing keys.'
+      : settingsSecretVaultStatusSynced
       ? 'API fields are editable, but the Secret Vault is not ready. Start the backend with SECRET_VAULT_ENABLED=true and SECRET_VAULT_KEY before sealing keys.'
       : 'API fields are editable, but backend provider status has not been synced. Start agents:server with Secret Vault env, then Sync status before sealing keys.';
     const settingsSecretVaultActionMessage = settingsSecretVaultReady
@@ -9662,6 +10747,7 @@ export default function EngineWorkspace() {
     const settingsSecretVaultSetupRows = [
       ['Target backend', providerRuntimeStatus.baseUrl || backendStation.baseUrl || DEFAULT_AGENT_BACKEND_URL],
       ['Required env', 'SECRET_VAULT_ENABLED=true and SECRET_VAULT_KEY set before npm run agents:server'],
+      ['Local start command', "$env:SECRET_VAULT_ENABLED='true'; $env:SECRET_VAULT_KEY='local-dev-vault-key'; npm run agents:server"],
       ['Startup preflight route', localMvpStartupReadiness?.backendRoutes?.localMvpStartupReadiness || '/local-mvp-startup-readiness'],
       ['Startup readiness', localMvpStartupReadiness?.status || 'not synced'],
       ['Startup next action', localMvpStartupReadiness?.nextAction?.label || 'Sync local MVP startup readiness'],
@@ -9676,6 +10762,7 @@ export default function EngineWorkspace() {
     );
     const settingsBackendReady = backendStation.connectionStatus === 'online'
       || Boolean(settingsProviderReadiness)
+      || settingsSecretVaultReady
       || Boolean(providerRuntimeStatus.secretVaultStatus?.ready)
       || providerStatusReachedBackend(providerRuntimeStatus.modelProvider)
       || providerStatusReachedBackend(providerRuntimeStatus.searchProvider);
@@ -9683,8 +10770,26 @@ export default function EngineWorkspace() {
       ? 'Backend-backed controls save on change for this project'
       : providerRuntimeStatus.lastRunAt || backendStation.connectionStatus === 'offline'
         ? 'You can type values here; saving requires the backend Secret Vault'
-        : 'Backend sync required before settings are treated as saved';
+        : 'API fields can be typed; backend sync and Secret Vault are required before saving or sealing';
     const SettingsBackendStatusIcon = settingsBackendReady ? CheckCircle2 : Server;
+    const settingsProviderApiEntryRows = [
+      ['API input fields', 'editable'],
+      ['Seal persistence', settingsSecretVaultReady ? 'available through /secret-vault/seal' : 'waiting for backend Secret Vault'],
+      ['Browser persistence', settingsProviderReadiness?.browserPersistsSecrets === true ? 'blocked: unexpected browser persistence' : 'disabled'],
+      ['Plaintext after Seal', 'cleared after backend receipt'],
+    ];
+    const settingsWorkflowSmoke = healthCheck.workflowSmoke?.schemaVersion === 'settings-workflow-smoke/v1'
+      ? healthCheck.workflowSmoke
+      : null;
+    const settingsWorkflowSmokeProofRows = settingsWorkflowSmoke ? [
+      ['Probe project', settingsWorkflowSmoke.project?.id || settingsWorkflowSmoke.projectId || 'missing'],
+      ['Submission', `${settingsWorkflowSmoke.submission?.artifactType || 'missing'} / ${settingsWorkflowSmoke.submission?.id || 'missing'}`],
+      ['Flow Graph', settingsWorkflowSmoke.graphProof?.route || 'missing'],
+      ['Proof Map', settingsWorkflowSmoke.proofMapProof?.route || 'missing'],
+      ['Group Chat', settingsWorkflowSmoke.transcriptProof?.route || 'missing'],
+      ['Timeline', settingsWorkflowSmoke.timelineProof?.route || 'missing'],
+      ['Event Ledger', settingsWorkflowSmoke.eventLedgerProof?.route || 'missing'],
+    ] : [];
 
     return (
       <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/45 px-6 py-6">
@@ -9749,6 +10854,24 @@ export default function EngineWorkspace() {
                       <div className="border border-[#d1d0c9] bg-[#f8f6ee] p-3">
                         <div className={labelClass}>Backend URL</div>
                         <div data-testid="settings-deployment-backend-url" className="mt-2 break-all font-mono text-xs text-[#1a1a1a]">{providerRuntimeStatus.baseUrl || backendStation.baseUrl}</div>
+                        <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+                          <input
+                            data-testid="settings-deployment-backend-url-input"
+                            value={backendStation.draftBaseUrl}
+                            onChange={(event) => setBackendStation(prev => ({ ...prev, draftBaseUrl: event.target.value }))}
+                            className="min-w-0 flex-1 border border-[#d1d0c9] bg-[#f5f4f0] px-3 py-2 font-mono text-[11px] text-[#1a1a1a] outline-none focus:border-[#1a1a1a]"
+                            aria-label="Settings backend API URL"
+                          />
+                          <button
+                            type="button"
+                            data-testid="settings-deployment-save-backend-url"
+                            onClick={saveBackendBaseUrl}
+                            disabled={backendStation.loading}
+                            className={`shrink-0 border border-[#1a1a1a] px-3 py-2 font-mono text-[10px] uppercase tracking-widest transition-colors ${backendStation.loading ? 'cursor-not-allowed opacity-50' : 'hover:bg-[#d1d0c9] hover:text-black'}`}
+                          >
+                            Save URL
+                          </button>
+                        </div>
                       </div>
                       <div className="border border-[#d1d0c9] bg-[#f8f6ee] p-3">
                         <div className={labelClass}>Worker Route</div>
@@ -9794,7 +10917,7 @@ export default function EngineWorkspace() {
                     {[
                       ['Model status', '/llm/status', providerRuntimeStatus.modelProvider?.enabled && providerRuntimeStatus.modelProvider?.configured],
                       ['Evidence status', '/search/status', providerRuntimeStatus.searchProvider?.enabled && providerRuntimeStatus.searchProvider?.configured],
-                      ['Provider vault bindings', '/provider-vault-bindings', providerRuntimeStatus.providerVaultBindings?.summary?.boundProviderCount > 0],
+                      ['Provider vault bindings', '/provider-vault-bindings', settingsProviderVaultBindings?.summary?.boundProviderCount > 0],
                       ['Provider readiness', activeProject?.id ? `/projects/${activeProject.id}/provider-readiness` : '/projects/:id/provider-readiness', Boolean(providerRuntimeStatus.modelProvider?.enabled && providerRuntimeStatus.searchProvider?.enabled)],
                     ].map(([label, route, ready]) => (
                       <div key={label} data-testid={`settings-deployment-route-${label.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`} className="border border-[#d1d0c9] bg-[#f8f6ee] p-4">
@@ -9825,7 +10948,11 @@ export default function EngineWorkspace() {
                         </p>
                       </div>
                       <div className="flex flex-wrap gap-2">
-                        <SmallButton onClick={() => syncSettingsProviderRuntime({ runTests: false })} disabled={providerRuntimeStatus.running}>
+                        <SmallButton
+                          data-testid="settings-provider-sync-status"
+                          onClick={() => syncSettingsProviderRuntime({ runTests: false })}
+                          disabled={providerRuntimeStatus.running}
+                        >
                           <RefreshCw size={12} className="inline-block mr-2" />Sync status
                         </SmallButton>
                         <button
@@ -9879,7 +11006,7 @@ export default function EngineWorkspace() {
                         ? healthStatusClass.pass
                         : configuredButDisabled || hasBackendKey
                           ? healthStatusClass.pending
-                          : healthStatusClass.fail;
+                          : healthStatusClass.pending;
                       const vault = status.secretVault || {};
                       const testStatus = item.test ? (item.test.ok ? 'pass' : 'fail') : 'idle';
                       return (
@@ -9916,17 +11043,17 @@ export default function EngineWorkspace() {
                         <div className={labelClass}>/provider-vault-bindings</div>
                         <div className="mt-2 font-serif text-xl leading-tight">Provider-vault binding proof</div>
                       </div>
-                      <span className={`border px-2 py-1 font-mono text-[9px] uppercase tracking-[0.14em] ${providerRuntimeStatus.providerVaultBindings?.redaction?.rawLeakCount === 0 && providerRuntimeStatus.providerVaultBindings?.summary?.boundProviderCount > 0 ? healthStatusClass.pass : healthStatusClass.idle}`}>
-                        {providerRuntimeStatus.providerVaultBindings?.summary?.boundProviderCount > 0 ? 'vault backed' : 'sync required'}
+                      <span className={`border px-2 py-1 font-mono text-[9px] uppercase tracking-[0.14em] ${settingsProviderVaultBindings?.redaction?.rawLeakCount === 0 && settingsProviderVaultBindings?.summary?.boundProviderCount > 0 ? healthStatusClass.pass : healthStatusClass.idle}`}>
+                        {settingsProviderVaultBindings?.summary?.boundProviderCount > 0 ? 'vault backed' : 'sync required'}
                       </span>
                     </div>
                     <div className="mt-4 grid gap-2 font-mono text-[10px] uppercase tracking-[0.12em] text-[#5f5a50] md:grid-cols-2">
-                      <div>Schema: {providerRuntimeStatus.providerVaultBindings?.schemaVersion || 'not synced'}</div>
-                      <div>Bound providers: {providerRuntimeStatus.providerVaultBindings?.summary?.boundProviderCount ?? 'not synced'}</div>
-                      <div>Vault records: {providerRuntimeStatus.providerVaultBindings?.summary?.encryptedVaultRecordCount ?? 'not synced'}</div>
-                      <div>Redaction leaks: {providerRuntimeStatus.providerVaultBindings?.redaction?.rawLeakCount ?? 'not synced'}</div>
+                      <div>Schema: {settingsProviderVaultBindings?.schemaVersion || 'not synced'}</div>
+                      <div>Bound providers: {settingsProviderVaultBindings?.summary?.boundProviderCount ?? 'not synced'}</div>
+                      <div>Vault records: {settingsProviderVaultBindings?.summary?.encryptedVaultRecordCount ?? 'not synced'}</div>
+                      <div>Redaction leaks: {settingsProviderVaultBindings?.redaction?.rawLeakCount ?? 'not synced'}</div>
                       <div className="break-all md:col-span-2">Project route: {activeProject?.id ? `/projects/${activeProject.id}/provider-vault-bindings` : '/projects/:id/provider-vault-bindings'}</div>
-                      <div className="break-all md:col-span-2">Checksum: {providerRuntimeStatus.providerVaultBindings?.checksum || 'not synced'}</div>
+                      <div className="break-all md:col-span-2">Checksum: {settingsProviderVaultBindings?.checksum || 'not synced'}</div>
                     </div>
                   </div>
 
@@ -9936,8 +11063,8 @@ export default function EngineWorkspace() {
                         <div className={labelClass}>/secret-vault/status</div>
                         <div className="mt-2 font-serif text-xl leading-tight">Secret vault</div>
                       </div>
-                      <span className={`border px-2 py-1 font-mono text-[9px] uppercase tracking-[0.14em] ${providerRuntimeStatus.secretVaultStatus?.ready ? healthStatusClass.pass : healthStatusClass.fail}`}>
-                        {providerRuntimeStatus.secretVaultStatus?.ready ? 'ready' : 'vault required'}
+                      <span className={`border px-2 py-1 font-mono text-[9px] uppercase tracking-[0.14em] ${settingsSecretVaultBadgeClass}`}>
+                        {settingsSecretVaultBadgeLabel}
                       </span>
                     </div>
                     <div className="mt-4 grid gap-2 font-mono text-[10px] uppercase tracking-[0.12em] text-[#5f5a50] md:grid-cols-2">
@@ -9949,7 +11076,7 @@ export default function EngineWorkspace() {
                     </div>
                     <div data-testid="settings-provider-readiness-contract" className="mt-3 border border-[#d1d0c9] bg-[#f5f4f0] px-3 py-2 font-mono text-[11px] leading-relaxed text-[#5f5a50]">
                       <div>Status: {settingsProviderReadiness?.status || 'not synced'}</div>
-                      <div>API fields: {settingsProviderReadiness?.canTypeApiFields === false ? 'blocked by backend contract' : 'editable for typing'} / Seal: {settingsSecretVaultReady ? 'available' : 'requires backend Vault'}</div>
+                      <div>API fields: editable for typing / Seal: {settingsSecretVaultReady ? 'available' : 'requires backend Vault'}</div>
                       <div>Next action: {settingsProviderReadiness?.actionRequired?.label || 'Sync provider readiness'}</div>
                       <div className="break-all">Readiness route: {settingsProviderReadiness?.backendRoutes?.settingsProviderReadiness || '/settings/provider-readiness'}</div>
                       <div className="break-all">Checksum: {settingsProviderReadiness?.checksum || 'not synced'}</div>
@@ -9977,6 +11104,35 @@ export default function EngineWorkspace() {
                     </div>
                   )}
 
+                  <div data-testid="settings-provider-api-entry-state" className="border border-[#b9a55f] bg-[#fbf7df] p-4">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <div className={labelClass}>API Entry Contract</div>
+                        <div className="mt-2 font-serif text-xl leading-tight">Typing is local; saving is backend-only</div>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className={`border px-2 py-1 font-mono text-[9px] uppercase tracking-[0.14em] ${healthStatusClass.pending}`}>
+                          input enabled
+                        </span>
+                        <button
+                          type="button"
+                          data-testid="settings-provider-open-backend-target"
+                          onClick={() => setSettingsTab('deployment')}
+                          className="border border-[#1a1a1a] px-2 py-1 font-mono text-[9px] uppercase tracking-[0.14em] text-[#1a1a1a] hover:bg-[#1a1a1a] hover:text-[#f5f4f0]"
+                        >
+                          Backend URL
+                        </button>
+                      </div>
+                    </div>
+                    <div className="mt-4 grid gap-2 font-mono text-[10px] uppercase tracking-[0.12em] text-[#5f5a50] md:grid-cols-2">
+                      {settingsProviderApiEntryRows.map(([label, value]) => (
+                        <div key={label} className="break-all">
+                          {label}: {value}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
                   <div className="grid gap-5 lg:grid-cols-2">
                     <SettingField label="Model API Key" hint="Saved through the backend secret-vault seal route; the browser clears the field after submit.">
                       <div className="flex gap-2">
@@ -9987,7 +11143,7 @@ export default function EngineWorkspace() {
                           autoComplete="off"
                           value={providerSecretDrafts.modelApiKey}
                           placeholder={providerRuntimeStatus.modelProvider?.hasApiKey ? 'Configured on backend' : 'Enter model provider key'}
-                          onChange={(event) => setProviderSecretDrafts(prev => ({ ...prev, modelApiKey: event.target.value, error: null }))}
+                          onChange={(event) => setProviderSecretDrafts(prev => ({ ...prev, modelApiKey: event.target.value, lastReceipt: null, error: null }))}
                         />
                         <button
                           type="button"
@@ -10009,7 +11165,7 @@ export default function EngineWorkspace() {
                           autoComplete="off"
                           value={providerSecretDrafts.searchApiKey}
                           placeholder={providerRuntimeStatus.searchProvider?.hasApiKey ? 'Configured on backend' : 'Enter evidence provider key'}
-                          onChange={(event) => setProviderSecretDrafts(prev => ({ ...prev, searchApiKey: event.target.value, error: null }))}
+                          onChange={(event) => setProviderSecretDrafts(prev => ({ ...prev, searchApiKey: event.target.value, lastReceipt: null, error: null }))}
                         />
                         <button
                           type="button"
@@ -10031,7 +11187,7 @@ export default function EngineWorkspace() {
                           autoComplete="off"
                           value={providerSecretDrafts.searchEndpoint}
                           placeholder={providerRuntimeStatus.searchProvider?.hasEndpoint ? 'Configured on backend' : 'Enter evidence search endpoint'}
-                          onChange={(event) => setProviderSecretDrafts(prev => ({ ...prev, searchEndpoint: event.target.value, error: null }))}
+                          onChange={(event) => setProviderSecretDrafts(prev => ({ ...prev, searchEndpoint: event.target.value, lastReceipt: null, error: null }))}
                         />
                         <button
                           type="button"
@@ -10154,8 +11310,8 @@ export default function EngineWorkspace() {
                           data-testid="settings-privacy-retention-mode"
                           className={fieldClass}
                           value={privacyPolicy.retentionMode}
-                          disabled={!activeProject}
-                          onChange={(event) => updateProjectPrivacyPolicySetting({ retentionMode: event.target.value })}
+                          disabled={!activeProject || privacyPolicySaving}
+                          onChange={(event) => updateProjectPrivacyPolicySetting({ retentionMode: event.currentTarget.value })}
                         >
                           <option value="project-local">Project local</option>
                           <option value="session-only">Session only</option>
@@ -10167,8 +11323,8 @@ export default function EngineWorkspace() {
                           data-testid="settings-privacy-provider-log-mode"
                           className={fieldClass}
                           value={privacyPolicy.providerLogMode}
-                          disabled={!activeProject}
-                          onChange={(event) => updateProjectPrivacyPolicySetting({ providerLogMode: event.target.value })}
+                          disabled={!activeProject || privacyPolicySaving}
+                          onChange={(event) => updateProjectPrivacyPolicySetting({ providerLogMode: event.currentTarget.value })}
                         >
                           <option value="redacted">Redacted</option>
                           <option value="metadata-only">Metadata only</option>
@@ -10182,8 +11338,8 @@ export default function EngineWorkspace() {
                           type="checkbox"
                           className="mt-0.5"
                           checked={privacyPolicy.evidenceExportRequiresApproval}
-                          disabled={!activeProject}
-                          onChange={(event) => updateProjectPrivacyPolicySetting({ evidenceExportRequiresApproval: event.target.checked })}
+                          disabled={!activeProject || privacyPolicySaving}
+                          onChange={(event) => updateProjectPrivacyPolicySetting({ evidenceExportRequiresApproval: event.currentTarget.checked })}
                         />
                         <span>Require approval before evidence export</span>
                       </label>
@@ -10243,8 +11399,8 @@ export default function EngineWorkspace() {
                         data-testid="settings-workspace-interface-density"
                         className={fieldClass}
                         value={workspacePolicy.interfaceDensity}
-                        disabled={!activeProject}
-                        onChange={(event) => updateProjectWorkspacePolicySetting({ interfaceDensity: event.target.value })}
+                        disabled={!activeProject || workspacePolicySaving}
+                        onChange={(event) => updateProjectWorkspacePolicySetting({ interfaceDensity: event.currentTarget.value })}
                       >
                         <option value="comfortable">Comfortable</option>
                         <option value="compact">Compact</option>
@@ -10256,8 +11412,8 @@ export default function EngineWorkspace() {
                         data-testid="settings-workspace-default-visibility"
                         className={fieldClass}
                         value={workspacePolicy.defaultVisibility}
-                        disabled={!activeProject}
-                        onChange={(event) => updateProjectWorkspacePolicySetting({ defaultVisibility: event.target.value })}
+                        disabled={!activeProject || workspacePolicySaving}
+                        onChange={(event) => updateProjectWorkspacePolicySetting({ defaultVisibility: event.currentTarget.value })}
                       >
                         <option value="team">Team</option>
                         <option value="manager-only">Manager only</option>
@@ -10269,8 +11425,8 @@ export default function EngineWorkspace() {
                         data-testid="settings-workspace-autosave-cadence"
                         className={fieldClass}
                         value={String(workspacePolicy.autosaveCadenceSeconds)}
-                        disabled={!activeProject}
-                        onChange={(event) => updateProjectWorkspacePolicySetting({ autosaveCadenceSeconds: Number(event.target.value) || 60 })}
+                        disabled={!activeProject || workspacePolicySaving}
+                        onChange={(event) => updateProjectWorkspacePolicySetting({ autosaveCadenceSeconds: Number(event.currentTarget.value) || 60 })}
                       >
                         <option value="30">30 seconds</option>
                         <option value="60">60 seconds</option>
@@ -10290,6 +11446,64 @@ export default function EngineWorkspace() {
                       <div>Backend-backed: {workspaceCapabilitySummary.backendBackedCount ?? 0}</div>
                       <div>Backend-required: {workspaceCapabilitySummary.backendRequiredCount ?? 0}</div>
                       <div>Browser-local: {workspaceCapabilitySummary.browserLocalCount ?? 0}</div>
+                    </div>
+                  </div>
+                  <div data-testid="settings-workspace-bind-contract" className="border border-[#d1d0c9] bg-[#f8f6ee] p-4">
+                    <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                      <div className="min-w-0">
+                        <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#7d786b]">/projects/:id/workspace/bind</div>
+                        <div className="mt-2 font-serif text-xl text-[#1a1a1a]">Backend local workspace binding</div>
+                        <p className="mt-2 font-mono text-[11px] leading-relaxed text-[#5f5a50]">
+                          Local/private MVP projects can bind a real filesystem workspace through the backend local runtime. The browser records no fake workspace path; production managed workspaces remain blocked until storage, access, quota, and audit controls exist.
+                        </p>
+                      </div>
+                      <span className={`shrink-0 border px-2 py-1 font-mono text-[9px] uppercase tracking-[0.14em] ${currentWorkspacePath ? 'border-[#59684b] text-[#3f5136]' : 'border-[#b9a55f] text-[#75631d]'}`}>
+                        {currentWorkspacePath ? 'bound' : 'not bound'}
+                      </span>
+                    </div>
+                    <div className="mt-4 grid gap-3 lg:grid-cols-[1fr_auto]">
+                      <input
+                        data-testid="settings-workspace-bind-path-input"
+                        value={workspaceBindDraft.path}
+                        onChange={(event) => {
+                          const nextPath = event.currentTarget.value;
+                          setWorkspaceBindDraft(prev => ({ ...prev, path: nextPath, error: null }));
+                        }}
+                        placeholder="C:\\projects\\customer-workspace"
+                        className="min-w-0 border border-[#d1d0c9] bg-[#f5f4f0] px-3 py-2 font-mono text-[11px] text-[#1a1a1a] outline-none focus:border-[#1a1a1a]"
+                        aria-label="Backend local workspace path"
+                      />
+                      <button
+                        type="button"
+                        data-testid="settings-workspace-bind-submit"
+                        onClick={bindProjectWorkspaceFromSettings}
+                        disabled={!activeProject || backendStation.loading || workspaceBindDraft.saving || !workspaceBindDraft.path.trim() || !shouldAttemptBackendProjectWrite(activeProject)}
+                        className={`shrink-0 border border-[#1a1a1a] px-3 py-2 font-mono text-[10px] uppercase tracking-widest transition-colors ${!activeProject || backendStation.loading || workspaceBindDraft.saving || !workspaceBindDraft.path.trim() || !shouldAttemptBackendProjectWrite(activeProject) ? 'cursor-not-allowed opacity-50' : 'hover:bg-[#d1d0c9] hover:text-black'}`}
+                      >
+                        <Save size={12} className="inline-block mr-2" />Bind workspace
+                      </button>
+                    </div>
+                    <label className="mt-3 flex items-start gap-3 font-mono text-[11px] leading-relaxed text-[#5f5a50]">
+                      <input
+                        data-testid="settings-workspace-bind-create-if-missing"
+                        type="checkbox"
+                        className="mt-0.5"
+                        checked={workspaceBindDraft.createIfMissing}
+                        disabled={workspaceBindDraft.saving}
+                        onChange={(event) => {
+                          const createIfMissing = event.currentTarget.checked;
+                          setWorkspaceBindDraft(prev => ({ ...prev, createIfMissing }));
+                        }}
+                      />
+                      <span>Create the directory if it does not exist</span>
+                    </label>
+                    <div data-testid="settings-workspace-bind-receipt" className="mt-4 grid gap-2 break-all font-mono text-[10px] leading-relaxed text-[#7d786b] md:grid-cols-2">
+                      <div>Bind route: {activeProject?.id ? `/projects/${activeProject.id}/workspace/bind` : '/projects/:id/workspace/bind'}</div>
+                      <div>Local runtime: {activeProject?.id ? `/projects/${activeProject.id}/local-runtime` : '/projects/:id/local-runtime'}</div>
+                      <div>Current path: {currentWorkspacePath || 'not bound'}</div>
+                      <div>Bound at: {currentWorkspaceBoundAt || 'not bound'}</div>
+                      <div>Receipt: {workspaceBindDraft.receipt?.route || 'none'}</div>
+                      <div className={workspaceBindDraft.error ? 'text-[#8f1e18]' : 'text-[#7d786b]'}>Status: {workspaceBindDraft.error || (workspaceBindDraft.saving ? 'binding' : currentWorkspacePath ? 'backend-bound' : 'waiting for backend bind')}</div>
                     </div>
                   </div>
                   <div data-testid="settings-workspace-capability-contract" className="grid gap-3 lg:grid-cols-2">
@@ -10317,7 +11531,18 @@ export default function EngineWorkspace() {
                       </div>
                     )) : (
                       <div data-testid="settings-workspace-capabilities-missing" className="border border-[#b9a55f] bg-[#fbf7df] p-4 font-mono text-[11px] leading-relaxed text-[#75631d] lg:col-span-2">
-                        Workspace capability contract not synced. Sync or update project settings through {activeProject?.id ? `/projects/${activeProject.id}/project-settings` : '/projects/:id/project-settings'} before treating workspace controls as backend-backed.
+                        <div>
+                          Workspace capability contract not synced. Sync or update project settings through {activeProject?.id ? `/projects/${activeProject.id}/project-settings` : '/projects/:id/project-settings'} before treating workspace controls as backend-backed.
+                        </div>
+                        <div className="mt-3">
+                          <SmallButton
+                            data-testid="settings-workspace-capabilities-sync-project-state"
+                            onClick={() => syncBackendProjectState({ silent: false })}
+                            disabled={!activeProject || backendStation.loading}
+                          >
+                            Sync project settings
+                          </SmallButton>
+                        </div>
                       </div>
                     )}
                   </div>
@@ -10466,6 +11691,9 @@ export default function EngineWorkspace() {
                           : 'settings-integration-readiness not synced'}
                       </div>
                     </div>
+                    <div data-testid="settings-integration-readiness-route" className="mt-2 break-all font-mono text-[10px] leading-relaxed text-[#7d786b]">
+                      Route: {activeProject?.id ? `/projects/${activeProject.id}/settings-integration-readiness` : '/projects/:id/settings-integration-readiness'}
+                    </div>
                   </div>
                   {settingsIntegrationReadinessRows.length > 0 && (
                     <div data-testid="settings-integration-readiness-contract" className="grid gap-3 lg:grid-cols-2">
@@ -10516,7 +11744,18 @@ export default function EngineWorkspace() {
                       </div>
                     )) : (
                       <div data-testid="settings-integration-capabilities-missing" className="border border-[#b9a55f] bg-[#fbf7df] p-4 font-mono text-[11px] leading-relaxed text-[#75631d] lg:col-span-2">
-                        Integration capability contract not synced. Sync or update project settings through {activeProject?.id ? `/projects/${activeProject.id}/project-settings` : '/projects/:id/project-settings'} before treating integration controls as backend-backed.
+                        <div>
+                          Integration capability contract not synced. Sync or update project settings through {activeProject?.id ? `/projects/${activeProject.id}/project-settings` : '/projects/:id/project-settings'} before treating integration controls as backend-backed.
+                        </div>
+                        <div className="mt-3">
+                          <SmallButton
+                            data-testid="settings-integration-capabilities-sync-project-state"
+                            onClick={() => syncBackendProjectState({ silent: false })}
+                            disabled={!activeProject || backendStation.loading}
+                          >
+                            Sync project settings
+                          </SmallButton>
+                        </div>
                       </div>
                     )}
                   </div>
@@ -10594,8 +11833,8 @@ export default function EngineWorkspace() {
                             type="checkbox"
                             className="mt-1 h-4 w-4 accent-[#1a1a1a]"
                             checked={activeToolGrantSet.has(option.id)}
-                            disabled={!activeProject}
-                            onChange={() => toggleProjectToolGrantSetting(option.id)}
+                            disabled={!activeProject || toolGrantPolicySaving}
+                            onChange={(event) => setProjectToolGrantSetting(option.id, event.currentTarget.checked)}
                           />
                           <span>
                             <span className="block font-mono text-[11px] uppercase tracking-[0.12em] text-[#1a1a1a]">{option.label}</span>
@@ -10621,8 +11860,8 @@ export default function EngineWorkspace() {
                           data-testid="settings-provider-budget-daily"
                           className={fieldClass}
                           value={String(providerBudgetPolicy.dailyBudgetCents)}
-                          disabled={!activeProject}
-                          onChange={(event) => updateProjectProviderBudgetPolicySetting({ dailyBudgetCents: Number(event.target.value) || 0 })}
+                          disabled={!activeProject || providerBudgetPolicySaving}
+                          onChange={(event) => updateProjectProviderBudgetPolicySetting({ dailyBudgetCents: Number(event.currentTarget.value) || 0 })}
                         >
                           <option value="0">Unlimited local</option>
                           <option value="100">$1 / day</option>
@@ -10635,8 +11874,8 @@ export default function EngineWorkspace() {
                           data-testid="settings-provider-budget-hourly"
                           className={fieldClass}
                           value={String(providerBudgetPolicy.maxRequestsPerProjectHour)}
-                          disabled={!activeProject}
-                          onChange={(event) => updateProjectProviderBudgetPolicySetting({ maxRequestsPerProjectHour: Number(event.target.value) || 0 })}
+                          disabled={!activeProject || providerBudgetPolicySaving}
+                          onChange={(event) => updateProjectProviderBudgetPolicySetting({ maxRequestsPerProjectHour: Number(event.currentTarget.value) || 0 })}
                         >
                           <option value="0">Unlimited local</option>
                           <option value="20">20 / hour</option>
@@ -10677,11 +11916,12 @@ export default function EngineWorkspace() {
                         <Activity size={22} className={healthCheck.running ? 'animate-pulse text-[#8f1e18]' : 'text-[#555047]'} />
                       </div>
                       <div className="mt-5 flex flex-wrap gap-3">
-                        <SmallButton onClick={() => runSettingsHealthCheck({ workflow: false })} disabled={healthCheck.running}>
+                        <SmallButton data-testid="settings-health-quick-check" onClick={() => runSettingsHealthCheck({ workflow: false })} disabled={healthCheck.running}>
                           <Play size={12} className="inline-block mr-2" />Quick check
                         </SmallButton>
                         <button
                           type="button"
+                          data-testid="settings-health-workflow-smoke"
                           onClick={() => runSettingsHealthCheck({ workflow: true })}
                           disabled={healthCheck.running}
                           className={`border border-[#1a1a1a] px-3 py-2 font-mono text-[10px] uppercase tracking-widest transition-colors ${healthCheck.running ? 'cursor-not-allowed opacity-50' : 'hover:bg-[#d1d0c9] hover:text-black'}`}
@@ -10722,6 +11962,36 @@ export default function EngineWorkspace() {
                     ))}
                   </div>
 
+                  <div data-testid="settings-health-route-contract" className="border border-[#d1d0c9] bg-[#f8f6ee] p-4 font-mono text-[11px] leading-relaxed text-[#5f5a50]">
+                    <div>Settings health: {healthCheck.backendRoutes?.settingsHealthReadiness || '/settings/health-readiness'}</div>
+                    <div>Local MVP startup: {healthCheck.backendRoutes?.localMvpStartupReadiness || localMvpStartupReadiness?.backendRoutes?.localMvpStartupReadiness || '/local-mvp-startup-readiness'}</div>
+                    <div>Project catalog: {healthCheck.backendRoutes?.projects || '/projects'}</div>
+                  </div>
+
+                  {settingsWorkflowSmoke && (
+                    <div data-testid="settings-health-workflow-smoke-output" className="border border-[#59684b] bg-[#eef5df] p-4">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                          <div className={labelClass}>/settings/workflow-smoke</div>
+                          <div className="mt-2 font-serif text-xl leading-tight text-[#1a1a1a]">Backend Agent output created</div>
+                        </div>
+                        <span className={`border px-2 py-1 font-mono text-[9px] uppercase tracking-[0.14em] ${settingsWorkflowSmoke.readyForLocalMvpWorkflowSmoke ? healthStatusClass.pass : healthStatusClass.fail}`}>
+                          {settingsWorkflowSmoke.status || 'unknown'}
+                        </span>
+                      </div>
+                      <p className="mt-3 font-mono text-[11px] leading-relaxed text-[#3f5136]">
+                        {settingsWorkflowSmoke.summary?.detail || 'Backend Workflow Smoke returned a product-team probe result.'}
+                      </p>
+                      <div className="mt-4 grid gap-2 font-mono text-[10px] uppercase tracking-[0.12em] text-[#3f5136] md:grid-cols-2">
+                        {settingsWorkflowSmokeProofRows.map(([label, value]) => (
+                          <div key={label} className="break-all">
+                            {label}: {value}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
                   {healthCheck.error && (
                     <div className="border border-red-800 bg-red-50 px-4 py-3 font-mono text-[11px] leading-relaxed text-red-800">
                       {healthCheck.error}
@@ -10742,7 +12012,8 @@ export default function EngineWorkspace() {
               <div className="flex items-center gap-2">
                 <button
                   type="button"
-                  onClick={() => runSettingsHealthCheck({ workflow: false })}
+                  data-testid="settings-footer-test-connection"
+                  onClick={runSettingsFooterConnectionTest}
                   disabled={healthCheck.running}
                   className={`border border-[#d1d0c9] px-3 py-2 font-mono text-[10px] uppercase tracking-widest text-[#555047] transition-colors ${healthCheck.running ? 'cursor-not-allowed opacity-50' : 'hover:border-[#1a1a1a] hover:text-black'}`}
                 >
@@ -11614,6 +12885,22 @@ export default function EngineWorkspace() {
       backendStation.error
       && /kickoff|initiation|leader confirmation|next-action|clarification/i.test(backendStation.lastAction || '')
     );
+    const initiationStartupReadiness = providerRuntimeStatus.localMvpStartupReadiness?.schemaVersion === 'local-mvp-startup-readiness/v1'
+      ? providerRuntimeStatus.localMvpStartupReadiness
+      : null;
+    const initiationDevelopmentFallbackAllowed = isDevelopmentInitiationFallbackEnabled();
+    const initiationStartupReadyForFirstRun = initiationStartupReadiness?.readyForFirstProjectRun === true;
+    const initiationCanStartKickoff = initiationStartupReadyForFirstRun || initiationDevelopmentFallbackAllowed;
+    const initiationCanApproveProject = initiationCanStartKickoff || Boolean(initiationMeetingSession);
+    const initiationStartupStatus = providerRuntimeStatus.running
+      ? 'syncing'
+      : initiationStartupReadiness?.status || 'not synced';
+    const initiationStartupBlocker = initiationStartupReadyForFirstRun
+      ? null
+      : initiationStartupReadiness?.nextAction?.label || 'Sync backend startup readiness before starting a real kickoff.';
+    const initiationStartupGateClass = initiationStartupReadyForFirstRun
+      ? 'border-[#59684b] bg-[#eef5df] text-[#3f5136]'
+      : 'border-[#8f1e18] bg-red-50 text-[#8f1e18]';
     const updateDraft = (key, value) => setInitiationDraft(prev => ({ ...prev, [key]: value }));
     const selectMeetingLeaderCandidate = async (agentId) => {
       setSelectedLeaderCandidateId(agentId);
@@ -11645,8 +12932,8 @@ export default function EngineWorkspace() {
           connectionStatus: 'offline',
           lastAction: 'Leader confirmation failed',
           error: error.name === 'AbortError'
-            ? 'Backend Leader confirmation timed out. No local mock Leader resolution was saved.'
-            : `${error.message || String(error)} No local mock Leader resolution was saved.`,
+            ? 'Backend Leader confirmation timed out. Browser-local Leader resolution fallback was suppressed.'
+            : `${error.message || String(error)} Browser-local Leader resolution fallback was suppressed.`,
         }));
         return;
       }
@@ -11683,8 +12970,8 @@ export default function EngineWorkspace() {
           connectionStatus: 'offline',
           lastAction: 'Next-action confirmation failed',
           error: error.name === 'AbortError'
-            ? 'Backend next-action confirmation timed out. No local mock next actions were saved.'
-            : `${error.message || String(error)} No local mock next actions were saved.`,
+            ? 'Backend next-action confirmation timed out. Browser-local next-action fallback was suppressed.'
+            : `${error.message || String(error)} Browser-local next-action fallback was suppressed.`,
         }));
         return;
       }
@@ -11765,8 +13052,8 @@ export default function EngineWorkspace() {
           connectionStatus: 'offline',
           lastAction: 'Kickoff meeting input failed',
           error: error.name === 'AbortError'
-            ? 'Backend kickoff meeting input timed out. No local mock meeting response was saved.'
-            : `${error.message || String(error)} No local mock meeting response was saved.`,
+            ? 'Backend kickoff meeting input timed out. Browser-local meeting response fallback was suppressed.'
+            : `${error.message || String(error)} Browser-local meeting response fallback was suppressed.`,
         }));
       }
     };
@@ -11812,6 +13099,45 @@ export default function EngineWorkspace() {
                     {backendStation.lastAction || 'Backend action failed'}
                   </div>
                   <div className="font-serif text-base leading-relaxed">{backendStation.error}</div>
+                </div>
+              )}
+              {!isInitiationMeetingStep && (
+                <div data-testid="initiation-startup-readiness-gate" className={`mx-auto mb-5 max-w-3xl border px-5 py-4 ${initiationStartupGateClass}`}>
+                  <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                    <div>
+                      <div className="font-mono text-[9px] uppercase tracking-[0.24em]">/local-mvp-startup-readiness</div>
+                      <div className="mt-1 font-serif text-lg leading-tight">
+                        {initiationStartupReadyForFirstRun ? 'Backend ready for real kickoff' : initiationDevelopmentFallbackAllowed ? 'Development fallback enabled; not launch evidence' : 'Backend startup required before real kickoff'}
+                      </div>
+                      <div className="mt-2 font-mono text-[10px] uppercase tracking-[0.12em]">
+                        Status: {initiationStartupStatus} / first project run: {initiationStartupReadyForFirstRun ? 'ready' : 'blocked'}
+                      </div>
+                      {initiationStartupBlocker && (
+                        <div className="mt-2 font-serif text-sm leading-relaxed">{initiationStartupBlocker}</div>
+                      )}
+                    </div>
+                    <div className="flex shrink-0 flex-wrap gap-2">
+                      <button
+                        type="button"
+                        data-testid="initiation-sync-startup"
+                        onClick={() => syncSettingsProviderRuntime({ runTests: false })}
+                        disabled={providerRuntimeStatus.running}
+                        className="inline-flex items-center justify-center gap-2 border border-current px-3 py-2 font-mono text-[8px] uppercase tracking-widest disabled:opacity-50"
+                      >
+                        <RefreshCw size={12} /> Sync
+                      </button>
+                      {!initiationStartupReadyForFirstRun && (
+                        <button
+                          type="button"
+                          data-testid="initiation-open-settings-keys"
+                          onClick={() => { setSettingsTab('keys'); setSettingsOpen(true); }}
+                          className="inline-flex items-center justify-center gap-2 border border-current px-3 py-2 font-mono text-[8px] uppercase tracking-widest"
+                        >
+                          <Settings size={12} /> Settings
+                        </button>
+                      )}
+                    </div>
+                  </div>
                 </div>
               )}
 
@@ -11924,7 +13250,12 @@ export default function EngineWorkspace() {
                         </div>
                       ))}
                     </div>
-                    <button data-testid="initiation-start-meeting" onClick={startInitiationMeetingSession} className="mt-7 w-full bg-[#8f1e18] hover:bg-[#a62a22] text-white px-5 py-4 flex items-center justify-center gap-3 font-mono text-[10px] uppercase tracking-widest transition-colors">
+                    <button
+                      data-testid="initiation-start-meeting"
+                      onClick={startInitiationMeetingSession}
+                      disabled={!initiationCanStartKickoff || providerRuntimeStatus.running}
+                      className="mt-7 w-full bg-[#8f1e18] disabled:bg-[#3a2a1c] disabled:text-[#7d6a49] hover:bg-[#a62a22] text-white px-5 py-4 flex items-center justify-center gap-3 font-mono text-[10px] uppercase tracking-widest transition-colors"
+                    >
                       Start Kickoff Roundtable <Users size={15} />
                     </button>
                   </section>
@@ -11941,7 +13272,11 @@ export default function EngineWorkspace() {
                         </div>
                       ))}
                     </div>
-                    <button onClick={startInitiationMeetingSession} className="w-full bg-[#8f1e18] hover:bg-[#a62a22] text-white px-5 py-4 flex items-center justify-center gap-3 font-mono text-[10px] uppercase tracking-widest transition-colors">
+                    <button
+                      onClick={startInitiationMeetingSession}
+                      disabled={!initiationCanStartKickoff || providerRuntimeStatus.running}
+                      className="w-full bg-[#8f1e18] disabled:bg-[#3a2a1c] disabled:text-[#7d6a49] hover:bg-[#a62a22] text-white px-5 py-4 flex items-center justify-center gap-3 font-mono text-[10px] uppercase tracking-widest transition-colors"
+                    >
                       开始立项圆桌 <Users size={15} />
                     </button>
                   </aside>
@@ -12036,6 +13371,14 @@ export default function EngineWorkspace() {
                               >
                                 <div className="font-serif text-base leading-tight">{candidate.name}</div>
                                 <div className="font-mono text-[7px] uppercase tracking-widest opacity-70">{candidate.score} / {candidate.role}</div>
+                                {candidate.claim && (
+                                  <p
+                                    data-testid={`initiation-meeting-leader-candidate-claim-${candidate.agentId}`}
+                                    className="mt-1 line-clamp-2 font-serif text-sm leading-snug opacity-90"
+                                  >
+                                    {candidate.claim}
+                                  </p>
+                                )}
                               </button>
                             );
                           })}
@@ -12268,7 +13611,12 @@ export default function EngineWorkspace() {
                         })}
                       </div>
                     </div>
-                    <button data-testid="initiation-approve-create" onClick={approveInitiationProject} className="mt-7 w-full bg-[#8f1e18] hover:bg-[#a62a22] text-white px-4 py-4 flex items-center justify-center gap-3 font-mono text-[10px] uppercase tracking-widest transition-colors">
+                    <button
+                      data-testid="initiation-approve-create"
+                      onClick={approveInitiationProject}
+                      disabled={!initiationCanApproveProject || providerRuntimeStatus.running || (!initiationMeetingSession && !initiationDevelopmentFallbackAllowed)}
+                      className="mt-7 w-full bg-[#8f1e18] disabled:bg-[#3a2a1c] disabled:text-[#7d6a49] hover:bg-[#a62a22] text-white px-4 py-4 flex items-center justify-center gap-3 font-mono text-[10px] uppercase tracking-widest transition-colors"
+                    >
                       <CheckCircle2 size={16} />
                       生成项目并进入 dashboard
                     </button>
@@ -12278,7 +13626,11 @@ export default function EngineWorkspace() {
                     <p className="font-serif text-2xl leading-relaxed text-[#d8c99f]">
                       现在才可以生成项目。通过后，这个项目会出现在 dashboard，并带上本次会议的第一领导人、汇报人和产出形式。
                     </p>
-                    <button onClick={approveInitiationProject} className="mt-7 w-full bg-[#8f1e18] hover:bg-[#a62a22] text-white px-4 py-4 flex items-center justify-center gap-3 font-mono text-[10px] uppercase tracking-widest transition-colors">
+                    <button
+                      onClick={approveInitiationProject}
+                      disabled={!initiationCanApproveProject || providerRuntimeStatus.running || (!initiationMeetingSession && !initiationDevelopmentFallbackAllowed)}
+                      className="mt-7 w-full bg-[#8f1e18] disabled:bg-[#3a2a1c] disabled:text-[#7d6a49] hover:bg-[#a62a22] text-white px-4 py-4 flex items-center justify-center gap-3 font-mono text-[10px] uppercase tracking-widest transition-colors"
+                    >
                       <CheckCircle2 size={16} />
                       生成项目并进入 dashboard
                     </button>
@@ -12317,7 +13669,188 @@ export default function EngineWorkspace() {
     );
   };
 
-  const renderDashboardView = () => (
+  const renderDashboardView = () => {
+    const localMvpStartupReadiness = providerRuntimeStatus.localMvpStartupReadiness?.schemaVersion === 'local-mvp-startup-readiness/v1'
+      ? providerRuntimeStatus.localMvpStartupReadiness
+      : null;
+    const startupStatus = providerRuntimeStatus.running
+      ? 'syncing'
+      : localMvpStartupReadiness?.status || 'not synced';
+    const startupReadyForFirstRun = localMvpStartupReadiness?.readyForFirstProjectRun === true;
+    const startupReadyForProviderSetup = localMvpStartupReadiness?.readyForProviderSetup === true;
+    const startupStatusClass = startupReadyForFirstRun
+      ? 'border-[#59684b] bg-[#edf4e9] text-[#3f5136]'
+      : startupReadyForProviderSetup
+        ? 'border-[#b9a55f] bg-[#fbf7df] text-[#75631d]'
+        : 'border-[#8f1e18] bg-red-50 text-[#8f1e18]';
+    const portfolioSourceMeta = (project = {}, fixtureMeta = sampleFixtureMeta(project)) => {
+      if (fixtureMeta) {
+        return {
+          label: fixtureMeta.status || 'sample-fixture',
+          detail: fixtureMeta.purpose || 'Sample fixture only / not a real project path',
+          className: fixtureMeta.status === 'development-fallback'
+            ? 'border-[#8f1e18] bg-red-50 text-[#8f1e18]'
+            : 'border-[#b9782b] bg-[#fff6d7] text-[#8a5d1d]',
+        };
+      }
+      if (isBackendKickoffProject(project) || hasBackendManagedProjectMarker(project) || projectHasBackendSyncEvidence(project)) {
+        return {
+          label: 'backend-backed',
+          detail: 'Loaded from backend project catalog or backend receipt sync',
+          className: 'border-[#59684b] bg-[#edf4e9] text-[#3f5136]',
+        };
+      }
+      return {
+        label: 'frontend-fallback',
+        detail: 'Local browser cache only; sync backend before treating this as a real project',
+        className: 'border-[#b9a55f] bg-[#fbf7df] text-[#75631d]',
+      };
+    };
+    const localWorkspaceOpenTaskCount = projects.reduce((count, project) => count + ((project.tasks || []).filter(task => task.status !== 'done').length), 0);
+    const localWorkspaceStoredMessageCount = chatMessages.length;
+    const backendCatalogProjects = Array.isArray(backendStation.projectCatalog) ? backendStation.projectCatalog : [];
+    const workspaceActiveProjectCount = backendStation.connectionStatus === 'online'
+      ? (
+          backendStation.lastProjectCatalogSyncAt
+            ? backendCatalogProjects.length
+            : 'backend required'
+        )
+      : projects.length;
+    const workspaceBackendProjectCount = backendStation.connectionStatus === 'online'
+      ? (
+          backendStation.lastProjectCatalogSyncAt
+            ? backendCatalogProjects.length
+            : 'backend required'
+        )
+      : 'offline';
+    const backendCatalogTaskCountForProject = (project = {}) => {
+      const explicitCount = project.tasks?.openCount
+        ?? project.taskSummary?.openCount
+        ?? project.summary?.openTasks
+        ?? project.openTasks;
+      if (Number.isFinite(Number(explicitCount))) return Number(explicitCount);
+      if (Array.isArray(project.tasks)) return project.tasks.filter(task => task.status !== 'done').length;
+      return null;
+    };
+    const backendCatalogMessageCountForProject = (project = {}) => {
+      const explicitCount = project.transcriptIndex?.messageCount
+        ?? project.transcriptSummary?.messageCount
+        ?? project.summary?.storedMessages
+        ?? project.summary?.messageCount
+        ?? project.messageCount;
+      if (Number.isFinite(Number(explicitCount))) return Number(explicitCount);
+      if (Array.isArray(project.messages)) return project.messages.length;
+      if (Array.isArray(project.chatMessages)) return project.chatMessages.length;
+      if (Array.isArray(project.transcripts?.channels)) {
+        return project.transcripts.channels.reduce((count, channel) => {
+          const channelCount = channel.messageCount ?? channel.messages?.length;
+          return Number.isFinite(Number(channelCount)) ? count + Number(channelCount) : count;
+        }, 0);
+      }
+      return null;
+    };
+    const backendCatalogTaskCounts = backendCatalogProjects.map(backendCatalogTaskCountForProject);
+    const backendCatalogMessageCounts = backendCatalogProjects.map(backendCatalogMessageCountForProject);
+    const workspaceOpenTaskCount = backendStation.connectionStatus === 'online'
+      ? (
+          backendStation.lastProjectCatalogSyncAt && backendCatalogTaskCounts.every(count => count !== null)
+            ? backendCatalogTaskCounts.reduce((count, value) => count + value, 0)
+            : 'backend required'
+        )
+      : localWorkspaceOpenTaskCount;
+    const workspaceStoredMessageCount = backendStation.connectionStatus === 'online'
+      ? (
+          backendStation.lastProjectCatalogSyncAt && backendCatalogMessageCounts.every(count => count !== null)
+            ? backendCatalogMessageCounts.reduce((count, value) => count + value, 0)
+            : 'backend required'
+        )
+      : localWorkspaceStoredMessageCount;
+    const workspaceOpenTaskSourceMeta = backendStation.connectionStatus === 'online'
+      ? (
+          backendStation.lastProjectCatalogSyncAt && backendCatalogTaskCounts.every(count => count !== null)
+            ? {
+                label: 'backend-catalog',
+                detail: 'Synced backend project task evidence',
+                className: 'border-[#59684b] bg-[#edf4e9] text-[#3f5136]',
+              }
+            : {
+                label: 'backend required',
+                detail: 'Sync project catalog task evidence',
+                className: 'border-[#8f1e18] bg-[#f7e6df] text-[#8f1e18]',
+              }
+        )
+      : {
+          label: 'frontend-fallback',
+          detail: 'Offline browser task cache',
+          className: 'border-[#b9a55f] bg-[#fbf7df] text-[#75631d]',
+        };
+    const workspaceStoredMessageSourceMeta = backendStation.connectionStatus === 'online'
+      ? (
+          backendStation.lastProjectCatalogSyncAt && backendCatalogMessageCounts.every(count => count !== null)
+            ? {
+                label: 'backend-catalog',
+                detail: 'Synced backend transcript evidence',
+                className: 'border-[#59684b] bg-[#edf4e9] text-[#3f5136]',
+              }
+            : {
+                label: 'backend required',
+                detail: 'Sync project catalog transcript evidence',
+                className: 'border-[#8f1e18] bg-[#f7e6df] text-[#8f1e18]',
+              }
+        )
+      : {
+          label: 'frontend-fallback',
+          detail: 'Offline browser message cache',
+          className: 'border-[#b9a55f] bg-[#fbf7df] text-[#75631d]',
+        };
+    const workspaceActiveProjectSourceMeta = backendStation.connectionStatus === 'online'
+      ? (
+          backendStation.lastProjectCatalogSyncAt
+            ? {
+                label: 'backend-catalog',
+                detail: 'Synced backend project catalog',
+                className: 'border-[#59684b] bg-[#edf4e9] text-[#3f5136]',
+              }
+            : {
+                label: 'backend required',
+                detail: 'Sync project catalog before trusting this count',
+                className: 'border-[#8f1e18] bg-[#f7e6df] text-[#8f1e18]',
+              }
+        )
+      : {
+          label: 'frontend-fallback',
+          detail: 'Offline browser project cache',
+          className: 'border-[#b9a55f] bg-[#fbf7df] text-[#75631d]',
+        };
+    const workspaceBackendProjectSourceMeta = backendStation.connectionStatus === 'online'
+      ? (
+          backendStation.lastProjectCatalogSyncAt
+            ? {
+                label: 'backend-catalog',
+                detail: 'Synced backend project catalog',
+                className: 'border-[#59684b] bg-[#edf4e9] text-[#3f5136]',
+              }
+            : {
+                label: 'backend required',
+                detail: 'Sync backend project catalog',
+                className: 'border-[#8f1e18] bg-[#f7e6df] text-[#8f1e18]',
+              }
+        )
+      : {
+          label: 'backend offline',
+          detail: 'Start backend, then sync project catalog',
+          className: 'border-[#7d786b] bg-[#f3f0e8] text-[#5f5a50]',
+        };
+    const workspaceBackendCatalogSummary = backendStation.connectionStatus === 'online'
+      ? (
+          backendStation.lastProjectCatalogSyncAt
+            ? `Backend catalog ${backendCatalogProjects.length} project${backendCatalogProjects.length === 1 ? '' : 's'}`
+            : 'Backend catalog sync required'
+        )
+      : 'Offline catalog uses local browser fallback';
+    const workspacePortfolioCatalogRequired = backendStation.connectionStatus === 'online' && !backendStation.lastProjectCatalogSyncAt;
+
+    return (
     <div className="flex-1 p-12 overflow-y-auto fade-in bg-[#fdfdfc]">
       <header className="mb-10 flex items-start justify-between gap-8">
         <div>
@@ -12353,6 +13886,60 @@ export default function EngineWorkspace() {
           </button>
         </div>
       </header>
+
+      <section data-testid="workspace-local-mvp-startup-readiness" className="mb-10 border border-[#d1d0c9] bg-white p-5 shadow-sm">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+          <div className="min-w-0">
+            <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-[#7d786b]">/local-mvp-startup-readiness</div>
+            <h2 className="mt-2 font-serif text-2xl leading-none text-[#1a1a1a]">Backend readiness before initiation</h2>
+          </div>
+          <div className="flex shrink-0 items-center gap-3">
+            <span data-testid="workspace-local-mvp-startup-status" className={`border px-3 py-2 font-mono text-[10px] uppercase tracking-[0.16em] ${startupStatusClass}`}>
+              {startupStatus}
+            </span>
+            <button
+              type="button"
+              data-testid="workspace-sync-local-mvp-startup"
+              onClick={() => syncSettingsProviderRuntime({ runTests: false })}
+              disabled={providerRuntimeStatus.running}
+              className="inline-flex items-center justify-center gap-2 border border-[#251b13] bg-[#efe2bd] px-4 py-3 font-mono text-[9px] uppercase tracking-widest text-[#251b13] hover:bg-[#251b13] hover:text-[#efe2bd] disabled:opacity-50"
+            >
+              <RefreshCw size={13} /> Sync startup
+            </button>
+            {!startupReadyForFirstRun && (
+              <button
+                type="button"
+                data-testid="workspace-open-settings-keys"
+                onClick={() => { setSettingsTab('keys'); setSettingsOpen(true); }}
+                className="inline-flex items-center justify-center gap-2 border border-[#8f1e18] px-4 py-3 font-mono text-[9px] uppercase tracking-widest text-[#8f1e18] hover:bg-[#8f1e18] hover:text-white"
+              >
+                <Settings size={13} /> Settings
+              </button>
+            )}
+          </div>
+        </div>
+        <div className="mt-4 grid gap-3 font-mono text-[11px] text-[#5f5a50] md:grid-cols-4">
+          <div data-testid="workspace-local-mvp-settings-entry" className="border border-[#d1d0c9] bg-[#f8f6ee] p-3">
+            <div className="text-[9px] uppercase tracking-[0.16em] text-[#7d786b]">Settings entry</div>
+            <div className="mt-1 text-[#1a1a1a]">{localMvpStartupReadiness?.readyForSettingsEntry ? 'ready' : localMvpStartupReadiness ? 'blocked' : 'not synced'}</div>
+          </div>
+          <div data-testid="workspace-local-mvp-provider-setup" className="border border-[#d1d0c9] bg-[#f8f6ee] p-3">
+            <div className="text-[9px] uppercase tracking-[0.16em] text-[#7d786b]">Provider setup</div>
+            <div className="mt-1 text-[#1a1a1a]">{startupReadyForProviderSetup ? 'ready' : localMvpStartupReadiness ? 'blocked' : 'not synced'}</div>
+          </div>
+          <div data-testid="workspace-local-mvp-first-run" className="border border-[#d1d0c9] bg-[#f8f6ee] p-3">
+            <div className="text-[9px] uppercase tracking-[0.16em] text-[#7d786b]">First project run</div>
+            <div className="mt-1 text-[#1a1a1a]">{startupReadyForFirstRun ? 'ready' : localMvpStartupReadiness ? 'blocked' : 'not synced'}</div>
+          </div>
+          <div data-testid="workspace-local-mvp-next-action" className="border border-[#d1d0c9] bg-[#f8f6ee] p-3">
+            <div className="text-[9px] uppercase tracking-[0.16em] text-[#7d786b]">Next action</div>
+            <div className="mt-1 line-clamp-2 text-[#1a1a1a]">{localMvpStartupReadiness?.nextAction?.label || 'Sync startup readiness'}</div>
+          </div>
+        </div>
+        <div data-testid="workspace-local-mvp-startup-route" className="mt-3 break-all font-mono text-[10px] uppercase tracking-[0.14em] text-[#7d786b]">
+          Route: {localMvpStartupReadiness?.backendRoutes?.localMvpStartupReadiness || '/local-mvp-startup-readiness'}
+        </div>
+      </section>
 
       {false && (
         <>
@@ -12415,19 +14002,47 @@ export default function EngineWorkspace() {
 
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6 mb-12">
         {[
-          { icon: Cpu, label: 'Active Projects', val: projects.length },
-          { icon: Server, label: 'Backend Projects', val: backendStation.projectCatalog?.length || 0 },
-          { icon: ClipboardList, label: 'Open Tasks', val: projects.reduce((count, project) => count + ((project.tasks || []).filter(task => task.status !== 'done').length), 0) },
-          { icon: MessageSquare, label: 'Stored Messages', val: chatMessages.length }
-        ].map((stat, i) => (
+          { icon: Cpu, label: 'Active Projects', val: workspaceActiveProjectCount },
+          { icon: Server, label: 'Backend Projects', val: workspaceBackendProjectCount },
+          { icon: ClipboardList, label: 'Open Tasks', val: workspaceOpenTaskCount },
+          { icon: MessageSquare, label: 'Stored Messages', val: workspaceStoredMessageCount }
+        ].map((stat, i) => {
+          const statId = stat.label.toLowerCase().replace(/\s+/g, '-');
+          const statSourceMeta = stat.label === 'Open Tasks'
+            ? workspaceOpenTaskSourceMeta
+            : stat.label === 'Active Projects'
+              ? workspaceActiveProjectSourceMeta
+            : stat.label === 'Backend Projects'
+              ? workspaceBackendProjectSourceMeta
+            : stat.label === 'Stored Messages'
+              ? workspaceStoredMessageSourceMeta
+              : null;
+          return (
           <div key={i} className="border border-[#d1d0c9] bg-white p-6 shadow-sm flex flex-col">
             <div className="flex justify-between items-center mb-6 text-gray-500">
               <span className="font-mono text-xs uppercase tracking-widest">{stat.label}</span>
               <stat.icon size={16} />
             </div>
             <span className="font-serif text-4xl">{stat.val}</span>
+            {statSourceMeta && (
+              <div className="mt-4 flex flex-col gap-1">
+                <span
+                  data-testid={`workspace-stat-source-${statId}`}
+                  className={`w-fit border px-2 py-1 font-mono text-[8px] uppercase tracking-widest ${statSourceMeta.className}`}
+                >
+                  {statSourceMeta.label}
+                </span>
+                <span
+                  data-testid={`workspace-stat-source-detail-${statId}`}
+                  className="font-mono text-[9px] uppercase tracking-widest text-gray-500"
+                >
+                  {statSourceMeta.detail}
+                </span>
+              </div>
+            )}
           </div>
-        ))}
+          );
+        })}
       </div>
 
       <div className="border border-[#d1d0c9] bg-white p-8 shadow-sm">
@@ -12435,9 +14050,7 @@ export default function EngineWorkspace() {
            <div>
              <h2 className="font-serif text-2xl">Active Portfolios</h2>
              <p className="mt-1 font-mono text-[9px] uppercase tracking-widest text-gray-500">
-               {backendStation.connectionStatus === 'online'
-                 ? `Backend catalog ${backendStation.projectCatalog?.length || 0} project${(backendStation.projectCatalog?.length || 0) === 1 ? '' : 's'}`
-                 : 'Offline catalog uses local browser fallback'}
+               {workspaceBackendCatalogSummary}
              </p>
            </div>
            <button
@@ -12451,7 +14064,25 @@ export default function EngineWorkspace() {
            </button>
          </div>
          <div className="flex flex-col gap-4">
-           {projects.length === 0 && (
+           {workspacePortfolioCatalogRequired && (
+             <div data-testid="workspace-portfolio-catalog-required" className="border border-[#8f1e18] bg-[#f7e6df] p-6">
+               <div className="font-mono text-[9px] uppercase tracking-widest text-[#8f1e18] mb-2">Backend catalog required</div>
+               <div className="font-serif text-2xl mb-2">Sync backend projects before trusting this portfolio list.</div>
+               <p className="font-mono text-[10px] uppercase tracking-widest text-[#5f5a50] mb-4">
+                 Browser rows can still appear as fallback, but backend project truth starts with /projects.
+               </p>
+               <button
+                 type="button"
+                 data-testid="workspace-portfolio-sync-catalog-required"
+                 onClick={() => syncBackendProjectCatalog({ silent: false })}
+                 disabled={backendStation.loading}
+                 className="inline-flex items-center justify-center gap-2 border border-[#251b13] bg-[#efe2bd] px-4 py-3 font-mono text-[9px] uppercase tracking-widest text-[#251b13] hover:bg-[#251b13] hover:text-[#efe2bd] disabled:opacity-50"
+               >
+                 <Server size={14} /> Sync Backend Projects
+               </button>
+             </div>
+           )}
+           {!workspacePortfolioCatalogRequired && projects.length === 0 && (
              <div className="border border-dashed border-gray-300 bg-gray-50 p-8 text-center">
                <div className="font-serif text-2xl mb-2">No projects yet</div>
                <p className="font-mono text-[10px] uppercase tracking-widest text-gray-500 mb-5">Create one through the real kickoff workflow.</p>
@@ -12462,9 +14093,10 @@ export default function EngineWorkspace() {
                  New Project
                </button>
              </div>
-           )}
+          )}
           {projects.map(proj => {
             const fixtureMeta = sampleFixtureMeta(proj);
+            const sourceMeta = portfolioSourceMeta(proj, fixtureMeta);
             return (
              <div 
                key={proj.id} 
@@ -12480,6 +14112,17 @@ export default function EngineWorkspace() {
                    <p className="font-mono text-[10px] text-gray-500 uppercase tracking-widest">
                      ID: {proj.id} | {proj.team.length} Members | {proj.status}
                    </p>
+                   <div className="mt-2 flex flex-wrap items-center gap-2">
+                     <span
+                       className={`border px-2 py-1 font-mono text-[9px] uppercase tracking-widest ${sourceMeta.className}`}
+                       data-testid={`project-source-${proj.id}`}
+                     >
+                       {sourceMeta.label}
+                     </span>
+                     <span className="font-mono text-[9px] uppercase tracking-widest text-gray-500" data-testid={`project-source-detail-${proj.id}`}>
+                       {sourceMeta.detail}
+                     </span>
+                   </div>
                    {fixtureMeta && (
                      <p className="mt-1 font-mono text-[9px] uppercase tracking-widest text-[#b9782b]" data-testid={`project-sample-fixture-${proj.id}`}>
                        Sample fixture only / not a real project path
@@ -12497,6 +14140,18 @@ export default function EngineWorkspace() {
                   <div className="flex flex-col items-end gap-1">
                     <span className="font-mono text-xs text-gray-500">{proj.progress}%</span>
                     <div className="w-32 h-1 bg-gray-100"><div className="h-full bg-black" style={{width: `${proj.progress}%`}}></div></div>
+                    <span
+                      className={`mt-1 border px-2 py-1 font-mono text-[8px] uppercase tracking-widest ${sourceMeta.className}`}
+                      data-testid={`project-progress-source-${proj.id}`}
+                    >
+                      {sourceMeta.label}
+                    </span>
+                    <span
+                      className="max-w-[180px] text-right font-mono text-[8px] uppercase tracking-widest text-gray-500"
+                      data-testid={`project-progress-source-detail-${proj.id}`}
+                    >
+                      {sourceMeta.detail}
+                    </span>
                   </div>
                   <ChevronRight size={20} className="text-gray-300 group-hover:text-black transition-colors" />
                </div>
@@ -12506,12 +14161,32 @@ export default function EngineWorkspace() {
          </div>
       </div>
     </div>
-  );
+    );
+  };
 
   const renderProjectDashboard = () => {
     const projectText = (value) => localizeText(String(value ?? ''), activeLanguage);
     const isInitiatedProject = Boolean(activeProject.initiation);
     const fixtureMeta = sampleFixtureMeta(activeProject);
+    const projectDashboardSnapshotSourceMeta = fixtureMeta
+      ? {
+          label: fixtureMeta.status || 'sample-fixture',
+          detail: fixtureMeta.purpose || 'Sample fixture only / not a real project path',
+          className: fixtureMeta.status === 'development-fallback'
+            ? 'border-[#8f1e18] bg-red-50 text-[#8f1e18]'
+            : 'border-[#b9782b] bg-[#fff6d7] text-[#8a5d1d]',
+        }
+      : isBackendKickoffProject(activeProject) || hasBackendManagedProjectMarker(activeProject) || projectHasBackendSyncEvidence(activeProject)
+        ? {
+            label: 'backend-backed',
+            detail: 'Project snapshot has backend catalog, kickoff, or receipt evidence',
+            className: 'border-[#59684b] bg-[#edf4e9] text-[#3f5136]',
+          }
+        : {
+            label: 'frontend-fallback',
+            detail: 'Browser-local project snapshot; sync backend before treating it as real',
+            className: 'border-[#b9a55f] bg-[#fbf7df] text-[#75631d]',
+          };
     const backendTimelineReadModel = String(backendStation.timelineReadModel?.projectId || '').toLowerCase() === String(activeProject.id || '').toLowerCase()
       ? backendStation.timelineReadModel
       : null;
@@ -12551,18 +14226,96 @@ export default function EngineWorkspace() {
         };
     const eventLedgerDisplayRows = eventLedgerReadModel.eventLedger || [];
     const eventLedgerSummary = eventLedgerReadModel.summary || missingEventLedgerSummary;
-    const dashboardStats = [
-      { label: 'Focus', value: isInitiatedProject ? 'Kickoff Consensus' : 'Waiting', icon: Crosshair },
-      { label: 'Active Channels', value: chatChannels.length, icon: Hash },
-      { label: 'Timeline Logs', value: timelineDisplayLogs.length, icon: GitCommit },
-      { label: 'Autonomous Cycles', value: activeProject.autonomousLedger?.length || 0, icon: Activity },
-    ];
-    const nextSuggestion = isInitiatedProject
-      ? `Let ${activeProject.initiation.firstLead} coordinate execution while ${activeProject.initiation.reporter} keeps the first evidence report current. Output target: ${activeProject.initiation.output}.`
-      : 'No kickoff evidence has been created for this project yet.';
+    const dashboardBackendReadyPackage = String(backendStation.managerReadyPackage?.projectId || '').toLowerCase() === String(activeProject.id || '').toLowerCase()
+      ? backendStation.managerReadyPackage
+      : null;
+    const dashboardBackendManagerDashboard = String(backendStation.managerDashboard?.projectId || '').toLowerCase() === String(activeProject.id || '').toLowerCase()
+      ? backendStation.managerDashboard
+      : dashboardBackendReadyPackage?.managerDashboard || null;
+    const dashboardBackendTranscriptIndex = String(backendStation.transcriptIndex?.projectId || '').toLowerCase() === String(activeProject.id || '').toLowerCase()
+      ? backendStation.transcriptIndex
+      : dashboardBackendManagerDashboard?.transcriptIndex || null;
+    const localRunStatsAllowed = !timelineEventReadModelsRequired;
+    const dashboardAutonomousCycleCount = dashboardBackendManagerDashboard?.autonomousRunControlLoops?.count
+      ?? dashboardBackendManagerDashboard?.autonomousRunControlRuns?.count
+      ?? (localRunStatsAllowed ? activeProject.autonomousLedger?.length || 0 : projectText('backend required'));
+    const dashboardAgentRunCount = dashboardBackendManagerDashboard?.agentAutonomousActionRuns?.count
+      ?? dashboardBackendManagerDashboard?.agentWorkerSummary?.count
+      ?? (localRunStatsAllowed ? activeProject.agentWorkerLedger?.length || activeProject.autonomousLedger?.length || 0 : projectText('backend required'));
+    const dashboardActiveChannelCount = Number.isFinite(Number(dashboardBackendTranscriptIndex?.channelCount))
+      ? Number(dashboardBackendTranscriptIndex.channelCount)
+      : Array.isArray(dashboardBackendTranscriptIndex?.channels)
+        ? dashboardBackendTranscriptIndex.channels.length
+        : (timelineEventReadModelsRequired ? projectText('backend required') : chatChannels.length);
+    const dashboardBackendTaskRows = Array.isArray(dashboardBackendManagerDashboard?.tasks?.rows)
+      ? dashboardBackendManagerDashboard.tasks.rows
+      : null;
+    const dashboardOpenTaskCount = dashboardBackendManagerDashboard?.tasks?.openCount
+      ?? (dashboardBackendTaskRows
+        ? dashboardBackendTaskRows.filter(task => task.status !== 'done').length
+        : (timelineEventReadModelsRequired ? projectText('backend required') : (activeProject.tasks || []).filter(task => task.status !== 'done').length));
+    const projectDashboardStatSourceMeta = (source, detail) => ({
+      label: projectText(source === 'backend-required'
+        ? 'backend required'
+        : source === 'frontend-fallback'
+          ? 'frontend-fallback'
+          : 'backend-backed'),
+      detail: projectText(detail),
+      className: source === 'backend-required'
+        ? 'border-[#8f1e18] bg-[#f7e6df] text-[#8f1e18]'
+        : source === 'frontend-fallback'
+          ? 'border-[#b9a55f] bg-[#fbf7df] text-[#75631d]'
+          : 'border-[#59684b] bg-[#edf4e9] text-[#3f5136]',
+    });
+    const projectDashboardTimelineSourceMeta = backendTimelineLogs
+      ? projectDashboardStatSourceMeta('backend-backed', 'Backend timeline read model')
+      : timelineEventReadModelsRequired
+        ? projectDashboardStatSourceMeta('backend-required', 'Sync /timeline before trusting this stat')
+        : projectDashboardStatSourceMeta('frontend-fallback', 'Offline/demo timeline fallback');
+    const projectDashboardEventLedgerSourceMeta = eventLedgerReadModel.frontendMockSuppressed
+      ? projectDashboardStatSourceMeta('backend-required', 'Sync /events before trusting this stat')
+      : eventLedgerReadModel.dataSource === 'frontend-fallback'
+        ? projectDashboardStatSourceMeta('frontend-fallback', 'Offline/demo event fallback')
+        : projectDashboardStatSourceMeta('backend-backed', 'Backend event ledger read model');
+    const projectDashboardOpenTaskSourceMeta = dashboardBackendManagerDashboard?.tasks?.openCount !== undefined || dashboardBackendTaskRows
+      ? projectDashboardStatSourceMeta('backend-backed', 'Backend Manager Dashboard task model')
+      : timelineEventReadModelsRequired
+        ? projectDashboardStatSourceMeta('backend-required', 'Sync Manager Dashboard task rows')
+        : projectDashboardStatSourceMeta('frontend-fallback', 'Offline/demo task fallback');
+    const projectDashboardActiveChannelSourceMeta = dashboardBackendTranscriptIndex
+      ? projectDashboardStatSourceMeta('backend-backed', 'Backend transcript index read model')
+      : timelineEventReadModelsRequired
+        ? projectDashboardStatSourceMeta('backend-required', 'Sync backend transcripts before trusting this stat')
+        : projectDashboardStatSourceMeta('frontend-fallback', 'Offline/demo transcript fallback');
+    const projectDashboardAutonomousCycleSourceMeta = dashboardBackendManagerDashboard?.autonomousRunControlLoops?.count !== undefined || dashboardBackendManagerDashboard?.autonomousRunControlRuns?.count !== undefined
+      ? projectDashboardStatSourceMeta('backend-backed', 'Backend Autonomous Run Control model')
+      : timelineEventReadModelsRequired
+        ? projectDashboardStatSourceMeta('backend-required', 'Sync Manager Dashboard operations board')
+        : projectDashboardStatSourceMeta('frontend-fallback', 'Offline/demo autonomous cycle fallback');
+    const projectDashboardAgentRunSourceMeta = dashboardBackendManagerDashboard?.agentAutonomousActionRuns?.count !== undefined || dashboardBackendManagerDashboard?.agentWorkerSummary?.count !== undefined
+      ? projectDashboardStatSourceMeta('backend-backed', 'Backend Agent run model')
+      : timelineEventReadModelsRequired
+        ? projectDashboardStatSourceMeta('backend-required', 'Sync Manager Dashboard run model')
+        : projectDashboardStatSourceMeta('frontend-fallback', 'Offline/demo run fallback');
+    const projectDashboardKickoffExecutionFlowBackendRequired = Boolean(
+      !fixtureMeta
+      && isInitiatedProject
+      && timelineEventReadModelsRequired
+      && !dashboardBackendManagerDashboard?.kickoffExecutionFlow
+    );
+    const projectDashboardFocusSourceMeta = projectDashboardKickoffExecutionFlowBackendRequired
+      ? projectDashboardStatSourceMeta('backend-required', 'Sync Manager Dashboard kickoff execution model before trusting project focus')
+      : isInitiatedProject && dashboardBackendManagerDashboard?.kickoffExecutionFlow
+        ? projectDashboardStatSourceMeta('backend-backed', 'Backend Manager Dashboard kickoff execution model')
+        : projectDashboardSnapshotSourceMeta;
+    const projectDashboardFocusValue = projectDashboardKickoffExecutionFlowBackendRequired
+      ? projectText('backend required')
+      : isInitiatedProject ? projectText('Kickoff Consensus') : 'Auth Middleware';
+    const recentLineBackendRequired = isInitiatedProject && timelineEventReadModelsRequired && !backendTimelineLogs;
     const recentLine = isInitiatedProject
-      ? activeProject.logs.map((log, index) => ({
-          id: `init-log-${index}`,
+      ? timelineDisplayLogs.map((log, index) => ({
+          id: `init-log-${log.id || 'row'}-${index}`,
+          sourceLogId: log.id || null,
           type: index === 0 ? 'approved' : 'record',
           day: 'Just now',
           hour: log.time,
@@ -12576,13 +14329,25 @@ export default function EngineWorkspace() {
       { id: 'timeline', label: 'Manager Flow Graph', sub: 'Timeline', icon: ScrollText, desc: 'Work, decisions, changes, reports, and proof.' },
     ];
     const managerDashboardStats = [
-      { label: projectText('Focus'), value: isInitiatedProject ? projectText('Kickoff Consensus') : 'Auth Middleware', icon: Crosshair },
-      { label: projectText('Open Tasks'), value: (activeProject.tasks || []).filter(task => task.status !== 'done').length, icon: ClipboardList },
-      { label: projectText('Timeline Logs'), value: timelineDisplayLogs.length, icon: GitCommit },
-      { label: projectText('Event Ledger'), value: eventLedgerSummary.eventCount || eventLedgerDisplayRows.length, icon: Database },
-      { label: 'Agent Runs', value: activeProject.agentWorkerLedger?.length || activeProject.autonomousLedger?.length || 0, icon: Activity },
+      { label: projectText('Focus'), value: projectDashboardFocusValue, icon: Crosshair, sourceId: 'focus', sourceMeta: projectDashboardFocusSourceMeta },
+      { label: projectText('Active Channels'), value: dashboardActiveChannelCount, icon: Hash, sourceId: 'active-channels', sourceMeta: projectDashboardActiveChannelSourceMeta },
+      { label: projectText('Open Tasks'), value: dashboardOpenTaskCount, icon: ClipboardList, sourceId: 'open-tasks', sourceMeta: projectDashboardOpenTaskSourceMeta },
+      { label: projectText('Timeline Logs'), value: timelineDisplayLogs.length, icon: GitCommit, sourceId: 'timeline-logs', sourceMeta: projectDashboardTimelineSourceMeta },
+      { label: projectText('Event Ledger'), value: eventLedgerSummary.eventCount || eventLedgerDisplayRows.length, icon: Database, sourceId: 'event-ledger', sourceMeta: projectDashboardEventLedgerSourceMeta },
+      { label: projectText('Autonomous Cycles'), value: dashboardAutonomousCycleCount, icon: Activity, sourceId: 'autonomous-cycles', sourceMeta: projectDashboardAutonomousCycleSourceMeta },
+      { label: 'Agent Runs', value: dashboardAgentRunCount, icon: Activity, sourceId: 'agent-runs', sourceMeta: projectDashboardAgentRunSourceMeta },
     ];
-    const managerNextSuggestion = fixtureMeta
+    const projectDashboardNextRecommendationBackendRequired = projectDashboardKickoffExecutionFlowBackendRequired;
+    const projectDashboardNextRecommendationSourceMeta = projectDashboardNextRecommendationBackendRequired
+      ? projectDashboardStatSourceMeta('backend-required', 'Sync Manager Dashboard kickoff execution model before trusting this recommendation')
+      : fixtureMeta
+        ? projectDashboardSnapshotSourceMeta
+        : isInitiatedProject && dashboardBackendManagerDashboard?.kickoffExecutionFlow
+          ? projectDashboardStatSourceMeta('backend-backed', 'Backend Manager Dashboard kickoff execution model')
+          : projectDashboardSnapshotSourceMeta;
+    const managerNextSuggestion = projectDashboardNextRecommendationBackendRequired
+      ? 'Sync Manager Dashboard before trusting the next recommendation for this backend project.'
+      : fixtureMeta
       ? 'This workspace is loaded from sample fixture data for validation and demo review. Create real work through Start Initiation before judging production autonomy.'
       : isInitiatedProject
       ? `Let ${activeProject.initiation.firstLead} coordinate the next execution pulse while ${activeProject.initiation.reporter} keeps the first evidence report current. Current output target: ${activeProject.initiation.output}.`
@@ -12596,7 +14361,22 @@ export default function EngineWorkspace() {
       project: activeProject,
       cadence: activeProject.autonomy?.cadence || activeProject.autonomousCadence || 'hourly',
     });
-    const latestSchedulerRecord = activeProject.autonomousSchedulerLedger?.[0] || null;
+    const backendLatestProjectCycle = dashboardBackendManagerDashboard?.operationsBoard?.latestProjectCycle || null;
+    const latestSchedulerRecord = dashboardBackendManagerDashboard?.operationsBoard?.latestSchedulerRecord
+      || (localRunStatsAllowed ? activeProject.autonomousSchedulerLedger?.[0] : null)
+      || null;
+    const autonomousWorkLoopCycles = backendLatestProjectCycle
+      ? [backendLatestProjectCycle]
+      : (localRunStatsAllowed ? activeProject.autonomousLedger || [] : []);
+    const autonomousWorkLoopBackendRequired = !localRunStatsAllowed && !latestSchedulerRecord && !backendLatestProjectCycle;
+    const autonomousWorkLoopLastRunAt = dashboardBackendManagerDashboard?.operationsBoard?.projectLastRunAt
+      || latestSchedulerRecord?.ranAt
+      || backendLatestProjectCycle?.ranAt
+      || (localRunStatsAllowed ? activeProject.lastAutonomousRunAt : null);
+    const autonomousWorkLoopNextRunAt = dashboardBackendManagerDashboard?.operationsBoard?.projectNextRunAt
+      || latestSchedulerRecord?.nextRunAt
+      || backendLatestProjectCycle?.nextRunAt
+      || (localRunStatsAllowed ? activeProject.nextAutonomousRunAt || autonomousSchedule.nextRunAt : null);
     const backendScheduler = backendStation.scheduler || {};
     const backendSchedulerAgentControls = backendScheduler.lastTickAgentControlSummary
       || backendScheduler.startupAgentControlSummary
@@ -12681,17 +14461,45 @@ export default function EngineWorkspace() {
         || item.sessionId
       )),
     ].filter(Boolean).map(item => String(item).toUpperCase()))).join(' / ');
-    const backendManagerDashboard = backendStation.managerDashboard || null;
-    const backendManagerReadyPackage = backendStation.managerReadyPackage || null;
-    const backendStationReadinessProofMap = String(backendStation.readinessProofMap?.projectId || '').toLowerCase() === String(activeProject.id || '').toLowerCase()
+    const backendManagerDashboard = dashboardBackendManagerDashboard || null;
+    const backendManagerReadyPackage = dashboardBackendReadyPackage || null;
+    const activeProjectIdKey = String(activeProject.id || '').toLowerCase();
+    const scopedBackendStationReadModel = (readModel = null) => {
+      if (!readModel) return null;
+      const readModelProjectId = String(readModel.projectId || readModel.project?.id || '').toLowerCase();
+      if (readModelProjectId) {
+        return readModelProjectId === activeProjectIdKey ? readModel : null;
+      }
+      return isBackendManagedRealProject(activeProject) ? null : readModel;
+    };
+    const scopedBackendStationProof = (proof = null) => {
+      if (!proof) return null;
+      const proofProjectId = String(
+        proof.projectId
+        || proof.project?.id
+        || proof.project?.projectId
+        || proof.context?.projectId
+        || proof.workSubmission?.projectId
+        || proof.submission?.projectId
+        || proof.artifact?.projectId
+        || proof.evidenceSearch?.projectId
+        || proof.review?.projectId
+        || proof.reviewedSubmission?.projectId
+        || proof.reviewResponseSubmission?.projectId
+        || proof.autonomousActionDecision?.projectId
+        || ''
+      ).toLowerCase();
+      return proofProjectId && proofProjectId === activeProjectIdKey ? proof : null;
+    };
+    const backendStationReadinessProofMap = String(backendStation.readinessProofMap?.projectId || '').toLowerCase() === activeProjectIdKey
       ? backendStation.readinessProofMap
       : null;
     const backendReadinessProofMap = backendStationReadinessProofMap || backendManagerDashboard?.readinessProofMap || backendManagerReadyPackage?.managerDashboard?.readinessProofMap || backendManagerReadyPackage?.readinessProofMap || null;
-    const backendProductTeamMissionRuns = backendStation.productTeamMissionRuns || backendManagerDashboard?.productTeamMissionRuns || null;
+    const backendProductTeamMissionRuns = scopedBackendStationReadModel(backendStation.productTeamMissionRuns) || backendManagerDashboard?.productTeamMissionRuns || null;
     const backendProductTeamMissionRows = Array.isArray(backendProductTeamMissionRuns)
       ? backendProductTeamMissionRuns
       : (backendProductTeamMissionRuns?.rows || []);
-    const backendLatestProductTeamMissionRun = backendStation.productTeamMissionRun
+    const backendLatestProductTeamMissionRun = scopedBackendStationProof(backendStation.productTeamMissionRun)
       || backendProductTeamMissionRuns?.latestRun
       || backendProductTeamMissionRows[0]
       || null;
@@ -12702,22 +14510,682 @@ export default function EngineWorkspace() {
     const backendProductTeamMissionFlowNodeId = backendLatestProductTeamMissionRun?.id
       ? `product-team-mission-run-${backendLatestProductTeamMissionRun.id}`
       : null;
+    const settingsProofMapRouteOrMissing = ({
+      routesKey,
+      summaryKey,
+      schemaName,
+      apiPath,
+      stageId,
+      label,
+      detail,
+      channelId = 'settings',
+    }) => {
+      const routesReadModel = backendReadinessProofMap?.[routesKey] || [];
+      const summary = backendReadinessProofMap?.[summaryKey] || null;
+      const routes = routesReadModel.length
+        ? routesReadModel
+        : summary && backendStation.connectionStatus === 'online'
+          ? [{
+            schemaVersion: `${schemaName}/missing-backend`,
+            status: 'backend-model-missing',
+            dataSource: 'backend-required',
+            frontendMockSuppressed: true,
+            frontendFallbackMode: 'backend-required',
+            apiPath,
+            channelId,
+            proofIds: [],
+            timelineLogIds: [],
+            eventIds: [],
+            readyForProduction: false,
+            missingStageIds: [stageId],
+            stageRows: [{
+              id: stageId,
+              label,
+              ready: false,
+              status: 'backend-required',
+              detail,
+            }],
+          }]
+          : [];
+      const latestRoute = routes[0] || null;
+      const proofIds = Array.from(new Set([
+        ...(summary?.proofIds || []),
+        ...(latestRoute?.proofIds || []),
+      ].filter(Boolean)));
+      const timelineIds = Array.from(new Set([
+        ...(summary?.timelineLogIds || []),
+        ...(summary?.eventIds || []),
+        ...(latestRoute?.timelineLogIds || []),
+        ...(latestRoute?.eventIds || []),
+      ].filter(Boolean)));
+      return {
+        summary,
+        route: latestRoute,
+        source: latestRoute || summary || {},
+        ready: Boolean(latestRoute && !latestRoute.frontendMockSuppressed),
+        proofIds,
+        timelineIds,
+      };
+    };
+    const settingsProofMapSpecs = [
+      {
+        key: 'local-mvp-startup-readiness',
+        title: 'Local MVP startup readiness',
+        routeLabel: 'Startup gate',
+        routesKey: 'localMvpStartupReadinessRoutes',
+        summaryKey: 'localMvpStartupReadinessSummary',
+        schemaName: 'local-mvp-startup-readiness-route',
+        apiPath: '/local-mvp-startup-readiness',
+        stageId: 'backend-local-mvp-startup-readiness-route-required',
+        missingLabel: 'Backend local MVP startup readiness route is required',
+        missingDetail: 'Readiness Proof Map must expose localMvpStartupReadinessRoutes from the backend.',
+        settingsTab: 'health',
+      },
+      {
+        key: 'settings-health-readiness',
+        title: 'Settings health readiness',
+        routeLabel: 'Quick check',
+        routesKey: 'settingsHealthReadinessRoutes',
+        summaryKey: 'settingsHealthReadinessSummary',
+        schemaName: 'settings-health-readiness-route',
+        apiPath: '/settings/health-readiness',
+        stageId: 'backend-settings-health-readiness-route-required',
+        missingLabel: 'Backend Settings health readiness route is required',
+        missingDetail: 'Readiness Proof Map must expose settingsHealthReadinessRoutes from the backend.',
+        settingsTab: 'health',
+      },
+      {
+        key: 'settings-provider-readiness',
+        title: 'Settings provider readiness',
+        routeLabel: 'Keys and Secret Vault',
+        routesKey: 'settingsProviderReadinessRoutes',
+        summaryKey: 'settingsProviderReadinessSummary',
+        schemaName: 'settings-provider-readiness-route',
+        apiPath: activeProject?.id ? `/projects/${activeProject.id}/settings-provider-readiness` : '/settings/provider-readiness',
+        stageId: 'backend-settings-provider-readiness-route-required',
+        missingLabel: 'Backend Settings provider readiness route is required',
+        missingDetail: 'Readiness Proof Map must expose settingsProviderReadinessRoutes from the backend.',
+        settingsTab: 'keys',
+      },
+      {
+        key: 'settings-runtime-readiness',
+        title: 'Settings runtime readiness',
+        routeLabel: 'Deployment and Models',
+        routesKey: 'settingsRuntimeReadinessRoutes',
+        summaryKey: 'settingsRuntimeReadinessSummary',
+        schemaName: 'settings-runtime-readiness-route',
+        apiPath: activeProject?.id ? `/projects/${activeProject.id}/settings-runtime-readiness` : '/settings/runtime-readiness',
+        stageId: 'backend-settings-runtime-readiness-route-required',
+        missingLabel: 'Backend Settings runtime readiness route is required',
+        missingDetail: 'Readiness Proof Map must expose settingsRuntimeReadinessRoutes from the backend.',
+        settingsTab: 'deployment',
+      },
+      {
+        key: 'settings-integration-readiness',
+        title: 'Settings integration readiness',
+        routeLabel: 'Integrations',
+        routesKey: 'settingsIntegrationReadinessRoutes',
+        summaryKey: 'settingsIntegrationReadinessSummary',
+        schemaName: 'settings-integration-readiness-route',
+        apiPath: activeProject?.id ? `/projects/${activeProject.id}/settings-integration-readiness` : '/projects/:id/settings-integration-readiness',
+        stageId: 'backend-settings-integration-readiness-route-required',
+        missingLabel: 'Backend Settings integration readiness route is required',
+        missingDetail: 'Readiness Proof Map must expose settingsIntegrationReadinessRoutes from the backend.',
+        settingsTab: 'integrations',
+      },
+    ];
+    const backendSettingsProofMapCards = settingsProofMapSpecs.map(spec => ({
+      ...spec,
+      ...settingsProofMapRouteOrMissing({
+        routesKey: spec.routesKey,
+        summaryKey: spec.summaryKey,
+        schemaName: spec.schemaName,
+        apiPath: spec.apiPath,
+        stageId: spec.stageId,
+        label: spec.missingLabel,
+        detail: spec.missingDetail,
+      }),
+    })).filter(card => card.summary || card.route);
+    const autonomyProofMapRouteOrMissing = (spec) => settingsProofMapRouteOrMissing({
+      routesKey: spec.routesKey,
+      summaryKey: spec.summaryKey,
+      schemaName: spec.schemaName,
+      apiPath: spec.apiPath,
+      stageId: spec.stageId,
+      label: spec.missingLabel,
+      detail: spec.missingDetail,
+      channelId: 'manager-dashboard',
+    });
+    const coreAutonomyProofMapSpecs = [
+      {
+        key: 'product-team-operating-loop',
+        title: 'Product Team operating loop',
+        routeLabel: 'C/A operating loop',
+        routesKey: 'productTeamOperatingLoopRoutes',
+        summaryKey: 'productTeamOperatingLoopSummary',
+        schemaName: 'product-team-operating-loop-route',
+        apiPath: activeProject?.id ? `/projects/${activeProject.id}/product-team-operating-loop` : '/projects/:id/product-team-operating-loop',
+        stageId: 'backend-product-team-operating-loop-route-required',
+        missingLabel: 'Backend Product Team operating loop route is required',
+        missingDetail: 'Readiness Proof Map must expose productTeamOperatingLoopRoutes from the backend.',
+      },
+      {
+        key: 'planner-executor-reviewer-state-machine',
+        title: 'Planner / Executor / Reviewer state machine',
+        routeLabel: 'Responsibility handoff',
+        routesKey: 'plannerExecutorReviewerStateMachineRoutes',
+        summaryKey: 'plannerExecutorReviewerStateMachineSummary',
+        schemaName: 'planner-executor-reviewer-state-machine-route',
+        apiPath: activeProject?.id ? `/projects/${activeProject.id}/planner-executor-reviewer-state-machine` : '/projects/:id/planner-executor-reviewer-state-machine',
+        stageId: 'backend-planner-executor-reviewer-state-machine-route-required',
+        missingLabel: 'Backend Planner / Executor / Reviewer state-machine route is required',
+        missingDetail: 'Readiness Proof Map must expose plannerExecutorReviewerStateMachineRoutes from the backend.',
+      },
+      {
+        key: 'team-collaboration-diagnostics',
+        title: 'Team collaboration diagnostics',
+        routeLabel: 'Coordination diagnostics',
+        routesKey: 'teamCollaborationDiagnosticRoutes',
+        summaryKey: 'teamCollaborationDiagnosticsSummary',
+        schemaName: 'team-collaboration-diagnostics-route',
+        apiPath: activeProject?.id ? `/projects/${activeProject.id}/team-collaboration-diagnostics` : '/projects/:id/team-collaboration-diagnostics',
+        stageId: 'backend-team-collaboration-diagnostics-route-required',
+        missingLabel: 'Backend Team Collaboration Diagnostics route is required',
+        missingDetail: 'Readiness Proof Map must expose teamCollaborationDiagnosticRoutes from the backend.',
+      },
+      {
+        key: 'runtime-contract-freeze',
+        title: 'Runtime contract freeze',
+        routeLabel: 'Contract freeze',
+        routesKey: 'runtimeContractFreezeRoutes',
+        summaryKey: 'runtimeContractFreezeSummary',
+        schemaName: 'runtime-contract-freeze-route',
+        apiPath: activeProject?.id ? `/projects/${activeProject.id}/runtime-contracts` : '/projects/:id/runtime-contracts',
+        stageId: 'backend-runtime-contract-freeze-route-required',
+        missingLabel: 'Backend Runtime Contract Freeze route is required',
+        missingDetail: 'Readiness Proof Map must expose runtimeContractFreezeRoutes from the backend.',
+      },
+      {
+        key: 'autonomous-cycle-consistency',
+        title: 'Autonomous cycle consistency',
+        routeLabel: 'N-step autonomy proof',
+        routesKey: 'autonomousCycleConsistencyRoutes',
+        summaryKey: 'autonomousCycleConsistencySummary',
+        schemaName: 'autonomous-cycle-consistency-route',
+        apiPath: activeProject?.id ? `/projects/${activeProject.id}/autonomous-cycle-consistency` : '/projects/:id/autonomous-cycle-consistency',
+        stageId: 'backend-autonomous-cycle-consistency-route-required',
+        missingLabel: 'Backend Autonomous Cycle Consistency route is required',
+        missingDetail: 'Readiness Proof Map must expose autonomousCycleConsistencyRoutes from the backend.',
+      },
+      {
+        key: 'runtime-autonomy-status',
+        title: 'Runtime autonomy status',
+        routeLabel: 'Runtime recovery proof',
+        routesKey: 'runtimeAutonomyStatusRoutes',
+        summaryKey: 'runtimeAutonomyStatusSummary',
+        schemaName: 'runtime-autonomy-status-route',
+        apiPath: activeProject?.id ? `/projects/${activeProject.id}/runtime-autonomy-status` : '/projects/:id/runtime-autonomy-status',
+        stageId: 'backend-runtime-autonomy-status-route-required',
+        missingLabel: 'Backend Runtime Autonomy Status route is required',
+        missingDetail: 'Readiness Proof Map must expose runtimeAutonomyStatusRoutes from the backend.',
+      },
+    ];
+    const backendCoreAutonomyProofMapCards = coreAutonomyProofMapSpecs.map(spec => ({
+      ...spec,
+      ...autonomyProofMapRouteOrMissing(spec),
+    })).filter(card => card.summary || card.route);
+    const cockpitProofMapSpecs = [
+      {
+        key: 'agent-state-summary',
+        title: 'Agent state summary',
+        routeLabel: 'Agent work state',
+        routesKey: 'agentStateSummaryRoutes',
+        summaryKey: 'agentStateSummarySummary',
+        schemaName: 'agent-state-summary-route',
+        apiPath: activeProject?.id ? `/projects/${activeProject.id}/agent-state-summary` : '/projects/:id/agent-state-summary',
+        stageId: 'backend-agent-state-summary-route-required',
+        missingLabel: 'Backend Agent State Summary route is required',
+        missingDetail: 'Readiness Proof Map must expose agentStateSummaryRoutes from the backend.',
+      },
+      {
+        key: 'assignment-timeline-matrix',
+        title: 'Assignment timeline matrix',
+        routeLabel: 'Assignment handoff proof',
+        routesKey: 'assignmentTimelineMatrixRoutes',
+        summaryKey: 'assignmentTimelineMatrixSummary',
+        schemaName: 'assignment-timeline-matrix-route',
+        apiPath: activeProject?.id ? `/projects/${activeProject.id}/assignment-timeline-matrix` : '/projects/:id/assignment-timeline-matrix',
+        stageId: 'backend-assignment-timeline-matrix-route-required',
+        missingLabel: 'Backend Assignment Timeline Matrix route is required',
+        missingDetail: 'Readiness Proof Map must expose assignmentTimelineMatrixRoutes from the backend.',
+      },
+      {
+        key: 'change-flow',
+        title: 'Change flow',
+        routeLabel: 'Change intake and sync',
+        routesKey: 'changeFlowRoutes',
+        summaryKey: 'changeFlowSummary',
+        schemaName: 'change-flow-route',
+        apiPath: activeProject?.id ? `/projects/${activeProject.id}/change-flow` : '/projects/:id/change-flow',
+        stageId: 'backend-change-flow-route-required',
+        missingLabel: 'Backend Change Flow route is required',
+        missingDetail: 'Readiness Proof Map must expose changeFlowRoutes from the backend.',
+      },
+      {
+        key: 'continuous-work-loop',
+        title: 'Continuous work loop',
+        routeLabel: 'Scheduler work proof',
+        routesKey: 'continuousWorkLoopRoutes',
+        summaryKey: 'continuousWorkLoopSummary',
+        schemaName: 'continuous-work-loop-route',
+        apiPath: activeProject?.id ? `/projects/${activeProject.id}/continuous-work-loop` : '/projects/:id/continuous-work-loop',
+        stageId: 'backend-continuous-work-loop-route-required',
+        missingLabel: 'Backend Continuous Work Loop route is required',
+        missingDetail: 'Readiness Proof Map must expose continuousWorkLoopRoutes from the backend.',
+      },
+    ];
+    const backendCockpitProofMapCards = cockpitProofMapSpecs.map(spec => ({
+      ...spec,
+      ...autonomyProofMapRouteOrMissing(spec),
+    })).filter(card => card.summary || card.route);
+    const governanceProofMapSpecs = [
+      {
+        key: 'governance-protocol',
+        title: 'Governance protocol',
+        routeLabel: 'Leader and Reviewer charter',
+        routesKey: 'governanceProtocolRoutes',
+        summaryKey: 'governanceProtocolSummary',
+        schemaName: 'governance-protocol-route',
+        apiPath: activeProject?.id ? `/projects/${activeProject.id}/governance-protocol` : '/projects/:id/governance-protocol',
+        stageId: 'backend-governance-protocol-route-required',
+        missingLabel: 'Backend Governance Protocol route is required',
+        missingDetail: 'Readiness Proof Map must expose governanceProtocolRoutes from the backend.',
+        syncKind: 'governance-protocol',
+      },
+      {
+        key: 'manager-command-center',
+        title: 'Manager Live Command Center',
+        routeLabel: 'C-side control room',
+        routesKey: 'managerCommandCenterRoutes',
+        summaryKey: 'managerCommandCenterSummary',
+        schemaName: 'manager-command-center-route',
+        apiPath: activeProject?.id ? `/projects/${activeProject.id}/manager-command-center` : '/projects/:id/manager-command-center',
+        stageId: 'backend-manager-command-center-route-required',
+        missingLabel: 'Backend Manager Command Center route is required',
+        missingDetail: 'Readiness Proof Map must expose managerCommandCenterRoutes from the backend.',
+        syncKind: 'command-center',
+      },
+      {
+        key: 'manager-scenario-trail',
+        title: 'Manager scenario trail',
+        routeLabel: 'Scenario evidence trail',
+        routesKey: 'managerScenarioTrailRoutes',
+        summaryKey: 'managerScenarioTrailSummary',
+        schemaName: 'manager-scenario-trail-route',
+        apiPath: activeProject?.id ? `/projects/${activeProject.id}/manager-scenario-trail` : '/projects/:id/manager-scenario-trail',
+        stageId: 'backend-manager-scenario-trail-route-required',
+        missingLabel: 'Backend Manager Scenario Trail route is required',
+        missingDetail: 'Readiness Proof Map must expose managerScenarioTrailRoutes from the backend.',
+        syncKind: 'scenario-trail',
+      },
+      {
+        key: 'manager-scenario-walkthrough',
+        title: 'Manager scenario walkthrough',
+        routeLabel: 'Runnable scenario guide',
+        routesKey: 'managerScenarioWalkthroughRoutes',
+        summaryKey: 'managerScenarioWalkthroughSummary',
+        schemaName: 'manager-scenario-walkthrough-route',
+        apiPath: activeProject?.id ? `/projects/${activeProject.id}/manager-scenario-walkthrough` : '/projects/:id/manager-scenario-walkthrough',
+        stageId: 'backend-manager-scenario-walkthrough-route-required',
+        missingLabel: 'Backend Manager Scenario Walkthrough route is required',
+        missingDetail: 'Readiness Proof Map must expose managerScenarioWalkthroughRoutes from the backend.',
+        syncKind: 'scenario-walkthrough',
+      },
+      {
+        key: 'manager-requirement-matrix',
+        title: 'Manager requirement matrix',
+        routeLabel: 'Acceptance requirements',
+        routesKey: 'managerRequirementMatrixRoutes',
+        summaryKey: 'managerRequirementMatrixSummary',
+        schemaName: 'manager-requirement-matrix-route',
+        apiPath: activeProject?.id ? `/projects/${activeProject.id}/manager-requirement-matrix` : '/projects/:id/manager-requirement-matrix',
+        stageId: 'backend-manager-requirement-matrix-route-required',
+        missingLabel: 'Backend Manager Requirement Matrix route is required',
+        missingDetail: 'Readiness Proof Map must expose managerRequirementMatrixRoutes from the backend.',
+        syncKind: 'requirement-matrix',
+      },
+      {
+        key: 'sync-protocol-audit',
+        title: 'C/A sync protocol audit',
+        routeLabel: 'C-side to A-side protocol',
+        routesKey: 'syncProtocolAuditRoutes',
+        summaryKey: 'syncProtocolAuditSummary',
+        schemaName: 'sync-protocol-audit-route',
+        apiPath: activeProject?.id ? `/projects/${activeProject.id}/sync-protocol-audit` : '/projects/:id/sync-protocol-audit',
+        stageId: 'backend-sync-protocol-audit-route-required',
+        missingLabel: 'Backend Sync Protocol Audit route is required',
+        missingDetail: 'Readiness Proof Map must expose syncProtocolAuditRoutes from the backend.',
+        syncKind: 'sync-protocol',
+      },
+      {
+        key: 'manager-use-case-audit',
+        title: 'Manager use-case audit',
+        routeLabel: 'Customer story coverage',
+        routesKey: 'managerUseCaseAuditRoutes',
+        summaryKey: 'managerUseCaseAuditSummary',
+        schemaName: 'manager-use-case-audit-route',
+        apiPath: activeProject?.id ? `/projects/${activeProject.id}/manager-use-case-audit` : '/projects/:id/manager-use-case-audit',
+        stageId: 'backend-manager-use-case-audit-route-required',
+        missingLabel: 'Backend Manager Use Case Audit route is required',
+        missingDetail: 'Readiness Proof Map must expose managerUseCaseAuditRoutes from the backend.',
+        syncKind: 'use-case-audit',
+      },
+      {
+        key: 'manager-action-queue',
+        title: 'Manager action queue',
+        routeLabel: 'Runnable Manager actions',
+        routesKey: 'managerActionQueueRoutes',
+        summaryKey: 'managerActionQueueSummary',
+        schemaName: 'manager-action-queue-route',
+        apiPath: activeProject?.id ? `/projects/${activeProject.id}/manager-action-queue` : '/projects/:id/manager-action-queue',
+        stageId: 'backend-manager-action-queue-route-required',
+        missingLabel: 'Backend Manager Action Queue route is required',
+        missingDetail: 'Readiness Proof Map must expose managerActionQueueRoutes from the backend.',
+        syncKind: 'action-queue',
+      },
+    ];
+    const backendGovernanceProofMapCards = governanceProofMapSpecs.map(spec => ({
+      ...spec,
+      ...autonomyProofMapRouteOrMissing(spec),
+    })).filter(card => card.summary || card.route);
+    const syncBackendGovernanceProofMapCard = (syncKind) => {
+      if (syncKind === 'governance-protocol') return syncBackendGovernanceProtocol({ silent: false, projectId: activeProject.id });
+      if (syncKind === 'command-center') return syncBackendManagerCommandCenter({ silent: false, projectId: activeProject.id });
+      if (syncKind === 'scenario-trail') return syncBackendManagerScenarioTrail({ silent: false, projectId: activeProject.id });
+      if (syncKind === 'scenario-walkthrough') return syncBackendManagerScenarioWalkthrough({ silent: false, projectId: activeProject.id });
+      if (syncKind === 'requirement-matrix') return syncBackendManagerRequirementMatrix({ silent: false, projectId: activeProject.id });
+      if (syncKind === 'sync-protocol') return syncBackendSyncProtocolAudit({ silent: false, projectId: activeProject.id });
+      if (syncKind === 'use-case-audit') return syncBackendManagerUseCaseAudit({ silent: false, projectId: activeProject.id });
+      if (syncKind === 'action-queue') return syncBackendManagerActionQueue({ silent: false, projectId: activeProject.id });
+      return syncBackendReadyPackageSubmodels({ silent: false, projectId: activeProject.id, includeLaunchControls: true });
+    };
+    const outputProofMapRouteOrMissing = (spec) => {
+      const routesReadModel = backendReadinessProofMap?.[spec.routesKey] || [];
+      const summary = backendReadinessProofMap?.[spec.summaryKey] || null;
+      const count = Number(summary?.count ?? summary?.submissionCount ?? summary?.custodyRecordCount ?? 0);
+      const shouldRequireRoute = spec.routeRequiredWhenEmpty || count > 0;
+      const routeState = shouldRequireRoute
+        ? autonomyProofMapRouteOrMissing(spec)
+        : settingsProofMapRouteOrMissing({
+          routesKey: spec.routesKey,
+          summaryKey: spec.summaryKey,
+          schemaName: spec.schemaName,
+          apiPath: spec.apiPath,
+          stageId: spec.stageId,
+          label: spec.missingLabel,
+          detail: spec.missingDetail,
+          channelId: 'manager-dashboard',
+        });
+      if (shouldRequireRoute || routesReadModel.length) return routeState;
+      return {
+        ...routeState,
+        route: null,
+        source: summary || {},
+        ready: false,
+      };
+    };
+    const outputChainProofMapSpecs = [
+      {
+        key: 'agent-submission-routes',
+        title: 'Agent submission routes',
+        routeLabel: 'Submitted work nodes',
+        routesKey: 'submissionRoutes',
+        summaryKey: 'submissionSummary',
+        schemaName: 'agent-submission-route',
+        apiPath: activeProject?.id ? `/projects/${activeProject.id}/submissions` : '/projects/:id/submissions',
+        stageId: 'backend-agent-submission-routes-required',
+        missingLabel: 'Backend Agent submission routes are required',
+        missingDetail: 'Readiness Proof Map must expose submissionRoutes from the backend when submissions exist.',
+      },
+      {
+        key: 'evidence-search-routes',
+        title: 'Evidence search routes',
+        routeLabel: 'Search and evidence nodes',
+        routesKey: 'evidenceSearchRoutes',
+        summaryKey: 'evidenceSearchSummary',
+        schemaName: 'evidence-search-route',
+        apiPath: activeProject?.id ? `/projects/${activeProject.id}/evidence-searches` : '/projects/:id/evidence-searches',
+        stageId: 'backend-evidence-search-routes-required',
+        missingLabel: 'Backend Evidence Search routes are required',
+        missingDetail: 'Readiness Proof Map must expose evidenceSearchRoutes from the backend when evidence searches exist.',
+      },
+      {
+        key: 'evidence-quality-audit',
+        title: 'Evidence quality audit',
+        routeLabel: 'Decision-ready evidence',
+        routesKey: 'evidenceQualityRoutes',
+        summaryKey: 'evidenceQualitySummary',
+        schemaName: 'evidence-quality-audit-route',
+        apiPath: activeProject?.id ? `/projects/${activeProject.id}/evidence-quality-audit` : '/projects/:id/evidence-quality-audit',
+        stageId: 'backend-evidence-quality-audit-route-required',
+        missingLabel: 'Backend Evidence Quality Audit route is required',
+        missingDetail: 'Readiness Proof Map must expose evidenceQualityRoutes from the backend.',
+        routeRequiredWhenEmpty: true,
+      },
+      {
+        key: 'evidence-source-review-workflow',
+        title: 'Evidence source review workflow',
+        routeLabel: 'Reviewer source decisions',
+        routesKey: 'evidenceSourceReviewWorkflowRoutes',
+        summaryKey: 'evidenceSourceReviewWorkflowSummary',
+        schemaName: 'evidence-source-review-workflow-route',
+        apiPath: activeProject?.id ? `/projects/${activeProject.id}/evidence-source-review-workflow` : '/projects/:id/evidence-source-review-workflow',
+        stageId: 'backend-evidence-source-review-workflow-route-required',
+        missingLabel: 'Backend Evidence Source Review Workflow route is required',
+        missingDetail: 'Readiness Proof Map must expose evidenceSourceReviewWorkflowRoutes from the backend.',
+        routeRequiredWhenEmpty: true,
+      },
+      {
+        key: 'evidence-index-readiness',
+        title: 'Evidence index readiness',
+        routeLabel: 'Evidence and artifact index',
+        routesKey: 'evidenceIndexReadinessRoutes',
+        summaryKey: 'evidenceIndexReadinessSummary',
+        schemaName: 'evidence-index-readiness-route',
+        apiPath: activeProject?.id ? `/projects/${activeProject.id}/evidence-index-readiness` : '/projects/:id/evidence-index-readiness',
+        stageId: 'backend-evidence-index-readiness-route-required',
+        missingLabel: 'Backend Evidence Index Readiness route is required',
+        missingDetail: 'Readiness Proof Map must expose evidenceIndexReadinessRoutes from the backend.',
+        routeRequiredWhenEmpty: true,
+      },
+      {
+        key: 'brainstorm-layer',
+        title: 'Brainstorm layer',
+        routeLabel: 'Brainstorm alternatives',
+        routesKey: 'brainstormLayerRoutes',
+        summaryKey: 'brainstormLayerSummary',
+        schemaName: 'brainstorm-layer-route',
+        apiPath: activeProject?.id ? `/projects/${activeProject.id}/brainstorm-layer` : '/projects/:id/brainstorm-layer',
+        stageId: 'backend-brainstorm-layer-route-required',
+        missingLabel: 'Backend Brainstorm Layer route is required',
+        missingDetail: 'Readiness Proof Map must expose brainstormLayerRoutes from the backend.',
+        routeRequiredWhenEmpty: true,
+      },
+      {
+        key: 'artifact-quality-audit',
+        title: 'Artifact quality audit',
+        routeLabel: 'Artifact quality and storage proof',
+        routesKey: 'artifactQualityRoutes',
+        summaryKey: 'artifactQualitySummary',
+        schemaName: 'artifact-quality-audit-route',
+        apiPath: activeProject?.id ? `/projects/${activeProject.id}/artifact-quality-audit` : '/projects/:id/artifact-quality-audit',
+        stageId: 'backend-artifact-quality-audit-route-required',
+        missingLabel: 'Backend Artifact Quality Audit route is required',
+        missingDetail: 'Readiness Proof Map must expose artifactQualityRoutes from the backend.',
+        routeRequiredWhenEmpty: true,
+      },
+      {
+        key: 'evidence-custody-readiness',
+        title: 'Evidence custody readiness',
+        routeLabel: 'Source custody proof',
+        routesKey: 'evidenceCustodyRoutes',
+        summaryKey: 'evidenceCustodySummary',
+        schemaName: 'evidence-custody-readiness-route',
+        apiPath: activeProject?.id ? `/projects/${activeProject.id}/evidence-custody-readiness` : '/projects/:id/evidence-custody-readiness',
+        stageId: 'backend-evidence-custody-readiness-route-required',
+        missingLabel: 'Backend Evidence Custody route is required',
+        missingDetail: 'Readiness Proof Map must expose evidenceCustodyRoutes from the backend.',
+        routeRequiredWhenEmpty: true,
+      },
+      {
+        key: 'project-evidence-archive',
+        title: 'Project evidence archive',
+        routeLabel: 'Customer handoff archive',
+        routesKey: 'projectEvidenceArchiveRoutes',
+        summaryKey: 'projectEvidenceArchiveSummary',
+        schemaName: 'project-evidence-archive-route',
+        apiPath: activeProject?.id ? `/projects/${activeProject.id}/project-evidence-archive` : '/projects/:id/project-evidence-archive',
+        stageId: 'backend-project-evidence-archive-route-required',
+        missingLabel: 'Backend Project Evidence Archive route is required',
+        missingDetail: 'Readiness Proof Map must expose projectEvidenceArchiveRoutes from the backend.',
+        routeRequiredWhenEmpty: true,
+      },
+      {
+        key: 'zero-to-autonomy-report',
+        title: 'Zero-to-autonomy report',
+        routeLabel: 'Full validation report',
+        routesKey: 'zeroToAutonomyReportRoutes',
+        summaryKey: 'zeroToAutonomyReportSummary',
+        schemaName: 'zero-to-autonomy-report-route',
+        apiPath: activeProject?.id ? `/projects/${activeProject.id}/zero-to-autonomy-report` : '/projects/:id/zero-to-autonomy-report',
+        stageId: 'backend-zero-to-autonomy-report-route-required',
+        missingLabel: 'Backend Zero-to-Autonomy Report route is required',
+        missingDetail: 'Readiness Proof Map must expose zeroToAutonomyReportRoutes from the backend.',
+        routeRequiredWhenEmpty: true,
+      },
+    ];
+    const backendOutputChainProofMapCards = outputChainProofMapSpecs.map(spec => ({
+      ...spec,
+      ...outputProofMapRouteOrMissing(spec),
+    })).filter(card => card.summary || card.route);
     const backendTranscriptProofCoverageSummary = backendReadinessProofMap?.transcriptProofCoverageSummary || null;
-    const backendTranscriptProofCoverageRoute = backendReadinessProofMap?.transcriptProofCoverageRoutes?.[0] || null;
+    const backendTranscriptProofCoverageRouteReadModel = backendReadinessProofMap?.transcriptProofCoverageRoutes?.[0] || null;
+    const backendTranscriptProofCoverageRoute = backendTranscriptProofCoverageRouteReadModel || (
+      backendTranscriptProofCoverageSummary && backendStation.connectionStatus === 'online' ? {
+        schemaVersion: 'transcript-proof-coverage-route/missing-backend',
+        status: 'backend-model-missing',
+        dataSource: 'backend-required',
+        frontendMockSuppressed: true,
+        frontendFallbackMode: 'backend-required',
+        apiPath: activeProject?.id ? `/projects/${activeProject.id}/project-evidence-archive` : null,
+        channelId: 'main',
+        proofIds: [],
+        timelineLogIds: [],
+        eventIds: [],
+        readyForBackendTranscriptProof: false,
+        missingStageIds: ['backend-transcript-proof-coverage-route-required'],
+        stageRows: [{
+          id: 'backend-transcript-proof-coverage-route-required',
+          label: 'Backend transcript proof coverage route is required',
+          ready: false,
+          status: 'backend-required',
+          detail: 'Readiness Proof Map must expose transcriptProofCoverageRoutes from the backend.',
+        }],
+      } : null
+    );
+    const backendTranscriptProofCoverageSource = backendTranscriptProofCoverageRoute || backendTranscriptProofCoverageSummary || {};
+    const backendTranscriptProofCoverageReady = Boolean(
+      backendTranscriptProofCoverageSummary?.readyForBackendTranscriptProof
+      && !backendTranscriptProofCoverageRoute?.frontendMockSuppressed
+    );
     const backendTranscriptProofCoverageIds = Array.from(new Set([
       ...(backendTranscriptProofCoverageSummary?.proofIds || []),
       ...(backendTranscriptProofCoverageRoute?.proofIds || []),
     ].filter(Boolean)));
     const backendTranscriptChannelSummary = backendReadinessProofMap?.transcriptChannelSummary || null;
-    const backendTranscriptChannelRoutes = backendReadinessProofMap?.transcriptChannelRoutes || [];
+    const backendTranscriptChannelRoutesReadModel = backendReadinessProofMap?.transcriptChannelRoutes || [];
+    const backendTranscriptChannelRoutes = backendTranscriptChannelRoutesReadModel.length
+      ? backendTranscriptChannelRoutesReadModel
+      : backendTranscriptChannelSummary && backendStation.connectionStatus === 'online'
+        ? [{
+          schemaVersion: 'transcript-channel-route/missing-backend',
+          status: 'backend-model-missing',
+          dataSource: 'backend-required',
+          frontendMockSuppressed: true,
+          frontendFallbackMode: 'backend-required',
+          apiPath: activeProject?.id ? `/projects/${activeProject.id}/transcripts` : null,
+          channelId: backendTranscriptChannelSummary.latestChannelId || 'main',
+          proofIds: [],
+          timelineLogIds: [],
+          eventIds: [],
+          readyForBackendTranscriptChannels: false,
+          missingStageIds: ['backend-transcript-channel-route-required'],
+          stageRows: [{
+            id: 'backend-transcript-channel-route-required',
+            label: 'Backend transcript channel route is required',
+            ready: false,
+            status: 'backend-required',
+            detail: 'Readiness Proof Map must expose transcriptChannelRoutes from the backend.',
+          }],
+        }]
+        : [];
     const backendLatestTranscriptChannelRoute = backendTranscriptChannelRoutes[0] || null;
+    const backendTranscriptChannelSource = backendLatestTranscriptChannelRoute || backendTranscriptChannelSummary || {};
+    const backendTranscriptChannelReady = Boolean(
+      backendTranscriptChannelSummary?.readyForBackendTranscriptChannels
+      && !backendLatestTranscriptChannelRoute?.frontendMockSuppressed
+    );
     const backendTranscriptChannelChatProofIds = chatProofIdsFromIds(backendTranscriptChannelRoutes.flatMap(route => route.proofIds || []));
     const backendTranscriptChannelTimelineIds = Array.from(new Set(
       backendTranscriptChannelRoutes.flatMap(route => route.timelineLogIds || []).filter(Boolean)
     ));
+    const missingTranscriptProofMapRoute = (schemaName, routeSlug, readyFlagName, stageId, label, detail, extra = {}) => ({
+      schemaVersion: `${schemaName}/missing-backend`,
+      status: 'backend-model-missing',
+      dataSource: 'backend-required',
+      frontendMockSuppressed: true,
+      frontendFallbackMode: 'backend-required',
+      apiPath: activeProject?.id ? `/projects/${activeProject.id}/${routeSlug}` : null,
+      channelId: extra.channelId || 'main',
+      proofIds: [],
+      timelineLogIds: [],
+      eventIds: [],
+      [readyFlagName]: false,
+      missingStageIds: [stageId],
+      stageRows: [{
+        id: stageId,
+        label,
+        ready: false,
+        status: 'backend-required',
+        detail,
+      }],
+      ...extra,
+    });
+    const routeAwareProofMapRoutes = (routes = [], summary, missingRoute) => (
+      routes.length ? routes : summary && missingRoute && backendStation.connectionStatus === 'online' ? [missingRoute] : []
+    );
+    const routeAwareProofMapReady = (summaryReady, latestRoute) => Boolean(summaryReady && !latestRoute?.frontendMockSuppressed);
     const backendTranscriptChannelPinSummary = backendReadinessProofMap?.transcriptChannelPinSummary || null;
-    const backendTranscriptChannelPinRoutes = backendReadinessProofMap?.transcriptChannelPinRoutes || [];
+    const backendTranscriptChannelPinRoutesReadModel = backendReadinessProofMap?.transcriptChannelPinRoutes || [];
+    const backendTranscriptChannelPinRoutes = routeAwareProofMapRoutes(
+      backendTranscriptChannelPinRoutesReadModel,
+      backendTranscriptChannelPinSummary,
+      backendTranscriptChannelPinSummary ? missingTranscriptProofMapRoute(
+        'transcript-channel-pin-route',
+        `transcripts/${backendTranscriptChannelPinSummary.latestChannelId || 'main'}/channel-pin`,
+        'readyForBackendTranscriptChannelPins',
+        'backend-transcript-channel-pin-route-required',
+        'Backend transcript channel pin route is required',
+        'Readiness Proof Map must expose transcriptChannelPinRoutes from the backend.',
+        { channelId: backendTranscriptChannelPinSummary.latestChannelId || 'main' },
+      ) : null,
+    );
     const backendLatestTranscriptChannelPinRoute = backendTranscriptChannelPinRoutes[0] || null;
+    const backendTranscriptChannelPinSource = backendLatestTranscriptChannelPinRoute || backendTranscriptChannelPinSummary || {};
+    const backendTranscriptChannelPinReady = routeAwareProofMapReady(
+      backendTranscriptChannelPinSummary?.readyForBackendTranscriptChannelPins,
+      backendLatestTranscriptChannelPinRoute,
+    );
     const backendTranscriptChannelPinChatProofIds = chatProofIdsFromIds(backendTranscriptChannelPinRoutes.flatMap(route => route.proofIds || []));
     const backendTranscriptChannelPinTimelineIds = Array.from(new Set(
       backendTranscriptChannelPinRoutes.flatMap(route => [
@@ -12726,8 +15194,26 @@ export default function EngineWorkspace() {
       ]).filter(Boolean)
     ));
     const backendTranscriptPinSummary = backendReadinessProofMap?.transcriptPinSummary || null;
-    const backendTranscriptPinRoutes = backendReadinessProofMap?.transcriptPinRoutes || [];
+    const backendTranscriptPinRoutesReadModel = backendReadinessProofMap?.transcriptPinRoutes || [];
+    const backendTranscriptPinRoutes = routeAwareProofMapRoutes(
+      backendTranscriptPinRoutesReadModel,
+      backendTranscriptPinSummary,
+      backendTranscriptPinSummary ? missingTranscriptProofMapRoute(
+        'transcript-pin-route',
+        `transcripts/${backendTranscriptPinSummary.latestChannelId || 'main'}/pins`,
+        'readyForBackendTranscriptPins',
+        'backend-transcript-pin-route-required',
+        'Backend transcript pin route is required',
+        'Readiness Proof Map must expose transcriptPinRoutes from the backend.',
+        { channelId: backendTranscriptPinSummary.latestChannelId || 'main' },
+      ) : null,
+    );
     const backendLatestTranscriptPinRoute = backendTranscriptPinRoutes[0] || null;
+    const backendTranscriptPinSource = backendLatestTranscriptPinRoute || backendTranscriptPinSummary || {};
+    const backendTranscriptPinReady = routeAwareProofMapReady(
+      backendTranscriptPinSummary?.readyForBackendTranscriptPins,
+      backendLatestTranscriptPinRoute,
+    );
     const backendTranscriptPinChatProofIds = chatProofIdsFromIds(backendTranscriptPinRoutes.flatMap(route => route.proofIds || []));
     const backendTranscriptPinTimelineIds = Array.from(new Set(
       backendTranscriptPinRoutes.flatMap(route => [
@@ -12736,8 +15222,26 @@ export default function EngineWorkspace() {
       ]).filter(Boolean)
     ));
     const backendTranscriptReplySummary = backendReadinessProofMap?.transcriptReplySummary || null;
-    const backendTranscriptReplyRoutes = backendReadinessProofMap?.transcriptReplyRoutes || [];
+    const backendTranscriptReplyRoutesReadModel = backendReadinessProofMap?.transcriptReplyRoutes || [];
+    const backendTranscriptReplyRoutes = routeAwareProofMapRoutes(
+      backendTranscriptReplyRoutesReadModel,
+      backendTranscriptReplySummary,
+      backendTranscriptReplySummary ? missingTranscriptProofMapRoute(
+        'transcript-reply-route',
+        `transcripts/${backendTranscriptReplySummary.latestChannelId || 'main'}/replies`,
+        'readyForBackendTranscriptReplies',
+        'backend-transcript-reply-route-required',
+        'Backend transcript reply route is required',
+        'Readiness Proof Map must expose transcriptReplyRoutes from the backend.',
+        { channelId: backendTranscriptReplySummary.latestChannelId || 'main' },
+      ) : null,
+    );
     const backendLatestTranscriptReplyRoute = backendTranscriptReplyRoutes[0] || null;
+    const backendTranscriptReplySource = backendLatestTranscriptReplyRoute || backendTranscriptReplySummary || {};
+    const backendTranscriptReplyReady = routeAwareProofMapReady(
+      backendTranscriptReplySummary?.readyForBackendTranscriptReplies,
+      backendLatestTranscriptReplyRoute,
+    );
     const backendTranscriptReplyChatProofIds = chatProofIdsFromIds(backendTranscriptReplyRoutes.flatMap(route => route.proofIds || []));
     const backendTranscriptReplyTimelineIds = Array.from(new Set(
       backendTranscriptReplyRoutes.flatMap(route => [
@@ -12746,8 +15250,26 @@ export default function EngineWorkspace() {
       ]).filter(Boolean)
     ));
     const backendTranscriptMentionSummary = backendReadinessProofMap?.transcriptMentionSummary || null;
-    const backendTranscriptMentionRoutes = backendReadinessProofMap?.transcriptMentionRoutes || [];
+    const backendTranscriptMentionRoutesReadModel = backendReadinessProofMap?.transcriptMentionRoutes || [];
+    const backendTranscriptMentionRoutes = routeAwareProofMapRoutes(
+      backendTranscriptMentionRoutesReadModel,
+      backendTranscriptMentionSummary,
+      backendTranscriptMentionSummary ? missingTranscriptProofMapRoute(
+        'transcript-mention-route',
+        `transcripts/${backendTranscriptMentionSummary.latestChannelId || 'main'}/mentions`,
+        'readyForBackendTranscriptMentions',
+        'backend-transcript-mention-route-required',
+        'Backend transcript mention route is required',
+        'Readiness Proof Map must expose transcriptMentionRoutes from the backend.',
+        { channelId: backendTranscriptMentionSummary.latestChannelId || 'main' },
+      ) : null,
+    );
     const backendLatestTranscriptMentionRoute = backendTranscriptMentionRoutes[0] || null;
+    const backendTranscriptMentionSource = backendLatestTranscriptMentionRoute || backendTranscriptMentionSummary || {};
+    const backendTranscriptMentionReady = routeAwareProofMapReady(
+      backendTranscriptMentionSummary?.readyForBackendTranscriptMentions,
+      backendLatestTranscriptMentionRoute,
+    );
     const backendTranscriptMentionChatProofIds = chatProofIdsFromIds(backendTranscriptMentionRoutes.flatMap(route => route.proofIds || []));
     const backendTranscriptMentionTimelineIds = Array.from(new Set(
       backendTranscriptMentionRoutes.flatMap(route => [
@@ -12756,8 +15278,26 @@ export default function EngineWorkspace() {
       ]).filter(Boolean)
     ));
     const backendTranscriptAttachmentSummary = backendReadinessProofMap?.transcriptAttachmentSummary || null;
-    const backendTranscriptAttachmentRoutes = backendReadinessProofMap?.transcriptAttachmentRoutes || [];
+    const backendTranscriptAttachmentRoutesReadModel = backendReadinessProofMap?.transcriptAttachmentRoutes || [];
+    const backendTranscriptAttachmentRoutes = routeAwareProofMapRoutes(
+      backendTranscriptAttachmentRoutesReadModel,
+      backendTranscriptAttachmentSummary,
+      backendTranscriptAttachmentSummary ? missingTranscriptProofMapRoute(
+        'transcript-attachment-route',
+        `transcripts/${backendTranscriptAttachmentSummary.latestChannelId || 'main'}/attachments`,
+        'readyForBackendTranscriptAttachments',
+        'backend-transcript-attachment-route-required',
+        'Backend transcript attachment route is required',
+        'Readiness Proof Map must expose transcriptAttachmentRoutes from the backend.',
+        { channelId: backendTranscriptAttachmentSummary.latestChannelId || 'main' },
+      ) : null,
+    );
     const backendLatestTranscriptAttachmentRoute = backendTranscriptAttachmentRoutes[0] || null;
+    const backendTranscriptAttachmentSource = backendLatestTranscriptAttachmentRoute || backendTranscriptAttachmentSummary || {};
+    const backendTranscriptAttachmentReady = routeAwareProofMapReady(
+      backendTranscriptAttachmentSummary?.readyForBackendTranscriptAttachments,
+      backendLatestTranscriptAttachmentRoute,
+    );
     const backendTranscriptAttachmentChatProofIds = chatProofIdsFromIds(backendTranscriptAttachmentRoutes.flatMap(route => route.proofIds || []));
     const backendTranscriptAttachmentTimelineIds = Array.from(new Set(
       backendTranscriptAttachmentRoutes.flatMap(route => [
@@ -12766,8 +15306,26 @@ export default function EngineWorkspace() {
       ]).filter(Boolean)
     ));
     const backendTranscriptMemberPresenceSummary = backendReadinessProofMap?.transcriptMemberPresenceSummary || null;
-    const backendTranscriptMemberPresenceRoutes = backendReadinessProofMap?.transcriptMemberPresenceRoutes || [];
+    const backendTranscriptMemberPresenceRoutesReadModel = backendReadinessProofMap?.transcriptMemberPresenceRoutes || [];
+    const backendTranscriptMemberPresenceRoutes = routeAwareProofMapRoutes(
+      backendTranscriptMemberPresenceRoutesReadModel,
+      backendTranscriptMemberPresenceSummary,
+      backendTranscriptMemberPresenceSummary ? missingTranscriptProofMapRoute(
+        'transcript-member-presence-route',
+        `transcripts/${backendTranscriptMemberPresenceSummary.latestChannelId || 'main'}/members`,
+        'readyForBackendTranscriptMemberPresence',
+        'backend-transcript-member-presence-route-required',
+        'Backend transcript member presence route is required',
+        'Readiness Proof Map must expose transcriptMemberPresenceRoutes from the backend.',
+        { channelId: backendTranscriptMemberPresenceSummary.latestChannelId || 'main' },
+      ) : null,
+    );
     const backendLatestTranscriptMemberPresenceRoute = backendTranscriptMemberPresenceRoutes[0] || null;
+    const backendTranscriptMemberPresenceSource = backendLatestTranscriptMemberPresenceRoute || backendTranscriptMemberPresenceSummary || {};
+    const backendTranscriptMemberPresenceReady = routeAwareProofMapReady(
+      backendTranscriptMemberPresenceSummary?.readyForBackendTranscriptMemberPresence,
+      backendLatestTranscriptMemberPresenceRoute,
+    );
     const backendTranscriptMemberPresenceChatProofIds = chatProofIdsFromIds(backendTranscriptMemberPresenceRoutes.flatMap(route => route.proofIds || []));
     const backendTranscriptMemberPresenceTimelineIds = Array.from(new Set(
       backendTranscriptMemberPresenceRoutes.flatMap(route => [
@@ -12776,8 +15334,38 @@ export default function EngineWorkspace() {
       ]).filter(Boolean)
     ));
     const backendAgentMessageSummary = backendReadinessProofMap?.agentMessageSummary || null;
-    const backendAgentMessageRoutes = backendReadinessProofMap?.agentMessageRoutes || [];
+    const backendAgentMessageRoutesReadModel = backendReadinessProofMap?.agentMessageRoutes || [];
+    const backendAgentMessageRoutes = backendAgentMessageRoutesReadModel.length
+      ? backendAgentMessageRoutesReadModel
+      : backendAgentMessageSummary && backendStation.connectionStatus === 'online'
+        ? [{
+          schemaVersion: 'agent-message-route/missing-backend',
+          status: 'backend-model-missing',
+          dataSource: 'backend-required',
+          frontendMockSuppressed: true,
+          frontendFallbackMode: 'backend-required',
+          apiPath: activeProject?.id ? `/projects/${activeProject.id}/transcripts/main` : null,
+          channelId: 'main',
+          proofIds: [],
+          timelineLogIds: [],
+          eventIds: [],
+          readyForAgentMessageDelivery: false,
+          missingStageIds: ['backend-agent-message-route-required'],
+          stageRows: [{
+            id: 'backend-agent-message-route-required',
+            label: 'Backend Agent-to-Agent message route is required',
+            ready: false,
+            status: 'backend-required',
+            detail: 'Readiness Proof Map must expose agentMessageRoutes from the backend.',
+          }],
+        }]
+        : [];
     const backendLatestAgentMessageRoute = backendAgentMessageRoutes[0] || null;
+    const backendAgentMessageProofMapSource = backendLatestAgentMessageRoute || backendAgentMessageSummary || {};
+    const backendAgentMessageProofRouteReady = Boolean(
+      backendAgentMessageSummary?.readyForAgentMessageDelivery
+      && !backendLatestAgentMessageRoute?.frontendMockSuppressed
+    );
     const backendAgentMessageChatProofIds = chatProofIdsFromIds(backendAgentMessageRoutes.flatMap(route => route.proofIds || []));
     const backendAgentMessageTimelineProofIds = Array.from(new Set(
       backendAgentMessageRoutes.flatMap(route => [
@@ -12795,7 +15383,7 @@ export default function EngineWorkspace() {
     const backendProductionInfrastructureRehearsal = backendReadyPackageSubmodels.productionInfrastructureRehearsal || backendManagerReadyPackage?.productionInfrastructureRehearsal || null;
     const backendPublicProductionStartupReadiness = backendManagerReadyPackage?.publicProductionStartupReadiness || null;
     const backendProductionLaunchAudit = backendReadyPackageSubmodels.productionLaunchAudit || backendManagerReadyPackage?.productionLaunchAudit || null;
-    const backendProjectEvidenceArchive = backendReadyPackageSubmodels.projectEvidenceArchive || backendManagerReadyPackage?.projectEvidenceArchive || null;
+    const backendProjectEvidenceArchiveReadModel = backendReadyPackageSubmodels.projectEvidenceArchive || backendManagerReadyPackage?.projectEvidenceArchive || null;
     const backendProjectEvidenceExportWorkflow = backendReadyPackageSubmodels.projectEvidenceExportWorkflow || backendManagerReadyPackage?.projectEvidenceExportWorkflow || null;
     const backendPrivatePilotGoLiveReadiness = backendReadyPackageSubmodels.privatePilotGoLiveReadiness || backendManagerReadyPackage?.privatePilotGoLiveReadiness || null;
     const backendOnlineForReadyPackage = backendStation.connectionStatus === 'online';
@@ -12865,6 +15453,87 @@ export default function EngineWorkspace() {
         eventIdCount: 0,
       },
     });
+    const missingZeroToAutonomyReport = () => missingReadyPackageReadModel('project-zero-to-autonomy-report', 'zeroToAutonomyReport', 'zero-to-autonomy-report', {
+      readyForLocalMvpTrial: false,
+      readyForPrivatePilotDelivery: false,
+      readyForPublicProduction: false,
+      nextAction: {
+        id: 'fetch-zero-to-autonomy-report',
+        owner: 'manager',
+        domain: 'zero-to-autonomy',
+        action: 'Fetch the backend project zero-to-autonomy report.',
+        apiPath: managerReadyPackageRoute('zeroToAutonomyReport', 'zero-to-autonomy-report'),
+      },
+      stageRows: [
+        'settings-byok-seal',
+        'startup-readiness',
+        'kickoff-self-marketing',
+        'workspace-binding',
+        'ca-handoff-autonomous-agent-output',
+        'provider-evidence-source-review',
+        'brainstorm-draft-review-revision-final',
+        'generic-artifact-coverage',
+        'manager-proof-surfaces',
+        'project-evidence-archive',
+      ].map(id => ({
+        id,
+        label: id.replace(/-/g, ' '),
+        ready: false,
+        status: 'backend-model-missing',
+        detail: 'Backend-online real projects require the project zero-to-autonomy report from the backend.',
+        proofIds: [],
+        timelineLogIds: [],
+        eventIds: [],
+      })),
+      missingRows: [],
+      artifactTypes: [],
+      productionBlockers: [],
+      redaction: {
+        plaintextProviderSecretsExposed: false,
+        ciphertextExposed: false,
+        archiveRawLeakCount: 0,
+      },
+      summary: {
+        stageCount: 10,
+        readyStageCount: 0,
+        missingStageCount: 10,
+        requiredArtifactTypeCount: 9,
+        submittedArtifactTypeCount: 0,
+        providerSourceCount: 0,
+        sourceReviewDecisionCount: 0,
+        proofIdCount: 0,
+        timelineLogIdCount: 0,
+        eventIdCount: 0,
+        archiveRawLeakCount: 0,
+      },
+    });
+    const missingProjectEvidenceArchive = () => missingReadyPackageReadModel('project-evidence-archive', 'projectEvidenceArchive', 'project-evidence-archive', {
+      readyForManagerHandoff: false,
+      readyForProduction: false,
+      rows: [{
+        id: 'backend-project-evidence-archive-required',
+        label: 'Backend Project Evidence Archive is required',
+        status: 'backend-required',
+        detail: 'Backend-online real projects require final delivery archive, artifact storage proof, workspace-file proof, transcript proof, and source-review proof from the backend.',
+        apiPath: managerReadyPackageRoute('projectEvidenceArchive', 'project-evidence-archive'),
+      }],
+      summary: {
+        manifestEntryCount: 1,
+        readyManifestEntryCount: 0,
+        submissionCount: 0,
+        finalDeliverableCount: 0,
+        evidenceSearchCount: 0,
+        artifactStorageProofCount: 0,
+        workspaceFileProofCount: 0,
+        evidenceSourceReviewDecisionCount: 0,
+        submissionReviewCount: 0,
+        transcriptMessageCount: 0,
+        rawLeakCount: 0,
+      },
+    });
+    const backendProjectEvidenceArchive = backendProjectEvidenceArchiveReadModel || (
+      backendOnlineForReadyPackage && backendManagerReadyPackage ? missingProjectEvidenceArchive() : null
+    );
     const missingProductTeamOperatingLoop = () => missingReadyPackageReadModel('product-team-operating-loop', 'productTeamOperatingLoop', 'product-team-operating-loop', {
       readyForLocalPilotOperatingLoop: false,
       readyForProduction: false,
@@ -13936,10 +16605,13 @@ export default function EngineWorkspace() {
     const backendProductTeamDeliveryTrace = backendReadyPackageSubmodels.productTeamDeliveryTrace || backendManagerReadyPackage?.productTeamDeliveryTrace || (
       backendOnlineForReadyPackage && backendManagerReadyPackage ? missingProductTeamDeliveryTrace() : null
     );
-    const backendProductTeamOperatingLoop = backendStation.productTeamOperatingLoop || backendReadyPackageSubmodels.productTeamOperatingLoop || backendManagerReadyPackage?.productTeamOperatingLoop || (
+    const backendZeroToAutonomyReport = backendReadyPackageSubmodels.zeroToAutonomyReport || backendManagerReadyPackage?.zeroToAutonomyReport || (
+      backendOnlineForReadyPackage && backendManagerReadyPackage ? missingZeroToAutonomyReport() : null
+    );
+    const backendProductTeamOperatingLoop = scopedBackendStationReadModel(backendStation.productTeamOperatingLoop) || backendReadyPackageSubmodels.productTeamOperatingLoop || backendManagerReadyPackage?.productTeamOperatingLoop || (
       backendOnlineForReadyPackage && backendManagerReadyPackage ? missingProductTeamOperatingLoop() : null
     );
-    const backendTeamCollaborationDiagnostics = backendStation.teamCollaborationDiagnostics || backendReadyPackageSubmodels.teamCollaborationDiagnostics || backendManagerReadyPackage?.teamCollaborationDiagnostics || (
+    const backendTeamCollaborationDiagnostics = scopedBackendStationReadModel(backendStation.teamCollaborationDiagnostics) || backendReadyPackageSubmodels.teamCollaborationDiagnostics || backendManagerReadyPackage?.teamCollaborationDiagnostics || (
       backendOnlineForReadyPackage && backendManagerReadyPackage ? missingTeamCollaborationDiagnostics() : null
     );
     const backendStationCollaborationIntentQueue = String(backendStation.collaborationIntentQueue?.projectId || '').toLowerCase() === String(activeProject.id || '').toLowerCase()
@@ -13948,7 +16620,36 @@ export default function EngineWorkspace() {
     const backendCollaborationIntentQueue = backendStationCollaborationIntentQueue || backendReadyPackageSubmodels.collaborationIntentQueue || backendManagerReadyPackage?.collaborationIntentQueue || (
       backendOnlineForReadyPackage && backendManagerReadyPackage ? missingCollaborationIntentQueue() : null
     );
-    const backendCollaborationIntentQueueRoute = backendReadinessProofMap?.collaborationIntentQueueRoutes?.[0] || null;
+    const missingReadinessProofRoute = (schemaName, routeSlug, extra = {}) => ({
+      schemaVersion: `${schemaName}/missing-backend`,
+      status: 'backend-model-missing',
+      dataSource: 'backend-required',
+      frontendMockSuppressed: true,
+      frontendFallbackMode: 'backend-required',
+      apiPath: activeProject?.id ? `/projects/${activeProject.id}/${routeSlug}` : null,
+      proofIds: [],
+      timelineLogIds: [],
+      eventIds: [],
+      ...extra,
+    });
+    const backendCollaborationIntentQueueRouteReadModel = backendReadinessProofMap?.collaborationIntentQueueRoutes?.[0] || null;
+    const backendCollaborationIntentQueueRoute = backendCollaborationIntentQueueRouteReadModel || (
+      backendOnlineForReadyPackage && backendReadinessProofMap ? missingReadinessProofRoute('collaboration-intent-queue-route', 'collaboration-intent-queue', {
+        readyForLocalPilotIntentQueue: false,
+        runnableCount: backendCollaborationIntentQueue?.summary?.runnableCount ?? 0,
+        rowCount: backendCollaborationIntentQueue?.summary?.rowCount ?? backendCollaborationIntentQueue?.rows?.length ?? 0,
+        missingStageIds: ['backend-collaboration-intent-queue-route-required'],
+        stageRows: [{
+          id: 'backend-collaboration-intent-queue-route-required',
+          label: 'Backend collaboration intent queue route is required',
+          ready: false,
+          status: 'backend-required',
+          detail: 'Readiness Proof Map must expose collaborationIntentQueueRoutes from the backend.',
+        }],
+        productionBlocked: true,
+      }) : null
+    );
+    const backendCollaborationIntentQueueProofMapSource = backendCollaborationIntentQueueRoute || backendCollaborationIntentQueue || {};
     const backendCollaborationIntentQueueProofIds = Array.from(new Set([
       ...(backendCollaborationIntentQueueRoute?.proofIds || []),
       ...(backendCollaborationIntentQueue?.proofIds || []),
@@ -13958,7 +16659,24 @@ export default function EngineWorkspace() {
       ...(backendCollaborationIntentQueueRoute?.timelineLogIds || []),
       ...(backendCollaborationIntentQueue?.timelineLogIds || []),
     ].filter(Boolean)));
-    const backendSubmissionReviewWorkflowRoute = backendReadinessProofMap?.submissionReviewWorkflowRoutes?.[0] || null;
+    const backendSubmissionReviewWorkflowRouteReadModel = backendReadinessProofMap?.submissionReviewWorkflowRoutes?.[0] || null;
+    const backendSubmissionReviewWorkflowRoute = backendSubmissionReviewWorkflowRouteReadModel || (
+      backendOnlineForReadyPackage && backendReadinessProofMap ? missingReadinessProofRoute('submission-review-workflow-route', 'submission-review-workflow', {
+        readyForPrivatePilotReview: false,
+        reviewCount: backendSubmissionReviewWorkflow?.summary?.reviewCount ?? backendSubmissionReviewWorkflow?.summary?.reviewRoundCount ?? 0,
+        revisionCount: backendSubmissionReviewWorkflow?.summary?.revisionResponseCount ?? 0,
+        acceptedCount: backendSubmissionReviewWorkflow?.summary?.acceptedFinalDeliverableCount ?? 0,
+        missingStageIds: ['backend-submission-review-workflow-route-required'],
+        stageRows: [{
+          id: 'backend-submission-review-workflow-route-required',
+          label: 'Backend submission-review workflow route is required',
+          ready: false,
+          status: 'backend-required',
+          detail: 'Readiness Proof Map must expose submissionReviewWorkflowRoutes from the backend.',
+        }],
+      }) : null
+    );
+    const backendSubmissionReviewWorkflowProofMapSource = backendSubmissionReviewWorkflowRoute || backendSubmissionReviewWorkflow || {};
     const backendSubmissionReviewWorkflowProofIds = Array.from(new Set([
       ...(backendSubmissionReviewWorkflowRoute?.proofIds || []),
       ...(backendSubmissionReviewWorkflow?.proofIds || []),
@@ -13968,7 +16686,24 @@ export default function EngineWorkspace() {
       ...(backendSubmissionReviewWorkflowRoute?.timelineLogIds || []),
       ...(backendSubmissionReviewWorkflow?.timelineLogIds || []),
     ].filter(Boolean)));
-    const backendProductTeamAcceptanceChainRoute = backendReadinessProofMap?.productTeamAcceptanceChainRoutes?.[0] || null;
+    const backendProductTeamAcceptanceChainRouteReadModel = backendReadinessProofMap?.productTeamAcceptanceChainRoutes?.[0] || null;
+    const backendProductTeamAcceptanceChainRoute = backendProductTeamAcceptanceChainRouteReadModel || (
+      backendOnlineForReadyPackage && backendReadinessProofMap ? missingReadinessProofRoute('product-team-acceptance-chain-route', 'product-team-delivery-trace', {
+        readyForGenericProductTeamAcceptance: false,
+        readyForBsideProductTeamRun: false,
+        readyForProduction: false,
+        readyStageIds: [],
+        missingStageIds: ['backend-product-team-acceptance-chain-route-required'],
+        stageRows: [{
+          id: 'backend-product-team-acceptance-chain-route-required',
+          label: 'Backend product-team acceptance chain route is required',
+          ready: false,
+          status: 'backend-required',
+          detail: 'Readiness Proof Map must expose productTeamAcceptanceChainRoutes from the backend.',
+        }],
+        productionBlocked: true,
+      }) : null
+    );
     const backendProductTeamAcceptanceChainSummary = backendReadinessProofMap?.productTeamAcceptanceChainSummary || null;
     const backendProductTeamAcceptanceChainProofIds = Array.from(new Set([
       ...(backendProductTeamAcceptanceChainRoute?.proofIds || []),
@@ -13985,7 +16720,23 @@ export default function EngineWorkspace() {
       backendProductTeamAcceptanceChainRoute?.readyForGenericProductTeamAcceptance
       || backendProductTeamAcceptanceChainSummary?.readyForGenericProductTeamAcceptance
     );
-    const backendProductTeamDeliveryTraceRoute = backendReadinessProofMap?.productTeamDeliveryTraceRoutes?.[0] || null;
+    const backendProductTeamDeliveryTraceRouteReadModel = backendReadinessProofMap?.productTeamDeliveryTraceRoutes?.[0] || null;
+    const backendProductTeamDeliveryTraceRoute = backendProductTeamDeliveryTraceRouteReadModel || (
+      backendOnlineForReadyPackage && backendReadinessProofMap ? missingReadinessProofRoute('product-team-delivery-trace-route', 'product-team-delivery-trace', {
+        readyForPrivatePilotDelivery: false,
+        acceptedFinalDeliverableCount: 0,
+        stageCount: backendProductTeamDeliveryTrace?.summary?.rowCount ?? 0,
+        missingStageIds: ['backend-product-team-delivery-trace-route-required'],
+        stageRows: [{
+          id: 'backend-product-team-delivery-trace-route-required',
+          label: 'Backend product-team delivery trace route is required',
+          ready: false,
+          status: 'backend-required',
+          detail: 'Readiness Proof Map must expose productTeamDeliveryTraceRoutes from the backend.',
+        }],
+      }) : null
+    );
+    const backendProductTeamDeliveryTraceProofMapSource = backendProductTeamDeliveryTraceRoute || backendProductTeamDeliveryTrace || {};
     const backendProductTeamDeliveryTraceProofIds = Array.from(new Set([
       ...(backendProductTeamDeliveryTraceRoute?.proofIds || []),
       ...(backendProductTeamDeliveryTrace?.proofIds || []),
@@ -13995,13 +16746,41 @@ export default function EngineWorkspace() {
       ...(backendProductTeamDeliveryTraceRoute?.timelineLogIds || []),
       ...(backendProductTeamDeliveryTrace?.timelineLogIds || []),
     ].filter(Boolean)));
-    const backendRuntimeContracts = backendStation.runtimeContracts || backendReadyPackageSubmodels.runtimeContracts || backendManagerReadyPackage?.runtimeContracts || (
+    const backendZeroToAutonomyReportRouteReadModel = backendReadinessProofMap?.zeroToAutonomyReportRoutes?.[0] || null;
+    const backendZeroToAutonomyReportRoute = backendZeroToAutonomyReportRouteReadModel || (
+      backendOnlineForReadyPackage && backendReadinessProofMap ? missingReadinessProofRoute('zero-to-autonomy-report-route', 'zero-to-autonomy-report', {
+        readyForLocalMvpTrial: false,
+        readyForPrivatePilotDelivery: false,
+        readyForPublicProduction: false,
+        stageCount: backendZeroToAutonomyReport?.summary?.stageCount ?? 10,
+        missingStageIds: ['backend-zero-to-autonomy-report-route-required'],
+        stageRows: [{
+          id: 'backend-zero-to-autonomy-report-route-required',
+          label: 'Backend zero-to-autonomy report route is required',
+          ready: false,
+          status: 'backend-required',
+          detail: 'Readiness Proof Map must expose zeroToAutonomyReportRoutes from the backend.',
+        }],
+        productionBlocked: true,
+      }) : null
+    );
+    const backendZeroToAutonomyReportProofMapSource = backendZeroToAutonomyReportRoute || backendZeroToAutonomyReport || {};
+    const backendZeroToAutonomyReportProofIds = Array.from(new Set([
+      ...(backendZeroToAutonomyReportRoute?.proofIds || []),
+      ...(backendZeroToAutonomyReport?.proofIds || []),
+    ].filter(Boolean)));
+    const backendZeroToAutonomyReportChatProofIds = chatProofIdsFromIds(backendZeroToAutonomyReportProofIds);
+    const backendZeroToAutonomyReportTimelineIds = Array.from(new Set([
+      ...(backendZeroToAutonomyReportRoute?.timelineLogIds || []),
+      ...(backendZeroToAutonomyReport?.timelineLogIds || []),
+    ].filter(Boolean)));
+    const backendRuntimeContracts = scopedBackendStationReadModel(backendStation.runtimeContracts) || backendReadyPackageSubmodels.runtimeContracts || backendManagerReadyPackage?.runtimeContracts || (
       backendOnlineForReadyPackage && backendManagerReadyPackage ? missingRuntimeContracts() : null
     );
-    const backendAutonomousCycleConsistency = backendStation.autonomousCycleConsistency || backendReadyPackageSubmodels.autonomousCycleConsistency || backendManagerReadyPackage?.autonomousCycleConsistency || (
+    const backendAutonomousCycleConsistency = scopedBackendStationReadModel(backendStation.autonomousCycleConsistency) || backendReadyPackageSubmodels.autonomousCycleConsistency || backendManagerReadyPackage?.autonomousCycleConsistency || (
       backendOnlineForReadyPackage && backendManagerReadyPackage ? missingAutonomousCycleConsistency() : null
     );
-    const backendRuntimeAutonomyStatus = backendStation.runtimeAutonomyStatus || backendReadyPackageSubmodels.runtimeAutonomyStatus || backendManagerReadyPackage?.runtimeAutonomyStatus || (
+    const backendRuntimeAutonomyStatus = scopedBackendStationReadModel(backendStation.runtimeAutonomyStatus) || backendReadyPackageSubmodels.runtimeAutonomyStatus || backendManagerReadyPackage?.runtimeAutonomyStatus || (
       backendOnlineForReadyPackage && backendManagerReadyPackage ? missingRuntimeAutonomyStatus() : null
     );
     const backendRuntimeAutonomyStatusRoute = backendReadinessProofMap?.runtimeAutonomyStatusRoutes?.[0] || null;
@@ -14034,34 +16813,51 @@ export default function EngineWorkspace() {
     const backendPersistenceAdapterDryRun = backendReadyPackageSubmodels.persistenceAdapterDryRun || backendManagerReadyPackage?.persistenceAdapterDryRun || null;
     const backendWorkerQueueAdapterPlan = backendReadyPackageSubmodels.workerQueueAdapterPlan || backendManagerReadyPackage?.workerQueueAdapterPlan || null;
     const backendWorkerQueueAdapterDryRun = backendReadyPackageSubmodels.workerQueueAdapterDryRun || backendManagerReadyPackage?.workerQueueAdapterDryRun || null;
-    const backendManagerCommandCenter = backendStation.managerCommandCenter || backendManagerReadyPackage?.managerCommandCenter || backendManagerDashboard?.managerCommandCenter || null;
-    const backendManagerScenarioTrail = backendStation.managerScenarioTrail || backendManagerDashboard?.managerScenarioTrail || null;
-    const backendManagerScenarioWalkthrough = backendStation.managerScenarioWalkthrough || backendManagerReadyPackage?.managerScenarioWalkthrough || backendManagerDashboard?.managerScenarioWalkthrough || null;
-    const backendManagerRequirementMatrix = backendStation.managerRequirementMatrix || backendManagerReadyPackage?.managerRequirementMatrix || backendManagerDashboard?.managerRequirementMatrix || null;
-    const backendManagerUseCaseAudit = backendStation.managerUseCaseAudit || backendManagerReadyPackage?.managerUseCaseAudit || backendManagerDashboard?.managerUseCaseAudit || null;
-    const backendManagerActionQueue = backendStation.managerActionQueue || backendManagerReadyPackage?.managerActionQueue || backendManagerDashboard?.managerActionQueue || null;
-    const backendAgentAutonomousActionQueue = backendStation.agentAutonomousActionQueue || backendManagerDashboard?.agentAutonomousActionQueue || null;
-    const backendAutonomousRunControl = backendStation.autonomousRunControl || backendReadyPackageSubmodels.autonomousRunControl || backendManagerReadyPackage?.autonomousRunControl || backendManagerDashboard?.autonomousRunControl || null;
-    const backendLatestAutonomousRunControlRun = backendStation.autonomousRunControlRun
+    const backendManagerCommandCenter = scopedBackendStationReadModel(backendStation.managerCommandCenter) || backendManagerReadyPackage?.managerCommandCenter || backendManagerDashboard?.managerCommandCenter || null;
+    const backendManagerScenarioTrail = scopedBackendStationReadModel(backendStation.managerScenarioTrail) || backendManagerDashboard?.managerScenarioTrail || null;
+    const backendManagerScenarioWalkthrough = scopedBackendStationReadModel(backendStation.managerScenarioWalkthrough) || backendManagerReadyPackage?.managerScenarioWalkthrough || backendManagerDashboard?.managerScenarioWalkthrough || null;
+    const backendManagerRequirementMatrix = scopedBackendStationReadModel(backendStation.managerRequirementMatrix) || backendManagerReadyPackage?.managerRequirementMatrix || backendManagerDashboard?.managerRequirementMatrix || null;
+    const backendManagerUseCaseAudit = scopedBackendStationReadModel(backendStation.managerUseCaseAudit) || backendManagerReadyPackage?.managerUseCaseAudit || backendManagerDashboard?.managerUseCaseAudit || null;
+    const backendManagerActionQueue = scopedBackendStationReadModel(backendStation.managerActionQueue) || backendManagerReadyPackage?.managerActionQueue || backendManagerDashboard?.managerActionQueue || null;
+    const backendAgentAutonomousActionQueue = scopedBackendStationReadModel(backendStation.agentAutonomousActionQueue) || backendManagerDashboard?.agentAutonomousActionQueue || null;
+    const backendAutonomousRunControl = scopedBackendStationReadModel(backendStation.autonomousRunControl) || backendReadyPackageSubmodels.autonomousRunControl || backendManagerReadyPackage?.autonomousRunControl || backendManagerDashboard?.autonomousRunControl || null;
+    const backendManagerCommandCenterRunReceipt = scopedBackendStationProof(backendStation.managerCommandCenterRun);
+    const backendManagerScenarioWalkthroughReceipt = scopedBackendStationProof(backendStation.managerScenarioWalkthroughReceipt);
+    const backendManagerActionRunOutput = scopedBackendStationProof(backendStation.managerActionRunOutput);
+    const backendCollaborationIntentRunReceipt = scopedBackendStationProof(backendStation.collaborationIntentRun);
+    const backendCollaborationIntentRunOutput = scopedBackendStationProof(backendStation.collaborationIntentRunOutput);
+    const backendAutonomousRunControlRunOutput = scopedBackendStationProof(backendStation.autonomousRunControlRunOutput);
+    const backendAutonomousRunControlSessionsReadModel = scopedBackendStationProof(backendStation.autonomousRunControlSessions);
+    const backendAutonomousRunControlSessionReceipt = scopedBackendStationProof(backendStation.autonomousRunControlSession)
+      || backendAutonomousRunControlSessionsReadModel?.activeSession
+      || backendAutonomousRunControlSessionsReadModel?.latestSession
+      || null;
+    const backendAutonomousRunControlSessionTickReceipt = scopedBackendStationProof(backendStation.autonomousRunControlSessionTick);
+    const backendAutonomousRunControlSessionWorkerReceipt = scopedBackendStationProof(backendStation.autonomousRunControlSessionWorker);
+    const backendAutonomousRunControlSessionAvailable = Boolean(
+      backendAutonomousRunControlSessionReceipt
+      || backendAutonomousRunControlSessionsReadModel?.activeSession
+      || backendAutonomousRunControlSessionsReadModel?.latestSession
+    );
+    const backendAgentAutonomousActionRunReceipt = scopedBackendStationProof(backendStation.agentAutonomousActionRun);
+    const backendAgentAutonomousActionRunOutput = scopedBackendStationProof(backendStation.agentAutonomousActionRunOutput);
+    const backendMvpReadinessOperatorActionRunReceipt = scopedBackendStationProof(backendStation.mvpReadinessOperatorActionRun);
+    const backendManagedInfrastructureCutoverAttestationRunReceipt = scopedBackendStationProof(backendStation.managedInfrastructureCutoverAttestationRun);
+    const backendTimelineActionReceipt = scopedBackendStationProof(backendStation.timelineActionReceipt);
+    const backendLatestAutonomousRunControlRunReadModel = scopedBackendStationProof(backendStation.autonomousRunControlRun)
       || backendManagerReadyPackage?.autonomousRunControlRuns?.latestRun
       || backendManagerDashboard?.autonomousRunControlRuns?.latestRun
       || backendManagerReadyPackage?.autonomousRunControlRuns?.rows?.[0]
       || backendManagerDashboard?.autonomousRunControlRuns?.rows?.[0]
-      || activeProject?.autonomousRunControlRunLedger?.[0]
       || null;
-    const backendLatestAutonomousRunControlLoop = backendStation.autonomousRunControlLoop
+    const backendLatestAutonomousRunControlLoopReadModel = scopedBackendStationProof(backendStation.autonomousRunControlLoop)
       || backendManagerReadyPackage?.autonomousRunControlLoops?.latestRun
       || backendManagerDashboard?.autonomousRunControlLoops?.latestRun
       || backendManagerReadyPackage?.autonomousRunControlLoops?.rows?.[0]
       || backendManagerDashboard?.autonomousRunControlLoops?.rows?.[0]
-      || activeProject?.autonomousRunControlLoopLedger?.[0]
       || null;
-    const backendManagerActionRuns = backendManagerReadyPackage?.managerActionRuns || backendManagerDashboard?.managerActionRuns || {
-      count: activeProject.managerActionRunLedger?.length || 0,
-      latestRun: activeProject.managerActionRunLedger?.[0] || null,
-      rows: activeProject.managerActionRunLedger || [],
-    };
-    const backendSyncProtocolAudit = backendStation.syncProtocolAudit || backendManagerReadyPackage?.syncProtocolAudit || backendManagerDashboard?.syncProtocolAudit || null;
+    const backendManagerActionRunsReadModel = backendManagerReadyPackage?.managerActionRuns || backendManagerDashboard?.managerActionRuns || null;
+    const backendSyncProtocolAudit = scopedBackendStationReadModel(backendStation.syncProtocolAudit) || backendManagerReadyPackage?.syncProtocolAudit || backendManagerDashboard?.syncProtocolAudit || null;
     const backendOnline = backendStation.connectionStatus === 'online';
     const backendCommandAvailable = shouldAttemptBackendProjectWrite(activeProject);
     const backendStatusText = backendOnline
@@ -14078,6 +16874,12 @@ export default function EngineWorkspace() {
       || backendStation.error === 'Backend-online real projects require timeline/event proof from the backend.'
     );
     const allowManagerFrontendFallbacks = frontendFallbackMode === 'demo-or-offline';
+    const backendLatestAutonomousRunControlRun = backendLatestAutonomousRunControlRunReadModel
+      || (allowManagerFrontendFallbacks ? activeProject?.autonomousRunControlRunLedger?.[0] : null)
+      || null;
+    const backendLatestAutonomousRunControlLoop = backendLatestAutonomousRunControlLoopReadModel
+      || (allowManagerFrontendFallbacks ? activeProject?.autonomousRunControlLoopLedger?.[0] : null)
+      || null;
     const withFrontendFallbackMeta = (readModel = {}, readModelName = 'frontend-fallback') => ({
       ...readModel,
       dataSource: 'frontend-fallback',
@@ -14107,25 +16909,74 @@ export default function EngineWorkspace() {
           : missingValue
       )
     );
-    const managerReadModelSourceLabel = (readModel = {}) => (
-      readModel.frontendMockSuppressed
+    const backendOrLazyFallback = (backendValue, fallbackFactory, missingValue, readModelName) => (
+      backendValue || (
+        allowManagerFrontendFallbacks
+          ? withFrontendFallbackMeta(fallbackFactory(), readModelName)
+          : missingValue
+      )
+    );
+    const fallbackManagerActionRuns = {
+      schemaVersion: 'manager-action-runs/frontend-fallback',
+      count: activeProject.managerActionRunLedger?.length || 0,
+      latestRun: activeProject.managerActionRunLedger?.[0] || null,
+      rows: activeProject.managerActionRunLedger || [],
+    };
+    const backendManagerActionRuns = backendOrAllowedFallback(
+      backendManagerActionRunsReadModel,
+      fallbackManagerActionRuns,
+      missingBackendReadModel('manager-action-runs/v1', {
+        status: 'backend-model-missing',
+        count: 0,
+        latestRun: null,
+        rows: [],
+      }),
+      'manager-action-runs/v1',
+    );
+    const managerReadModelMeta = (readModel = {}) => readModel || {};
+    const managerReadModelSourceLabel = (readModel = {}) => {
+      const meta = managerReadModelMeta(readModel);
+      return meta.frontendMockSuppressed
         ? projectText('backend model missing')
-        : readModel.dataSource === 'frontend-fallback'
+        : meta.dataSource === 'frontend-fallback'
           ? projectText('demo data')
-          : projectText('backend-backed')
-    );
-    const managerReadModelSourceClass = (readModel = {}) => (
-      readModel.frontendMockSuppressed
+          : projectText('backend-backed');
+    };
+    const managerReadModelSourceClass = (readModel = {}) => {
+      const meta = managerReadModelMeta(readModel);
+      return meta.frontendMockSuppressed
         ? 'bg-[#8f1e18] text-white'
-        : readModel.dataSource === 'frontend-fallback'
+        : meta.dataSource === 'frontend-fallback'
           ? 'bg-[#b9782b] text-white'
-          : 'bg-[#59684b] text-white'
-    );
+          : 'bg-[#59684b] text-white';
+    };
     const managerReadModelSourceBadge = (readModel = {}, testId) => (
       <span data-testid={testId} className={`node-status-tag ${managerReadModelSourceClass(readModel)}`}>
         {managerReadModelSourceLabel(readModel)}
       </span>
     );
+    const managerProofModelSyncButton = (readModel = {}, testId) => managerReadModelMeta(readModel).frontendMockSuppressed ? (
+      <button
+        type="button"
+        data-testid={testId}
+        onClick={() => syncBackendReadyPackageSubmodels({ silent: false, projectId: activeProject.id, includeLaunchControls: true })}
+        disabled={backendStation.loading}
+        className="node-status-tag border border-[#8f1e18] bg-red-50 text-[#8f1e18] hover:border-[#251b13] hover:text-[#251b13] disabled:opacity-40 disabled:cursor-not-allowed"
+      >
+        {projectText('Sync Proof Models')}
+      </button>
+    ) : null;
+    const managerProofMapRouteSyncButton = (route = {}, testId) => managerReadModelMeta(route).frontendMockSuppressed ? (
+      <button
+        type="button"
+        data-testid={testId}
+        onClick={() => syncBackendReadinessProofMap({ silent: false, projectId: activeProject.id })}
+        disabled={backendStation.loading}
+        className="inline-flex items-center gap-1 border border-[#8f1e18] px-2 py-1 font-mono text-[8px] uppercase text-[#8f1e18] hover:border-[#251b13] hover:text-[#251b13] disabled:opacity-40 disabled:cursor-not-allowed"
+      >
+        <FileText size={10} /> {projectText('Sync Proof Map')}
+      </button>
+    ) : null;
     const kickoffCharter = activeProject.kickoffCharter || null;
     const projectAgentById = Object.fromEntries(activeProject.team.map(agent => [agent.id, agent]));
     const governanceAgent = (agentId, agentName) => {
@@ -14143,13 +16994,15 @@ export default function EngineWorkspace() {
       lead: fallbackGovernanceLead,
       reviewer: fallbackGovernanceReviewer,
     };
-    const backendGovernanceProtocol = kickoffCharter?.governance ? {
+    const backendStationGovernanceProtocol = scopedBackendStationReadModel(backendStation.governanceProtocol);
+    const backendGovernanceProtocolFromCharter = !isBackendManagedRealProject(activeProject) && kickoffCharter?.governance ? {
       schemaVersion: 'governance-protocol/v1',
       status: kickoffCharter.status || 'charter-ready',
       dataSource: kickoffCharter.source || 'backend-backed',
       lead: governanceAgent(kickoffCharter.governance.leaderId, kickoffCharter.governance.leaderName),
       reviewer: governanceAgent(kickoffCharter.governance.reviewerId, kickoffCharter.governance.reviewerName),
     } : null;
+    const backendGovernanceProtocol = backendStationGovernanceProtocol || backendGovernanceProtocolFromCharter;
     const governanceProtocol = backendOrAllowedFallback(
       backendGovernanceProtocol,
       fallbackGovernanceProtocol,
@@ -14311,14 +17164,17 @@ export default function EngineWorkspace() {
         isLeader: Boolean(row.isLeader),
       };
     };
-    const normalizeAgentStateSummaryRow = (row = {}) => {
+    const normalizeAgentStateSummaryRow = (row = {}, { allowLocalProofFallback = true } = {}) => {
       const agent = agentForStateRow(row);
-      const state = row.state || agentStates[agent.id] || {};
+      const state = row.state || (allowLocalProofFallback ? agentStates[agent.id] || {} : {});
       const currentPlan = row.currentPlan || state.currentPlan || {};
-      const routine = row.routine || currentPlan.routine || state.currentPlan?.routine || null;
-      const latestWorklog = row.latestWorklog || state.worklog?.[0] || null;
-      const latestWorker = latestAgentWorkerById[agent.id] || {};
+      const routine = row.routine || currentPlan.routine || (allowLocalProofFallback ? state.currentPlan?.routine : null) || null;
+      const latestWorklog = row.latestWorklog || (allowLocalProofFallback ? state.worklog?.[0] : null) || null;
+      const latestWorker = row.latestWorker || (allowLocalProofFallback ? latestAgentWorkerById[agent.id] || {} : {});
       const openObligations = row.openObligationCount ?? (state.obligations || []).filter(item => item.status !== 'done' && item.status !== 'resolved').length;
+      const openTaskCount = row.openTaskCount ?? row.ownedOpenTaskCount ?? row.taskCount ?? row.ownedTaskCount ?? row.tasks?.openCount ?? row.tasks?.length ?? row.taskIds?.length ?? 0;
+      const currentTask = row.currentTask || row.activeTask || row.task || null;
+      const currentTaskText = row.currentTaskText || currentTask?.text || currentTask?.title || row.activeTaskText || row.taskText || null;
       const focus = currentPlan.focus || row.focus || 'monitor project lane';
       const next = row.strategyNextStep || currentPlan.next || row.nextStep || 'wait for next routine pulse';
       return {
@@ -14340,6 +17196,9 @@ export default function EngineWorkspace() {
         latestWorklog,
         latestWorker,
         openObligations,
+        openTaskCount,
+        currentTask,
+        currentTaskText,
         nextRunAt: row.nextRunAt || state.nextAgentRunAt || latestWorker.nextRunAt || null,
         lastRunAt: row.lastRunAt || latestWorker.ranAt || latestWorker.completedAt || state.lastActiveAt || latestWorklog?.at || null,
         trigger: row.trigger || latestWorker.trigger || latestWorklog?.source || state.status || 'waiting',
@@ -14347,17 +17206,23 @@ export default function EngineWorkspace() {
         reason: row.managementReasons?.[0] || latestWorker.managementReasons?.[0] || next || 'routine cadence',
       };
     };
-    const backendAgentStateSummary = Array.isArray(backendManagerDashboard?.agents?.states)
+    const backendAgentStateSummaryReadModel = scopedBackendStationReadModel(backendStation.agentStateSummary) || (Array.isArray(backendManagerDashboard?.agents?.states) ? {
+      schemaVersion: 'agent-state-summary/v1',
+      count: backendManagerDashboard.agents.states.length,
+      rows: backendManagerDashboard.agents.states,
+    } : null);
+    const backendAgentStateSummary = Array.isArray(backendAgentStateSummaryReadModel?.rows)
       ? {
-        schemaVersion: 'agent-state-summary/v1',
-        count: backendManagerDashboard.agents.states.length,
-        rows: backendManagerDashboard.agents.states.map(normalizeAgentStateSummaryRow),
+        ...backendAgentStateSummaryReadModel,
+        schemaVersion: backendAgentStateSummaryReadModel.schemaVersion || 'agent-state-summary/v1',
+        count: backendAgentStateSummaryReadModel.count ?? backendAgentStateSummaryReadModel.rows.length,
+        rows: backendAgentStateSummaryReadModel.rows.map(row => normalizeAgentStateSummaryRow(row, { allowLocalProofFallback: false })),
       }
       : null;
     const fallbackAgentStateSummary = {
       schemaVersion: 'agent-state-summary/frontend-fallback',
       count: localOperationsBoardRows.length,
-      rows: localOperationsBoardRows.map(normalizeAgentStateSummaryRow),
+      rows: localOperationsBoardRows.map(row => normalizeAgentStateSummaryRow(row, { allowLocalProofFallback: true })),
     };
     const agentStateSummary = backendOrAllowedFallback(
       backendAgentStateSummary,
@@ -14368,17 +17233,22 @@ export default function EngineWorkspace() {
       }),
       'agent-state-summary/v1',
     );
-    const operationsBoardRows = (agentStateSummary.rows || []).map(normalizeAgentStateSummaryRow);
+    const agentStateSummaryAllowsLocalProofFallback = agentStateSummary.schemaVersion === 'agent-state-summary/frontend-fallback';
+    const operationsBoardRows = (agentStateSummary.rows || []).map(row => normalizeAgentStateSummaryRow(row, {
+      allowLocalProofFallback: agentStateSummaryAllowsLocalProofFallback,
+    }));
     const routineRows = operationsBoardRows;
-    const backendContinuousWorkLoop = Array.isArray(backendManagerDashboard?.continuousWorkLoop?.rows)
+    const backendContinuousWorkLoopReadModel = scopedBackendStationReadModel(backendStation.continuousWorkLoop) || backendManagerDashboard?.continuousWorkLoop || null;
+    const backendContinuousWorkLoop = Array.isArray(backendContinuousWorkLoopReadModel?.rows)
       ? {
-        schemaVersion: 'continuous-work-loop/v1',
-        count: backendManagerDashboard.continuousWorkLoop.rows.length,
-        proofedCount: backendManagerDashboard.continuousWorkLoop.proofedAgentCount,
-        scheduledCount: backendManagerDashboard.continuousWorkLoop.scheduledAgentCount,
-        rows: backendManagerDashboard.continuousWorkLoop.rows.map(row => {
+        ...backendContinuousWorkLoopReadModel,
+        schemaVersion: backendContinuousWorkLoopReadModel.schemaVersion || 'continuous-work-loop/v1',
+        count: backendContinuousWorkLoopReadModel.count ?? backendContinuousWorkLoopReadModel.rows.length,
+        proofedCount: backendContinuousWorkLoopReadModel.proofedAgentCount ?? backendContinuousWorkLoopReadModel.proofedCount,
+        scheduledCount: backendContinuousWorkLoopReadModel.scheduledAgentCount ?? backendContinuousWorkLoopReadModel.scheduledCount,
+        rows: backendContinuousWorkLoopReadModel.rows.map(row => {
           const agent = agentForStateRow(row);
-          const base = operationsBoardRows.find(item => item.agent.id === agent.id) || normalizeAgentStateSummaryRow(row);
+          const base = operationsBoardRows.find(item => item.agent.id === agent.id) || normalizeAgentStateSummaryRow(row, { allowLocalProofFallback: false });
           const timelineIds = row.timelineLogIds || row.timelineIds || [];
           const chatIds = row.chatProofIds || row.chatIds || [];
           return {
@@ -14419,18 +17289,37 @@ export default function EngineWorkspace() {
       chatProofIds: row.chatProofIds || row.chatIds || [],
       proofReady: Boolean(row.proofReady || (row.timelineIds || row.timelineLogIds || []).length || (row.chatIds || row.chatProofIds || []).length),
     }));
+    const operationsBoardBackendRequired = Boolean(agentStateSummary.frontendMockSuppressed);
+    const operationsBoardProjectNextRunLabel = operationsBoardBackendRequired
+      ? projectText('backend required')
+      : formatRunTime(autonomousWorkLoopNextRunAt);
+    const operationsBoardProjectLastRunLabel = operationsBoardBackendRequired
+      ? projectText('backend required')
+      : formatRunTime(autonomousWorkLoopLastRunAt);
+    const operationsBoardCadenceLabel = operationsBoardBackendRequired
+      ? projectText('backend required')
+      : activeProject.autonomy?.enabled ? projectText('Cadence Active') : projectText('Cadence Paused');
+    const operationsBoardCadenceClass = operationsBoardBackendRequired
+      ? 'bg-[#8f1e18] text-white'
+      : activeProject.autonomy?.enabled ? 'bg-green-700 text-white' : 'bg-[#8f1e18] text-white';
+    const continuousWorkProjectNextRunLabel = continuousWorkLoop.frontendMockSuppressed
+      ? projectText('backend required')
+      : formatRunTime(autonomousWorkLoopNextRunAt);
     const changeLedger = activeProject.changeLedger || [];
     const peerHandoffs = activeProject.peerHandoffs || [];
     const agentNameById = Object.fromEntries(activeProject.team.map(agent => [agent.id, agent.name]));
+    const localManagerSubmissionReviewRowsAllowed = !shouldRequireBackendProofTranscript(activeProject);
     const managerSubmissionReviewRows = backendManagerDashboard?.submissionReviews?.rows?.length
       ? backendManagerDashboard.submissionReviews.rows
-      : (activeProject.submissionReviews || []).slice(0, 40).map(review => ({
+      : (localManagerSubmissionReviewRowsAllowed ? activeProject.submissionReviews || [] : []).slice(0, 40).map(review => ({
         ...review,
         reviewerAgentName: review.reviewerAgentName || agentNameById[review.reviewerAgentId] || review.reviewerAgentId,
         submitterAgentName: review.submitterAgentName || agentNameById[review.submitterAgentId] || review.submitterAgentId,
         proofRoute: activeProject.id ? `/projects/${activeProject.id}/submission-reviews/${review.id}` : null,
         submissionRoute: activeProject.id ? `/projects/${activeProject.id}/submissions/${review.submissionId}` : null,
       }));
+    const managerSubmissionReviewRowsBackendRequired = !localManagerSubmissionReviewRowsAllowed
+      && !(backendManagerDashboard?.submissionReviews?.rows?.length);
     const localProjectTranscriptMessages = chatMessages.filter(message => (
       (message.projectId || DEFAULT_CHAT_PROJECT_ID) === (activeProject.id || DEFAULT_CHAT_PROJECT_ID)
     ));
@@ -14452,6 +17341,7 @@ export default function EngineWorkspace() {
         : isManagerDemoProject(activeProject)
           ? 'sample-fixture'
           : 'frontend-fallback';
+    const transcriptLocalRecoveryAllowed = !backendTranscriptReadModelRequired && !backendTranscriptReadModelReady;
     const projectTranscriptMessages = backendTranscriptReadModelMissing
       ? []
       : backendStation.connectionStatus === 'online' && (backendTranscriptIndex || backendTranscriptMessages.length)
@@ -14459,7 +17349,7 @@ export default function EngineWorkspace() {
       : localProjectTranscriptMessages;
     const backendTranscriptSummaryByChannel = Object.fromEntries((backendTranscriptIndex?.channels || [])
       .map(channel => [channel.channelId, channel]));
-    const recoveredProofIdsByChannel = [
+    const recoveredProofIdsByChannel = (transcriptLocalRecoveryAllowed ? [
       ...(activeProject.initiation?.directorBriefId ? [{ id: activeProject.initiation.directorBriefId, channelId: 'main' }] : []),
       ...(activeProject.kickoffCharter?.evidence?.directorBriefIds || []).map(id => ({ id, channelId: 'main' })),
       ...(activeProject.initiation?.roleNegotiation?.transcript || []).map(item => ({ id: item.id, channelId: 'main' })),
@@ -14469,17 +17359,26 @@ export default function EngineWorkspace() {
         id: String(log.id || '').startsWith('log_') ? String(log.id).slice(4) : log.messageId,
         channelId: log.sourceChannelId || 'main',
       })),
-    ].reduce((acc, item) => {
+    ] : []).reduce((acc, item) => {
       if (!item.id) return acc;
       const channelId = item.channelId || 'main';
       acc[channelId] = Array.from(new Set([...(acc[channelId] || []), item.id]));
       return acc;
     }, {});
+    const transcriptRecoverableProofCount = Number.isFinite(Number(backendTranscriptIndex?.recoverableProofCount))
+      ? Number(backendTranscriptIndex.recoverableProofCount)
+      : backendTranscriptReadModelReady
+        ? (backendTranscriptIndex?.channels || []).reduce((count, channel) => (
+            count + (Number.isFinite(Number(channel.recoverableProofCount))
+              ? Number(channel.recoverableProofCount)
+              : (channel.proofIds || []).length)
+          ), 0)
+        : Object.values(recoveredProofIdsByChannel).flat().length;
     const channelTranscriptRows = chatChannels.map(channel => {
       const messages = projectTranscriptMessages.filter(message => message.channelId === channel.id);
       const messageIds = new Set(messages.map(message => message.id));
       const backendSummary = backendTranscriptSummaryByChannel[channel.id] || null;
-      const archivedProofIds = (backendTranscriptReadModelMissing ? [] : (backendSummary?.proofIds || recoveredProofIdsByChannel[channel.id] || []))
+      const archivedProofIds = (backendTranscriptReadModelMissing ? [] : (backendSummary?.proofIds || (transcriptLocalRecoveryAllowed ? recoveredProofIdsByChannel[channel.id] : []) || []))
         .filter(id => !messageIds.has(id));
       const latest = backendSummary?.latestMessage || messages[messages.length - 1] || null;
       const directTargetNames = Array.from(new Set(messages.flatMap(message => (
@@ -14503,9 +17402,30 @@ export default function EngineWorkspace() {
         ].filter(Boolean),
       };
     });
-    const collaborationProofSourceLabel = backendManagerDashboard ? 'backend-backed' : backendTranscriptSourceLabel;
+    const backendCollaborationProofReadModel = backendManagerDashboard
+      && Array.isArray(backendManagerDashboard.evidenceSearches?.rows)
+      && Array.isArray(backendManagerDashboard.submissions?.rows)
+      && Array.isArray(backendManagerDashboard.submissionReviews?.rows)
+      && Array.isArray(backendManagerDashboard.evidenceSourceReviews?.rows)
+      ? {
+        evidenceRows: backendManagerDashboard.evidenceSearches.rows,
+        submissionRows: backendManagerDashboard.submissions.rows,
+        reviewRows: backendManagerDashboard.submissionReviews.rows,
+        sourceReviewRows: backendManagerDashboard.evidenceSourceReviews.rows,
+      }
+      : null;
+    const backendCollaborationProofReadModelRequired = shouldRequireBackendAgentDashboard(activeProject);
+    const localCollaborationProofRowsAllowed = !backendCollaborationProofReadModelRequired;
+    const collaborationEvidenceRows = backendCollaborationProofReadModel?.evidenceRows || (localCollaborationProofRowsAllowed ? activeProject.evidenceSearches || [] : []);
+    const collaborationSubmissionRows = backendCollaborationProofReadModel?.submissionRows || (localCollaborationProofRowsAllowed ? activeProject.agentSubmissions || [] : []);
+    const collaborationReviewRows = backendCollaborationProofReadModel?.reviewRows || (localCollaborationProofRowsAllowed ? activeProject.submissionReviews || [] : []);
+    const collaborationProofSourceLabel = backendCollaborationProofReadModel
+      ? 'backend-backed'
+      : backendCollaborationProofReadModelRequired
+        ? 'backend-required'
+        : backendTranscriptSourceLabel;
     const collaborationProofRows = [
-      ...((backendManagerDashboard?.evidenceSearches?.rows || activeProject.evidenceSearches || []).map(row => ({
+      ...(collaborationEvidenceRows.map(row => ({
         id: `evidence-${row.id}`,
         rawId: row.id,
         testKind: 'evidence',
@@ -14522,7 +17442,7 @@ export default function EngineWorkspace() {
         eventIds: Array.from(new Set([row.eventId, ...(row.eventIds || [])].filter(Boolean))),
         createdAt: row.createdAt || row.updatedAt || row.time || null,
       }))),
-      ...((backendManagerDashboard?.submissions?.rows || activeProject.agentSubmissions || []).map(row => {
+      ...(collaborationSubmissionRows.map(row => {
         const artifactType = row.artifactType || row.type || 'artifact';
         const isRevision = artifactType === 'revision-note' || row.respondsToReviewId || row.revisesSubmissionId;
         const isFinal = artifactType === 'final-deliverable' || row.status === 'final';
@@ -14544,7 +17464,7 @@ export default function EngineWorkspace() {
           createdAt: row.createdAt || row.updatedAt || row.submittedAt || null,
         };
       })),
-      ...((backendManagerDashboard?.submissionReviews?.rows || activeProject.submissionReviews || []).map(row => ({
+      ...(collaborationReviewRows.map(row => ({
         id: `review-${row.id}`,
         rawId: row.id,
         testKind: 'review',
@@ -14694,7 +17614,7 @@ export default function EngineWorkspace() {
         checkInCount: row.checkInCount || 0,
       };
     });
-    const peerManagementMatrixRows = (activeProject.peerManagementMatrix?.length
+    const localPeerManagementMatrixRows = (activeProject.peerManagementMatrix?.length
       ? activeProject.peerManagementMatrix
       : buildPeerManagementMatrix(activeProject.team, {
         leaderId: activeProject.team.find(agent => agent.isLeader)?.id || kickoffCharter?.governance?.leaderId,
@@ -14710,6 +17630,17 @@ export default function EngineWorkspace() {
         .map(log => log.id)
         .filter(Boolean),
     }));
+    const backendPeerManagementMatrixRows = Array.isArray(backendManagerDashboard?.peerManagementMatrix)
+      ? backendManagerDashboard.peerManagementMatrix.map(row => ({
+        ...row,
+        agentName: row.agentName || agentNameById[row.agentId] || row.agentId,
+        peerManagedNames: row.peerManagedNames || (row.peerManagedIds || []).map(id => agentNameById[id] || id).filter(Boolean),
+        peerManagerNames: row.peerManagerNames || (row.peerManagerIds || []).map(id => agentNameById[id] || id).filter(Boolean),
+        proofLogIds: row.proofLogIds || row.timelineLogIds || [],
+      }))
+      : null;
+    const peerManagementMatrixRows = backendPeerManagementMatrixRows
+      || (agentManagementMesh.frontendMockSuppressed || timelineEventReadModelsRequired ? [] : localPeerManagementMatrixRows);
     const kickoffCharterProofIds = kickoffCharter ? [
       ...(kickoffCharter.evidence?.directorBriefIds || []),
       activeProject.initiation?.directorBriefId,
@@ -14932,6 +17863,21 @@ export default function EngineWorkspace() {
       hearingMatrixRows: kickoffHearingMatrixRows.length ? kickoffHearingMatrixRows : backendKickoffMeetingFlow?.hearingMatrixRows || [],
       briefAlignment: kickoffBriefAlignment || backendKickoffMeetingFlow?.briefAlignment || null,
     } : null;
+    const backendTaskRows = Array.isArray(backendManagerDashboard?.tasks?.rows)
+      ? backendManagerDashboard.tasks.rows
+      : null;
+    const localTaskProofFallbackAllowed = !timelineEventReadModelsRequired;
+    const taskProofBackendRequired = timelineEventReadModelsRequired && !backendTaskRows;
+    const emptyTaskEvidence = (task = {}) => ({
+      chatIds: [],
+      timelineIds: [],
+      hasAssignment: false,
+      hasAcknowledgement: false,
+      hasOwnerSync: false,
+      timelineCount: 0,
+      source: task.sourceChannelId ? channelNameById[task.sourceChannelId] || task.sourceChannelId : null,
+      dataSource: 'backend-required',
+    });
     const proofChatIdsForTask = (task) => [
       task.assignmentMessageId,
       task.requestMessageId,
@@ -14939,7 +17885,7 @@ export default function EngineWorkspace() {
       task.confirmationMessageId,
       task.syncMessageId,
     ].filter(Boolean);
-    const taskEvidence = (task) => ({
+    const localTaskEvidence = (task) => ({
       chatIds: proofChatIdsForTask(task),
       timelineIds: task.timelineLogIds || [],
       hasAssignment: Boolean(task.assignmentMessageId || task.requestMessageId),
@@ -14947,7 +17893,37 @@ export default function EngineWorkspace() {
       hasOwnerSync: Boolean(task.syncMessageId),
       timelineCount: task.timelineLogIds?.length || 0,
       source: task.sourceChannelId ? channelNameById[task.sourceChannelId] || task.sourceChannelId : null,
+      dataSource: 'frontend-fallback',
     });
+    const backendTaskEvidenceFromRow = (task = {}, row = {}) => {
+      const evidence = row.evidence || {};
+      const chatIds = evidence.chatIds || evidence.proofIds || [];
+      const timelineIds = evidence.timelineLogIds || evidence.timelineIds || [];
+      return {
+        chatIds,
+        timelineIds,
+        hasAssignment: Boolean(evidence.hasAssignment || row.assignmentMessageId || row.requestMessageId || chatIds.length),
+        hasAcknowledgement: Boolean(evidence.hasAcknowledgement || row.acknowledgementMessageId || row.confirmationMessageId),
+        hasOwnerSync: Boolean(evidence.hasOwnerSync || row.syncMessageId),
+        timelineCount: evidence.timelineCount ?? timelineIds.length,
+        source: row.sourceChannelId ? channelNameById[row.sourceChannelId] || row.sourceChannelId : null,
+        dataSource: 'backend-backed',
+        taskEvidencePath: evidence.taskEvidencePath || row.taskEvidencePath || (activeProject?.id && (row.id || task.id) ? `/projects/${activeProject.id}/tasks/${row.id || task.id}/evidence` : null),
+      };
+    };
+    const taskEvidence = (task = {}) => {
+      const backendTaskRow = backendTaskRows?.find(row => (
+        String(row.id || row.taskId || '') === String(task.id || '')
+      ));
+      if (backendTaskRows) {
+        return backendTaskEvidenceFromRow(task, backendTaskRow || task);
+      }
+      if (task.evidence?.taskEvidencePath) {
+        return backendTaskEvidenceFromRow(task, task);
+      }
+      return localTaskProofFallbackAllowed ? localTaskEvidence(task) : emptyTaskEvidence(task);
+    };
+    const activeThreadRows = taskProofBackendRequired ? [] : backendTaskRows || activeProject.tasks || [];
     const agentNameForTask = (task) => activeProject.team.find(agent => (
       agent.id === task.ownerId
       || agent.id === task.assignee
@@ -15005,8 +17981,9 @@ export default function EngineWorkspace() {
       timelineReadyCount: assignmentTimelineMatrixRows.filter(row => row.assignmentPosted && row.assigneeReceived && row.timelineRecorded).length,
       rows: assignmentTimelineMatrixRows,
     };
+    const backendAssignmentTimelineMatrix = scopedBackendStationReadModel(backendStation.assignmentTimelineMatrix) || backendManagerDashboard?.assignmentTimelineMatrix || null;
     const assignmentTimelineMatrix = backendOrAllowedFallback(
-      backendManagerDashboard?.assignmentTimelineMatrix,
+      backendAssignmentTimelineMatrix,
       fallbackAssignmentTimelineMatrix,
       missingBackendReadModel('assignment-timeline-matrix/v1', {
         status: 'backend-model-missing',
@@ -15279,8 +18256,9 @@ export default function EngineWorkspace() {
       count: changeFlowRows.length,
       rows: changeFlowRows,
     };
+    const backendChangeFlow = scopedBackendStationReadModel(backendStation.changeFlow) || backendManagerDashboard?.changeFlow || null;
     const changeFlow = backendOrAllowedFallback(
-      backendManagerDashboard?.changeFlow,
+      backendChangeFlow,
       fallbackChangeFlow,
       missingBackendReadModel('change-flow/v1', {
         status: 'backend-model-missing',
@@ -15329,7 +18307,37 @@ export default function EngineWorkspace() {
       };
     });
     const changeDerivedFrontendRowsAllowed = !changeFlow.frontendMockSuppressed;
-    const changeSourceIntakeRows = changeFlowDisplayRows.flatMap(row => (row.sourceIntakeRows || []).map(sourceRow => ({
+    const changeSourceIntakeReadModelRows = Array.isArray(changeFlow.sourceIntake?.rows) ? changeFlow.sourceIntake.rows : null;
+    const changeSourceIntakeRows = changeSourceIntakeReadModelRows
+      ? changeSourceIntakeReadModelRows.map(sourceRow => {
+        const matchingDisplayRow = changeFlowDisplayRows.find(row => (
+          String(row.change.id || '') === String(sourceRow.changeId || sourceRow.change?.id || '')
+          || (sourceRow.sourceMessageId && (row.change.sourceMessageIds || []).includes(sourceRow.sourceMessageId))
+        )) || {};
+        const change = matchingDisplayRow.change || sourceRow.change || {
+          id: sourceRow.changeId || sourceRow.id || 'backend-required',
+          requestText: sourceRow.requestText || 'Backend Change Source Intake required',
+          ownerName: sourceRow.ownerName || sourceRow.ownerId || 'pending',
+          discussionMessageIds: sourceRow.discussionMessageIds || [],
+          confirmationMessageId: sourceRow.confirmationMessageId || null,
+          syncMessageId: sourceRow.syncMessageId || null,
+        };
+        return {
+          ...sourceRow,
+          change,
+          requestText: sourceRow.requestText || change.requestText,
+          ownerName: sourceRow.ownerName || change.ownerName || change.ownerId || 'pending',
+          discussionCount: sourceRow.discussionCount ?? matchingDisplayRow.discussionCount ?? 0,
+          ownerConfirmed: Boolean(sourceRow.ownerConfirmed || change.confirmationMessageId),
+          ownerPlanLinked: Boolean(sourceRow.ownerPlanLinked || matchingDisplayRow.ownerPlanLinked),
+          teamSyncCount: sourceRow.teamSyncCount ?? matchingDisplayRow.teamSyncCount ?? 0,
+          sourceChannelCount: sourceRow.sourceChannelCount ?? changeSourceIntakeReadModelRows.length,
+          discussionMessageIds: sourceRow.discussionMessageIds || change.discussionMessageIds || [],
+          confirmationMessageId: sourceRow.confirmationMessageId || change.confirmationMessageId,
+          syncMessageId: sourceRow.syncMessageId || change.syncMessageId,
+        };
+      })
+      : changeFlowDisplayRows.flatMap(row => (row.sourceIntakeRows || []).map(sourceRow => ({
       ...sourceRow,
       change: row.change,
       requestText: sourceRow.requestText || row.change.requestText,
@@ -15488,25 +18496,35 @@ export default function EngineWorkspace() {
       .map(log => log.id)
       .filter(Boolean)
       .slice(0, 6);
-    const buildManagerProofMapRows = (checks = []) => checks.map(check => {
-      const kickoffIds = kickoffCharterProofIds;
-      const assignmentIds = assignmentFlowRows.flatMap(row => row.evidence.chatIds).filter(Boolean).slice(0, 8);
-      const assignmentTimelineIds = assignmentFlowRows.flatMap(row => row.evidence.timelineIds).filter(Boolean).slice(0, 8);
-      const handoffChatIds = peerHandoffs.flatMap(handoff => [handoff.requestMessageId, handoff.acknowledgementMessageId]).filter(Boolean).slice(0, 8);
-      const handoffTimelineIds = peerHandoffs.flatMap(handoff => handoffTimelineProofIds(handoff)).filter(Boolean).slice(0, 8);
-      const changeChatIds = changeLedger.flatMap(change => [
+    const buildManagerProofMapRows = (checks = [], { allowLocalProofFallback = true } = {}) => checks.map(check => {
+      const checkChatIds = Array.from(new Set([
+        ...(check.chatProofIds || []),
+        ...(check.proofIds || []),
+      ].filter(Boolean))).slice(0, 8);
+      const checkTimelineIds = Array.from(new Set([
+        ...(check.timelineLogIds || []),
+        ...(check.timelineIds || []),
+      ].filter(Boolean))).slice(0, 8);
+      const kickoffIds = allowLocalProofFallback ? kickoffCharterProofIds : checkChatIds;
+      const assignmentIds = allowLocalProofFallback ? assignmentFlowRows.flatMap(row => row.evidence.chatIds).filter(Boolean).slice(0, 8) : checkChatIds;
+      const assignmentTimelineIds = allowLocalProofFallback ? assignmentFlowRows.flatMap(row => row.evidence.timelineIds).filter(Boolean).slice(0, 8) : checkTimelineIds;
+      const handoffChatIds = allowLocalProofFallback ? peerHandoffs.flatMap(handoff => [handoff.requestMessageId, handoff.acknowledgementMessageId]).filter(Boolean).slice(0, 8) : checkChatIds;
+      const handoffTimelineIds = allowLocalProofFallback ? peerHandoffs.flatMap(handoff => handoffTimelineProofIds(handoff)).filter(Boolean).slice(0, 8) : checkTimelineIds;
+      const changeChatIds = allowLocalProofFallback ? changeLedger.flatMap(change => [
         ...(change.sourceMessageIds || []),
         ...(change.discussionMessageIds || []),
         change.confirmationMessageId,
         change.syncMessageId,
-      ]).filter(Boolean).slice(0, 10);
-      const changeTimelineIds = changeLedger.flatMap(change => changeTimelineProofIds(change)).filter(Boolean).slice(0, 10);
-      const managementTimelineIds = timelineProofIdsForTypes(['management-check-in', 'peer-management-check-in', 'review-sweep', 'management-response']);
-      const workTimelineIds = timelineProofIdsForTypes(['work-pulse', 'daily-report', 'task-completed']);
-      const eventTimelineIds = (activeProject.logs || []).map(log => log.id).filter(Boolean).slice(0, 8);
-      const channelForChange = changeLedger.find(change => change.sourceChannelId === 'google_chat')?.sourceChannelId
-        || changeLedger[0]?.sourceChannelId
-        || 'main';
+      ]).filter(Boolean).slice(0, 10) : checkChatIds;
+      const changeTimelineIds = allowLocalProofFallback ? changeLedger.flatMap(change => changeTimelineProofIds(change)).filter(Boolean).slice(0, 10) : checkTimelineIds;
+      const managementTimelineIds = allowLocalProofFallback ? timelineProofIdsForTypes(['management-check-in', 'peer-management-check-in', 'review-sweep', 'management-response']) : checkTimelineIds;
+      const workTimelineIds = allowLocalProofFallback ? timelineProofIdsForTypes(['work-pulse', 'daily-report', 'task-completed']) : checkTimelineIds;
+      const eventTimelineIds = allowLocalProofFallback ? (activeProject.logs || []).map(log => log.id).filter(Boolean).slice(0, 8) : checkTimelineIds;
+      const channelForChange = check.channelId || (allowLocalProofFallback
+        ? changeLedger.find(change => change.sourceChannelId === 'google_chat')?.sourceChannelId
+          || changeLedger[0]?.sourceChannelId
+          || 'main'
+        : 'main');
 
       if (['kickoff-approved', 'role-clarification', 'agents-hear-each-other', 'leader-election-confirmed'].includes(check.id)) {
         return { check, proofType: 'chat', proofLabel: 'Kickoff chat proof', proofIds: kickoffIds, channelId: 'main', targetLabel: 'Kickoff meeting' };
@@ -15532,7 +18550,15 @@ export default function EngineWorkspace() {
       if (['event-ledger-continuity', 'event-ledger-replay-ready'].includes(check.id)) {
         return { check, proofType: eventTimelineIds.length ? 'timeline' : 'dashboard', proofLabel: 'Ledger proof', proofIds: eventTimelineIds, testId: 'event-ledger-summary', targetLabel: 'Event ledger' };
       }
-      return { check, proofType: 'dashboard', proofLabel: 'Dashboard proof', testId: 'manager-proof-map', targetLabel: 'Dashboard' };
+      return {
+        check,
+        proofType: checkTimelineIds.length ? 'timeline' : checkChatIds.length ? 'chat' : 'dashboard',
+        proofLabel: 'Dashboard proof',
+        proofIds: checkTimelineIds.length ? checkTimelineIds : checkChatIds,
+        channelId: check.channelId || 'main',
+        testId: 'manager-proof-map',
+        targetLabel: 'Dashboard',
+      };
     });
     const fallbackManagerProofMap = {
       schemaVersion: 'manager-proof-map/frontend-fallback',
@@ -15540,7 +18566,7 @@ export default function EngineWorkspace() {
       score: managerReadiness.score,
       passedCount: managerReadiness.passedCount,
       totalCount: managerReadiness.totalCount,
-      rows: buildManagerProofMapRows(managerReadiness.checks),
+      rows: buildManagerProofMapRows(managerReadiness.checks, { allowLocalProofFallback: true }),
     };
     const backendManagerProofMap = backendReadinessProofMap?.readiness?.checks?.length
       ? {
@@ -15549,7 +18575,7 @@ export default function EngineWorkspace() {
         score: backendReadinessProofMap.readiness.score ?? backendReadinessProofMap.score,
         passedCount: backendReadinessProofMap.readiness.passedCount ?? backendReadinessProofMap.passedCount,
         totalCount: backendReadinessProofMap.readiness.totalCount ?? backendReadinessProofMap.totalCount,
-        rows: buildManagerProofMapRows(backendReadinessProofMap.readiness.checks),
+        rows: buildManagerProofMapRows(backendReadinessProofMap.readiness.checks, { allowLocalProofFallback: false }),
       }
       : null;
     const managerProofMap = backendOrAllowedFallback(
@@ -15577,7 +18603,7 @@ export default function EngineWorkspace() {
     );
     const managerProofMapDisplayRows = managerProofMap.rows || [];
     const managerReadinessDisplayChecks = managerProofMapDisplayRows.map(row => row.check).filter(Boolean);
-    const showSampleFixturePath = isManagerDemoProject(activeProject) || isDevelopmentLocalRuntimeFallbackEnabled();
+    const showSampleFixturePath = isManagerDemoProject(activeProject) || canUseDevelopmentSnapshotSeed(activeProject);
     const openManagerProofMapRow = (row) => {
       const chatProofIds = chatProofIdsFromRow(row);
       if (row.proofType === 'chat' && chatProofIds.length) {
@@ -15665,28 +18691,72 @@ export default function EngineWorkspace() {
       const target = document.querySelector(`[data-testid="${testId}"]`);
       if (target) target.scrollIntoView({ behavior: 'smooth', block: 'center' });
     };
+    const scenarioAutonomyCycleLabel = dashboardAutonomousCycleCount ?? (autonomousWorkLoopBackendRequired ? projectText('backend required') : 0);
+    const scenarioAutonomyNextRunLabel = autonomousWorkLoopNextRunAt
+      ? formatRunTime(autonomousWorkLoopNextRunAt)
+      : (autonomousWorkLoopBackendRequired ? projectText('backend required') : 'not scheduled');
+    const scenarioAutonomyStatus = autonomousWorkLoopBackendRequired
+      ? projectText('backend required')
+      : activeProject.autonomy?.enabled ? 'Cadence active' : 'Cadence paused';
+    const scenarioAutonomyProof = `${projectText('Cycles')}: ${scenarioAutonomyCycleLabel} / ${projectText('Next')}: ${scenarioAutonomyNextRunLabel}`;
+    const scenarioManagementProofCount = agentManagementMeshDisplayRows
+      .flatMap(row => row.proofLogIds || [])
+      .filter(Boolean)
+      .length;
+    const scenarioManagementStatus = agentManagementMesh.frontendMockSuppressed
+      ? projectText('backend required')
+      : managementSyncAgent ? `${managementSyncAgent.name} ready` : 'No Agent available';
+    const scenarioManagementProof = agentManagementMesh.frontendMockSuppressed
+      ? projectText('backend required')
+      : `${scenarioManagementProofCount} management proof logs`;
+    const scenarioChangeCount = changeFlow.frontendMockSuppressed
+      ? projectText('backend required')
+      : changeFlowDisplayRows.length;
+    const scenarioChangeStatus = changeFlow.frontendMockSuppressed
+      ? projectText('backend required')
+      : `${scenarioChangeCount} change${scenarioChangeCount === 1 ? '' : 's'} recorded`;
+    const scenarioChangeOwnerPlanCount = changeFlowDisplayRows.filter(row => row.ownerPlanLinked).length;
+    const scenarioChangeTeamSyncCount = changeFlowDisplayRows.filter(row => row.teamSyncCount > 0).length;
+    const scenarioChangeProof = changeFlow.frontendMockSuppressed
+      ? projectText('backend required')
+      : `${scenarioChangeOwnerPlanCount} owner plan sync / ${scenarioChangeTeamSyncCount} team sync`;
+    const scenarioKickoffExecutionFlow = backendManagerDashboard?.kickoffExecutionFlow
+      || (timelineEventReadModelsRequired ? null : kickoffExecutionFlow);
+    const scenarioKickoffBackendRequired = timelineEventReadModelsRequired && !backendManagerDashboard?.kickoffExecutionFlow;
+    const scenarioKickoffResolution = scenarioKickoffExecutionFlow?.nextActionResolution || null;
+    const scenarioKickoffDelivery = scenarioKickoffExecutionFlow?.nextActionResolutionDelivery || null;
+    const scenarioKickoffStatus = scenarioKickoffBackendRequired
+      ? projectText('backend required')
+      : scenarioKickoffResolution?.managerConfirmed
+        ? 'Manager confirmed'
+        : scenarioKickoffExecutionFlow
+          ? 'Charter ready'
+          : 'Needs kickoff';
+    const scenarioKickoffProof = scenarioKickoffBackendRequired
+      ? projectText('backend required')
+      : `${scenarioKickoffExecutionFlow?.nextActions?.length || 0} next actions / ${scenarioKickoffDelivery?.deliveredAgentIds?.length || 0}/${scenarioKickoffDelivery?.teamCount || activeProject.team.length} Agent receipts`;
     const scenarioControlSteps = [
       {
         id: 'kickoff',
         title: 'Kickoff Decisions',
-        status: nextActionResolution?.managerConfirmed ? 'Manager confirmed' : kickoffCharter ? 'Charter ready' : 'Needs kickoff',
-        proof: `${kickoffExecutionFlow?.nextActions?.length || 0} next actions / ${nextActionResolutionDelivery?.deliveredAgentIds?.length || 0}/${activeProject.team.length} Agent receipts`,
+        status: scenarioKickoffStatus,
+        proof: scenarioKickoffProof,
         actionLabel: 'Open kickoff proof',
         action: () => openManagerProofMapRow(scenarioProofTarget('role-clarification')),
       },
       {
         id: 'autonomy',
         title: '24/7 Work Pulse',
-        status: activeProject.autonomy?.enabled ? 'Cadence active' : 'Cadence paused',
-        proof: `${activeProject.autonomousLedger?.length || 0} cycles / next ${formatRunTime(activeProject.nextAutonomousRunAt || autonomousSchedule.nextRunAt)}`,
+        status: scenarioAutonomyStatus,
+        proof: scenarioAutonomyProof,
         actionLabel: allowLocalRuntimeFallbackForActiveProject(activeProject) && !shouldAttemptBackendProjectWrite(activeProject) ? 'Run local pulse' : 'Run backend pulse',
         action: () => runProjectAutonomousPulse('hourly'),
       },
       {
         id: 'management',
         title: 'Agent Management Sync',
-        status: managementSyncAgent ? `${managementSyncAgent.name} ready` : 'No Agent available',
-        proof: `${timelineProofIdsForTypes(['management-check-in', 'peer-management-check-in', 'management-response']).length} management proof logs`,
+        status: scenarioManagementStatus,
+        proof: scenarioManagementProof,
         actionLabel: 'Run management sync',
         action: () => managementSyncAgent && runBackendManagementSync(managementSyncAgent.id),
         disabled: !backendOnline || !managementSyncAgent,
@@ -15694,8 +18764,8 @@ export default function EngineWorkspace() {
       {
         id: 'change',
         title: 'Mid-project Change Intake',
-        status: `${changeLedger.length} change${changeLedger.length === 1 ? '' : 's'} recorded`,
-        proof: `${changeFlowRows.filter(row => row.ownerPlanLinked).length} owner plan sync / ${changeFlowRows.filter(row => row.teamSyncCount > 0).length} team sync`,
+        status: scenarioChangeStatus,
+        proof: scenarioChangeProof,
         actionLabel: 'Broadcast change',
         action: () => runMultiChannelChangeBroadcast('@all add scenario control center follow-up packet before the next manager review'),
       },
@@ -15708,7 +18778,7 @@ export default function EngineWorkspace() {
         action: () => scrollDashboardTarget('manager-proof-map'),
       },
     ];
-    const managerScenarioTrailRows = [
+    const managerScenarioTrailRows = allowManagerFrontendFallbacks ? [
       {
         id: 'kickoff-brief',
         stage: 'Project Brief Heard',
@@ -15812,7 +18882,7 @@ export default function EngineWorkspace() {
         proofKind: 'timeline',
         timelineIds: managementMeshRows.flatMap(row => row.proofLogIds || []).slice(0, 8),
       },
-    ];
+    ] : [];
     const fallbackManagerScenarioTrail = {
       schemaVersion: 'manager-scenario-trail/frontend-fallback',
       count: managerScenarioTrailRows.length,
@@ -15845,7 +18915,7 @@ export default function EngineWorkspace() {
       acc[row.id] = row;
       return acc;
     }, {});
-    const managerRequirementMatrixRows = [
+    const managerRequirementMatrixRows = allowManagerFrontendFallbacks ? [
       {
         id: 'kickoff-brief-understood',
         requirement: 'Director opens a kickoff meeting and briefs the project.',
@@ -15979,7 +19049,7 @@ export default function EngineWorkspace() {
         proofKind: 'timeline',
         timelineIds: trailById['management-mesh']?.timelineIds || [],
       },
-    ];
+    ] : [];
     const openScenarioTrailRow = (row) => {
       const chatProofIds = chatProofIdsFromRow(row);
       if ((row.proofKind === 'chat' || row.proofKind === 'hybrid') && chatProofIds.length) {
@@ -16031,7 +19101,7 @@ export default function EngineWorkspace() {
       ['owner-plan-team-sync', 'Plan + Team Sync', 'Does the owner add the change to their plan and sync it back to everyone?', ['owner-plan-and-team-sync']],
       ['mutual-agent-management', 'Mutual Management', 'Can Agents mutually manage one another with auditable check-ins?', ['agents-mutually-manage']],
     ];
-    const fallbackManagerUseCaseAuditRows = localManagerUseCaseAuditSpecs.map(([id, stage, managerQuestion, requirementIds]) => {
+    const fallbackManagerUseCaseAuditRows = allowManagerFrontendFallbacks ? localManagerUseCaseAuditSpecs.map(([id, stage, managerQuestion, requirementIds]) => {
       const requirements = requirementIds.map(requirementId => managerRequirementById[requirementId]).filter(Boolean);
       const coveredCount = requirements.filter(row => row.passed).length;
       const status = coveredCount === requirements.length ? 'covered' : coveredCount > 0 ? 'partial' : 'missing';
@@ -16051,7 +19121,7 @@ export default function EngineWorkspace() {
         timelineLogIds: Array.from(new Set(requirements.flatMap(row => row.timelineIds || []))).slice(0, 12),
         channelId: requirements.find(row => row.channelId)?.channelId || 'main',
       };
-    });
+    }) : [];
     const fallbackManagerUseCaseAudit = {
       count: fallbackManagerUseCaseAuditRows.length,
       coveredCount: fallbackManagerUseCaseAuditRows.filter(row => row.covered).length,
@@ -16118,13 +19188,13 @@ export default function EngineWorkspace() {
       'owner-plan-and-team-sync': { phase: 'Change Sync', label: 'Verify owner plan sync', uiTarget: 'change-resolution-matrix', method: 'GET', apiPath: `/projects/${activeProject.id}/manager-requirement-matrix` },
       'agents-mutually-manage': { phase: 'Management Loop', label: 'Run management sync', uiTarget: 'agent-management-mesh', method: 'POST', rerunnable: true, apiPath: managerActionAgentPath, requestBodyTemplate: { trigger: 'manager-action-playbook-management-sync', cadence: 'management-sync', source: 'manager-action-playbook', now: 'now-iso' } },
     };
-    const firstPendingPlaybookIndex = managerRequirementMatrixRows.findIndex(row => !row.passed);
+    const firstPendingPlaybookIndex = allowManagerFrontendFallbacks ? managerRequirementMatrixRows.findIndex(row => !row.passed) : -1;
     const fallbackManagerActionQueue = {
       count: managerRequirementMatrixRows.length,
       completedCount: managerRequirementMatrixRows.filter(row => row.passed).length,
       readyCount: firstPendingPlaybookIndex >= 0 ? 1 : 0,
       blockedCount: firstPendingPlaybookIndex >= 0 ? Math.max(0, managerRequirementMatrixRows.length - firstPendingPlaybookIndex - 1) : 0,
-      rows: managerRequirementMatrixRows.map((row, index) => {
+      rows: allowManagerFrontendFallbacks ? managerRequirementMatrixRows.map((row, index) => {
         const spec = managerActionPlaybookSpecs[row.id] || {};
         const status = row.passed ? 'complete' : index === firstPendingPlaybookIndex ? 'ready' : 'blocked';
         const method = spec.method || 'GET';
@@ -16159,7 +19229,7 @@ export default function EngineWorkspace() {
           timelineLogIds: row.timelineIds || [],
           channelId: row.channelId || null,
         };
-      }),
+      }) : [],
     };
     fallbackManagerActionQueue.nextAction = fallbackManagerActionQueue.rows.find(row => row.status === 'ready') || null;
     fallbackManagerActionQueue.nextActionId = fallbackManagerActionQueue.nextAction?.id || null;
@@ -16235,7 +19305,7 @@ export default function EngineWorkspace() {
       ['owner-plan-team-sync', 'Plan + Team Sync', 'Check that the owner added the feature to their plan and synchronized it back to the team.', 'owner-plan-team-sync', ['owner-plan-sync'], 'owner-plan-and-team-sync'],
       ['mutual-agent-management', 'Mutual Management', 'Run or inspect peer-management check-ins so Agents manage each other continuously.', 'mutual-agent-management', ['management-mesh'], 'agents-mutually-manage'],
     ];
-    const fallbackManagerScenarioWalkthroughRows = managerWalkthroughSpecs.map(([id, stage, managerIntent, useCaseId, trailIds, primaryRequirementId], index) => {
+    const fallbackManagerScenarioWalkthroughRows = allowManagerFrontendFallbacks ? managerWalkthroughSpecs.map(([id, stage, managerIntent, useCaseId, trailIds, primaryRequirementId], index) => {
       const auditRow = managerUseCaseAuditById[useCaseId] || {};
       const trailRows = trailIds.map(trailId => trailById[trailId]).filter(Boolean);
       const primaryAction = toUseCaseActionHint(useCaseActionByRequirementId[primaryRequirementId]) || auditRow.nextAction || null;
@@ -16278,7 +19348,7 @@ export default function EngineWorkspace() {
         managerRoute: `/projects/${activeProject.id}/manager-scenario-walkthrough#${id}`,
         runApiPath: `/projects/${activeProject.id}/manager-scenario-walkthrough/${id}/run`,
       };
-    });
+    }) : [];
     const fallbackManagerScenarioWalkthrough = {
       count: fallbackManagerScenarioWalkthroughRows.length,
       completedCount: fallbackManagerScenarioWalkthroughRows.filter(row => row.completed).length,
@@ -16313,7 +19383,7 @@ export default function EngineWorkspace() {
       || managerActionPlaybook.nextAction
       || (managerActionPlaybook.rows || []).find(row => row.canRun)
       || null;
-    const fallbackManagerCommandAttentionRows = [
+    const fallbackManagerCommandAttentionRows = allowManagerFrontendFallbacks ? [
       ...(fallbackManagerCommandPrimaryAction ? [{
         id: `next-action-${fallbackManagerCommandPrimaryAction.requirementId || fallbackManagerCommandPrimaryAction.id}`,
         type: 'next-action',
@@ -16363,8 +19433,8 @@ export default function EngineWorkspace() {
         timelineLogIds: [...(row.timelineLogIds || []), ...(row.ownerWorkTimelineLogIds || [])],
         uiTarget: 'change-resolution-matrix',
       })),
-    ].slice(0, 10);
-    const fallbackManagerCommandCenter = {
+    ].slice(0, 10) : [];
+    const buildFallbackManagerCommandCenter = () => ({
       status: fallbackManagerCommandAttentionRows.some(row => row.severity === 'critical')
         ? 'needs-action'
         : fallbackManagerCommandPrimaryAction?.canRun
@@ -16807,10 +19877,10 @@ export default function EngineWorkspace() {
           timelineLogIds: [log.id].filter(Boolean),
         })),
       ].slice(0, 6),
-    };
-    const managerCommandCenter = backendOrAllowedFallback(
+    });
+    const managerCommandCenter = backendOrLazyFallback(
       backendManagerCommandCenter,
-      fallbackManagerCommandCenter,
+      buildFallbackManagerCommandCenter,
       missingBackendReadModel('manager-command-center/v1', {
         status: 'backend-model-missing',
         headline: 'Backend command center read model missing.',
@@ -16826,8 +19896,8 @@ export default function EngineWorkspace() {
           syncProtocols: '0/0',
           actionQueue: '0/0',
           agentsScheduled: '0/0',
-          openTasks: activeProject.tasks.filter(task => task.status !== 'done').length,
-          changeRequests: changeFlowRows.length,
+          openTasks: projectText('backend required'),
+          changeRequests: projectText('backend required'),
         },
         attentionRows: [{
           id: 'backend-manager-command-center-missing',
@@ -16845,14 +19915,15 @@ export default function EngineWorkspace() {
       }),
       'manager-command-center/v1',
     );
-    const latestManagerActionRun = activeProject.managerActionRunLedger?.[0] || null;
+    const latestManagerActionRun = backendManagerActionRuns.latestRun || backendManagerActionRuns.rows?.[0] || null;
     const latestWalkthroughRunStep = latestManagerActionRun
       ? (managerScenarioWalkthrough.rows || []).find(row => (
         row.primaryAction?.requirementId === latestManagerActionRun.requirementId
         || (row.actions || []).some(action => action.requirementId === latestManagerActionRun.requirementId)
       ))
       : null;
-    const managerScenarioWalkthroughReceipt = backendStation.managerScenarioWalkthroughReceipt || (latestManagerActionRun && latestWalkthroughRunStep ? {
+    const managerScenarioWalkthroughReceipt = backendManagerScenarioWalkthroughReceipt || (latestManagerActionRun && latestWalkthroughRunStep ? {
+      projectId: activeProject.id,
       stepId: latestWalkthroughRunStep.id,
       stage: latestWalkthroughRunStep.stage,
       actionLabel: latestManagerActionRun.actionLabel,
@@ -16893,7 +19964,9 @@ export default function EngineWorkspace() {
           connectionStatus: 'online',
           loading: false,
           managerCommandCenter: payload.managerCommandCenter || payload.managerReadyPackage?.managerCommandCenter || prev.managerCommandCenter,
-          managerCommandCenterRun: payload.managerCommandCenterRun || prev.managerCommandCenterRun,
+          managerCommandCenterRun: payload.managerCommandCenterRun
+            ? { ...payload.managerCommandCenterRun, projectId: payload.managerCommandCenterRun.projectId || payload.project?.id || activeProject.id }
+            : prev.managerCommandCenterRun,
           lastManagerCommandCenterSyncAt: payload.managerCommandCenter ? new Date().toISOString() : prev.lastManagerCommandCenterSyncAt,
           managerCommandCenterSyncCount: payload.managerCommandCenter ? (prev.managerCommandCenterSyncCount || 0) + 1 : prev.managerCommandCenterSyncCount,
           lastAction: `Command Center ran: ${payload.managerCommandCenterRun?.actionLabel || managerCommandCenter.nextBestActionLabel || 'next action'}`,
@@ -16912,7 +19985,7 @@ export default function EngineWorkspace() {
       } catch (error) {
         setBackendStation(prev => ({
           ...prev,
-          connectionStatus: 'offline',
+          connectionStatus: backendFailureConnectionStatusFor(activeProject, prev.connectionStatus),
           loading: false,
           lastAction: 'Command Center run failed',
           error: error.name === 'AbortError' ? 'Command Center run timed out.' : error.message || String(error),
@@ -16922,6 +19995,7 @@ export default function EngineWorkspace() {
     };
     const buildManagerActionRunOutput = (payload = {}, fallback = {}, generatedAt = new Date().toISOString()) => ({
       schemaVersion: 'manager-action-run-output/v1',
+      projectId: payload.project?.id || payload.managerActionRun?.projectId || fallback.projectId || activeProject?.id || null,
       generatedAt,
       actionLabel: payload.managerActionRun?.actionLabel || payload.managerAction?.label || fallback.actionLabel || fallback.label || fallback.stage || fallback.id || null,
       actionId: payload.managerActionRun?.actionId || payload.managerAction?.id || fallback.actionId || fallback.id || null,
@@ -16974,7 +20048,9 @@ export default function EngineWorkspace() {
           connectionStatus: 'online',
           loading: false,
           managerActionQueue: payload.managerActionQueue || payload.managerDashboard?.managerActionQueue || prev.managerActionQueue,
-          managerActionRun: payload.managerActionRun || prev.managerActionRun,
+          managerActionRun: payload.managerActionRun
+            ? { ...payload.managerActionRun, projectId: payload.managerActionRun.projectId || payload.project?.id || activeProject.id }
+            : prev.managerActionRun,
           managerActionRunOutput: buildManagerActionRunOutput(payload, row, now),
           lastAction: `Manager action ran: ${row.label || row.requirementId || row.id}`,
           lastProjectSyncAt: new Date().toISOString(),
@@ -16994,7 +20070,7 @@ export default function EngineWorkspace() {
       } catch (error) {
         setBackendStation(prev => ({
           ...prev,
-          connectionStatus: 'offline',
+          connectionStatus: backendFailureConnectionStatusFor(activeProject, prev.connectionStatus),
           loading: false,
           lastAction: 'Manager action failed',
           error: error.name === 'AbortError' ? 'Manager action timed out.' : error.message || String(error),
@@ -17025,10 +20101,13 @@ export default function EngineWorkspace() {
           connectionStatus: 'online',
           loading: false,
           autonomousRunControl: payload.autonomousRunControl || payload.managerDashboard?.autonomousRunControl || payload.managerReadyPackage?.autonomousRunControl || prev.autonomousRunControl,
-          autonomousRunControlRun: payload.autonomousRunControlRun || prev.autonomousRunControlRun,
+          autonomousRunControlRun: payload.autonomousRunControlRun
+            ? { ...payload.autonomousRunControlRun, projectId: payload.autonomousRunControlRun.projectId || payload.project?.id || activeProject.id }
+            : prev.autonomousRunControlRun,
           autonomousActionDecision: payload.autonomousActionDecision || payload.autonomousRunControlRun?.autonomousActionDecision || payload.agentAutonomousActionRun?.autonomousActionDecision || prev.autonomousActionDecision,
           autonomousRunControlRunOutput: {
             schemaVersion: 'autonomous-run-control-run-output/v1',
+            projectId: payload.project?.id || payload.autonomousRunControlRun?.projectId || activeProject.id,
             generatedAt: now,
             runId: payload.autonomousRunControlRun?.id || null,
             actionLabel: payload.autonomousRunControlRun?.actionLabel || action.label || action.id || null,
@@ -17074,7 +20153,7 @@ export default function EngineWorkspace() {
       } catch (error) {
         setBackendStation(prev => ({
           ...prev,
-          connectionStatus: 'offline',
+          connectionStatus: backendFailureConnectionStatusFor(activeProject, prev.connectionStatus),
           loading: false,
           lastAction: 'Autonomous Run Control action failed',
           error: error.name === 'AbortError' ? 'Autonomous Run Control action timed out.' : error.message || String(error),
@@ -17104,8 +20183,12 @@ export default function EngineWorkspace() {
           connectionStatus: 'online',
           loading: false,
           autonomousRunControl: payload.autonomousRunControl || payload.managerDashboard?.autonomousRunControl || payload.managerReadyPackage?.autonomousRunControl || prev.autonomousRunControl,
-          autonomousRunControlLoop: payload.autonomousRunControlLoop || payload.autonomousRunControlLoopRun || prev.autonomousRunControlLoop,
-          autonomousRunControlRun: latestLoopRun || prev.autonomousRunControlRun,
+          autonomousRunControlLoop: payload.autonomousRunControlLoop || payload.autonomousRunControlLoopRun
+            ? { ...(payload.autonomousRunControlLoop || payload.autonomousRunControlLoopRun), projectId: (payload.autonomousRunControlLoop || payload.autonomousRunControlLoopRun).projectId || payload.project?.id || activeProject.id }
+            : prev.autonomousRunControlLoop,
+          autonomousRunControlRun: latestLoopRun
+            ? { ...latestLoopRun, projectId: latestLoopRun.projectId || payload.project?.id || activeProject.id }
+            : prev.autonomousRunControlRun,
           managerActionQueue: payload.managerActionQueue || payload.managerDashboard?.managerActionQueue || prev.managerActionQueue,
           agentAutonomousActionQueue: payload.agentAutonomousActionQueue || payload.managerDashboard?.agentAutonomousActionQueue || prev.agentAutonomousActionQueue,
           lastAutonomousRunControlSyncAt: payload.autonomousRunControl ? new Date().toISOString() : prev.lastAutonomousRunControlSyncAt,
@@ -17134,7 +20217,7 @@ export default function EngineWorkspace() {
       } catch (error) {
         setBackendStation(prev => ({
           ...prev,
-          connectionStatus: 'offline',
+          connectionStatus: backendFailureConnectionStatusFor(activeProject, prev.connectionStatus),
           loading: false,
           lastAction: 'Autonomous Run Control loop failed',
           error: error.name === 'AbortError' ? 'Autonomous Run Control loop timed out.' : error.message || String(error),
@@ -17176,9 +20259,15 @@ export default function EngineWorkspace() {
           connectionStatus: 'online',
           loading: false,
           autonomousRunControl: payload.autonomousRunControl || prev.autonomousRunControl,
-          autonomousRunControlSessions: payload.autonomousRunControlSessions || prev.autonomousRunControlSessions,
-          autonomousRunControlSession: payload.autonomousRunControlSession || prev.autonomousRunControlSession,
-          autonomousRunControlSessionTick: payload.autonomousRunControlSessionTick || prev.autonomousRunControlSessionTick,
+          autonomousRunControlSessions: payload.autonomousRunControlSessions
+            ? { ...payload.autonomousRunControlSessions, projectId: payload.autonomousRunControlSessions.projectId || payload.project?.id || activeProject.id }
+            : prev.autonomousRunControlSessions,
+          autonomousRunControlSession: payload.autonomousRunControlSession
+            ? { ...payload.autonomousRunControlSession, projectId: payload.autonomousRunControlSession.projectId || payload.project?.id || activeProject.id }
+            : prev.autonomousRunControlSession,
+          autonomousRunControlSessionTick: payload.autonomousRunControlSessionTick
+            ? { ...payload.autonomousRunControlSessionTick, projectId: payload.autonomousRunControlSessionTick.projectId || payload.project?.id || activeProject.id }
+            : prev.autonomousRunControlSessionTick,
           lastAutonomousRunControlSyncAt: payload.autonomousRunControl ? new Date().toISOString() : prev.lastAutonomousRunControlSyncAt,
           autonomousRunControlSyncCount: payload.autonomousRunControl ? (prev.autonomousRunControlSyncCount || 0) + 1 : prev.autonomousRunControlSyncCount,
           lastAction: `Autopilot session: ${payload.autonomousRunControlSession?.status || 'started'}`,
@@ -17201,7 +20290,7 @@ export default function EngineWorkspace() {
       } catch (error) {
         setBackendStation(prev => ({
           ...prev,
-          connectionStatus: 'offline',
+          connectionStatus: backendFailureConnectionStatusFor(activeProject, prev.connectionStatus),
           loading: false,
           lastAction: 'Autopilot session start failed',
           error: error.name === 'AbortError' ? 'Autopilot session start timed out.' : error.message || String(error),
@@ -17267,9 +20356,9 @@ export default function EngineWorkspace() {
     };
     const tickAutonomousRunControlSession = async () => {
       if (!activeProject || !backendCommandAvailable) return null;
-      const sessionId = backendStation.autonomousRunControlSession?.id
-        || backendStation.autonomousRunControlSessions?.activeSession?.id
-        || backendStation.autonomousRunControlSessions?.latestSession?.id
+      const sessionId = backendAutonomousRunControlSessionReceipt?.id
+        || backendAutonomousRunControlSessionsReadModel?.activeSession?.id
+        || backendAutonomousRunControlSessionsReadModel?.latestSession?.id
         || 'active';
       const now = new Date().toISOString();
       const runApiPath = `/projects/${encodeURIComponent(activeProject.id)}/autonomous-run-control/sessions/${encodeURIComponent(sessionId)}/tick`;
@@ -17337,7 +20426,7 @@ export default function EngineWorkspace() {
       } catch (error) {
         setBackendStation(prev => ({
           ...prev,
-          connectionStatus: 'offline',
+          connectionStatus: backendFailureConnectionStatusFor(activeProject, prev.connectionStatus),
           loading: false,
           lastAction: 'Autopilot session tick failed',
           error: error.name === 'AbortError' ? 'Autopilot session tick timed out.' : error.message || String(error),
@@ -17347,9 +20436,9 @@ export default function EngineWorkspace() {
     };
     const runAutopilotSessionThroughScheduler = async () => {
       if (!activeProject || !backendCommandAvailable) return null;
-      const sessionId = backendStation.autonomousRunControlSession?.id
-        || backendStation.autonomousRunControlSessions?.activeSession?.id
-        || backendStation.autonomousRunControlSessions?.latestSession?.id
+      const sessionId = backendAutonomousRunControlSessionReceipt?.id
+        || backendAutonomousRunControlSessionsReadModel?.activeSession?.id
+        || backendAutonomousRunControlSessionsReadModel?.latestSession?.id
         || 'active';
       const now = new Date().toISOString();
       setBackendStation(prev => ({ ...prev, loading: true }));
@@ -17459,7 +20548,7 @@ export default function EngineWorkspace() {
       } catch (error) {
         setBackendStation(prev => ({
           ...prev,
-          connectionStatus: 'offline',
+          connectionStatus: backendFailureConnectionStatusFor(activeProject, prev.connectionStatus),
           loading: false,
           lastAction: 'Autopilot scheduler tick failed',
           error: error.name === 'AbortError' ? 'Autopilot scheduler tick timed out.' : error.message || String(error),
@@ -17469,9 +20558,9 @@ export default function EngineWorkspace() {
     };
     const pauseAutonomousRunControlSession = async () => {
       if (!activeProject || !backendCommandAvailable) return null;
-      const sessionId = backendStation.autonomousRunControlSession?.id
-        || backendStation.autonomousRunControlSessions?.activeSession?.id
-        || backendStation.autonomousRunControlSessions?.latestSession?.id
+      const sessionId = backendAutonomousRunControlSessionReceipt?.id
+        || backendAutonomousRunControlSessionsReadModel?.activeSession?.id
+        || backendAutonomousRunControlSessionsReadModel?.latestSession?.id
         || 'active';
       const now = new Date().toISOString();
       const runApiPath = `/projects/${encodeURIComponent(activeProject.id)}/autonomous-run-control/sessions/${encodeURIComponent(sessionId)}/pause`;
@@ -17516,7 +20605,7 @@ export default function EngineWorkspace() {
       } catch (error) {
         setBackendStation(prev => ({
           ...prev,
-          connectionStatus: 'offline',
+          connectionStatus: backendFailureConnectionStatusFor(activeProject, prev.connectionStatus),
           loading: false,
           lastAction: 'Autopilot session pause failed',
           error: error.name === 'AbortError' ? 'Autopilot session pause timed out.' : error.message || String(error),
@@ -17539,7 +20628,7 @@ export default function EngineWorkspace() {
             source: 'manager-ready-package-ui',
             includeReadModels: false,
           },
-          timeoutMs: 3000,
+          timeoutMs: 10000,
         });
         if (payload.project) {
           applyBackendProjectSnapshot(payload);
@@ -17550,7 +20639,9 @@ export default function EngineWorkspace() {
           ...prev,
           connectionStatus: 'online',
           loading: false,
-          mvpReadinessOperatorActionRun: payload.mvpReadinessOperatorActionRun || prev.mvpReadinessOperatorActionRun,
+          mvpReadinessOperatorActionRun: payload.mvpReadinessOperatorActionRun
+            ? { ...payload.mvpReadinessOperatorActionRun, projectId: payload.mvpReadinessOperatorActionRun.projectId || projectId }
+            : prev.mvpReadinessOperatorActionRun,
           readyPackageSubmodels: {
             ...(String(prev.readyPackageSubmodelsProjectId || '').toLowerCase() === String(projectId).toLowerCase() ? (prev.readyPackageSubmodels || {}) : {}),
             ...(payload.mvpReadiness ? { mvpReadiness: payload.mvpReadiness } : {}),
@@ -17566,9 +20657,18 @@ export default function EngineWorkspace() {
         if (!appliedManagerPayload) {
           setTimeout(() => syncBackendManagerDashboard({ silent: true, projectId }), 0);
         }
-        setTimeout(() => syncBackendManagerFlowGraph({ silent: true, projectId }), 0);
-        setTimeout(() => syncBackendTimelineAndEvents({ silent: true, projectId }), 0);
-        setTimeout(() => syncBackendReadyPackageSubmodels({ silent: true, projectId, includeLaunchControls: true }), 0);
+        const refreshedReadModels = await refreshReceiptReadModels({
+          payload,
+          projectId,
+          workflowKey: 'mvpReadiness',
+          includeLaunchControls: true,
+          actionLabel: 'MVP readiness action receipt routes refreshed',
+        });
+        if (!refreshedReadModels || !Object.keys(refreshedReadModels).length) {
+          setTimeout(() => syncBackendManagerFlowGraph({ silent: true, projectId }), 0);
+          setTimeout(() => syncBackendTimelineAndEvents({ silent: true, projectId }), 0);
+          setTimeout(() => syncBackendReadyPackageSubmodels({ silent: true, projectId, includeLaunchControls: true }), 0);
+        }
         return payload;
       } catch (error) {
         const errorMessage = error.name === 'AbortError'
@@ -17576,11 +20676,12 @@ export default function EngineWorkspace() {
           : `${error.message || String(error)} No local operator receipt was created.`;
         setBackendStation(prev => ({
           ...prev,
-          connectionStatus: 'offline',
+          connectionStatus: backendFailureConnectionStatusFor(activeProject, prev.connectionStatus),
           loading: false,
           mvpReadinessOperatorActionRun: {
             schemaVersion: 'mvp-readiness-operator-action-run/v1',
             status: 'failed',
+            projectId: activeProject.id,
             actionId: action.id,
             actionLabel: action.label || action.id,
             runApiPath,
@@ -17625,10 +20726,13 @@ export default function EngineWorkspace() {
           loading: false,
           agentAutonomousActionQueue: payload.agentAutonomousActionQueue || prev.agentAutonomousActionQueue,
           autonomousRunControl: payload.autonomousRunControl || payload.managerDashboard?.autonomousRunControl || payload.managerReadyPackage?.autonomousRunControl || prev.autonomousRunControl,
-          agentAutonomousActionRun: payload.agentAutonomousActionRun || prev.agentAutonomousActionRun,
+          agentAutonomousActionRun: payload.agentAutonomousActionRun
+            ? { ...payload.agentAutonomousActionRun, projectId: payload.agentAutonomousActionRun.projectId || payload.project?.id || activeProject.id }
+            : prev.agentAutonomousActionRun,
           autonomousActionDecision: payload.autonomousActionDecision || payload.agentAutonomousActionRun?.autonomousActionDecision || prev.autonomousActionDecision,
           agentAutonomousActionRunOutput: {
             schemaVersion: 'agent-autonomous-action-run-output/v1',
+            projectId: payload.project?.id || payload.agentAutonomousActionRun?.projectId || activeProject.id,
             generatedAt: now,
             agentId,
             runId: payload.agentAutonomousActionRun?.id || null,
@@ -17672,12 +20776,13 @@ export default function EngineWorkspace() {
           : `${error.message || String(error)} No local run receipt was created.`;
         setBackendStation(prev => ({
           ...prev,
-          connectionStatus: 'offline',
+          connectionStatus: backendFailureConnectionStatusFor(activeProject, prev.connectionStatus),
           loading: false,
           agentAutonomousActionRun: null,
           agentAutonomousActionRunOutput: {
             schemaVersion: 'agent-autonomous-action-run-output/v1',
             status: 'failed',
+            projectId: activeProject.id,
             generatedAt: new Date().toISOString(),
             agentId,
             runId: null,
@@ -17697,13 +20802,19 @@ export default function EngineWorkspace() {
       const intentId = row.id || 'next';
       const now = new Date().toISOString();
       const runApiPath = row.runIntentApiPath || `/projects/${encodeURIComponent(activeProject.id)}/collaboration-intent-queue/${encodeURIComponent(intentId)}/run`;
+      const routeBackedIntent = Boolean(row.runIntentApiPath || row.runApiPath);
       setBackendStation(prev => ({ ...prev, loading: true }));
       try {
-        await ensureBackendProjectSeed();
+        const projectSnapshot = await readBackendProjectSnapshotForWrite({ projectId: activeProject.id, timeoutMs: 8000 }).catch((error) => {
+          if (error.status === 404) return null;
+          if (error.name === 'AbortError' && routeBackedIntent) return { skippedProjectSnapshotPreflight: true };
+          throw error;
+        });
+        if (!projectSnapshot && !routeBackedIntent) await ensureBackendProjectSeed();
         const payload = await requestAgentBackend(runApiPath, {
           method: 'POST',
           body: { now, includeReadModels: false },
-          timeoutMs: String(row.runApiPath || '').includes('/autonomous-run-control/') ? 15000 : 7000,
+          timeoutMs: String(runApiPath || '').includes('/collaboration-intent-queue/') ? 120_000 : 45_000,
         });
         if (payload.project) {
           applyBackendProjectSnapshot(payload);
@@ -17713,9 +20824,12 @@ export default function EngineWorkspace() {
           ...prev,
           connectionStatus: 'online',
           loading: false,
-          collaborationIntentRun: payload.collaborationIntentRun || prev.collaborationIntentRun,
+          collaborationIntentRun: payload.collaborationIntentRun
+            ? { ...payload.collaborationIntentRun, projectId: payload.collaborationIntentRun.projectId || payload.project?.id || activeProject.id }
+            : prev.collaborationIntentRun,
           collaborationIntentRunOutput: {
             schemaVersion: 'collaboration-intent-run-output/v1',
+            projectId: payload.project?.id || payload.collaborationIntentRun?.projectId || activeProject.id,
             generatedAt: now,
             intentId,
             runId: payload.collaborationIntentRun?.id || null,
@@ -17734,12 +20848,18 @@ export default function EngineWorkspace() {
           collaborationIntentQueue: payload.collaborationIntentQueue || prev.collaborationIntentQueue,
           productTeamOperatingLoop: payload.productTeamOperatingLoop || prev.productTeamOperatingLoop,
           autonomousRunControl: payload.autonomousRunControl || payload.managerDashboard?.autonomousRunControl || payload.managerReadyPackage?.autonomousRunControl || prev.autonomousRunControl,
-          autonomousRunControlRun: payload.autonomousRunControlRun || prev.autonomousRunControlRun,
+          autonomousRunControlRun: payload.autonomousRunControlRun
+            ? { ...payload.autonomousRunControlRun, projectId: payload.autonomousRunControlRun.projectId || payload.project?.id || activeProject.id }
+            : prev.autonomousRunControlRun,
           autonomousActionDecision: payload.autonomousActionDecision || payload.collaborationIntentRun?.autonomousActionDecision || payload.autonomousRunControlRun?.autonomousActionDecision || payload.agentAutonomousActionRun?.autonomousActionDecision || prev.autonomousActionDecision,
           managerActionQueue: payload.managerActionQueue || payload.managerDashboard?.managerActionQueue || prev.managerActionQueue,
-          managerActionRun: payload.managerActionRun || prev.managerActionRun,
+          managerActionRun: payload.managerActionRun
+            ? { ...payload.managerActionRun, projectId: payload.managerActionRun.projectId || payload.project?.id || activeProject.id }
+            : prev.managerActionRun,
           agentAutonomousActionQueue: payload.agentAutonomousActionQueue || payload.managerDashboard?.agentAutonomousActionQueue || prev.agentAutonomousActionQueue,
-          agentAutonomousActionRun: payload.agentAutonomousActionRun || prev.agentAutonomousActionRun,
+          agentAutonomousActionRun: payload.agentAutonomousActionRun
+            ? { ...payload.agentAutonomousActionRun, projectId: payload.agentAutonomousActionRun.projectId || payload.project?.id || activeProject.id }
+            : prev.agentAutonomousActionRun,
           lastCollaborationIntentQueueSyncAt: payload.collaborationIntentQueue ? new Date().toISOString() : prev.lastCollaborationIntentQueueSyncAt,
           collaborationIntentQueueSyncCount: payload.collaborationIntentQueue ? (prev.collaborationIntentQueueSyncCount || 0) + 1 : prev.collaborationIntentQueueSyncCount,
           lastProductTeamOperatingLoopSyncAt: payload.productTeamOperatingLoop ? new Date().toISOString() : prev.lastProductTeamOperatingLoopSyncAt,
@@ -17772,12 +20892,13 @@ export default function EngineWorkspace() {
           : `${error.message || String(error)} No local intent receipt was created.`;
         setBackendStation(prev => ({
           ...prev,
-          connectionStatus: 'offline',
+          connectionStatus: backendFailureConnectionStatusFor(activeProject, prev.connectionStatus),
           loading: false,
           collaborationIntentRun: null,
           collaborationIntentRunOutput: {
             schemaVersion: 'collaboration-intent-run-output/v1',
             status: 'failed',
+            projectId: activeProject.id,
             generatedAt: new Date().toISOString(),
             intentId,
             runId: null,
@@ -17865,7 +20986,7 @@ export default function EngineWorkspace() {
       } catch (error) {
         setBackendStation(prev => ({
           ...prev,
-          connectionStatus: 'offline',
+          connectionStatus: backendFailureConnectionStatusFor(activeProject, prev.connectionStatus),
           loading: false,
           lastAction: `${label} receipt failed`,
           error: error.name === 'AbortError' ? `${label} receipt timed out.` : error.message || String(error),
@@ -17934,6 +21055,86 @@ export default function EngineWorkspace() {
           controls,
         },
       });
+    };
+    const runManagedInfrastructureCutoverAttestation = async () => {
+      if (!activeProject || !backendCommandAvailable) return null;
+      const projectId = activeProject.id;
+      const route = backendManagerReadyPackage?.backendRoutes?.managedInfrastructureCutoverAttestations
+        || `/projects/${projectId}/managed-infrastructure-cutover-attestations`;
+      const now = new Date().toISOString();
+      setBackendStation(prev => ({ ...prev, loading: true }));
+      try {
+        await ensureBackendProjectSeed();
+        const payload = await requestAgentBackend(route, {
+          method: 'POST',
+          body: {
+            actorRole: 'operations-owner',
+            actorId: 'director',
+            actorName: 'Director',
+            source: 'manager-ui-managed-infrastructure-cutover-attestation',
+            reason: 'Request signed managed-production adapter gateway attestations for managed persistence and queue cutover.',
+            now,
+            includeReadModels: false,
+          },
+          timeoutMs: 15000,
+        });
+        if (payload.project) {
+          applyBackendProjectSnapshot(payload);
+        }
+        const appliedManagerPayload = applyBackendManagerDashboardPayload(payload);
+        setBackendStation(prev => ({
+          ...prev,
+          connectionStatus: 'online',
+          loading: false,
+          managedInfrastructureCutoverAttestationRun: payload.managedInfrastructureCutoverAttestationRun
+            ? { ...payload.managedInfrastructureCutoverAttestationRun, projectId: payload.managedInfrastructureCutoverAttestationRun.projectId || projectId }
+            : prev.managedInfrastructureCutoverAttestationRun,
+          productionOperationsControlReceiptWorkflow: payload.productionOperationsControlReceiptWorkflow || prev.productionOperationsControlReceiptWorkflow,
+          productionOperationsReadiness: payload.productionOperationsReadiness || prev.productionOperationsReadiness,
+          lastAction: `Managed cutover attestation ${payload.managedInfrastructureCutoverAttestationRun?.status || 'recorded'}`,
+          lastProjectSyncAt: new Date().toISOString(),
+          projectSyncCount: payload.project ? (prev.projectSyncCount || 0) + 1 : prev.projectSyncCount,
+          error: null,
+        }));
+        if (!appliedManagerPayload) {
+          setTimeout(() => syncBackendManagerDashboard({ silent: true, projectId }), 0);
+        }
+        const refreshedReadModels = await refreshReceiptReadModels({
+          payload,
+          projectId,
+          includeLaunchControls: true,
+          actionLabel: 'Managed cutover attestation proof routes refreshed',
+        });
+        if (!refreshedReadModels || !Object.keys(refreshedReadModels).length) {
+          setTimeout(() => syncBackendReadyPackageSubmodels({ silent: true, projectId, includeLaunchControls: true }), 0);
+          setTimeout(() => syncBackendManagerFlowGraph({ silent: true, projectId }), 0);
+          setTimeout(() => syncBackendTimelineAndEvents({ silent: true, projectId }), 0);
+        }
+        return payload;
+      } catch (error) {
+        const errorMessage = error.name === 'AbortError'
+          ? 'Managed cutover attestation timed out. No local cutover proof was created.'
+          : `${error.message || String(error)} No local cutover proof was created.`;
+        setBackendStation(prev => ({
+          ...prev,
+          connectionStatus: backendFailureConnectionStatusFor(activeProject, prev.connectionStatus),
+          loading: false,
+          managedInfrastructureCutoverAttestationRun: {
+            schemaVersion: 'managed-infrastructure-cutover-attestation-run/v1',
+            status: 'failed',
+            projectId,
+            source: 'manager-ui-managed-infrastructure-cutover-attestation',
+            adapterGatewayEndpointConfigured: false,
+            readyForManagedInfrastructureCutoverEvidence: false,
+            readyForProduction: false,
+            localProofCreated: false,
+            blocker: errorMessage,
+          },
+          lastAction: 'Managed cutover attestation failed; no local cutover proof was created',
+          error: errorMessage,
+        }));
+        return null;
+      }
     };
     const runManagerScenarioWalkthroughRow = async (row) => {
       if (!activeProject || !backendCommandAvailable || !row || !row.primaryAction?.canRun) return null;
@@ -18022,7 +21223,7 @@ export default function EngineWorkspace() {
       } catch (error) {
         setBackendStation(prev => ({
           ...prev,
-          connectionStatus: 'offline',
+          connectionStatus: backendFailureConnectionStatusFor(activeProject, prev.connectionStatus),
           loading: false,
           lastAction: 'Walkthrough step failed',
           error: error.name === 'AbortError' ? 'Walkthrough step timed out.' : error.message || String(error),
@@ -18084,16 +21285,39 @@ export default function EngineWorkspace() {
               <div>
                 <div className="font-mono text-[10px] uppercase tracking-[0.3em] text-[#8f1e18] mb-3">Project Dashboard</div>
                 <h1 className="font-serif text-6xl leading-none mb-4">{activeProject.name}</h1>
-                <div className="flex items-center gap-3 font-mono text-[10px] uppercase tracking-widest text-[#6b5a3d]">
+                <div className="flex flex-wrap items-center gap-3 font-mono text-[10px] uppercase tracking-widest text-[#6b5a3d]">
                   <span className="bg-[#251b13] text-[#efe2bd] px-3 py-1">{projectText(activeProject.status)}</span>
                   {fixtureMeta && <span className="border border-[#b9782b] bg-[#f7edcf] px-3 py-1 text-[#8f1e18]">Sample fixture</span>}
+                  <span
+                    data-testid="project-dashboard-snapshot-source"
+                    className={`border px-3 py-1 ${projectDashboardSnapshotSourceMeta.className}`}
+                  >
+                    {projectDashboardSnapshotSourceMeta.label}
+                  </span>
                   <span>ID: {activeProject.id}</span>
                   <span>{activeProject.team.length} {projectText('Members')}</span>
+                </div>
+                <div data-testid="project-dashboard-snapshot-source-detail" className="mt-2 font-mono text-[9px] uppercase tracking-widest text-[#7d6a49]">
+                  {projectDashboardSnapshotSourceMeta.detail}
                 </div>
               </div>
               <div className="text-right">
                 <div className="font-serif text-6xl">{activeProject.progress}%</div>
                 <div className="font-mono text-[10px] uppercase tracking-widest text-[#6b5a3d]">{projectText('Project Progress')}</div>
+                <div className="mt-3 flex flex-col items-end gap-1">
+                  <span
+                    data-testid="project-dashboard-progress-source"
+                    className={`w-fit border px-2 py-1 font-mono text-[8px] uppercase tracking-widest ${projectDashboardSnapshotSourceMeta.className}`}
+                  >
+                    {projectDashboardSnapshotSourceMeta.label}
+                  </span>
+                  <span
+                    data-testid="project-dashboard-progress-source-detail"
+                    className="max-w-[260px] text-right font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]"
+                  >
+                    {projectDashboardSnapshotSourceMeta.detail}
+                  </span>
+                </div>
               </div>
             </header>
 
@@ -18115,14 +21339,55 @@ export default function EngineWorkspace() {
                     <item.icon size={18} className="text-[#8f1e18] mb-4" />
                     <div className="font-mono text-[9px] uppercase tracking-widest text-[#7d6a49] mb-2">{item.label}</div>
                     <div className="font-serif text-2xl">{item.value}</div>
+                    {item.sourceMeta && (
+                      <div className="mt-3 flex flex-col gap-1">
+                        <span
+                          data-testid={`project-dashboard-stat-source-${item.sourceId}`}
+                          className={`w-fit border px-2 py-1 font-mono text-[8px] uppercase tracking-widest ${item.sourceMeta.className}`}
+                        >
+                          {item.sourceMeta.label}
+                        </span>
+                        <span
+                          data-testid={`project-dashboard-stat-source-detail-${item.sourceId}`}
+                          className="font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]"
+                        >
+                          {item.sourceMeta.detail}
+                        </span>
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
 
               <div className="bg-[#251b13] text-[#efe2bd] border border-[#5c4933] p-6 mb-6">
-                <div className="flex items-center gap-2 font-mono text-[10px] uppercase tracking-widest text-red-200 mb-4">
-                  <Sparkles size={15} /> {t('common.nextRecommendation')}
+                <div className="flex items-start justify-between gap-4 mb-3">
+                  <div className="flex items-center gap-2 font-mono text-[10px] uppercase tracking-widest text-red-200">
+                    <Sparkles size={15} /> {t('common.nextRecommendation')}
+                  </div>
+                  <span
+                    data-testid="project-dashboard-next-recommendation-source"
+                    className={`border px-3 py-1 font-mono text-[8px] uppercase tracking-widest ${projectDashboardNextRecommendationSourceMeta.className}`}
+                  >
+                    {projectDashboardNextRecommendationSourceMeta.label}
+                  </span>
                 </div>
+                <div
+                  data-testid="project-dashboard-next-recommendation-source-detail"
+                  className="mb-4 font-mono text-[8px] uppercase tracking-widest text-[#d8c99f]"
+                >
+                  {projectDashboardNextRecommendationSourceMeta.detail}
+                </div>
+                {projectDashboardNextRecommendationBackendRequired && (
+                  <button
+                    type="button"
+                    data-testid="project-dashboard-next-recommendation-sync-manager-dashboard"
+                    onClick={() => syncBackendManagerDashboard({ silent: false, projectId: activeProject.id })}
+                    disabled={backendStation.loading}
+                    className="mb-4 inline-flex items-center gap-1.5 border border-[#d8c99f] px-3 py-2 font-mono text-[8px] uppercase tracking-widest text-[#efe2bd] hover:border-white hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    <Database size={11} /> Sync Manager Dashboard
+                  </button>
+                )}
                 {isInitiatedProject && (
                   <p className="font-serif text-2xl leading-relaxed">
                     {managerNextSuggestion}
@@ -18134,10 +21399,10 @@ export default function EngineWorkspace() {
                 {isInitiatedProject && (
                   <div data-testid="dashboard-next-action-resolution" className="mt-5 border-t border-[#7b6542] pt-4 font-mono text-[9px] uppercase tracking-widest text-[#d8c99f] leading-relaxed">
                     <div>
-                      NEXT ACTION RESOLUTION: {nextActionResolution?.status || (activeProject.initiation?.output ? 'manager-confirmed' : 'awaiting confirmation')}
+                      NEXT ACTION RESOLUTION: {projectDashboardNextRecommendationBackendRequired ? 'backend required' : nextActionResolution?.status || (activeProject.initiation?.output ? 'manager-confirmed' : 'awaiting confirmation')}
                     </div>
                     <div>
-                      AGENT RECEIPTS: {nextActionResolutionDelivery ? `${nextActionResolutionDelivery.deliveredAgentIds.length}/${nextActionResolutionDelivery.teamCount}` : `${activeProject.team.length}/${activeProject.team.length}`}
+                      AGENT RECEIPTS: {projectDashboardNextRecommendationBackendRequired ? 'backend required' : nextActionResolutionDelivery ? `${nextActionResolutionDelivery.deliveredAgentIds.length}/${nextActionResolutionDelivery.teamCount}` : `${activeProject.team.length}/${activeProject.team.length}`}
                     </div>
                   </div>
                 )}
@@ -18169,19 +21434,37 @@ export default function EngineWorkspace() {
                     <div className="font-mono text-[10px] uppercase tracking-widest text-[#8f1e18] mb-2">{projectText('Agent Current Work Status')}</div>
                     <div className="font-serif text-2xl leading-tight">{projectText('What each employee is doing, running, and accountable for now.')}</div>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => enterProjectScene('timeline')}
-                    disabled={Boolean(sceneTransition)}
-                    className="inline-flex shrink-0 items-center justify-center gap-2 border border-[#7b6542] bg-[#251b13] px-4 py-2 font-mono text-[8px] uppercase tracking-widest text-[#efe2bd] hover:border-[#251b13] disabled:opacity-40"
-                  >
-                    <Network size={12} /> {projectText('Open Flow Graph')}
-                  </button>
+                  <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+                    {managerReadModelSourceBadge(agentStateSummary, 'dashboard-agent-status-source')}
+                    <button
+                      type="button"
+                      onClick={openManagerFlowGraphScene}
+                      disabled={Boolean(sceneTransition)}
+                      className="inline-flex items-center justify-center gap-2 border border-[#7b6542] bg-[#251b13] px-4 py-2 font-mono text-[8px] uppercase tracking-widest text-[#efe2bd] hover:border-[#251b13] disabled:opacity-40"
+                    >
+                      <Network size={12} /> {projectText('Open Flow Graph')}
+                    </button>
+                  </div>
                 </div>
+                {operationsBoardBackendRequired && (
+                  <div data-testid="dashboard-agent-status-backend-required" className="mb-4 border border-[#8f1e18] bg-red-50 px-3 py-2 font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">
+                    <div>{projectText('Backend Agent State Summary required. Local Agent status rows are suppressed for this backend project.')}</div>
+                    <button
+                      type="button"
+                      data-testid="dashboard-agent-status-sync-cockpit"
+                      onClick={() => syncBackendCockpitReadModels({ silent: false, projectId: activeProject.id })}
+                      disabled={backendStation.loading}
+                      className="mt-2 inline-flex items-center gap-1 border border-[#8f1e18] bg-white px-2 py-1 text-[#8f1e18] hover:border-[#251b13] hover:text-[#251b13] disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      <Database size={10} /> {projectText('Sync Cockpit')}
+                    </button>
+                  </div>
+                )}
                 <div className="grid grid-cols-1 gap-3">
                   {operationsBoardRows.map(row => {
                     const loopRow = continuousWorkRows.find(item => item.agent.id === row.agent.id) || {};
-                    const ownedOpenTasks = (activeProject.tasks || []).filter(task => (
+                    const agentStatusLocalTasksAllowed = agentStateSummaryAllowsLocalProofFallback;
+                    const ownedOpenTasks = agentStatusLocalTasksAllowed ? (activeProject.tasks || []).filter(task => (
                       task.status !== 'done'
                       && (
                         task.ownerId === row.agent.id
@@ -18189,8 +21472,25 @@ export default function EngineWorkspace() {
                         || task.assignee === row.agent.name
                         || task.ownerName === row.agent.name
                       )
-                    ));
-                    const currentTask = ownedOpenTasks[0] || null;
+                    )) : [];
+                    const backendOwnedOpenTaskCount = row.openTaskCount
+                      ?? row.ownedOpenTaskCount
+                      ?? row.taskCount
+                      ?? row.ownedTaskCount
+                      ?? row.tasks?.openCount
+                      ?? row.tasks?.length
+                      ?? row.taskIds?.length
+                      ?? 0;
+                    const displayOpenTaskCount = agentStatusLocalTasksAllowed ? ownedOpenTasks.length : backendOwnedOpenTaskCount;
+                    const currentTask = agentStatusLocalTasksAllowed ? ownedOpenTasks[0] || null : null;
+                    const backendCurrentTaskText = row.currentTaskText
+                      || row.currentTask?.text
+                      || row.currentTask?.title
+                      || row.activeTaskText
+                      || row.task?.text
+                      || row.task?.title
+                      || row.state.currentPlan?.taskText
+                      || null;
                     const statusLabel = row.state.status || row.latestWorker.reason || row.trigger || 'waiting';
                     return (
                       <div key={`dashboard-agent-status-${row.agent.id}`} data-testid={`dashboard-agent-status-${row.agent.id}`} className="border border-[#d8c99f] bg-[#efe2bd]/55 p-4">
@@ -18207,7 +21507,7 @@ export default function EngineWorkspace() {
                             <div className="mt-3 grid grid-cols-1 md:grid-cols-4 gap-2">
                               <div className="border border-[#d8c99f] bg-[#f7edcf] px-2 py-1 min-w-0">
                                 <div className="font-mono text-[7px] uppercase tracking-widest text-[#8f1e18]">{projectText('Doing')}</div>
-                                <div className="font-serif text-sm leading-tight text-[#4d412d]">{projectText(row.state.currentPlan?.focus || loopRow.focus || currentTask?.text || 'Monitoring project lane')}</div>
+                                <div className="font-serif text-sm leading-tight text-[#4d412d]">{projectText(row.state.currentPlan?.focus || loopRow.focus || backendCurrentTaskText || currentTask?.text || 'Monitoring project lane')}</div>
                               </div>
                               <div className="border border-[#d8c99f] bg-[#f7edcf] px-2 py-1 min-w-0">
                                 <div className="font-mono text-[7px] uppercase tracking-widest text-[#8f1e18]">{projectText('Skill')}</div>
@@ -18227,7 +21527,7 @@ export default function EngineWorkspace() {
                             <div className="grid grid-cols-2 gap-2">
                               <div className="border border-[#d8c99f] bg-[#f7edcf] px-2 py-1 text-center">
                                 <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">{projectText('Tasks')}</div>
-                                <div className="font-serif text-lg leading-tight">{ownedOpenTasks.length}</div>
+                                <div className="font-serif text-lg leading-tight">{displayOpenTaskCount}</div>
                               </div>
                               <div className="border border-[#d8c99f] bg-[#f7edcf] px-2 py-1 text-center">
                                 <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">{projectText('Proof')}</div>
@@ -18298,9 +21598,7 @@ export default function EngineWorkspace() {
                     </div>
                   </div>
                   <div className="flex shrink-0 flex-wrap items-center gap-2">
-                    <span data-testid="manager-command-center-source" className={`node-status-tag ${managerCommandCenter.frontendMockSuppressed ? 'bg-[#8f1e18] text-white' : managerCommandCenter.dataSource === 'frontend-fallback' ? 'bg-[#b9782b] text-white' : 'bg-[#59684b] text-white'}`}>
-                      {projectText(managerCommandCenter.frontendMockSuppressed ? 'backend model missing' : managerCommandCenter.dataSource === 'frontend-fallback' ? 'demo data' : 'backend-backed')}
-                    </span>
+                    {managerReadModelSourceBadge(managerCommandCenter, 'manager-command-center-source')}
                     <span className={`node-status-tag ${managerCommandCenter.status === 'live' ? 'bg-green-700 text-white' : managerCommandCenter.status === 'action-ready' ? 'bg-[#251b13] text-[#efe2bd]' : 'bg-[#b9782b] text-white'}`}>
                       {projectText(managerCommandCenter.status)}
                     </span>
@@ -18315,17 +21613,31 @@ export default function EngineWorkspace() {
                     </button>
                   </div>
                 </div>
-                {backendStation.managerCommandCenterRun && (
+                {backendManagerCommandCenterRunReceipt && (
                   <div data-testid="manager-command-run-receipt" className="mb-4 border border-[#7b6542] bg-[#efe2bd]/70 px-3 py-2 font-mono text-[8px] uppercase tracking-widest text-[#6b5a3d] leading-relaxed break-words">
-                    Command Center run: {backendStation.managerCommandCenterRun.actionLabel || backendStation.managerCommandCenterRun.requirementId} / {backendStation.managerCommandCenterRun.delegatedRunApiPath || 'delegated action'} / messages {(backendStation.managerCommandCenterRun.resultMessageIds || []).length} / timeline {(backendStation.managerCommandCenterRun.timelineLogIds || []).length}
+                    Command Center run: {backendManagerCommandCenterRunReceipt.actionLabel || backendManagerCommandCenterRunReceipt.requirementId} / {backendManagerCommandCenterRunReceipt.delegatedRunApiPath || 'delegated action'} / messages {(backendManagerCommandCenterRunReceipt.resultMessageIds || []).length} / timeline {(backendManagerCommandCenterRunReceipt.timelineLogIds || []).length}
                     <button
                       type="button"
                       data-testid="manager-command-run-proof"
-                      onClick={() => openProjectTimelineProof(backendStation.managerCommandCenterRun.timelineLogIds || [])}
-                      disabled={!(backendStation.managerCommandCenterRun.timelineLogIds || []).length}
+                      onClick={() => openProjectTimelineProof(backendManagerCommandCenterRunReceipt.timelineLogIds || [])}
+                      disabled={!(backendManagerCommandCenterRunReceipt.timelineLogIds || []).length}
                       className="mt-2 inline-flex items-center justify-center gap-1 border border-[#7b6542] bg-[#efe2bd] px-2 py-1 font-mono text-[8px] uppercase tracking-widest text-[#251b13] hover:border-[#251b13] disabled:opacity-40 disabled:cursor-not-allowed"
                     >
                       <CornerDownRight size={10} /> Command run proof
+                    </button>
+                  </div>
+                )}
+                {managerCommandCenter.frontendMockSuppressed && (
+                  <div data-testid="manager-command-center-backend-required" className="mb-4 border border-[#8f1e18] bg-red-50 px-3 py-2 font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">
+                    Backend Manager Command Center is required for this real project. Local command rows are suppressed until /manager-command-center returns manager-command-center/v1.
+                    <button
+                      type="button"
+                      data-testid="manager-command-center-sync-read-model"
+                      onClick={() => syncBackendManagerCommandCenter({ silent: false, projectId: activeProject.id })}
+                      disabled={backendStation.loading}
+                      className="mt-3 inline-flex items-center gap-1 border border-[#8f1e18] px-2 py-1 font-mono text-[8px] uppercase tracking-widest text-[#8f1e18] hover:border-[#251b13] hover:text-[#251b13] disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      <Activity size={10} /> Sync Command
                     </button>
                   </div>
                 )}
@@ -18730,9 +22042,7 @@ export default function EngineWorkspace() {
                     <div className="font-serif text-2xl leading-tight">{projectText('A single guided path from kickoff meeting to 24/7 Agent work, change intake, and mutual management.')}</div>
                   </div>
                   <div className="flex shrink-0 flex-col items-end gap-2">
-                    <span data-testid="manager-scenario-walkthrough-source" className={`node-status-tag ${managerReadModelSourceClass(managerScenarioWalkthrough)}`}>
-                      {managerReadModelSourceLabel(managerScenarioWalkthrough)}
-                    </span>
+                    {managerReadModelSourceBadge(managerScenarioWalkthrough, 'manager-scenario-walkthrough-source')}
                     <span className="node-status-tag bg-[#251b13] text-[#efe2bd]">
                       {managerScenarioWalkthrough.completedCount || 0}/{managerScenarioWalkthrough.count || 0} {projectText('complete')}
                     </span>
@@ -18765,6 +22075,20 @@ export default function EngineWorkspace() {
                       className="mt-2 inline-flex items-center justify-center gap-1 border border-[#7b6542] bg-[#efe2bd] px-2 py-1 font-mono text-[8px] uppercase tracking-widest text-[#251b13] hover:border-[#251b13] disabled:opacity-40 disabled:cursor-not-allowed"
                     >
                       <CornerDownRight size={10} /> Run result proof
+                    </button>
+                  </div>
+                )}
+                {managerScenarioWalkthrough.frontendMockSuppressed && (
+                  <div data-testid="manager-scenario-walkthrough-backend-required" className="mb-4 border border-[#8f1e18] bg-red-50 px-3 py-2 font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">
+                    Backend Scenario Walkthrough is required for this real project. Local walkthrough rows are suppressed until /manager-scenario-walkthrough returns manager-scenario-walkthrough/v1.
+                    <button
+                      type="button"
+                      data-testid="manager-scenario-walkthrough-sync-read-model"
+                      onClick={() => syncBackendManagerScenarioWalkthrough({ silent: false, projectId: activeProject.id })}
+                      disabled={backendStation.loading}
+                      className="mt-3 inline-flex items-center gap-1 border border-[#8f1e18] px-2 py-1 font-mono text-[8px] uppercase tracking-widest text-[#8f1e18] hover:border-[#251b13] hover:text-[#251b13] disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      <Network size={10} /> Sync Walkthrough
                     </button>
                   </div>
                 )}
@@ -18825,9 +22149,7 @@ export default function EngineWorkspace() {
                     <div className="font-serif text-2xl leading-tight">Operational next steps mapped to runnable backend routes and exact proof exits.</div>
                   </div>
                   <div className="flex shrink-0 flex-col items-end gap-2">
-                    <span data-testid="manager-action-playbook-source" className={`node-status-tag ${managerReadModelSourceClass(managerActionPlaybook)}`}>
-                      {managerReadModelSourceLabel(managerActionPlaybook)}
-                    </span>
+                    {managerReadModelSourceBadge(managerActionPlaybook, 'manager-action-playbook-source')}
                     <span className="node-status-tag bg-[#251b13] text-[#efe2bd]">
                       {managerActionPlaybook.completedCount ?? 0}/{managerActionPlaybook.count ?? 0} complete
                     </span>
@@ -18846,6 +22168,20 @@ export default function EngineWorkspace() {
                     </div>
                   ))}
                 </div>
+                {managerActionPlaybook.frontendMockSuppressed && (
+                  <div data-testid="manager-action-playbook-backend-required" className="mb-4 flex flex-col gap-2 border border-[#8f1e18] bg-red-50 px-3 py-2 font-mono text-[8px] uppercase tracking-widest text-[#8f1e18] md:flex-row md:items-center md:justify-between">
+                    <span>Backend Manager Action Queue is required for this real project. Local action rows are suppressed until /manager-action-queue returns manager-action-queue/v1.</span>
+                    <button
+                      type="button"
+                      data-testid="manager-action-playbook-sync-action-queue"
+                      onClick={() => syncBackendManagerActionQueue({ silent: false, projectId: activeProject.id })}
+                      disabled={backendStation.loading}
+                      className="inline-flex shrink-0 items-center justify-center gap-1 border border-[#8f1e18] bg-red-50 px-2 py-1 text-[#8f1e18] hover:border-[#251b13] hover:text-[#251b13] disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      <ClipboardList size={10} /> Sync Queue
+                    </button>
+                  </div>
+                )}
                 <div className="space-y-2">
                   {(managerActionPlaybook.rows || []).map((row, index) => (
                     <div key={`manager-action-playbook-${row.id}`} data-testid={`manager-action-playbook-row-${row.requirementId || row.id}`} className="border border-[#d8c99f] bg-[#efe2bd]/55 p-3">
@@ -18906,18 +22242,35 @@ export default function EngineWorkspace() {
                     <div className="font-mono text-[10px] uppercase tracking-widest text-[#8f1e18] mb-2">Manager Action Run Ledger</div>
                     <div className="font-serif text-2xl leading-tight">Every Playbook execution becomes timeline evidence and a backend action receipt.</div>
                   </div>
-                  <span className="node-status-tag bg-[#251b13] text-[#efe2bd]">
-                    {backendManagerActionRuns?.count || 0} runs
-                  </span>
+                  <div className="flex shrink-0 flex-wrap justify-end gap-2">
+                    {managerReadModelSourceBadge(backendManagerActionRuns, 'manager-action-run-ledger-source')}
+                    <span className="node-status-tag bg-[#251b13] text-[#efe2bd]">
+                      {backendManagerActionRuns?.count || 0} runs
+                    </span>
+                  </div>
                 </div>
-                {backendStation.managerActionRunOutput && (
+                {backendManagerActionRuns.frontendMockSuppressed && (
+                  <div data-testid="manager-action-run-ledger-backend-required" className="mb-4 flex flex-col gap-2 border border-[#8f1e18] bg-red-50 px-3 py-2 font-mono text-[8px] uppercase tracking-widest text-[#8f1e18] md:flex-row md:items-center md:justify-between">
+                    <span>Backend Manager Action Run Ledger is required for this real project. Local run history is suppressed until Manager Dashboard returns manager-action-runs/v1.</span>
+                    <button
+                      type="button"
+                      data-testid="manager-action-run-ledger-sync-manager-dashboard"
+                      onClick={() => syncBackendManagerDashboard({ silent: false, projectId: activeProject.id })}
+                      disabled={backendStation.loading}
+                      className="inline-flex shrink-0 items-center justify-center gap-1 border border-[#8f1e18] bg-red-50 px-2 py-1 text-[#8f1e18] hover:border-[#251b13] hover:text-[#251b13] disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      <Database size={10} /> Sync Dashboard
+                    </button>
+                  </div>
+                )}
+                {backendManagerActionRunOutput && (
                   <div data-testid="manager-action-run-output" className="mb-4 border border-[#d8c99f] bg-[#efe2bd]/70 px-3 py-3">
                     <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">{projectText('Manager Action Output Nodes')}</div>
                     <div className="mt-1 font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] break-words">
-                      {projectText(backendStation.managerActionRunOutput.actionLabel || 'manager action')} / {projectText(backendStation.managerActionRunOutput.resultRoute || 'manager-action-queue-item-run')} / {projectText(backendStation.managerActionRunOutput.runId || 'receipt pending')}
+                      {projectText(backendManagerActionRunOutput.actionLabel || 'manager action')} / {projectText(backendManagerActionRunOutput.resultRoute || 'manager-action-queue-item-run')} / {projectText(backendManagerActionRunOutput.runId || 'receipt pending')}
                     </div>
                     {(() => {
-                      const output = backendStation.managerActionRunOutput || {};
+                      const output = backendManagerActionRunOutput || {};
                       const rows = [
                         output.resultMessageIds?.length ? {
                           id: 'result-messages',
@@ -19067,7 +22420,7 @@ export default function EngineWorkspace() {
                       </div>
                     </div>
                   ))}
-                  {!(backendManagerActionRuns?.rows || []).length && (
+                  {!(backendManagerActionRuns?.rows || []).length && !backendManagerActionRuns.frontendMockSuppressed && (
                     <div className="border border-dashed border-[#d8c99f] bg-[#efe2bd]/45 p-3 font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">
                       No Playbook runs yet. Use Run Action on a ready row to create the first audit receipt.
                     </div>
@@ -19088,6 +22441,20 @@ export default function EngineWorkspace() {
                     </span>
                   </div>
                 </div>
+                {managerScenarioTrail.frontendMockSuppressed && (
+                  <div data-testid="manager-scenario-trail-backend-required" className="mb-4 border border-[#8f1e18] bg-red-50 px-3 py-2 font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">
+                    Backend Manager Scenario Trail is required for this real project. Local scenario rows are suppressed until /manager-scenario-trail returns manager-scenario-trail/v1.
+                    <button
+                      type="button"
+                      data-testid="manager-scenario-trail-sync-read-model"
+                      onClick={() => syncBackendManagerScenarioTrail({ silent: false, projectId: activeProject.id })}
+                      disabled={backendStation.loading}
+                      className="mt-3 inline-flex items-center gap-1 border border-[#8f1e18] px-2 py-1 font-mono text-[8px] uppercase tracking-widest text-[#8f1e18] hover:border-[#251b13] hover:text-[#251b13] disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      <Search size={10} /> Sync Trail
+                    </button>
+                  </div>
+                )}
                 <div className="space-y-2">
                   {managerScenarioTrailDisplayRows.map((row, index) => (
                     <div key={`manager-scenario-trail-${row.id}`} data-testid={`manager-scenario-trail-row-${row.id}`} className="border border-[#d8c99f] bg-[#efe2bd]/55 p-3">
@@ -19134,6 +22501,20 @@ export default function EngineWorkspace() {
                     </span>
                   </div>
                 </div>
+                {syncProtocolAudit.frontendMockSuppressed && (
+                  <div data-testid="sync-protocol-audit-backend-required" className="mb-4 border border-[#8f1e18] bg-red-50 px-3 py-2 font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">
+                    Backend Sync Protocol Audit is required for this real project. Local protocol rows are suppressed until /sync-protocol-audit returns sync-protocol-audit/v1.
+                    <button
+                      type="button"
+                      data-testid="sync-protocol-audit-sync-read-model"
+                      onClick={() => syncBackendSyncProtocolAudit({ silent: false, projectId: activeProject.id })}
+                      disabled={backendStation.loading}
+                      className="mt-3 inline-flex items-center gap-1 border border-[#8f1e18] px-2 py-1 font-mono text-[8px] uppercase tracking-widest text-[#8f1e18] hover:border-[#251b13] hover:text-[#251b13] disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      <Search size={10} /> Sync Protocol
+                    </button>
+                  </div>
+                )}
                 <div className="grid grid-cols-1 gap-2">
                   {(syncProtocolAudit.rows || []).map(row => {
                     const timelineIds = row.timelineLogIds || row.timelineIds || [];
@@ -19197,14 +22578,26 @@ export default function EngineWorkspace() {
                     <div className="font-serif text-2xl leading-tight">The user story translated into manager-readable coverage checks and proof exits.</div>
                   </div>
                   <div className="flex shrink-0 flex-col items-end gap-2">
-                    <span data-testid="manager-use-case-audit-source" className={`node-status-tag ${managerReadModelSourceClass(managerUseCaseAudit)}`}>
-                      {managerReadModelSourceLabel(managerUseCaseAudit)}
-                    </span>
+                    {managerReadModelSourceBadge(managerUseCaseAudit, 'manager-use-case-audit-source')}
                     <span className="node-status-tag bg-[#251b13] text-[#efe2bd]">
                       {managerUseCaseAudit.coveredCount || 0}/{managerUseCaseAudit.count || 0} covered
                     </span>
                   </div>
                 </div>
+                {managerUseCaseAudit.frontendMockSuppressed && (
+                  <div data-testid="manager-use-case-audit-backend-required" className="mb-4 border border-[#8f1e18] bg-red-50 px-3 py-2 font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">
+                    Backend Manager Use Case Audit is required for this real project. Local use-case rows are suppressed until /manager-use-case-audit returns manager-use-case-audit/v1.
+                    <button
+                      type="button"
+                      data-testid="manager-use-case-audit-sync-read-model"
+                      onClick={() => syncBackendManagerUseCaseAudit({ silent: false, projectId: activeProject.id })}
+                      disabled={backendStation.loading}
+                      className="mt-3 inline-flex items-center gap-1 border border-[#8f1e18] px-2 py-1 font-mono text-[8px] uppercase tracking-widest text-[#8f1e18] hover:border-[#251b13] hover:text-[#251b13] disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      <Search size={10} /> Sync Audit
+                    </button>
+                  </div>
+                )}
                 <div className="grid grid-cols-1 gap-2">
                   {(managerUseCaseAudit.rows || []).map((row, index) => (
                     <div key={`manager-use-case-${row.id}`} data-testid={`manager-use-case-row-${row.id}`} className="border border-[#d8c99f] bg-[#efe2bd]/55 p-3">
@@ -19269,6 +22662,20 @@ export default function EngineWorkspace() {
                     </span>
                   </div>
                 </div>
+                {managerRequirementMatrix.frontendMockSuppressed && (
+                  <div data-testid="manager-requirement-matrix-backend-required" className="mb-4 border border-[#8f1e18] bg-red-50 px-3 py-2 font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">
+                    Backend Manager Requirement Matrix is required for this real project. Local requirement rows are suppressed until /manager-requirement-matrix returns manager-requirement-matrix/v1.
+                    <button
+                      type="button"
+                      data-testid="manager-requirement-matrix-sync-read-model"
+                      onClick={() => syncBackendManagerRequirementMatrix({ silent: false, projectId: activeProject.id })}
+                      disabled={backendStation.loading}
+                      className="mt-3 inline-flex items-center gap-1 border border-[#8f1e18] px-2 py-1 font-mono text-[8px] uppercase tracking-widest text-[#8f1e18] hover:border-[#251b13] hover:text-[#251b13] disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      <ClipboardList size={10} /> Sync Matrix
+                    </button>
+                  </div>
+                )}
                 <div className="grid grid-cols-1 gap-2">
                   {managerRequirementMatrixDisplayRows.map((row, index) => (
                     <div key={`manager-requirement-${row.id}`} data-testid={`manager-requirement-row-${row.id}`} className="border border-[#d8c99f] bg-[#efe2bd]/55 p-3">
@@ -19400,20 +22807,26 @@ export default function EngineWorkspace() {
                       {activeProject.autonomy?.enabled ? `${activeProject.autonomy.cadence || 'hourly'} cadence enabled` : 'Cadence paused'}
                     </div>
                     <div className="font-mono text-[9px] uppercase tracking-widest text-[#7d6a49] mt-2">
-                      Last run: {activeProject.lastAutonomousRunAt ? new Date(activeProject.lastAutonomousRunAt).toLocaleString() : 'not yet'}
+                      Last run: {autonomousWorkLoopLastRunAt ? new Date(autonomousWorkLoopLastRunAt).toLocaleString() : autonomousWorkLoopBackendRequired ? 'backend required' : 'not yet'}
                     </div>
                     <div className="font-mono text-[9px] uppercase tracking-widest text-[#7d6a49] mt-1">
-                      Next run: {activeProject.nextAutonomousRunAt || autonomousSchedule.nextRunAt ? new Date(activeProject.nextAutonomousRunAt || autonomousSchedule.nextRunAt).toLocaleString() : 'not scheduled'}
+                      Next run: {autonomousWorkLoopNextRunAt ? new Date(autonomousWorkLoopNextRunAt).toLocaleString() : autonomousWorkLoopBackendRequired ? 'backend required' : 'not scheduled'}
                     </div>
                     {latestSchedulerRecord && (
                       <div className="font-mono text-[8px] uppercase tracking-widest text-[#9b875c] mt-1">
-                        {latestSchedulerRecord.trigger} / {latestSchedulerRecord.reason} / next {new Date(latestSchedulerRecord.nextRunAt).toLocaleTimeString()}
+                        {latestSchedulerRecord.trigger} / {latestSchedulerRecord.reason} / next {latestSchedulerRecord.nextRunAt ? new Date(latestSchedulerRecord.nextRunAt).toLocaleTimeString() : 'pending'}
+                      </div>
+                    )}
+                    {autonomousWorkLoopBackendRequired && (
+                      <div data-testid="autonomous-work-loop-backend-required" className="mt-2 border border-[#8f1e18] bg-red-50 px-3 py-2 font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">
+                        Backend operations board is required before this real project can show scheduler or autonomous-cycle history.
                       </div>
                     )}
                   </div>
                   <div className="flex shrink-0 items-center gap-2">
                     <button
                       type="button"
+                      data-testid="autonomous-work-loop-hour-pulse"
                       onClick={() => runProjectAutonomousPulse('hourly')}
                       className="border border-[#7b6542] bg-[#251b13] px-3 py-2 font-mono text-[9px] uppercase tracking-widest text-[#efe2bd] hover:bg-[#8f1e18] transition-colors"
                     >
@@ -19421,6 +22834,7 @@ export default function EngineWorkspace() {
                     </button>
                     <button
                       type="button"
+                      data-testid="autonomous-work-loop-day-report"
                       onClick={() => runProjectAutonomousPulse('daily')}
                       className="border border-[#7b6542] bg-[#efe2bd] px-3 py-2 font-mono text-[9px] uppercase tracking-widest text-[#251b13] hover:border-[#251b13] transition-colors"
                     >
@@ -19428,13 +22842,13 @@ export default function EngineWorkspace() {
                     </button>
                   </div>
                 </div>
-                {activeProject.autonomousLedger?.length > 0 && (
+                {autonomousWorkLoopCycles.length > 0 && (
                   <div className="mt-4 border-t border-[#d8c99f] pt-3 space-y-2">
-                    {activeProject.autonomousLedger.slice(0, 2).map(cycle => (
-                      <div key={cycle.id} className="space-y-1">
+                    {autonomousWorkLoopCycles.slice(0, 2).map((cycle, index) => (
+                      <div key={cycle.id || `autonomous-work-loop-cycle-${index}`} className="space-y-1">
                         <div className="flex items-center justify-between gap-3 font-mono text-[9px] uppercase tracking-widest text-[#7d6a49]">
-                          <span>{cycle.cadence} / {cycle.publishedEventCount} published / {cycle.managementEventCount || 0} managed</span>
-                          <span>{new Date(cycle.ranAt).toLocaleString()}</span>
+                          <span>{cycle.cadence || cycle.trigger || 'cycle'} / {cycle.publishedEventCount || 0} published / {cycle.managementEventCount || 0} managed</span>
+                          <span>{cycle.ranAt ? new Date(cycle.ranAt).toLocaleString() : 'recent'}</span>
                         </div>
                         <div className="font-mono text-[8px] uppercase tracking-widest text-[#9b875c]">
                           {cycle.trigger || 'cycle'} / due {cycle.dueAt ? new Date(cycle.dueAt).toLocaleTimeString() : 'now'} / next {cycle.nextRunAt ? new Date(cycle.nextRunAt).toLocaleTimeString() : 'pending'}
@@ -19478,24 +22892,33 @@ export default function EngineWorkspace() {
                   </div>
                   <div className="flex flex-wrap items-center justify-end gap-2">
                     {managerReadModelSourceBadge(agentStateSummary, 'agent-state-summary-source')}
-                    <span className={`node-status-tag ${activeProject.autonomy?.enabled ? 'bg-green-700 text-white' : 'bg-[#8f1e18] text-white'}`}>
-                      {activeProject.autonomy?.enabled ? 'Cadence Active' : 'Cadence Paused'}
+                    <span className={`node-status-tag ${operationsBoardCadenceClass}`}>
+                      {operationsBoardCadenceLabel}
                     </span>
                   </div>
                 </div>
                 {agentStateSummary.frontendMockSuppressed && (
-                  <div data-testid="agent-state-summary-backend-required" className="mb-4 border border-[#8f1e18] bg-red-50 px-3 py-2 font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">
-                    Backend Agent State Summary required. Local Agent state rows are suppressed for this backend project.
+                  <div data-testid="agent-state-summary-backend-required" className="mb-4 flex flex-col gap-2 border border-[#8f1e18] bg-red-50 px-3 py-2 font-mono text-[8px] uppercase tracking-widest text-[#8f1e18] md:flex-row md:items-center md:justify-between">
+                    <span>Backend Agent State Summary required. Local Agent state rows are suppressed for this backend project.</span>
+                    <button
+                      type="button"
+                      data-testid="agent-state-summary-sync-cockpit"
+                      onClick={() => syncBackendCockpitReadModels({ silent: false, projectId: activeProject.id })}
+                      disabled={backendStation.loading}
+                      className="inline-flex shrink-0 items-center justify-center gap-1 border border-[#8f1e18] bg-red-50 px-2 py-1 text-[#8f1e18] hover:border-[#251b13] hover:text-[#251b13] disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      <Database size={10} /> Sync Cockpit
+                    </button>
                   </div>
                 )}
                 <div className="grid grid-cols-1 md:grid-cols-4 gap-2 mb-4">
                   <div className="border border-[#d8c99f] bg-[#efe2bd]/55 px-3 py-2">
                     <div className="font-mono text-[7px] uppercase tracking-widest text-[#8f1e18]">Project Next Run</div>
-                    <div className="font-serif text-base leading-tight">{formatRunTime(activeProject.nextAutonomousRunAt || autonomousSchedule.nextRunAt)}</div>
+                    <div className="font-serif text-base leading-tight">{operationsBoardProjectNextRunLabel}</div>
                   </div>
                   <div className="border border-[#d8c99f] bg-[#efe2bd]/55 px-3 py-2">
                     <div className="font-mono text-[7px] uppercase tracking-widest text-[#8f1e18]">Project Last Run</div>
-                    <div className="font-serif text-base leading-tight">{formatRunTime(activeProject.lastAutonomousRunAt)}</div>
+                    <div className="font-serif text-base leading-tight">{operationsBoardProjectLastRunLabel}</div>
                   </div>
                   <div className="border border-[#d8c99f] bg-[#efe2bd]/55 px-3 py-2">
                     <div className="font-mono text-[7px] uppercase tracking-widest text-[#8f1e18]">Backend Worker</div>
@@ -19557,8 +22980,17 @@ export default function EngineWorkspace() {
                   </div>
                 </div>
                 {continuousWorkLoop.frontendMockSuppressed && (
-                  <div data-testid="continuous-work-loop-backend-required" className="mb-4 border border-[#8f1e18] bg-red-50 px-3 py-2 font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">
-                    Backend Continuous Work Loop required. Local loop rows are suppressed for this backend project.
+                  <div data-testid="continuous-work-loop-backend-required" className="mb-4 flex flex-col gap-2 border border-[#8f1e18] bg-red-50 px-3 py-2 font-mono text-[8px] uppercase tracking-widest text-[#8f1e18] md:flex-row md:items-center md:justify-between">
+                    <span>Backend Continuous Work Loop required. Local loop rows are suppressed for this backend project.</span>
+                    <button
+                      type="button"
+                      data-testid="continuous-work-loop-sync-cockpit"
+                      onClick={() => syncBackendCockpitReadModels({ silent: false, projectId: activeProject.id })}
+                      disabled={backendStation.loading}
+                      className="inline-flex shrink-0 items-center justify-center gap-1 border border-[#8f1e18] bg-red-50 px-2 py-1 text-[#8f1e18] hover:border-[#251b13] hover:text-[#251b13] disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      <Database size={10} /> Sync Cockpit
+                    </button>
                   </div>
                 )}
                 <div className="grid grid-cols-1 md:grid-cols-4 gap-2 mb-4">
@@ -19568,7 +23000,7 @@ export default function EngineWorkspace() {
                   </div>
                   <div className="border border-[#d8c99f] bg-[#efe2bd]/55 px-3 py-2">
                     <div className="font-mono text-[7px] uppercase tracking-widest text-[#8f1e18]">{projectText('Next Project Pulse')}</div>
-                    <div className="font-serif text-base leading-tight">{formatRunTime(activeProject.nextAutonomousRunAt || autonomousSchedule.nextRunAt)}</div>
+                    <div className="font-serif text-base leading-tight">{continuousWorkProjectNextRunLabel}</div>
                   </div>
                   <div className="border border-[#d8c99f] bg-[#efe2bd]/55 px-3 py-2">
                     <div className="font-mono text-[7px] uppercase tracking-widest text-[#8f1e18]">{projectText('Agent Loops')}</div>
@@ -19638,8 +23070,17 @@ export default function EngineWorkspace() {
                   </div>
                 </div>
                 {agentStateSummary.frontendMockSuppressed && (
-                  <div data-testid="fixed-work-routines-backend-required" className="mb-4 border border-[#8f1e18] bg-red-50 px-3 py-2 font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">
-                    Backend Agent State Summary required. Local fixed-routine rows are suppressed for this backend project.
+                  <div data-testid="fixed-work-routines-backend-required" className="mb-4 flex flex-col gap-2 border border-[#8f1e18] bg-red-50 px-3 py-2 font-mono text-[8px] uppercase tracking-widest text-[#8f1e18] md:flex-row md:items-center md:justify-between">
+                    <span>Backend Agent State Summary required. Local fixed-routine rows are suppressed for this backend project.</span>
+                    <button
+                      type="button"
+                      data-testid="fixed-work-routines-sync-cockpit"
+                      onClick={() => syncBackendCockpitReadModels({ silent: false, projectId: activeProject.id })}
+                      disabled={backendStation.loading}
+                      className="inline-flex shrink-0 items-center justify-center gap-1 border border-[#8f1e18] bg-red-50 px-2 py-1 text-[#8f1e18] hover:border-[#251b13] hover:text-[#251b13] disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      <Database size={10} /> Sync Cockpit
+                    </button>
                   </div>
                 )}
                 <div className="space-y-3">
@@ -19843,6 +23284,25 @@ export default function EngineWorkspace() {
                         <div data-testid="backend-production-infrastructure-rehearsal-route" className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#9b875c] break-words">
                           {projectText('Infrastructure rehearsal route')}: {backendProductionInfrastructureRehearsal.backendRoutes?.productionInfrastructureRehearsal || `/projects/${activeProject.id}/production-infrastructure-rehearsal`}
                         </div>
+                        <div className="mt-2 flex flex-wrap items-center gap-2">
+                          <button
+                            type="button"
+                            data-testid="backend-managed-infrastructure-cutover-attestation-run"
+                            onClick={runManagedInfrastructureCutoverAttestation}
+                            disabled={backendStation.loading || !backendCommandAvailable}
+                            className="inline-flex items-center gap-1 border border-[#7b6542] bg-[#251b13] px-2 py-1 font-mono text-[8px] uppercase tracking-widest text-[#efe2bd] hover:bg-[#8f1e18] disabled:opacity-40 disabled:cursor-not-allowed"
+                          >
+                            <Server size={10} /> {projectText('Request managed cutover attestation')}
+                          </button>
+                          <span className="font-mono text-[8px] uppercase tracking-widest text-[#9b875c]">
+                            {backendManagerReadyPackage?.backendRoutes?.managedInfrastructureCutoverAttestations || `/projects/${activeProject.id}/managed-infrastructure-cutover-attestations`}
+                          </span>
+                        </div>
+                        {backendManagedInfrastructureCutoverAttestationRunReceipt && (
+                          <div data-testid="backend-managed-infrastructure-cutover-attestation-receipt" className={`mt-2 border px-2 py-1 font-mono text-[8px] uppercase tracking-widest ${backendManagedInfrastructureCutoverAttestationRunReceipt.localProofCreated ? 'border-[#d8c99f] bg-[#fff8df] text-[#6b5a3d]' : 'border-[#8f1e18] bg-red-50 text-[#8f1e18]'}`}>
+                            {backendManagedInfrastructureCutoverAttestationRunReceipt.status || 'recorded'} / {backendManagedInfrastructureCutoverAttestationRunReceipt.readyForManagedInfrastructureCutoverEvidence ? 'managed evidence ready' : 'managed evidence blocked'} / {backendManagedInfrastructureCutoverAttestationRunReceipt.blocker || backendManagedInfrastructureCutoverAttestationRunReceipt.backendRoutes?.productionInfrastructureRehearsal || 'proof routes refreshed'}
+                          </div>
+                        )}
                       </div>
                     )}
                     {backendProofTranscriptRequired && (
@@ -20027,6 +23487,7 @@ export default function EngineWorkspace() {
                                 <span data-testid="backend-product-team-operating-loop-source" className={`node-status-tag ${managerReadModelSourceClass(backendProductTeamOperatingLoop)}`}>
                                   {managerReadModelSourceLabel(backendProductTeamOperatingLoop)}
                                 </span>
+                                {managerProofModelSyncButton(backendProductTeamOperatingLoop, 'backend-product-team-operating-loop-sync-proof-models')}
                                 <span className={`node-status-tag ${backendProductTeamOperatingLoop.readyForLocalPilotOperatingLoop ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
                                   {backendProductTeamOperatingLoop.readyForLocalPilotOperatingLoop ? projectText('local loop ready') : projectText('backend required')}
                                 </span>
@@ -20104,6 +23565,7 @@ export default function EngineWorkspace() {
                                 <span data-testid="backend-team-collaboration-diagnostics-source" className={`node-status-tag ${managerReadModelSourceClass(backendTeamCollaborationDiagnostics)}`}>
                                   {managerReadModelSourceLabel(backendTeamCollaborationDiagnostics)}
                                 </span>
+                                {managerProofModelSyncButton(backendTeamCollaborationDiagnostics, 'backend-team-collaboration-diagnostics-sync-proof-models')}
                                 <span className={`node-status-tag ${backendTeamCollaborationDiagnostics.readyForLocalPilotCollaboration ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
                                   {backendTeamCollaborationDiagnostics.readyForLocalPilotCollaboration ? projectText('collaboration ready') : projectText('handoff break')}
                                 </span>
@@ -20255,30 +23717,30 @@ export default function EngineWorkspace() {
                                 );
                               })}
                             </div>
-                            {backendStation.collaborationIntentRun && (
+                            {backendCollaborationIntentRunReceipt && (
                               <div data-testid="backend-collaboration-intent-run-receipt" className="mt-2 border border-[#d8c99f] bg-[#efe2bd]/70 px-2 py-1 font-mono text-[8px] uppercase tracking-widest text-[#59684b] break-words">
-                                Intent run receipt: {backendStation.collaborationIntentRun.intentId || backendStation.collaborationIntentRun.id} / {backendStation.collaborationIntentRun.delegatedRunKind || 'delegated'} / {backendStation.collaborationIntentRun.delegatedReceiptId || 'receipt pending'}
+                                Intent run receipt: {backendCollaborationIntentRunReceipt.intentId || backendCollaborationIntentRunReceipt.id} / {backendCollaborationIntentRunReceipt.delegatedRunKind || 'delegated'} / {backendCollaborationIntentRunReceipt.delegatedReceiptId || 'receipt pending'}
                               </div>
                             )}
-                            {backendStation.collaborationIntentRunOutput && (
-                              <div data-testid="backend-collaboration-intent-run-output" className={`mt-2 border px-2 py-2 ${backendStation.collaborationIntentRunOutput.status === 'failed' ? 'border-red-800 bg-red-50' : 'border-[#d8c99f] bg-[#efe2bd]/70'}`}>
-                                <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">{projectText(backendStation.collaborationIntentRunOutput.status === 'failed' ? 'Intent Run Failed' : 'Intent Output Nodes')}</div>
+                            {backendCollaborationIntentRunOutput && (
+                              <div data-testid="backend-collaboration-intent-run-output" className={`mt-2 border px-2 py-2 ${backendCollaborationIntentRunOutput.status === 'failed' ? 'border-red-800 bg-red-50' : 'border-[#d8c99f] bg-[#efe2bd]/70'}`}>
+                                <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">{projectText(backendCollaborationIntentRunOutput.status === 'failed' ? 'Intent Run Failed' : 'Intent Output Nodes')}</div>
                                 <div className="mt-1 font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] break-words">
-                                  {backendStation.collaborationIntentRunOutput.status === 'failed'
-                                    ? projectText(`No local intent receipt was created: ${backendStation.collaborationIntentRunOutput.error || 'backend run failed'}`)
-                                    : `${projectText(backendStation.collaborationIntentRunOutput.delegatedRunKind || 'delegated')} / ${projectText(backendStation.collaborationIntentRunOutput.delegatedReceiptId || backendStation.collaborationIntentRunOutput.runId || 'receipt pending')}`}
+                                  {backendCollaborationIntentRunOutput.status === 'failed'
+                                    ? projectText(`No local intent receipt was created: ${backendCollaborationIntentRunOutput.error || 'backend run failed'}`)
+                                    : `${projectText(backendCollaborationIntentRunOutput.delegatedRunKind || 'delegated')} / ${projectText(backendCollaborationIntentRunOutput.delegatedReceiptId || backendCollaborationIntentRunOutput.runId || 'receipt pending')}`}
                                 </div>
-                                {backendStation.collaborationIntentRunOutput.status === 'failed' ? (
+                                {backendCollaborationIntentRunOutput.status === 'failed' ? (
                                   <div data-testid="backend-collaboration-intent-run-output-failed" className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">
                                     {projectText('Backend intent run failed; previous successful receipts were cleared from this panel.')}
                                   </div>
                                 ) : (
                                   <>
-                                    {renderAutonomousActionDecision(backendStation.collaborationIntentRunOutput.autonomousActionDecision, {
+                                    {renderAutonomousActionDecision(backendCollaborationIntentRunOutput.autonomousActionDecision, {
                                       testId: 'backend-collaboration-intent-action-decision',
                                     })}
                                     {(() => {
-                                  const output = backendStation.collaborationIntentRunOutput || {};
+                                  const output = backendCollaborationIntentRunOutput || {};
                                   const outputRows = [
                                     output.workSubmission ? {
                                       id: 'work-submission',
@@ -20399,6 +23861,7 @@ export default function EngineWorkspace() {
                                 <span data-testid="backend-runtime-contracts-source" className={`node-status-tag ${managerReadModelSourceClass(backendRuntimeContracts)}`}>
                                   {managerReadModelSourceLabel(backendRuntimeContracts)}
                                 </span>
+                                {managerProofModelSyncButton(backendRuntimeContracts, 'backend-runtime-contracts-sync-proof-models')}
                                 <span className={`node-status-tag ${backendRuntimeContracts.readyForLocalPilotContractFreeze ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
                                   {backendRuntimeContracts.readyForLocalPilotContractFreeze ? projectText('contracts frozen') : projectText('proof missing')}
                                 </span>
@@ -20450,6 +23913,7 @@ export default function EngineWorkspace() {
                                 <span data-testid="backend-autonomous-cycle-consistency-source" className={`node-status-tag ${managerReadModelSourceClass(backendAutonomousCycleConsistency)}`}>
                                   {managerReadModelSourceLabel(backendAutonomousCycleConsistency)}
                                 </span>
+                                {managerProofModelSyncButton(backendAutonomousCycleConsistency, 'backend-autonomous-cycle-consistency-sync-proof-models')}
                                 <span className={`node-status-tag ${backendAutonomousCycleConsistency.readyForLocalPilotCycleConsistency ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
                                   {backendAutonomousCycleConsistency.readyForLocalPilotCycleConsistency ? projectText('cycle consistent') : projectText('backend required')}
                                 </span>
@@ -20504,6 +23968,7 @@ export default function EngineWorkspace() {
                                 <span data-testid="backend-runtime-autonomy-status-source" className={`node-status-tag ${managerReadModelSourceClass(backendRuntimeAutonomyStatus)}`}>
                                   {managerReadModelSourceLabel(backendRuntimeAutonomyStatus)}
                                 </span>
+                                {managerProofModelSyncButton(backendRuntimeAutonomyStatus, 'backend-runtime-autonomy-status-sync-proof-models')}
                                 <span className={`node-status-tag ${backendRuntimeAutonomyStatus.readyForLocalAutonomy ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
                                   {backendRuntimeAutonomyStatus.readyForLocalAutonomy ? projectText('local autonomy ready') : projectText('backend required')}
                                 </span>
@@ -20590,6 +24055,58 @@ export default function EngineWorkspace() {
                             </div>
                           </div>
                         )}
+                        {backendZeroToAutonomyReport && (
+                          <div data-testid="backend-zero-to-autonomy-report-snapshot" className="mt-3 border border-[#d8c99f] bg-[#efe2bd]/55 p-2">
+                            <div className="flex flex-wrap items-start justify-between gap-2">
+                              <div>
+                                <div className="text-[9px] uppercase tracking-[0.22em] text-[#9b875c]">{projectText('Zero-to-autonomy')}</div>
+                                <div className="font-serif text-base leading-tight">{projectText(backendZeroToAutonomyReport.status || 'project-zero-to-autonomy-incomplete')}</div>
+                              </div>
+                              <div className="flex flex-wrap items-center gap-1">
+                                <span data-testid="backend-zero-to-autonomy-report-source" className={`node-status-tag ${managerReadModelSourceClass(backendZeroToAutonomyReport)}`}>
+                                  {managerReadModelSourceLabel(backendZeroToAutonomyReport)}
+                                </span>
+                                {managerProofModelSyncButton(backendZeroToAutonomyReport, 'backend-zero-to-autonomy-report-sync-proof-models')}
+                                <span className={`node-status-tag ${backendZeroToAutonomyReport.readyForLocalMvpTrial ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
+                                  {backendZeroToAutonomyReport.readyForLocalMvpTrial ? projectText('local trial ready') : projectText('trial blocked')}
+                                </span>
+                                <span className={`node-status-tag ${backendZeroToAutonomyReport.readyForPublicProduction ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
+                                  {backendZeroToAutonomyReport.readyForPublicProduction ? projectText('production ready') : projectText('production blocked')}
+                                </span>
+                              </div>
+                            </div>
+                            <div className="mt-2 grid gap-1 text-[10px] text-[#5f5136] sm:grid-cols-4">
+                              {[
+                                [projectText('Ready Stages'), `${backendZeroToAutonomyReport.summary?.readyStageCount ?? 0}/${backendZeroToAutonomyReport.summary?.stageCount ?? 0}`],
+                                [projectText('Artifact Types'), `${backendZeroToAutonomyReport.summary?.submittedArtifactTypeCount ?? 0}/${backendZeroToAutonomyReport.summary?.requiredArtifactTypeCount ?? 0}`],
+                                [projectText('Source Decisions'), backendZeroToAutonomyReport.summary?.sourceReviewDecisionCount ?? 0],
+                                [projectText('Proofs'), backendZeroToAutonomyReport.summary?.proofIdCount ?? 0],
+                                [projectText('Timeline'), backendZeroToAutonomyReport.summary?.timelineLogIdCount ?? 0],
+                                [projectText('Events'), backendZeroToAutonomyReport.summary?.eventIdCount ?? 0],
+                                [projectText('Archive Leaks'), backendZeroToAutonomyReport.summary?.archiveRawLeakCount ?? 0],
+                                [projectText('Packet'), backendZeroToAutonomyReport.checksum || 'missing'],
+                              ].map(([label, value]) => (
+                                <div key={`zero-to-autonomy-report-${label}`} className="border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                  <div className="uppercase tracking-[0.18em] text-[#9b875c]">{label}</div>
+                                  <div className="font-mono text-[10px] text-[#2f2618]">{value}</div>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="mt-2 grid gap-1 text-[10px] text-[#5f5136] sm:grid-cols-2">
+                              {(backendZeroToAutonomyReport.stageRows || []).slice(0, 10).map(row => (
+                                <div key={`zero-to-autonomy-report-row-${row.id}`} className="grid grid-cols-[1fr_auto] gap-2 border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                  <span>{projectText(row.label || row.id)}</span>
+                                  <span className={`font-mono uppercase ${row.ready ? 'text-[#59684b]' : 'text-[#8f1e18]'}`}>
+                                    {row.ready ? projectText('ready') : projectText('needs proof')}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                            <div data-testid="backend-zero-to-autonomy-report-route" className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#9b875c]">
+                              {projectText('Report route')}: {backendZeroToAutonomyReport.backendRoutes?.zeroToAutonomyReport || backendManagerReadyPackage.backendRoutes?.zeroToAutonomyReport || `/projects/${activeProject.id}/zero-to-autonomy-report`}
+                            </div>
+                          </div>
+                        )}
                         {backendProductTeamDeliveryTrace && (
                           <div data-testid="backend-product-team-delivery-trace-snapshot" className="mt-3 border border-[#d8c99f] bg-[#efe2bd]/55 p-2">
                             <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
@@ -20601,6 +24118,7 @@ export default function EngineWorkspace() {
                                 <span data-testid="backend-product-team-delivery-trace-source" className={`node-status-tag ${managerReadModelSourceClass(backendProductTeamDeliveryTrace)}`}>
                                   {managerReadModelSourceLabel(backendProductTeamDeliveryTrace)}
                                 </span>
+                                {managerProofModelSyncButton(backendProductTeamDeliveryTrace, 'backend-product-team-delivery-trace-sync-proof-models')}
                                 <span className={`node-status-tag ${backendProductTeamDeliveryTrace.readyForPrivatePilotDelivery ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
                                   {backendProductTeamDeliveryTrace.readyForPrivatePilotDelivery ? projectText('trace closed') : projectText('trace open')}
                                 </span>
@@ -20638,7 +24156,7 @@ export default function EngineWorkspace() {
                                 </div>
                               ))}
                             </div>
-                            <div className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#9b875c]">
+                            <div data-testid="backend-product-team-delivery-trace-route" className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#9b875c]">
                               Trace route: {backendProductTeamDeliveryTrace.backendRoutes?.productTeamDeliveryTrace || backendManagerReadyPackage.backendRoutes?.productTeamDeliveryTrace || `/projects/${activeProject.id}/product-team-delivery-trace`}
                             </div>
                           </div>
@@ -20654,6 +24172,7 @@ export default function EngineWorkspace() {
                                 <span data-testid="backend-project-evidence-archive-source" className={`node-status-tag ${managerReadModelSourceClass(backendProjectEvidenceArchive)}`}>
                                   {managerReadModelSourceLabel(backendProjectEvidenceArchive)}
                                 </span>
+                                {managerProofModelSyncButton(backendProjectEvidenceArchive, 'backend-project-evidence-archive-sync-proof-models')}
                                 <span className={`node-status-tag ${backendProjectEvidenceArchive.readyForManagerHandoff ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
                                   {backendProjectEvidenceArchive.readyForManagerHandoff ? projectText('ready') : projectText('blocked')}
                                 </span>
@@ -20665,6 +24184,8 @@ export default function EngineWorkspace() {
                                 [projectText('Submissions'), backendProjectEvidenceArchive.summary?.submissionCount ?? 0],
                                 [projectText('Final Deliverables'), backendProjectEvidenceArchive.summary?.finalDeliverableCount ?? 0],
                                 [projectText('Evidence Searches'), backendProjectEvidenceArchive.summary?.evidenceSearchCount ?? 0],
+                                [projectText('Storage Proofs'), `${backendProjectEvidenceArchive.summary?.artifactStorageProofCount ?? 0}/${backendProjectEvidenceArchive.summary?.submissionCount ?? 0}`],
+                                [projectText('Workspace Files'), `${backendProjectEvidenceArchive.summary?.workspaceFileProofCount ?? 0}/${backendProjectEvidenceArchive.summary?.submissionCount ?? 0}`],
                                 [projectText('Source Decisions'), backendProjectEvidenceArchive.summary?.evidenceSourceReviewDecisionCount ?? 0],
                                 [projectText('Reviews'), backendProjectEvidenceArchive.summary?.submissionReviewCount ?? 0],
                                 [projectText('Transcript Messages'), backendProjectEvidenceArchive.summary?.transcriptMessageCount ?? 0],
@@ -20693,6 +24214,7 @@ export default function EngineWorkspace() {
                                 <span data-testid="backend-brainstorm-layer-source" className={`node-status-tag ${managerReadModelSourceClass(backendBrainstormLayer)}`}>
                                   {managerReadModelSourceLabel(backendBrainstormLayer)}
                                 </span>
+                                {managerProofModelSyncButton(backendBrainstormLayer, 'backend-brainstorm-layer-sync-proof-models')}
                                 <span className={`node-status-tag ${backendBrainstormLayer.readyForPrivatePilotBrainstorm ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
                                   {backendBrainstormLayer.readyForPrivatePilotBrainstorm ? projectText('local ready') : projectText('needs work')}
                                 </span>
@@ -20742,6 +24264,7 @@ export default function EngineWorkspace() {
                                 <span data-testid="backend-artifact-quality-audit-source" className={`node-status-tag ${managerReadModelSourceClass(backendArtifactQualityAudit)}`}>
                                   {managerReadModelSourceLabel(backendArtifactQualityAudit)}
                                 </span>
+                                {managerProofModelSyncButton(backendArtifactQualityAudit, 'backend-artifact-quality-audit-sync-proof-models')}
                                 <span className={`node-status-tag ${backendArtifactQualityAudit.readyForLocalPilot ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
                                   {backendArtifactQualityAudit.readyForLocalPilot ? projectText('local ready') : projectText('review needed')}
                                 </span>
@@ -20807,6 +24330,7 @@ export default function EngineWorkspace() {
                                 <span data-testid="backend-submission-review-workflow-source" className={`node-status-tag ${managerReadModelSourceClass(backendSubmissionReviewWorkflow)}`}>
                                   {managerReadModelSourceLabel(backendSubmissionReviewWorkflow)}
                                 </span>
+                                {managerProofModelSyncButton(backendSubmissionReviewWorkflow, 'backend-submission-review-workflow-sync-proof-models')}
                                 <span className={`node-status-tag ${backendSubmissionReviewWorkflow.readyForPrivatePilotReview ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
                                   {backendSubmissionReviewWorkflow.readyForPrivatePilotReview ? projectText('loop closed') : projectText('review open')}
                                 </span>
@@ -20856,6 +24380,7 @@ export default function EngineWorkspace() {
                                 <span data-testid="backend-evidence-quality-audit-source" className={`node-status-tag ${managerReadModelSourceClass(backendEvidenceQualityAudit)}`}>
                                   {managerReadModelSourceLabel(backendEvidenceQualityAudit)}
                                 </span>
+                                {managerProofModelSyncButton(backendEvidenceQualityAudit, 'backend-evidence-quality-audit-sync-proof-models')}
                                 <span className={`node-status-tag ${backendEvidenceQualityAudit.readyForDecision ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
                                   {backendEvidenceQualityAudit.readyForDecision ? projectText('decision ready') : projectText('review needed')}
                                 </span>
@@ -20912,6 +24437,7 @@ export default function EngineWorkspace() {
                                 <span data-testid="backend-evidence-index-readiness-source" className={`node-status-tag ${managerReadModelSourceClass(backendEvidenceIndexReadiness)}`}>
                                   {managerReadModelSourceLabel(backendEvidenceIndexReadiness)}
                                 </span>
+                                {managerProofModelSyncButton(backendEvidenceIndexReadiness, 'backend-evidence-index-readiness-sync-proof-models')}
                                 <span className={`node-status-tag ${backendEvidenceIndexReadiness.readyForLocalMvp ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
                                   {backendEvidenceIndexReadiness.readyForLocalMvp ? projectText('local index ready') : projectText('index blocked')}
                                 </span>
@@ -20963,6 +24489,7 @@ export default function EngineWorkspace() {
                                 <span data-testid="backend-evidence-source-review-workflow-source" className={`node-status-tag ${managerReadModelSourceClass(backendEvidenceSourceReviewWorkflow)}`}>
                                   {managerReadModelSourceLabel(backendEvidenceSourceReviewWorkflow)}
                                 </span>
+                                {managerProofModelSyncButton(backendEvidenceSourceReviewWorkflow, 'backend-evidence-source-review-workflow-sync-proof-models')}
                                 <span className={`node-status-tag ${backendEvidenceSourceReviewWorkflow.readyForLocalPilot ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
                                   {backendEvidenceSourceReviewWorkflow.readyForLocalPilot ? projectText('local ready') : projectText('review blocked')}
                                 </span>
@@ -21262,6 +24789,25 @@ export default function EngineWorkspace() {
                             <div data-testid="backend-production-infrastructure-rehearsal-route" className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#9b875c] break-words">
                               {projectText('Infrastructure rehearsal route')}: {backendProductionInfrastructureRehearsal.backendRoutes?.productionInfrastructureRehearsal || backendManagerReadyPackage.backendRoutes?.productionInfrastructureRehearsal || `/projects/${activeProject.id}/production-infrastructure-rehearsal`}
                             </div>
+                            <div className="mt-2 flex flex-wrap items-center gap-2">
+                              <button
+                                type="button"
+                                data-testid="backend-managed-infrastructure-cutover-attestation-run"
+                                onClick={runManagedInfrastructureCutoverAttestation}
+                                disabled={backendStation.loading || !backendCommandAvailable}
+                                className="inline-flex items-center gap-1 border border-[#7b6542] bg-[#251b13] px-2 py-1 font-mono text-[8px] uppercase tracking-widest text-[#efe2bd] hover:bg-[#8f1e18] disabled:opacity-40 disabled:cursor-not-allowed"
+                              >
+                                <Server size={10} /> {projectText('Request managed cutover attestation')}
+                              </button>
+                              <span className="font-mono text-[8px] uppercase tracking-widest text-[#9b875c]">
+                                {backendManagerReadyPackage.backendRoutes?.managedInfrastructureCutoverAttestations || `/projects/${activeProject.id}/managed-infrastructure-cutover-attestations`}
+                              </span>
+                            </div>
+                            {backendManagedInfrastructureCutoverAttestationRunReceipt && (
+                              <div data-testid="backend-managed-infrastructure-cutover-attestation-receipt" className={`mt-2 border px-2 py-1 font-mono text-[8px] uppercase tracking-widest ${backendManagedInfrastructureCutoverAttestationRunReceipt.localProofCreated ? 'border-[#d8c99f] bg-[#fff8df] text-[#6b5a3d]' : 'border-[#8f1e18] bg-red-50 text-[#8f1e18]'}`}>
+                                {backendManagedInfrastructureCutoverAttestationRunReceipt.status || 'recorded'} / {backendManagedInfrastructureCutoverAttestationRunReceipt.readyForManagedInfrastructureCutoverEvidence ? 'managed evidence ready' : 'managed evidence blocked'} / {backendManagedInfrastructureCutoverAttestationRunReceipt.blocker || backendManagedInfrastructureCutoverAttestationRunReceipt.backendRoutes?.productionInfrastructureRehearsal || 'proof routes refreshed'}
+                              </div>
+                            )}
                           </div>
                         )}
                         {backendPublicProductionStartupReadiness && (
@@ -21284,6 +24830,11 @@ export default function EngineWorkspace() {
                                 [projectText('Failed Gates'), backendPublicProductionStartupReadiness.summary?.failedGateCount ?? 0],
                                 [projectText('Blockers'), backendPublicProductionStartupReadiness.summary?.failedBlockerGateCount ?? 0],
                                 [projectText('Access'), backendPublicProductionStartupReadiness.summary?.accessControlEnforced ? projectText('enforced') : projectText('blocked')],
+                                [projectText('Managed Identity'), backendPublicProductionStartupReadiness.summary?.managedIdentityStartupReady ? projectText('ready') : projectText('blocked')],
+                                [projectText('Cost Control'), backendPublicProductionStartupReadiness.summary?.productionCostControlReady ? projectText('ready') : projectText('blocked')],
+                                [projectText('Data Governance'), backendPublicProductionStartupReadiness.summary?.productionDataGovernanceReady ? projectText('ready') : projectText('blocked')],
+                                [projectText('Traffic Control'), backendPublicProductionStartupReadiness.summary?.productionTrafficStartupReady ? projectText('ready') : projectText('blocked')],
+                                [projectText('Customer Acceptance'), backendPublicProductionStartupReadiness.summary?.productionCustomerAcceptanceReady ? projectText('ready') : projectText('blocked')],
                                 [projectText('Managed Secrets'), backendPublicProductionStartupReadiness.summary?.managedSecretsReady ? projectText('ready') : projectText('blocked')],
                                 [projectText('Managed DB'), backendPublicProductionStartupReadiness.summary?.managedPersistenceReady ? projectText('ready') : projectText('blocked')],
                                 [projectText('Managed Queue'), backendPublicProductionStartupReadiness.summary?.managedQueueReady ? projectText('ready') : projectText('blocked')],
@@ -21297,6 +24848,282 @@ export default function EngineWorkspace() {
                                 </div>
                               ))}
                             </div>
+                            {backendPublicProductionStartupReadiness.managedIdentityStartup && (
+                              <div data-testid="backend-managed-identity-startup-readiness" className="mt-2 border border-[#d8c99f] bg-[#f7edcf] p-2">
+                                <div className="flex flex-col gap-1 md:flex-row md:items-start md:justify-between">
+                                  <div className="min-w-0">
+                                    <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">{projectText('Managed Identity Startup')}</div>
+                                    <div className="font-serif text-sm leading-tight break-words">
+                                      {projectText(backendPublicProductionStartupReadiness.managedIdentityStartup.status || 'blocked')}
+                                    </div>
+                                  </div>
+                                  <span className={`node-status-tag ${backendPublicProductionStartupReadiness.managedIdentityStartup.ready ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
+                                    {backendPublicProductionStartupReadiness.managedIdentityStartup.ready ? projectText('ready') : projectText('blocked')}
+                                  </span>
+                                </div>
+                                <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2">
+                                  {[
+                                    [projectText('Provider Config'), backendPublicProductionStartupReadiness.managedIdentityStartup.providerConfigured ? projectText('configured') : projectText('missing')],
+                                    [projectText('Service Identity'), backendPublicProductionStartupReadiness.managedIdentityStartup.serviceIdentityConfigured ? projectText('configured') : projectText('missing')],
+                                    [projectText('Evidence'), backendPublicProductionStartupReadiness.managedIdentityStartup.evidenceReady ? projectText('ready') : projectText('missing')],
+                                    [projectText('Signature'), backendPublicProductionStartupReadiness.managedIdentityStartup.attestationSignatureReady ? projectText('ready') : projectText('missing')],
+                                    [projectText('Prototype Signed'), backendPublicProductionStartupReadiness.managedIdentityStartup.signedAccessOnly ? projectText('only') : projectText('no')],
+                                    [projectText('Configured Env'), backendPublicProductionStartupReadiness.managedIdentityStartup.configuredEnvVars?.length ?? 0],
+                                    [projectText('Route'), backendPublicProductionStartupReadiness.managedIdentityStartup.apiPath || '/public-production-startup-readiness'],
+                                    [projectText('Check'), backendPublicProductionStartupReadiness.managedIdentityStartup.validationCommand || 'npm run agents:public-production-startup-readiness'],
+                                  ].map(([label, value]) => (
+                                    <div key={`managed-identity-startup-readiness-${label}`} className="border border-[#d8c99f] bg-[#fff8df] px-2 py-1">
+                                      <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">{label}</div>
+                                      <div className="font-serif text-sm leading-tight break-words">{value}</div>
+                                    </div>
+                                  ))}
+                                </div>
+                                <div className="mt-2 font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] break-words">
+                                  {projectText(backendPublicProductionStartupReadiness.managedIdentityStartup.detail || backendPublicProductionStartupReadiness.managedIdentityStartup.productionRequirement || '')}
+                                </div>
+                              </div>
+                            )}
+                            {backendPublicProductionStartupReadiness.productionCostControlStartup && (
+                              <div data-testid="backend-production-cost-control-startup-readiness" className="mt-2 border border-[#d8c99f] bg-[#f7edcf] p-2">
+                                <div className="flex flex-col gap-1 md:flex-row md:items-start md:justify-between">
+                                  <div className="min-w-0">
+                                    <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">{projectText('Production Cost Control Startup')}</div>
+                                    <div className="font-serif text-sm leading-tight break-words">
+                                      {projectText(backendPublicProductionStartupReadiness.productionCostControlStartup.status || 'blocked')}
+                                    </div>
+                                  </div>
+                                  <span className={`node-status-tag ${backendPublicProductionStartupReadiness.productionCostControlStartup.ready ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
+                                    {backendPublicProductionStartupReadiness.productionCostControlStartup.ready ? projectText('ready') : projectText('blocked')}
+                                  </span>
+                                </div>
+                                <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2">
+                                  {[
+                                    [projectText('Budget Policy'), backendPublicProductionStartupReadiness.productionCostControlStartup.budgetPolicyConfigured ? projectText('configured') : projectText('missing')],
+                                    [projectText('Usage Audit'), backendPublicProductionStartupReadiness.productionCostControlStartup.usageAuditConfigured ? projectText('configured') : projectText('missing')],
+                                    [projectText('Cost Alerts'), backendPublicProductionStartupReadiness.productionCostControlStartup.alertRoutingConfigured ? projectText('configured') : projectText('missing')],
+                                    [projectText('Evidence'), backendPublicProductionStartupReadiness.productionCostControlStartup.evidenceReady ? projectText('ready') : projectText('missing')],
+                                    [projectText('Signature'), backendPublicProductionStartupReadiness.productionCostControlStartup.attestationSignatureReady ? projectText('ready') : projectText('missing')],
+                                    [projectText('Configured Env'), backendPublicProductionStartupReadiness.productionCostControlStartup.configuredEnvVars?.length ?? 0],
+                                    [projectText('Route'), backendPublicProductionStartupReadiness.productionCostControlStartup.apiPath || '/public-production-startup-readiness'],
+                                    [projectText('Check'), backendPublicProductionStartupReadiness.productionCostControlStartup.validationCommand || 'npm run agents:public-production-startup-readiness'],
+                                  ].map(([label, value]) => (
+                                    <div key={`production-cost-control-startup-readiness-${label}`} className="border border-[#d8c99f] bg-[#fff8df] px-2 py-1">
+                                      <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">{label}</div>
+                                      <div className="font-serif text-sm leading-tight break-words">{value}</div>
+                                    </div>
+                                  ))}
+                                </div>
+                                <div className="mt-2 font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] break-words">
+                                  {projectText(backendPublicProductionStartupReadiness.productionCostControlStartup.detail || backendPublicProductionStartupReadiness.productionCostControlStartup.productionRequirement || '')}
+                                </div>
+                              </div>
+                            )}
+                            {backendPublicProductionStartupReadiness.productionDataGovernanceStartup && (
+                              <div data-testid="backend-production-data-governance-startup-readiness" className="mt-2 border border-[#d8c99f] bg-[#f7edcf] p-2">
+                                <div className="flex flex-col gap-1 md:flex-row md:items-start md:justify-between">
+                                  <div className="min-w-0">
+                                    <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">{projectText('Production Data Governance Startup')}</div>
+                                    <div className="font-serif text-sm leading-tight break-words">
+                                      {projectText(backendPublicProductionStartupReadiness.productionDataGovernanceStartup.status || 'blocked')}
+                                    </div>
+                                  </div>
+                                  <span className={`node-status-tag ${backendPublicProductionStartupReadiness.productionDataGovernanceStartup.ready ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
+                                    {backendPublicProductionStartupReadiness.productionDataGovernanceStartup.ready ? projectText('ready') : projectText('blocked')}
+                                  </span>
+                                </div>
+                                <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2">
+                                  {[
+                                    [projectText('Retention'), backendPublicProductionStartupReadiness.productionDataGovernanceStartup.retentionPolicyConfigured ? projectText('configured') : projectText('missing')],
+                                    [projectText('Deletion Job'), backendPublicProductionStartupReadiness.productionDataGovernanceStartup.deletionJobConfigured ? projectText('configured') : projectText('missing')],
+                                    [projectText('Export Storage'), backendPublicProductionStartupReadiness.productionDataGovernanceStartup.exportStorageConfigured ? projectText('configured') : projectText('missing')],
+                                    [projectText('Evidence'), backendPublicProductionStartupReadiness.productionDataGovernanceStartup.evidenceReady ? projectText('ready') : projectText('missing')],
+                                    [projectText('Signature'), backendPublicProductionStartupReadiness.productionDataGovernanceStartup.attestationSignatureReady ? projectText('ready') : projectText('missing')],
+                                    [projectText('Configured Env'), backendPublicProductionStartupReadiness.productionDataGovernanceStartup.configuredEnvVars?.length ?? 0],
+                                    [projectText('Route'), backendPublicProductionStartupReadiness.productionDataGovernanceStartup.apiPath || '/public-production-startup-readiness'],
+                                    [projectText('Check'), backendPublicProductionStartupReadiness.productionDataGovernanceStartup.validationCommand || 'npm run agents:public-production-startup-readiness'],
+                                  ].map(([label, value]) => (
+                                    <div key={`production-data-governance-startup-readiness-${label}`} className="border border-[#d8c99f] bg-[#fff8df] px-2 py-1">
+                                      <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">{label}</div>
+                                      <div className="font-serif text-sm leading-tight break-words">{value}</div>
+                                    </div>
+                                  ))}
+                                </div>
+                                <div className="mt-2 font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] break-words">
+                                  {projectText(backendPublicProductionStartupReadiness.productionDataGovernanceStartup.detail || backendPublicProductionStartupReadiness.productionDataGovernanceStartup.productionRequirement || '')}
+                                </div>
+                              </div>
+                            )}
+                            {backendPublicProductionStartupReadiness.productionTrafficStartup && (
+                              <div data-testid="backend-production-traffic-startup-readiness" className="mt-2 border border-[#d8c99f] bg-[#f7edcf] p-2">
+                                <div className="flex flex-col gap-1 md:flex-row md:items-start md:justify-between">
+                                  <div className="min-w-0">
+                                    <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">{projectText('Production Traffic Startup')}</div>
+                                    <div className="font-serif text-sm leading-tight break-words">
+                                      {projectText(backendPublicProductionStartupReadiness.productionTrafficStartup.status || 'blocked')}
+                                    </div>
+                                  </div>
+                                  <span className={`node-status-tag ${backendPublicProductionStartupReadiness.productionTrafficStartup.ready ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
+                                    {backendPublicProductionStartupReadiness.productionTrafficStartup.ready ? projectText('ready') : projectText('blocked')}
+                                  </span>
+                                </div>
+                                <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2">
+                                  {[
+                                    [projectText('Domain/TLS'), backendPublicProductionStartupReadiness.productionTrafficStartup.domainTlsConfigured ? projectText('configured') : projectText('missing')],
+                                    [projectText('Traffic Gateway'), backendPublicProductionStartupReadiness.productionTrafficStartup.trafficGatewayConfigured ? projectText('configured') : projectText('missing')],
+                                    [projectText('Release Approval'), backendPublicProductionStartupReadiness.productionTrafficStartup.releaseApprovalConfigured ? projectText('configured') : projectText('missing')],
+                                    [projectText('Rollback'), backendPublicProductionStartupReadiness.productionTrafficStartup.rollbackConfigured ? projectText('configured') : projectText('missing')],
+                                    [projectText('Evidence'), backendPublicProductionStartupReadiness.productionTrafficStartup.evidenceReady ? projectText('ready') : projectText('missing')],
+                                    [projectText('Signature'), backendPublicProductionStartupReadiness.productionTrafficStartup.attestationSignatureReady ? projectText('ready') : projectText('missing')],
+                                    [projectText('Configured Env'), backendPublicProductionStartupReadiness.productionTrafficStartup.configuredEnvVars?.length ?? 0],
+                                    [projectText('Check'), backendPublicProductionStartupReadiness.productionTrafficStartup.validationCommand || 'npm run agents:public-production-startup-readiness'],
+                                  ].map(([label, value]) => (
+                                    <div key={`production-traffic-startup-readiness-${label}`} className="border border-[#d8c99f] bg-[#fff8df] px-2 py-1">
+                                      <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">{label}</div>
+                                      <div className="font-serif text-sm leading-tight break-words">{value}</div>
+                                    </div>
+                                  ))}
+                                </div>
+                                <div className="mt-2 font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] break-words">
+                                  {projectText(backendPublicProductionStartupReadiness.productionTrafficStartup.detail || backendPublicProductionStartupReadiness.productionTrafficStartup.productionRequirement || '')}
+                                </div>
+                              </div>
+                            )}
+                            {backendPublicProductionStartupReadiness.productionCustomerAcceptanceStartup && (
+                              <div data-testid="backend-production-customer-acceptance-startup-readiness" className="mt-2 border border-[#d8c99f] bg-[#f7edcf] p-2">
+                                <div className="flex flex-col gap-1 md:flex-row md:items-start md:justify-between">
+                                  <div className="min-w-0">
+                                    <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">{projectText('Production Customer Acceptance Startup')}</div>
+                                    <div className="font-serif text-sm leading-tight break-words">
+                                      {projectText(backendPublicProductionStartupReadiness.productionCustomerAcceptanceStartup.status || 'blocked')}
+                                    </div>
+                                  </div>
+                                  <span className={`node-status-tag ${backendPublicProductionStartupReadiness.productionCustomerAcceptanceStartup.ready ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
+                                    {backendPublicProductionStartupReadiness.productionCustomerAcceptanceStartup.ready ? projectText('ready') : projectText('blocked')}
+                                  </span>
+                                </div>
+                                <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2">
+                                  {[
+                                    [projectText('Policy'), backendPublicProductionStartupReadiness.productionCustomerAcceptanceStartup.policyConfigured ? projectText('configured') : projectText('missing')],
+                                    [projectText('Success Criteria'), backendPublicProductionStartupReadiness.productionCustomerAcceptanceStartup.successCriteriaConfigured ? projectText('configured') : projectText('missing')],
+                                    [projectText('Threshold'), backendPublicProductionStartupReadiness.productionCustomerAcceptanceStartup.thresholdConfigured ? projectText('configured') : projectText('missing')],
+                                    [projectText('Approval'), backendPublicProductionStartupReadiness.productionCustomerAcceptanceStartup.approvalConfigured ? projectText('configured') : projectText('missing')],
+                                    [projectText('Rollback Criteria'), backendPublicProductionStartupReadiness.productionCustomerAcceptanceStartup.rollbackCriteriaConfigured ? projectText('configured') : projectText('missing')],
+                                    [projectText('Evidence'), backendPublicProductionStartupReadiness.productionCustomerAcceptanceStartup.evidenceReady ? projectText('ready') : projectText('missing')],
+                                    [projectText('Signature'), backendPublicProductionStartupReadiness.productionCustomerAcceptanceStartup.attestationSignatureReady ? projectText('ready') : projectText('missing')],
+                                    [projectText('Check'), backendPublicProductionStartupReadiness.productionCustomerAcceptanceStartup.validationCommand || 'npm run agents:public-production-startup-readiness'],
+                                  ].map(([label, value]) => (
+                                    <div key={`production-customer-acceptance-startup-readiness-${label}`} className="border border-[#d8c99f] bg-[#fff8df] px-2 py-1">
+                                      <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">{label}</div>
+                                      <div className="font-serif text-sm leading-tight break-words">{value}</div>
+                                    </div>
+                                  ))}
+                                </div>
+                                <div className="mt-2 font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] break-words">
+                                  {projectText(backendPublicProductionStartupReadiness.productionCustomerAcceptanceStartup.detail || backendPublicProductionStartupReadiness.productionCustomerAcceptanceStartup.productionRequirement || '')}
+                                </div>
+                              </div>
+                            )}
+                            {backendPublicProductionStartupReadiness.managedSecretManager && (
+                              <div data-testid="backend-managed-secret-manager-readiness" className="mt-2 border border-[#d8c99f] bg-[#f7edcf] p-2">
+                                <div className="flex flex-col gap-1 md:flex-row md:items-start md:justify-between">
+                                  <div className="min-w-0">
+                                    <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">{projectText('Managed Secret Manager Readiness')}</div>
+                                    <div className="font-serif text-sm leading-tight break-words">
+                                      {projectText(backendPublicProductionStartupReadiness.managedSecretManager.status || 'blocked')}
+                                    </div>
+                                  </div>
+                                  <span className={`node-status-tag ${backendPublicProductionStartupReadiness.managedSecretManager.ready ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
+                                    {backendPublicProductionStartupReadiness.managedSecretManager.ready ? projectText('ready') : projectText('blocked')}
+                                  </span>
+                                </div>
+                                <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2">
+                                  {[
+                                    [projectText('Provider'), backendPublicProductionStartupReadiness.managedSecretManager.provider || 'none'],
+                                    [projectText('Provider Proof'), backendPublicProductionStartupReadiness.managedSecretManager.providerReady ? projectText('ready') : projectText('blocked')],
+                                    [projectText('Config'), backendPublicProductionStartupReadiness.managedSecretManager.configurationReady ? projectText('configured') : projectText('missing')],
+                                    [projectText('Attestation'), backendPublicProductionStartupReadiness.managedSecretManager.attestationReady ? projectText('matched') : projectText('missing')],
+                                    [projectText('Raw Secret'), backendPublicProductionStartupReadiness.managedSecretManager.rawExposureBlocked ? projectText('blocked') : projectText('clear')],
+                                    [projectText('Configured Env'), backendPublicProductionStartupReadiness.managedSecretManager.configuredEnvVars?.length ?? 0],
+                                    [projectText('Route'), backendPublicProductionStartupReadiness.managedSecretManager.apiPath || '/secret-vault/status'],
+                                    [projectText('Check'), backendPublicProductionStartupReadiness.managedSecretManager.validationCommand || 'npm run agents:public-production-startup-readiness'],
+                                  ].map(([label, value]) => (
+                                    <div key={`managed-secret-manager-readiness-${label}`} className="border border-[#d8c99f] bg-[#fff8df] px-2 py-1">
+                                      <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">{label}</div>
+                                      <div className="font-serif text-sm leading-tight break-words">{value}</div>
+                                    </div>
+                                  ))}
+                                </div>
+                                <div className="mt-2 font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] break-words">
+                                  {projectText(backendPublicProductionStartupReadiness.managedSecretManager.detail || backendPublicProductionStartupReadiness.managedSecretManager.productionRequirement || '')}
+                                </div>
+                              </div>
+                            )}
+                            {backendPublicProductionStartupReadiness.managedInfrastructureCutover && (
+                              <div data-testid="backend-managed-infrastructure-cutover-readiness" className="mt-2 border border-[#d8c99f] bg-[#f7edcf] p-2">
+                                <div className="flex flex-col gap-1 md:flex-row md:items-start md:justify-between">
+                                  <div className="min-w-0">
+                                    <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">{projectText('Managed Infrastructure Cutover')}</div>
+                                    <div className="font-serif text-sm leading-tight">
+                                      {backendPublicProductionStartupReadiness.managedInfrastructureCutover.summary?.readyRowCount ?? 0}/{backendPublicProductionStartupReadiness.managedInfrastructureCutover.summary?.rowCount ?? 0} {projectText('domains ready')}
+                                    </div>
+                                  </div>
+                                  <span className={`node-status-tag ${backendPublicProductionStartupReadiness.managedInfrastructureCutover.ready ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
+                                    {backendPublicProductionStartupReadiness.managedInfrastructureCutover.ready ? projectText('ready') : projectText('blocked')}
+                                  </span>
+                                </div>
+                                <div className="mt-2 space-y-1">
+                                  {(backendPublicProductionStartupReadiness.managedInfrastructureCutover.rows || []).map((row) => (
+                                    <div data-testid={`backend-managed-infrastructure-cutover-row-${row.id}`} key={`managed-infrastructure-cutover-${row.id}`} className="grid grid-cols-[1fr_auto] gap-2 border border-[#d8c99f] bg-[#fff8df] px-2 py-1">
+                                      <div className="min-w-0">
+                                        <div className="font-serif text-sm leading-tight truncate">{projectText(row.label || row.id)}</div>
+                                        <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] truncate">
+                                          {row.driver || 'unknown'} / {row.configurationReady ? projectText('configured') : projectText('missing config')} / {row.requireRealAdapter ? projectText('real adapter required') : projectText('real adapter not required')} / {row.cutoverReady ? projectText('cutover proof ready') : projectText('cutover proof missing')}
+                                        </div>
+                                        <div className="font-mono text-[7px] uppercase tracking-widest text-[#9b875c] truncate">
+                                          {row.validationCommand || row.apiPath || projectText(row.detail || '')}
+                                        </div>
+                                      </div>
+                                      <span className={`node-status-tag ${row.ready ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
+                                        {row.ready ? projectText('ready') : projectText(row.status || 'blocked')}
+                                      </span>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                            {backendPublicProductionStartupReadiness.productionOperationsStartup && (
+                              <div data-testid="backend-production-operations-startup-readiness" className="mt-2 border border-[#d8c99f] bg-[#f7edcf] p-2">
+                                <div className="flex flex-col gap-1 md:flex-row md:items-start md:justify-between">
+                                  <div className="min-w-0">
+                                    <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">{projectText('Production Operations Startup')}</div>
+                                    <div className="font-serif text-sm leading-tight">
+                                      {backendPublicProductionStartupReadiness.productionOperationsStartup.summary?.readyRowCount ?? 0}/{backendPublicProductionStartupReadiness.productionOperationsStartup.summary?.rowCount ?? 0} {projectText('controls ready')}
+                                    </div>
+                                  </div>
+                                  <span className={`node-status-tag ${backendPublicProductionStartupReadiness.productionOperationsStartup.ready ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
+                                    {backendPublicProductionStartupReadiness.productionOperationsStartup.ready ? projectText('ready') : projectText('blocked')}
+                                  </span>
+                                </div>
+                                <div className="mt-2 space-y-1">
+                                  {(backendPublicProductionStartupReadiness.productionOperationsStartup.rows || []).map((row) => (
+                                    <div data-testid={`backend-production-operations-startup-row-${row.id}`} key={`production-operations-startup-${row.id}`} className="grid grid-cols-[1fr_auto] gap-2 border border-[#d8c99f] bg-[#fff8df] px-2 py-1">
+                                      <div className="min-w-0">
+                                        <div className="font-serif text-sm leading-tight truncate">{projectText(row.label || row.id)}</div>
+                                        <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] truncate">
+                                          {row.configurationReady ? projectText('configured') : projectText('missing config')} / {row.evidenceReady ? projectText('evidence ready') : projectText('evidence missing')} / {row.attestationSignatureReady ? projectText('signature ready') : projectText('signature missing')}
+                                        </div>
+                                        <div className="font-mono text-[7px] uppercase tracking-widest text-[#9b875c] truncate">
+                                          {row.validationCommand || row.apiPath || projectText(row.detail || '')}
+                                        </div>
+                                      </div>
+                                      <span className={`node-status-tag ${row.ready ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
+                                        {row.ready ? projectText('ready') : projectText(row.status || 'blocked')}
+                                      </span>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
                             <div className="mt-2 space-y-1">
                               {(backendPublicProductionStartupReadiness.failedGates?.length ? backendPublicProductionStartupReadiness.failedGates : backendPublicProductionStartupReadiness.gates || []).slice(0, 5).map(row => (
                                 <div key={`public-production-startup-readiness-gate-${row.id}`} className="grid grid-cols-[1fr_auto] gap-2 border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
@@ -21313,6 +25140,51 @@ export default function EngineWorkspace() {
                                 </div>
                               ))}
                             </div>
+                            {backendPublicProductionStartupReadiness.productionEnvironmentSetup?.rows?.length > 0 && (
+                              <div data-testid="backend-production-environment-setup-matrix" className="mt-2 border border-[#d8c99f] bg-[#f7edcf] p-2">
+                                <div className="flex flex-col gap-1 md:flex-row md:items-start md:justify-between">
+                                  <div className="min-w-0">
+                                    <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">{projectText('Production Environment Setup')}</div>
+                                    <div className="font-serif text-sm leading-tight">
+                                      {backendPublicProductionStartupReadiness.productionEnvironmentSetup.summary?.readyRowCount ?? 0}/{backendPublicProductionStartupReadiness.productionEnvironmentSetup.summary?.rowCount ?? 0} {projectText('setup domains ready')}
+                                    </div>
+                                  </div>
+                                  <span className={`node-status-tag ${backendPublicProductionStartupReadiness.productionEnvironmentSetup.readyForPublicProduction ? 'bg-[#59684b] text-white' : 'bg-[#251b13] text-[#efe2bd]'}`}>
+                                    {backendPublicProductionStartupReadiness.productionEnvironmentSetup.readyForPublicProduction ? projectText('public ready') : projectText('setup blocked')}
+                                  </span>
+                                </div>
+                                <div className="mt-2 space-y-1">
+                                  {backendPublicProductionStartupReadiness.productionEnvironmentSetup.rows.slice(0, 6).map((row) => {
+                                    const missingRequired = row.missingRequiredEnvVars || [];
+                                    const missingAnyOfGroups = row.missingAnyOfEnvVarGroups || [];
+                                    const missingEnvLabel = missingRequired.length
+                                      ? missingRequired.slice(0, 3).join(', ')
+                                      : missingAnyOfGroups.length
+                                        ? missingAnyOfGroups[0].slice(0, 3).join(' | ')
+                                        : (row.configuredEnvVars || []).slice(0, 3).join(', ') || row.apiPath || 'no env gaps';
+                                    return (
+                                      <div data-testid={`backend-production-environment-setup-row-${row.id}`} key={`production-environment-setup-${row.id}`} className="grid grid-cols-[1fr_auto] gap-2 border border-[#d8c99f] bg-[#fff8df] px-2 py-1">
+                                        <div className="min-w-0">
+                                          <div className="flex flex-wrap items-center gap-1">
+                                            <span className="font-serif text-sm leading-tight">{projectText(row.label || row.id)}</span>
+                                            <span className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">{projectText(row.domain || 'production')}</span>
+                                          </div>
+                                          <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] truncate">
+                                            {projectText('Missing')}: {missingEnvLabel}
+                                          </div>
+                                          <div className="font-mono text-[7px] uppercase tracking-widest text-[#9b875c] truncate">
+                                            {row.validationCommand || row.apiPath || projectText(row.nextAction || '')}
+                                          </div>
+                                        </div>
+                                        <span className={`node-status-tag ${row.ready ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
+                                          {row.ready ? projectText('ready') : projectText(row.status || 'blocked')}
+                                        </span>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            )}
                             <div className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#9b875c] break-words">
                               {projectText('Public startup route')}: {backendPublicProductionStartupReadiness.backendRoutes?.publicProductionStartupReadiness || backendManagerReadyPackage.backendRoutes?.publicProductionStartupReadiness || '/public-production-startup-readiness'}
                             </div>
@@ -21329,6 +25201,7 @@ export default function EngineWorkspace() {
                                 <span data-testid="backend-production-launch-gap-register-source" className={`node-status-tag ${managerReadModelSourceClass(backendProductionLaunchGapRegister)}`}>
                                   {managerReadModelSourceLabel(backendProductionLaunchGapRegister)}
                                 </span>
+                                {managerProofModelSyncButton(backendProductionLaunchGapRegister, 'backend-production-launch-gap-register-sync-proof-models')}
                                 <span className="node-status-tag bg-[#8f1e18] text-white">
                                   {backendProductionLaunchGapRegister.readyForProduction ? projectText('production ready') : projectText('production blocked')}
                                 </span>
@@ -21348,6 +25221,7 @@ export default function EngineWorkspace() {
                                 [projectText('Infra'), backendProductionLaunchGapRegister.summary?.infrastructureGapCount ?? 0],
                                 [projectText('Ops'), backendProductionLaunchGapRegister.summary?.operationsGapCount ?? 0],
                                 [projectText('Provider'), backendProductionLaunchGapRegister.summary?.providerGapCount ?? 0],
+                                [projectText('Env Setup'), backendProductionLaunchGapRegister.summary?.publicProductionEnvironmentSetupOpenCount ?? 0],
                               ].map(([label, value]) => (
                                 <div key={`production-launch-gap-${label}`} className="border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
                                   <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">{label}</div>
@@ -21364,6 +25238,9 @@ export default function EngineWorkspace() {
                                     <div className="font-mono text-[7px] uppercase tracking-widest text-[#9b875c] truncate">{row.action || row.detail || row.status}</div>
                                     {row.apiPath && (
                                       <div className="font-mono text-[7px] uppercase tracking-widest text-[#9b875c] truncate">Route: {row.apiPath}</div>
+                                    )}
+                                    {row.validationCommand && (
+                                      <div className="font-mono text-[7px] uppercase tracking-widest text-[#9b875c] truncate">Check: {row.validationCommand}</div>
                                     )}
                                   </div>
                                   <span className={`node-status-tag ${row.status === 'ready' ? 'bg-[#59684b] text-white' : 'bg-[#251b13] text-[#efe2bd]'}`}>{row.status || 'blocked'}</span>
@@ -21386,6 +25263,7 @@ export default function EngineWorkspace() {
                                 <span data-testid="backend-production-launch-control-center-source" className={`node-status-tag ${managerReadModelSourceClass(backendProductionLaunchControlCenter)}`}>
                                   {managerReadModelSourceLabel(backendProductionLaunchControlCenter)}
                                 </span>
+                                {managerProofModelSyncButton(backendProductionLaunchControlCenter, 'backend-production-launch-control-center-sync-proof-models')}
                                 <span className="node-status-tag bg-[#8f1e18] text-white">
                                   {backendProductionLaunchControlCenter.readyForProduction ? projectText('production ready') : projectText('no-go')}
                                 </span>
@@ -21439,6 +25317,7 @@ export default function EngineWorkspace() {
                                 <span data-testid="backend-production-launch-evidence-dossier-source" className={`node-status-tag ${managerReadModelSourceClass(backendProductionLaunchEvidenceDossier)}`}>
                                   {managerReadModelSourceLabel(backendProductionLaunchEvidenceDossier)}
                                 </span>
+                                {managerProofModelSyncButton(backendProductionLaunchEvidenceDossier, 'backend-production-launch-evidence-dossier-sync-proof-models')}
                                 <span className={`node-status-tag ${backendProductionLaunchEvidenceDossier.readyForProduction ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
                                   {backendProductionLaunchEvidenceDossier.readyForProduction ? projectText('production ready') : projectText('production no-go')}
                                 </span>
@@ -21490,9 +25369,13 @@ export default function EngineWorkspace() {
                                 <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">{projectText('Production Evidence Integrity Audit')}</div>
                                 <div className="font-serif text-base leading-tight">{projectText(backendProductionEvidenceIntegrityAudit.status || 'managed-production-evidence-needed')}</div>
                               </div>
-                              <span className={`node-status-tag ${backendProductionEvidenceIntegrityAudit.readyForManagedProductionEvidence ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
-                                {backendProductionEvidenceIntegrityAudit.readyForManagedProductionEvidence ? projectText('managed proof ready') : projectText('production proof needed')}
-                              </span>
+                              <div className="flex flex-wrap gap-1 md:justify-end">
+                                {managerReadModelSourceBadge(backendProductionEvidenceIntegrityAudit, 'backend-production-evidence-integrity-audit-source')}
+                                {managerProofModelSyncButton(backendProductionEvidenceIntegrityAudit, 'backend-production-evidence-integrity-audit-sync-proof-models')}
+                                <span className={`node-status-tag ${backendProductionEvidenceIntegrityAudit.readyForManagedProductionEvidence ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
+                                  {backendProductionEvidenceIntegrityAudit.readyForManagedProductionEvidence ? projectText('managed proof ready') : projectText('production proof needed')}
+                                </span>
+                              </div>
                             </div>
                             <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2">
                               {[
@@ -22434,11 +26317,11 @@ export default function EngineWorkspace() {
                                 ))}
                               </div>
                             )}
-                            {backendStation.mvpReadinessOperatorActionRun && (
-                              <div data-testid="mvp-readiness-operator-action-receipt" className={`mt-2 border px-2 py-1 font-mono text-[8px] uppercase tracking-widest ${backendStation.mvpReadinessOperatorActionRun.status === 'failed' ? 'border-red-800 bg-red-50 text-[#8f1e18]' : 'border-[#d8c99f] bg-[#fff8df] text-[#6b5a3d]'}`}>
-                                {backendStation.mvpReadinessOperatorActionRun.status === 'failed'
-                                  ? `Action failed: ${backendStation.mvpReadinessOperatorActionRun.actionLabel || backendStation.mvpReadinessOperatorActionRun.actionId} / no local operator receipt was created / ${backendStation.mvpReadinessOperatorActionRun.error || 'backend run failed'}`
-                                  : `Receipt: ${backendStation.mvpReadinessOperatorActionRun.actionLabel || backendStation.mvpReadinessOperatorActionRun.actionId} / ${backendStation.mvpReadinessOperatorActionRun.status || 'recorded'} / ${backendStation.mvpReadinessOperatorActionRun.runApiPath || 'run route pending'} / target ${backendStation.mvpReadinessOperatorActionRun.targetStageId || 'manual'}`}
+                            {backendMvpReadinessOperatorActionRunReceipt && (
+                              <div data-testid="mvp-readiness-operator-action-receipt" className={`mt-2 border px-2 py-1 font-mono text-[8px] uppercase tracking-widest ${backendMvpReadinessOperatorActionRunReceipt.status === 'failed' ? 'border-red-800 bg-red-50 text-[#8f1e18]' : 'border-[#d8c99f] bg-[#fff8df] text-[#6b5a3d]'}`}>
+                                {backendMvpReadinessOperatorActionRunReceipt.status === 'failed'
+                                  ? `Action failed: ${backendMvpReadinessOperatorActionRunReceipt.actionLabel || backendMvpReadinessOperatorActionRunReceipt.actionId} / no local operator receipt was created / ${backendMvpReadinessOperatorActionRunReceipt.error || 'backend run failed'}`
+                                  : `Receipt: ${backendMvpReadinessOperatorActionRunReceipt.actionLabel || backendMvpReadinessOperatorActionRunReceipt.actionId} / ${backendMvpReadinessOperatorActionRunReceipt.status || 'recorded'} / ${backendMvpReadinessOperatorActionRunReceipt.runApiPath || 'run route pending'} / target ${backendMvpReadinessOperatorActionRunReceipt.targetStageId || 'manual'}`}
                               </div>
                             )}
                             <div className="mt-2 space-y-1">
@@ -22740,6 +26623,7 @@ export default function EngineWorkspace() {
                                 <span data-testid="backend-evidence-custody-readiness-source" className={`node-status-tag ${managerReadModelSourceClass(backendEvidenceCustodyReadiness)}`}>
                                   {managerReadModelSourceLabel(backendEvidenceCustodyReadiness)}
                                 </span>
+                                {managerProofModelSyncButton(backendEvidenceCustodyReadiness, 'backend-evidence-custody-readiness-sync-proof-models')}
                                 <span className={`node-status-tag ${backendEvidenceCustodyReadiness.readyForPrivatePilot ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
                                   {backendEvidenceCustodyReadiness.readyForPrivatePilot ? 'Local Custody Ready' : 'Needs Custody Work'}
                                 </span>
@@ -22980,6 +26864,116 @@ export default function EngineWorkspace() {
                             )}
                           </div>
                         )}
+                        {backendCollaborationIntentQueue && !backendManagerReadyPackage && (
+                          <div data-testid="backend-collaboration-intent-queue-snapshot" className="mt-3 border border-[#d8c99f] bg-[#efe2bd]/55 p-2">
+                            <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                              <div className="min-w-0">
+                                <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">Collaboration Intent Queue</div>
+                                <div className="font-serif text-base leading-tight">{projectText(backendCollaborationIntentQueue.status || 'backend-backed intent queue')}</div>
+                              </div>
+                              <div className="flex flex-wrap gap-1 md:justify-end">
+                                <span data-testid="backend-collaboration-intent-queue-source" className={`node-status-tag ${managerReadModelSourceClass(backendCollaborationIntentQueue)}`}>
+                                  {managerReadModelSourceLabel(backendCollaborationIntentQueue)}
+                                </span>
+                                <span className={`node-status-tag ${backendCollaborationIntentQueue.readyForLocalPilotIntentQueue ? 'bg-[#59684b] text-white' : 'bg-[#8f1e18] text-white'}`}>
+                                  {backendCollaborationIntentQueue.readyForLocalPilotIntentQueue ? 'intent routing ready' : 'backend required'}
+                                </span>
+                              </div>
+                            </div>
+                            <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2">
+                              {[
+                                ['Rows', backendCollaborationIntentQueue.summary?.rowCount ?? backendCollaborationIntentQueue.rows?.length ?? 0],
+                                ['Runnable', backendCollaborationIntentQueue.summary?.runnableCount ?? 0],
+                                ['Mission Handoff', backendCollaborationIntentQueue.summary?.customerAgentHandoffIntentCount ?? 0],
+                                ['Intent Runs', backendCollaborationIntentQueue.summary?.collaborationIntentRunCount ?? backendCollaborationIntentQueue.recentRuns?.length ?? 0],
+                              ].map(([label, value]) => (
+                                <div key={`dashboard-collaboration-intent-queue-${label}`} className="border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                  <div className="font-mono text-[7px] uppercase text-[#7d6a49]">{label}</div>
+                                  <div className="font-serif text-sm leading-tight break-words">{value}</div>
+                                </div>
+                              ))}
+                            </div>
+                            <div data-testid="backend-collaboration-intent-queue-rows" className="mt-2 space-y-1">
+                              {[
+                                ...(backendCollaborationIntentQueue.rows || []).filter(row => row.id === 'customer-agent-handoff-intent'),
+                                ...(backendCollaborationIntentQueue.rows || []).filter(row => row.id !== 'customer-agent-handoff-intent'),
+                              ].slice(0, 6).map(row => (
+                                <div key={`dashboard-collaboration-intent-row-${row.id}`} className="border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
+                                  <div className="grid grid-cols-[1fr_auto] gap-2">
+                                    <div className="min-w-0">
+                                      <div className="font-serif text-sm leading-tight truncate">
+                                        {row.queuePosition ? `#${row.queuePosition} ` : ''}{projectText(row.intent || row.id)}
+                                      </div>
+                                      <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] truncate">
+                                        {projectText(row.actorName || row.agentName || row.actorType || 'agent')} / {projectText(row.lane || row.stage || 'intent')} / {projectText(row.status || 'pending')}
+                                      </div>
+                                    </div>
+                                    <span className={`node-status-tag ${row.canRun ? 'bg-[#59684b] text-white' : row.requiresManager ? 'bg-[#251b13] text-[#efe2bd]' : 'bg-[#8f1e18] text-white'}`}>
+                                      {projectText(row.canRun ? 'runnable' : row.requiresManager ? 'manager' : row.status || 'wait')}
+                                    </span>
+                                  </div>
+                                  <div className="mt-2 flex flex-wrap gap-2">
+                                    <button
+                                      type="button"
+                                      data-testid={`collaboration-intent-run-${row.id}`}
+                                      onClick={() => runCollaborationIntentQueueRow(row)}
+                                      disabled={!backendCommandAvailable || backendStation.loading || !row.canRun || !row.runIntentApiPath}
+                                      className="inline-flex items-center justify-center gap-1 border border-[#7b6542] bg-[#251b13] px-2 py-1 font-mono text-[7px] uppercase tracking-widest text-[#efe2bd] hover:bg-[#8f1e18] disabled:opacity-40 disabled:cursor-not-allowed"
+                                    >
+                                      <Play size={10} /> Run intent
+                                    </button>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                            {backendCollaborationIntentRunOutput && (
+                              <div data-testid="backend-collaboration-intent-run-output" className={`mt-2 border px-2 py-2 ${backendCollaborationIntentRunOutput.status === 'failed' ? 'border-red-800 bg-red-50' : 'border-[#d8c99f] bg-[#f7edcf]'}`}>
+                                <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">{backendCollaborationIntentRunOutput.status === 'failed' ? 'Intent Run Failed' : 'Intent Output Nodes'}</div>
+                                <div className="mt-1 font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] break-words">
+                                  {backendCollaborationIntentRunOutput.status === 'failed'
+                                    ? `No local intent receipt was created: ${backendCollaborationIntentRunOutput.error || 'backend run failed'}`
+                                    : `${projectText(backendCollaborationIntentRunOutput.delegatedRunKind || 'delegated')} / ${projectText(backendCollaborationIntentRunOutput.delegatedReceiptId || backendCollaborationIntentRunOutput.runId || 'receipt pending')}`}
+                                </div>
+                                {backendCollaborationIntentRunOutput.workSubmission && (
+                                  <div data-testid="backend-collaboration-intent-output-work-submission" className="mt-2 border border-[#d8c99f] bg-[#efe2bd]/70 px-2 py-1">
+                                    <div className="font-serif text-sm leading-tight truncate">
+                                      Agent Submission: {projectText(backendCollaborationIntentRunOutput.workSubmission.title || backendCollaborationIntentRunOutput.workSubmission.artifactType || backendCollaborationIntentRunOutput.workSubmission.id)}
+                                    </div>
+                                    <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] truncate">
+                                      {projectText(backendCollaborationIntentRunOutput.workSubmission.artifactType || 'artifact')} / {projectText(backendCollaborationIntentRunOutput.workSubmission.status || backendCollaborationIntentRunOutput.workSubmission.reviewStatus || 'submitted')}
+                                    </div>
+                                    <div data-testid="backend-collaboration-intent-handoff-output-routes" className="mt-1 font-mono text-[7px] uppercase tracking-widest text-[#59684b] break-words">
+                                      Submission route: {backendCollaborationIntentRunOutput.workSubmission.route || (activeProject?.id && backendCollaborationIntentRunOutput.workSubmission.id ? `/projects/${activeProject.id}/submissions/${backendCollaborationIntentRunOutput.workSubmission.id}` : '/projects/:id/submissions/:submissionId')}
+                                      {' '} / Timeline: {backendCollaborationIntentRunOutput.workSubmission.timelineLogId || 'missing'}
+                                      {' '} / Event: {backendCollaborationIntentRunOutput.workSubmission.eventId || 'missing'}
+                                    </div>
+                                    <button
+                                      type="button"
+                                      data-testid="collaboration-intent-output-chat-proof-work-submission"
+                                      onClick={() => openProjectChatProof(activeProject, [backendCollaborationIntentRunOutput.workSubmission.messageId].filter(Boolean), 'main')}
+                                      disabled={!backendCollaborationIntentRunOutput.workSubmission.messageId}
+                                      className="mt-2 inline-flex items-center justify-center gap-1 border border-[#7b6542] bg-[#efe2bd] px-2 py-1 font-mono text-[7px] uppercase tracking-widest text-[#251b13] hover:border-[#251b13] disabled:opacity-40 disabled:cursor-not-allowed"
+                                    >
+                                      <MessageSquare size={10} /> Output chat proof
+                                    </button>
+                                    <button
+                                      type="button"
+                                      data-testid="collaboration-intent-output-timeline-proof-work-submission"
+                                      onClick={() => openProjectTimelineProof([backendCollaborationIntentRunOutput.workSubmission.timelineLogId].filter(Boolean))}
+                                      disabled={!backendCollaborationIntentRunOutput.workSubmission.timelineLogId}
+                                      className="ml-2 mt-2 inline-flex items-center justify-center gap-1 border border-[#7b6542] bg-[#efe2bd] px-2 py-1 font-mono text-[7px] uppercase tracking-widest text-[#251b13] hover:border-[#251b13] disabled:opacity-40 disabled:cursor-not-allowed"
+                                    >
+                                      <ScrollText size={10} /> Output timeline proof
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                            <div data-testid="backend-collaboration-intent-queue-route" className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#9b875c] leading-relaxed break-words">
+                              Collaboration intent route: {backendCollaborationIntentQueue.backendRoutes?.collaborationIntentQueue || `/projects/${activeProject.id}/collaboration-intent-queue`}
+                            </div>
+                          </div>
+                        )}
                         {backendTranscriptProofCoverageSummary && (
                           <div data-testid="backend-transcript-proof-coverage-snapshot" className="mt-3 border border-[#d8c99f] bg-[#efe2bd]/55 p-2">
                             <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
@@ -23181,9 +27175,14 @@ export default function EngineWorkspace() {
                             </div>
                           </div>
                         )}
-                        {managerSubmissionReviewRows.length > 0 && (
+                        {(managerSubmissionReviewRows.length > 0 || managerSubmissionReviewRowsBackendRequired) && (
                           <div data-testid="backend-manager-submission-reviews-snapshot" className="mt-3 border border-[#d8c99f] bg-[#efe2bd]/55 p-2">
                             <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">Submission Reviews</div>
+                            {managerSubmissionReviewRowsBackendRequired && (
+                              <div data-testid="backend-manager-submission-reviews-required" className="mt-2 border border-[#8f1e18] bg-[#f7edcf] px-2 py-1 font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">
+                                Manager Dashboard submission-review rows are required before this real project can show review receipts.
+                              </div>
+                            )}
                             <div className="mt-2 space-y-1">
                               {managerSubmissionReviewRows.slice(0, 4).map(row => (
                                 <div key={row.id} className="grid grid-cols-[1fr_auto] gap-2 border border-[#d8c99f] bg-[#f7edcf] px-2 py-1">
@@ -23437,7 +27436,7 @@ export default function EngineWorkspace() {
                                 type="button"
                                 data-testid="backend-autonomous-run-control-session-scheduler-tick"
                                 onClick={() => runAutopilotSessionThroughScheduler()}
-                                disabled={!backendCommandAvailable || backendStation.loading || !(backendStation.autonomousRunControlSession || backendStation.autonomousRunControlSessions?.activeSession || backendStation.autonomousRunControlSessions?.latestSession)}
+                                disabled={!backendCommandAvailable || backendStation.loading || !backendAutonomousRunControlSessionAvailable}
                                 className="inline-flex items-center justify-center gap-1 border border-[#7b6542] bg-[#f7edcf] px-2 py-1 font-mono text-[7px] uppercase tracking-widest text-[#251b13] hover:border-[#251b13] disabled:opacity-40 disabled:cursor-not-allowed"
                               >
                                 <Activity size={9} /> Scheduler Tick
@@ -23446,7 +27445,7 @@ export default function EngineWorkspace() {
                                 type="button"
                                 data-testid="backend-autonomous-run-control-session-tick"
                                 onClick={() => tickAutonomousRunControlSession()}
-                                disabled={!backendCommandAvailable || backendStation.loading || !(backendStation.autonomousRunControlSession || backendStation.autonomousRunControlSessions?.activeSession || backendStation.autonomousRunControlSessions?.latestSession)}
+                                disabled={!backendCommandAvailable || backendStation.loading || !backendAutonomousRunControlSessionAvailable}
                                 className="inline-flex items-center justify-center gap-1 border border-[#7b6542] bg-[#efe2bd] px-2 py-1 font-mono text-[7px] uppercase tracking-widest text-[#251b13] hover:border-[#251b13] disabled:opacity-40 disabled:cursor-not-allowed"
                               >
                                 <Activity size={9} /> Direct Tick
@@ -23455,7 +27454,7 @@ export default function EngineWorkspace() {
                                 type="button"
                                 data-testid="backend-autonomous-run-control-session-pause"
                                 onClick={() => pauseAutonomousRunControlSession()}
-                                disabled={!backendCommandAvailable || backendStation.loading || !(backendStation.autonomousRunControlSession || backendStation.autonomousRunControlSessions?.activeSession || backendStation.autonomousRunControlSessions?.latestSession)}
+                                disabled={!backendCommandAvailable || backendStation.loading || !backendAutonomousRunControlSessionAvailable}
                                 className="inline-flex items-center justify-center gap-1 border border-[#7b6542] bg-[#efe2bd] px-2 py-1 font-mono text-[7px] uppercase tracking-widest text-[#251b13] hover:border-[#251b13] disabled:opacity-40 disabled:cursor-not-allowed"
                               >
                                 <StopCircle size={9} /> Pause
@@ -23484,23 +27483,25 @@ export default function EngineWorkspace() {
                             Run receipt: {backendLatestAutonomousRunControlRun.actionLabel || backendLatestAutonomousRunControlRun.actionId} / {backendLatestAutonomousRunControlRun.actionLane || 'lane'} / {backendLatestAutonomousRunControlRun.delegatedRunKind || 'delegated'}
                           </div>
                         )}
-                        {backendStation.autonomousRunControlRunOutput && (
+                        {backendAutonomousRunControlRunOutput && (
                           <div data-testid="backend-autonomous-run-control-run-output" className="mt-2 border border-[#d8c99f] bg-[#efe2bd]/70 px-2 py-2">
                             <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">{projectText('Run Control Output Nodes')}</div>
                             <div className="mt-1 font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] break-words">
-                              {projectText(backendStation.autonomousRunControlRunOutput.actionLabel || 'run control action')} / {projectText(backendStation.autonomousRunControlRunOutput.delegatedRunKind || 'delegated')} / {projectText(backendStation.autonomousRunControlRunOutput.runId || 'receipt pending')}
+                              {projectText(backendAutonomousRunControlRunOutput.actionLabel || 'run control action')} / {projectText(backendAutonomousRunControlRunOutput.delegatedRunKind || 'delegated')} / {projectText(backendAutonomousRunControlRunOutput.runId || 'receipt pending')}
                             </div>
-                            {renderAutonomousActionDecision(backendStation.autonomousRunControlRunOutput.autonomousActionDecision, {
+                            {renderAutonomousActionDecision(backendAutonomousRunControlRunOutput.autonomousActionDecision, {
                               testId: 'backend-run-control-action-decision',
                             })}
                             {(() => {
-                              const output = backendStation.autonomousRunControlRunOutput || {};
+                              const output = backendAutonomousRunControlRunOutput || {};
                               const rows = [
                                 output.workSubmission ? {
                                   id: 'work-submission',
                                   label: 'Agent Submission',
                                   title: output.workSubmission.title || output.workSubmission.artifactType || output.workSubmission.id,
                                   detail: `${output.workSubmission.artifactType || 'artifact'} / ${output.workSubmission.status || output.workSubmission.reviewStatus || 'submitted'}`,
+                                  route: output.workSubmission.route || (activeProject?.id && output.workSubmission.id ? `/projects/${activeProject.id}/submissions/${output.workSubmission.id}` : null),
+                                  eventId: output.workSubmission.eventId,
                                   proofIds: [output.workSubmission.messageId, output.workSubmission.timelineLogId, output.workSubmission.eventId, output.workSubmission.artifactStorageProofChecksum],
                                   chatProofIds: [output.workSubmission.messageId],
                                   timelineProofIds: [output.workSubmission.timelineLogId],
@@ -23519,6 +27520,8 @@ export default function EngineWorkspace() {
                                   label: 'Evidence Search',
                                   title: output.evidenceSearch.query || output.evidenceSearch.purpose || output.evidenceSearch.id,
                                   detail: `${output.evidenceSearch.evidenceJudgement || output.evidenceSearch.confidence || 'evidence'} / score ${output.evidenceSearch.qualityScore ?? output.evidenceSearch.averageQualityScore ?? 'n/a'}`,
+                                  route: output.evidenceSearch.route || (activeProject?.id && output.evidenceSearch.id ? `/projects/${activeProject.id}/evidence-searches/${output.evidenceSearch.id}` : null),
+                                  eventId: output.evidenceSearch.eventId,
                                   proofIds: [output.evidenceSearch.id, output.evidenceSearch.messageId, output.evidenceSearch.logId, output.evidenceSearch.eventId],
                                   chatProofIds: [output.evidenceSearch.messageId],
                                   timelineProofIds: [output.evidenceSearch.logId, output.evidenceSearch.timelineLogId],
@@ -23606,19 +27609,19 @@ export default function EngineWorkspace() {
                             Loop receipt: {backendLatestAutonomousRunControlLoop.stepCount ?? 0}/{backendLatestAutonomousRunControlLoop.maxSteps ?? 0} steps / {backendLatestAutonomousRunControlLoop.stoppedReason || 'complete'} / receipts {(backendLatestAutonomousRunControlLoop.runReceiptIds || []).length}
                           </div>
                         )}
-                        {backendStation.autonomousRunControlSession && (
+                        {backendAutonomousRunControlSessionReceipt && (
                           <div data-testid="backend-autonomous-run-control-session-receipt" className="mt-2 border border-[#7b6542] bg-[#efe2bd]/70 px-2 py-1 font-mono text-[8px] uppercase tracking-widest text-[#6b5a3d] leading-relaxed break-words">
-                            Autopilot session: {backendStation.autonomousRunControlSession.status || 'unknown'} / {backendStation.autonomousRunControlSession.completedSteps ?? 0}/{backendStation.autonomousRunControlSession.maxTotalSteps ?? 0} steps / ticks {backendStation.autonomousRunControlSession.tickCount ?? 0} / target {backendStation.autonomousRunControlSession.targetReadyCount ?? backendStation.autonomousRunControlSession.targetSnapshot?.readyCount ?? 0}/{backendStation.autonomousRunControlSession.targetSnapshot?.rowCount ?? 'unknown'} / next {backendStation.autonomousRunControlSession.targetNextMissingStageId || backendStation.autonomousRunControlSession.targetSnapshot?.nextMissingStageId || 'complete'}
+                            Autopilot session: {backendAutonomousRunControlSessionReceipt.status || 'unknown'} / {backendAutonomousRunControlSessionReceipt.completedSteps ?? 0}/{backendAutonomousRunControlSessionReceipt.maxTotalSteps ?? 0} steps / ticks {backendAutonomousRunControlSessionReceipt.tickCount ?? 0} / target {backendAutonomousRunControlSessionReceipt.targetReadyCount ?? backendAutonomousRunControlSessionReceipt.targetSnapshot?.readyCount ?? 0}/{backendAutonomousRunControlSessionReceipt.targetSnapshot?.rowCount ?? 'unknown'} / next {backendAutonomousRunControlSessionReceipt.targetNextMissingStageId || backendAutonomousRunControlSessionReceipt.targetSnapshot?.nextMissingStageId || 'complete'}
                           </div>
                         )}
-                        {backendStation.autonomousRunControlSessionTick && (
+                        {backendAutonomousRunControlSessionTickReceipt && (
                           <div data-testid="backend-autonomous-run-control-session-tick-receipt" className="mt-2 border border-[#7b6542] bg-[#f7edcf] px-2 py-1 font-mono text-[8px] uppercase tracking-widest text-[#6b5a3d] leading-relaxed break-words">
-                            Autopilot tick: {backendStation.autonomousRunControlSessionTick.stepCount ?? 0} steps / loops {(backendStation.autonomousRunControlSessionTick.loopReceiptIds || []).length} / agents {(backendStation.autonomousRunControlSessionTick.agentIds || []).join(', ') || 'none'} / {backendStation.autonomousRunControlSessionTick.statusBefore || 'unknown'} to {backendStation.autonomousRunControlSessionTick.statusAfter || 'unknown'} / target {backendStation.autonomousRunControlSessionTick.targetReadyCount ?? backendStation.autonomousRunControlSessionTick.targetSnapshot?.readyCount ?? 0}/{backendStation.autonomousRunControlSessionTick.targetSnapshot?.rowCount ?? 'unknown'} / next {backendStation.autonomousRunControlSessionTick.targetNextMissingStageId || backendStation.autonomousRunControlSessionTick.targetSnapshot?.nextMissingStageId || 'complete'} / control {backendStation.autonomousRunControlSessionTick.targetControl?.targetStageId || 'none'}
+                            Autopilot tick: {backendAutonomousRunControlSessionTickReceipt.stepCount ?? 0} steps / loops {(backendAutonomousRunControlSessionTickReceipt.loopReceiptIds || []).length} / agents {(backendAutonomousRunControlSessionTickReceipt.agentIds || []).join(', ') || 'none'} / {backendAutonomousRunControlSessionTickReceipt.statusBefore || 'unknown'} to {backendAutonomousRunControlSessionTickReceipt.statusAfter || 'unknown'} / target {backendAutonomousRunControlSessionTickReceipt.targetReadyCount ?? backendAutonomousRunControlSessionTickReceipt.targetSnapshot?.readyCount ?? 0}/{backendAutonomousRunControlSessionTickReceipt.targetSnapshot?.rowCount ?? 'unknown'} / next {backendAutonomousRunControlSessionTickReceipt.targetNextMissingStageId || backendAutonomousRunControlSessionTickReceipt.targetSnapshot?.nextMissingStageId || 'complete'} / control {backendAutonomousRunControlSessionTickReceipt.targetControl?.targetStageId || 'none'}
                           </div>
                         )}
-                        {backendStation.autonomousRunControlSessionWorker && (
+                        {backendAutonomousRunControlSessionWorkerReceipt && (
                           <div data-testid="backend-autonomous-run-control-session-worker-receipt" className="mt-2 border border-[#59684b] bg-[#eef5df] px-2 py-1 font-mono text-[8px] uppercase tracking-widest text-[#3f5136] leading-relaxed break-words">
-                            {'Autopilot worker: /workers/autonomous/tick -> /workers/autopilot/due / session '} {backendStation.autonomousRunControlSessionWorker.sessionId || 'active'} / tick {backendStation.autonomousRunControlSessionWorker.tickId || backendStation.autonomousRunControlSessionTick?.id || 'pending'} / stage {backendStation.autonomousRunControlSessionWorker.targetStageId || backendStation.autonomousRunControlSessionTick?.targetControl?.targetStageId || 'none'} / lanes {(backendStation.autonomousRunControlSessionWorker.actionLanes || []).join(', ') || 'none'}
+                            {'Autopilot worker: /workers/autonomous/tick -> /workers/autopilot/due / session '} {backendAutonomousRunControlSessionWorkerReceipt.sessionId || 'active'} / tick {backendAutonomousRunControlSessionWorkerReceipt.tickId || backendAutonomousRunControlSessionTickReceipt?.id || 'pending'} / stage {backendAutonomousRunControlSessionWorkerReceipt.targetStageId || backendAutonomousRunControlSessionTickReceipt?.targetControl?.targetStageId || 'none'} / lanes {(backendAutonomousRunControlSessionWorkerReceipt.actionLanes || []).join(', ') || 'none'}
                           </div>
                         )}
                         {backendAutopilotProviderEvidenceReceipt?.providerEvidenceSearch && (
@@ -23703,36 +27706,38 @@ export default function EngineWorkspace() {
                         <div className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#9b875c] leading-relaxed break-words">
                           Route: {backendAgentAutonomousActionQueue.backendRoutes?.agentAutonomousActionQueue || backendManagerDashboard?.backendRoutes?.agentAutonomousActionQueue || `/projects/${activeProject.id}/agent-autonomous-action-queue`}
                         </div>
-                        {backendStation.agentAutonomousActionRun && (
+                        {backendAgentAutonomousActionRunReceipt && (
                           <div data-testid="backend-agent-autonomous-action-run-receipt" className="mt-2 border border-[#7b6542] bg-[#efe2bd]/70 px-2 py-1 font-mono text-[8px] uppercase tracking-widest text-[#6b5a3d] leading-relaxed break-words">
-                            Run receipt: {backendStation.agentAutonomousActionRun.actionLabel || backendStation.agentAutonomousActionRun.selectedAction} / {backendStation.agentAutonomousActionRun.agentId} / strategy {backendStation.agentAutonomousActionRun.strategyDecisionId || 'recorded'}
+                            Run receipt: {backendAgentAutonomousActionRunReceipt.actionLabel || backendAgentAutonomousActionRunReceipt.selectedAction} / {backendAgentAutonomousActionRunReceipt.agentId} / strategy {backendAgentAutonomousActionRunReceipt.strategyDecisionId || 'recorded'}
                           </div>
                         )}
-                        {backendStation.agentAutonomousActionRunOutput && (
-                          <div data-testid="backend-agent-autonomous-action-run-output" className={`mt-2 border px-2 py-2 ${backendStation.agentAutonomousActionRunOutput.status === 'failed' ? 'border-red-800 bg-red-50' : 'border-[#d8c99f] bg-[#efe2bd]/70'}`}>
-                            <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">{projectText(backendStation.agentAutonomousActionRunOutput.status === 'failed' ? 'Agent Action Failed' : 'Agent Action Output Nodes')}</div>
+                        {backendAgentAutonomousActionRunOutput && (
+                          <div data-testid="backend-agent-autonomous-action-run-output" className={`mt-2 border px-2 py-2 ${backendAgentAutonomousActionRunOutput.status === 'failed' ? 'border-red-800 bg-red-50' : 'border-[#d8c99f] bg-[#efe2bd]/70'}`}>
+                            <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">{projectText(backendAgentAutonomousActionRunOutput.status === 'failed' ? 'Agent Action Failed' : 'Agent Action Output Nodes')}</div>
                             <div className="mt-1 font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] break-words">
-                              {backendStation.agentAutonomousActionRunOutput.status === 'failed'
-                                ? projectText(`No local run receipt was created: ${backendStation.agentAutonomousActionRunOutput.error || 'backend run failed'}`)
-                                : `${projectText(backendStation.agentAutonomousActionRunOutput.actionLabel || 'agent action')} / ${projectText(backendStation.agentAutonomousActionRunOutput.runId || 'receipt pending')}`}
+                              {backendAgentAutonomousActionRunOutput.status === 'failed'
+                                ? projectText(`No local run receipt was created: ${backendAgentAutonomousActionRunOutput.error || 'backend run failed'}`)
+                                : `${projectText(backendAgentAutonomousActionRunOutput.actionLabel || 'agent action')} / ${projectText(backendAgentAutonomousActionRunOutput.runId || 'receipt pending')}`}
                             </div>
-                            {backendStation.agentAutonomousActionRunOutput.status === 'failed' ? (
+                            {backendAgentAutonomousActionRunOutput.status === 'failed' ? (
                               <div data-testid="backend-agent-autonomous-action-run-output-failed" className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">
                                 {projectText('Backend Agent action failed; previous successful receipts were cleared from this panel.')}
                               </div>
                             ) : (
                               <>
-                                {renderAutonomousActionDecision(backendStation.agentAutonomousActionRunOutput.autonomousActionDecision, {
+                                {renderAutonomousActionDecision(backendAgentAutonomousActionRunOutput.autonomousActionDecision, {
                                   testId: 'backend-agent-autonomous-action-decision',
                                 })}
                                 {(() => {
-                              const output = backendStation.agentAutonomousActionRunOutput || {};
+                              const output = backendAgentAutonomousActionRunOutput || {};
                               const rows = [
                                 output.workSubmission ? {
                                   id: 'work-submission',
                                   label: 'Agent Submission',
                                   title: output.workSubmission.title || output.workSubmission.artifactType || output.workSubmission.id,
                                   detail: `${output.workSubmission.artifactType || 'artifact'} / ${output.workSubmission.status || output.workSubmission.reviewStatus || 'submitted'}`,
+                                  route: output.workSubmission.route || (activeProject?.id && output.workSubmission.id ? `/projects/${activeProject.id}/submissions/${output.workSubmission.id}` : null),
+                                  eventId: output.workSubmission.eventId,
                                   proofIds: [output.workSubmission.messageId, output.workSubmission.timelineLogId, output.workSubmission.eventId, output.workSubmission.artifactStorageProofChecksum],
                                   chatProofIds: [output.workSubmission.messageId],
                                   timelineProofIds: [output.workSubmission.timelineLogId],
@@ -23742,6 +27747,8 @@ export default function EngineWorkspace() {
                                   label: 'Evidence Search',
                                   title: output.evidenceSearch.query || output.evidenceSearch.purpose || output.evidenceSearch.id,
                                   detail: `${output.evidenceSearch.evidenceJudgement || output.evidenceSearch.confidence || 'evidence'} / score ${output.evidenceSearch.qualityScore ?? output.evidenceSearch.averageQualityScore ?? 'n/a'}`,
+                                  route: output.evidenceSearch.route || (activeProject?.id && output.evidenceSearch.id ? `/projects/${activeProject.id}/evidence-searches/${output.evidenceSearch.id}` : null),
+                                  eventId: output.evidenceSearch.eventId,
                                   proofIds: [output.evidenceSearch.id, output.evidenceSearch.messageId, output.evidenceSearch.logId, output.evidenceSearch.eventId],
                                   chatProofIds: [output.evidenceSearch.messageId],
                                   timelineProofIds: [output.evidenceSearch.logId, output.evidenceSearch.timelineLogId],
@@ -23751,6 +27758,8 @@ export default function EngineWorkspace() {
                                   label: 'Submission Review',
                                   title: output.review.verdict || output.review.status || output.review.id,
                                   detail: `${output.review.submissionId || 'submission'} / ${output.review.reviewerAgentName || output.review.reviewerAgentId || 'reviewer'}`,
+                                  route: output.review.route || (activeProject?.id && output.review.id ? `/projects/${activeProject.id}/submission-reviews/${output.review.id}` : null),
+                                  eventId: output.review.eventId,
                                   proofIds: [output.review.id, output.review.messageId, output.review.timelineLogId, output.review.eventId],
                                   chatProofIds: [output.review.messageId],
                                   timelineProofIds: [output.review.timelineLogId],
@@ -23760,6 +27769,8 @@ export default function EngineWorkspace() {
                                   label: 'Review Response',
                                   title: output.reviewResponseSubmission.title || output.reviewResponseSubmission.artifactType || output.reviewResponseSubmission.id,
                                   detail: `${output.reviewResponseSubmission.artifactType || 'artifact'} / review ${output.reviewResponseSubmission.respondsToReviewId || 'linked'}`,
+                                  route: output.reviewResponseSubmission.route || (activeProject?.id && output.reviewResponseSubmission.id ? `/projects/${activeProject.id}/submissions/${output.reviewResponseSubmission.id}` : null),
+                                  eventId: output.reviewResponseSubmission.eventId,
                                   proofIds: [output.reviewResponseSubmission.messageId, output.reviewResponseSubmission.timelineLogId, output.reviewResponseSubmission.eventId, output.reviewResponseSubmission.respondsToReviewId],
                                   chatProofIds: [output.reviewResponseSubmission.messageId],
                                   timelineProofIds: [output.reviewResponseSubmission.timelineLogId],
@@ -23769,6 +27780,8 @@ export default function EngineWorkspace() {
                                   label: 'Result Messages',
                                   title: `${output.resultMessageIds.length} transcript message(s)`,
                                   detail: `${output.agentId || 'agent'} / ${output.actionLabel || 'agent action'}`,
+                                  route: activeProject?.id ? `/projects/${activeProject.id}/transcripts/${output.channelId || 'main'}` : null,
+                                  eventId: output.eventId || output.eventIds?.[0],
                                   proofIds: output.resultMessageIds,
                                   chatProofIds: output.resultMessageIds,
                                   timelineProofIds: [],
@@ -23793,6 +27806,9 @@ export default function EngineWorkspace() {
                                           <div className="min-w-0">
                                             <div className="font-serif text-sm leading-tight truncate">{projectText(row.label)}: {projectText(row.title || 'output')}</div>
                                             <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49] truncate">{projectText(row.detail || 'backend output')}</div>
+                                            <div data-testid={`agent-autonomous-action-output-route-${row.id}`} className="font-mono text-[7px] uppercase tracking-widest text-[#59684b] truncate">
+                                              Route: {row.route || 'route pending'} / Event: {row.eventId || 'missing'}
+                                            </div>
                                           </div>
                                           <span className="node-status-tag bg-[#59684b] text-white">{proofIds.length}</span>
                                         </div>
@@ -24031,6 +28047,15 @@ export default function EngineWorkspace() {
                     </button>
                     <button
                       type="button"
+                      data-testid="backend-sync-cockpit-models"
+                      onClick={() => syncBackendCockpitReadModels({ silent: false })}
+                      disabled={backendStation.loading}
+                      className="inline-flex items-center justify-center gap-2 border border-[#7b6542] bg-[#efe2bd] px-3 py-2 font-mono text-[8px] uppercase tracking-widest text-[#251b13] hover:border-[#251b13] disabled:opacity-50"
+                    >
+                      <Database size={13} /> Sync Cockpit
+                    </button>
+                    <button
+                      type="button"
                       data-testid="backend-sync-action-queue"
                       onClick={() => syncBackendManagerActionQueue({ silent: false })}
                       disabled={backendStation.loading}
@@ -24086,6 +28111,15 @@ export default function EngineWorkspace() {
                   {eventLedgerReadModel.frontendMockSuppressed && (
                     <div data-testid="event-ledger-backend-required" className="mb-4 border border-[#8f1e18] bg-red-50 px-3 py-2 font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">
                       Backend Event Ledger required. Local event-ledger rows are suppressed for this backend project.
+                      <button
+                        type="button"
+                        data-testid="event-ledger-sync-timeline-events"
+                        onClick={() => syncBackendTimelineAndEvents({ silent: false, projectId: activeProject.id })}
+                        disabled={backendStation.loading}
+                        className="mt-3 inline-flex items-center gap-1 border border-[#8f1e18] px-2 py-1 font-mono text-[8px] uppercase tracking-widest text-[#8f1e18] hover:border-[#251b13] hover:text-[#251b13] disabled:opacity-40 disabled:cursor-not-allowed"
+                      >
+                        <GitCommit size={10} /> Sync Timeline
+                      </button>
                     </div>
                   )}
                   <div className="font-mono text-[8px] uppercase tracking-widest text-[#7d6a49] mb-4">
@@ -24127,8 +28161,17 @@ export default function EngineWorkspace() {
                   {managerReadModelSourceBadge(governanceProtocol, 'governance-protocol-source')}
                 </div>
                 {governanceProtocol.frontendMockSuppressed && (
-                  <div data-testid="governance-protocol-backend-required" className="mb-4 border border-[#8f1e18] bg-red-50 px-3 py-2 font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">
-                    Backend Kickoff Charter governance required. Local governance inference is suppressed for this backend project.
+                  <div data-testid="governance-protocol-backend-required" className="mb-4 flex flex-col gap-2 border border-[#8f1e18] bg-red-50 px-3 py-2 font-mono text-[8px] uppercase tracking-widest text-[#8f1e18] md:flex-row md:items-center md:justify-between">
+                    <span>Backend Kickoff Charter governance required. Local governance inference is suppressed for this backend project.</span>
+                    <button
+                      type="button"
+                      data-testid="governance-protocol-sync-governance"
+                      onClick={() => syncBackendGovernanceProtocol({ silent: false, projectId: activeProject.id })}
+                      disabled={backendStation.loading}
+                      className="inline-flex shrink-0 items-center justify-center gap-1 border border-[#8f1e18] bg-red-50 px-2 py-1 text-[#8f1e18] hover:border-[#251b13] hover:text-[#251b13] disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      <Server size={10} /> Sync Governance
+                    </button>
                   </div>
                 )}
                 <div className="grid md:grid-cols-2 gap-4 mb-4">
@@ -24670,7 +28713,7 @@ export default function EngineWorkspace() {
                     <span className="node-status-tag bg-[#251b13] text-[#efe2bd]">
                       {backendTranscriptReadModelMissing
                         ? 'transcript read model missing'
-                        : `${backendTranscriptIndex?.messageCount ?? projectTranscriptMessages.length} messages / ${backendTranscriptIndex?.recoverableProofCount ?? Object.values(recoveredProofIdsByChannel).flat().length} recoverable proofs`}
+                        : `${backendTranscriptIndex?.messageCount ?? projectTranscriptMessages.length} messages / ${transcriptRecoverableProofCount} recoverable proofs`}
                     </span>
                     {backendStation.connectionStatus === 'online' && (
                       <button
@@ -24745,6 +28788,23 @@ export default function EngineWorkspace() {
                     </div>
                   ))}
                 </div>
+                {collaborationProofSourceLabel === 'backend-required' && !collaborationProofRows.length && (
+                  <div data-testid="group-chat-collaboration-proof-backend-required" className="mt-4 border border-[#8f1e18] bg-[#251b13]/95 px-3 py-2 text-[#efe2bd]">
+                    <div className="font-mono text-[8px] uppercase tracking-widest">Backend collaboration proof rows required</div>
+                    <div className="mt-1 font-serif text-sm leading-relaxed">
+                      This real backend project requires Manager Dashboard collaboration rows before evidence, submissions, reviews, revisions, or final delivery can be shown as transcript proof.
+                    </div>
+                    <button
+                      type="button"
+                      data-testid="group-chat-collaboration-proof-sync-manager-dashboard"
+                      onClick={() => syncBackendManagerDashboard({ silent: false, projectId: activeProject.id })}
+                      disabled={backendStation.loading}
+                      className="mt-3 inline-flex items-center gap-1 border border-[#d8c99f] px-2 py-1 font-mono text-[8px] uppercase tracking-widest text-[#efe2bd] hover:border-white hover:text-white disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      <Database size={10} /> Sync Manager Dashboard
+                    </button>
+                  </div>
+                )}
                 {collaborationProofRows.length > 0 && (
                   <div data-testid="group-chat-collaboration-proof-rows" className="mt-4 border border-[#d8c99f] bg-[#efe2bd]/45 p-3">
                     <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
@@ -24821,8 +28881,17 @@ export default function EngineWorkspace() {
                       </div>
                     </div>
                     {changeFlow.frontendMockSuppressed && (
-                      <div data-testid="change-flow-backend-required" className="mt-3 border border-[#8f1e18] bg-red-50 px-3 py-2 font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">
-                        Backend Change Flow required. Local change/source-intake rows are suppressed for this backend project.
+                      <div data-testid="change-flow-backend-required" className="mt-3 flex flex-col gap-2 border border-[#8f1e18] bg-red-50 px-3 py-2 font-mono text-[8px] uppercase tracking-widest text-[#8f1e18] md:flex-row md:items-center md:justify-between">
+                        <span>Backend Change Flow required. Local change/source-intake rows are suppressed for this backend project.</span>
+                        <button
+                          type="button"
+                          data-testid="change-flow-sync-cockpit"
+                          onClick={() => syncBackendCockpitReadModels({ silent: false, projectId: activeProject.id })}
+                          disabled={backendStation.loading}
+                          className="inline-flex shrink-0 items-center justify-center gap-1 border border-[#8f1e18] bg-red-50 px-2 py-1 text-[#8f1e18] hover:border-[#251b13] hover:text-[#251b13] disabled:opacity-40 disabled:cursor-not-allowed"
+                        >
+                          <Database size={10} /> Sync Cockpit
+                        </button>
                       </div>
                     )}
                     <div className="mt-3 space-y-2">
@@ -25195,6 +29264,20 @@ export default function EngineWorkspace() {
                     <span className="node-status-tag bg-[#251b13] text-[#efe2bd]">{agentManagementMeshDisplayRows.length} Agents</span>
                   </div>
                 </div>
+                {agentManagementMesh.frontendMockSuppressed && (
+                  <div data-testid="agent-management-mesh-backend-required" className="mb-4 flex flex-col gap-2 border border-[#8f1e18] bg-red-50 px-3 py-2 font-mono text-[8px] uppercase tracking-widest text-[#8f1e18] md:flex-row md:items-center md:justify-between">
+                    <span>Backend Agent Management Mesh required. Local management and peer-proof rows are suppressed until Manager Dashboard returns agent-management-mesh/v1.</span>
+                    <button
+                      type="button"
+                      data-testid="agent-management-mesh-sync-cockpit"
+                      onClick={() => syncBackendCockpitReadModels({ silent: false, projectId: activeProject.id })}
+                      disabled={backendStation.loading}
+                      className="inline-flex shrink-0 items-center justify-center gap-1 border border-[#8f1e18] bg-red-50 px-2 py-1 text-[#8f1e18] hover:border-[#251b13] hover:text-[#251b13] disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      <Database size={10} /> Sync Cockpit
+                    </button>
+                  </div>
+                )}
                 <div data-testid="peer-management-matrix" className="mb-4 border border-[#d8c99f] bg-[#efe2bd]/50 p-3">
                   <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
                     <div>
@@ -25320,6 +29403,15 @@ export default function EngineWorkspace() {
                 {managerProofMap.frontendMockSuppressed && (
                   <div data-testid="manager-scenario-readiness-backend-required" className="mb-3 border border-[#8f1e18] bg-red-50 px-3 py-2 font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">
                     Backend Readiness Proof Map required. Local scenario readiness is suppressed for this backend project.
+                    <button
+                      type="button"
+                      data-testid="manager-scenario-readiness-sync-proof-map"
+                      onClick={() => syncBackendReadinessProofMap({ silent: false, projectId: activeProject.id })}
+                      disabled={backendStation.loading}
+                      className="mt-3 inline-flex items-center gap-1 border border-[#8f1e18] px-2 py-1 font-mono text-[8px] uppercase tracking-widest text-[#8f1e18] hover:border-[#251b13] hover:text-[#251b13] disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      <FileText size={10} /> Sync Proof Map
+                    </button>
                   </div>
                 )}
                 <div className="grid md:grid-cols-2 gap-2">
@@ -25352,31 +29444,288 @@ export default function EngineWorkspace() {
                   Core routes: {backendManagerDashboard?.backendRoutes?.managerFlowGraph || `/projects/${activeProject.id}/manager-flow-graph`} / {backendManagerDashboard?.backendRoutes?.submissions || `/projects/${activeProject.id}/submissions`} / {backendSubmissionReviewWorkflowRoute?.apiPath || backendSubmissionReviewWorkflow?.backendRoutes?.submissionReviewWorkflow || `/projects/${activeProject.id}/submission-review-workflow`} / {backendProductTeamDeliveryTraceRoute?.apiPath || backendProductTeamDeliveryTrace?.backendRoutes?.productTeamDeliveryTrace || `/projects/${activeProject.id}/product-team-delivery-trace`} / {backendManagerDashboard?.backendRoutes?.readinessProofMap || `/projects/${activeProject.id}/readiness-proof-map`}
                 </div>
                 <div className="space-y-2">
+                  {backendSettingsProofMapCards.map(card => (
+                    <div key={card.key} data-testid={`proof-map-${card.key}`} className="border border-[#d8c99f] bg-[#efe2bd]/55 p-3">
+                      <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <CheckCircle2 size={14} className={card.ready ? 'text-green-700' : 'text-[#8f1e18]'} />
+                            <div className="font-serif text-base leading-tight">{card.title}</div>
+                            {managerReadModelSourceBadge(card.source, `proof-map-${card.key}-source`)}
+                            <span className={`node-status-tag ${card.ready ? 'bg-green-700 text-white' : 'bg-[#8f1e18] text-white'}`}>
+                              {card.ready ? 'Route ready' : 'Needs proof'}
+                            </span>
+                          </div>
+                          <div className="mt-1 font-mono text-[8px] uppercase text-[#7d6a49] leading-relaxed">
+                            {card.routeLabel} / {card.summary?.routeReady ? 'summary route ready' : 'summary route open'} / {card.summary?.productionBlockerCount ?? 0} production blocker{(card.summary?.productionBlockerCount ?? 0) === 1 ? '' : 's'}
+                          </div>
+                          <div className="mt-1 font-mono text-[8px] uppercase text-[#9b875c] leading-relaxed break-words">
+                            Route: {card.route?.apiPath || card.apiPath}
+                          </div>
+                        </div>
+                        <div className="flex shrink-0 flex-wrap gap-2 md:justify-end">
+                          {managerProofMapRouteSyncButton(card.route, `proof-map-${card.key}-sync-proof-map`)}
+                          <button
+                            type="button"
+                            data-testid={`proof-map-${card.key}-open-settings`}
+                            onClick={() => {
+                              setSettingsTab(card.settingsTab);
+                              setSettingsOpen(true);
+                            }}
+                            className="inline-flex items-center gap-1 border border-[#d8c99f] px-2 py-1 font-mono text-[8px] uppercase text-[#6b5a3d] hover:border-[#8f1e18] hover:text-[#8f1e18] transition-colors"
+                          >
+                            <Settings size={10} />
+                            Open Settings
+                          </button>
+                          <button
+                            type="button"
+                            data-testid={`proof-map-${card.key}-timeline-open`}
+                            onClick={() => openProjectTimelineProof(card.timelineIds)}
+                            disabled={!card.timelineIds.length}
+                            className="inline-flex items-center gap-1 border border-[#d8c99f] px-2 py-1 font-mono text-[8px] uppercase text-[#6b5a3d] hover:border-[#8f1e18] hover:text-[#8f1e18] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                          >
+                            <ScrollText size={10} />
+                            Settings timeline proof
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                  {backendCoreAutonomyProofMapCards.map(card => (
+                    <div key={card.key} data-testid={`proof-map-${card.key}`} className="border border-[#d8c99f] bg-[#efe2bd]/55 p-3">
+                      <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <CheckCircle2 size={14} className={card.ready ? 'text-green-700' : 'text-[#8f1e18]'} />
+                            <div className="font-serif text-base leading-tight">{card.title}</div>
+                            {managerReadModelSourceBadge(card.source, `proof-map-${card.key}-source`)}
+                            <span className={`node-status-tag ${card.ready ? 'bg-green-700 text-white' : 'bg-[#8f1e18] text-white'}`}>
+                              {card.ready ? 'Route ready' : 'Needs proof'}
+                            </span>
+                          </div>
+                          <div className="mt-1 font-mono text-[8px] uppercase text-[#7d6a49] leading-relaxed">
+                            {card.routeLabel} / {card.summary?.routeReady ? 'summary route ready' : 'summary route open'} / {card.summary?.productionBlockerCount ?? 0} production blocker{(card.summary?.productionBlockerCount ?? 0) === 1 ? '' : 's'}
+                          </div>
+                          <div className="mt-1 font-mono text-[8px] uppercase text-[#9b875c] leading-relaxed break-words">
+                            Route: {card.route?.apiPath || card.apiPath}
+                          </div>
+                        </div>
+                        <div className="flex shrink-0 flex-wrap gap-2 md:justify-end">
+                          {managerProofMapRouteSyncButton(card.route, `proof-map-${card.key}-sync-proof-map`)}
+                          <button
+                            type="button"
+                            data-testid={`proof-map-${card.key}-sync-proof-models`}
+                            onClick={() => syncBackendReadyPackageSubmodels({ silent: false, projectId: activeProject.id, includeLaunchControls: true })}
+                            disabled={backendStation.loading}
+                            className="inline-flex items-center gap-1 border border-[#d8c99f] px-2 py-1 font-mono text-[8px] uppercase text-[#6b5a3d] hover:border-[#8f1e18] hover:text-[#8f1e18] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                          >
+                            <Database size={10} />
+                            Sync Proof Models
+                          </button>
+                          <button
+                            type="button"
+                            data-testid={`proof-map-${card.key}-timeline-open`}
+                            onClick={() => openProjectTimelineProof(card.timelineIds)}
+                            disabled={!card.timelineIds.length}
+                            className="inline-flex items-center gap-1 border border-[#d8c99f] px-2 py-1 font-mono text-[8px] uppercase text-[#6b5a3d] hover:border-[#8f1e18] hover:text-[#8f1e18] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                          >
+                            <ScrollText size={10} />
+                            Autonomy timeline proof
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                  {backendCockpitProofMapCards.map(card => (
+                    <div key={card.key} data-testid={`proof-map-${card.key}`} className="border border-[#d8c99f] bg-[#efe2bd]/55 p-3">
+                      <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <CheckCircle2 size={14} className={card.ready ? 'text-green-700' : 'text-[#8f1e18]'} />
+                            <div className="font-serif text-base leading-tight">{card.title}</div>
+                            {managerReadModelSourceBadge(card.source, `proof-map-${card.key}-source`)}
+                            <span className={`node-status-tag ${card.ready ? 'bg-green-700 text-white' : 'bg-[#8f1e18] text-white'}`}>
+                              {card.ready ? 'Route ready' : 'Needs proof'}
+                            </span>
+                          </div>
+                          <div className="mt-1 font-mono text-[8px] uppercase text-[#7d6a49] leading-relaxed">
+                            {card.routeLabel} / {card.summary?.routeReady ? 'summary route ready' : 'summary route open'} / {card.summary?.productionBlockerCount ?? 0} production blocker{(card.summary?.productionBlockerCount ?? 0) === 1 ? '' : 's'}
+                          </div>
+                          <div className="mt-1 font-mono text-[8px] uppercase text-[#9b875c] leading-relaxed break-words">
+                            Route: {card.route?.apiPath || card.apiPath}
+                          </div>
+                        </div>
+                        <div className="flex shrink-0 flex-wrap gap-2 md:justify-end">
+                          {managerProofMapRouteSyncButton(card.route, `proof-map-${card.key}-sync-proof-map`)}
+                          <button
+                            type="button"
+                            data-testid={`proof-map-${card.key}-sync-cockpit`}
+                            onClick={() => syncBackendCockpitReadModels({ silent: false, projectId: activeProject.id })}
+                            disabled={backendStation.loading}
+                            className="inline-flex items-center gap-1 border border-[#d8c99f] px-2 py-1 font-mono text-[8px] uppercase text-[#6b5a3d] hover:border-[#8f1e18] hover:text-[#8f1e18] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                          >
+                            <Database size={10} />
+                            Sync Cockpit
+                          </button>
+                          <button
+                            type="button"
+                            data-testid={`proof-map-${card.key}-timeline-open`}
+                            onClick={() => openProjectTimelineProof(card.timelineIds)}
+                            disabled={!card.timelineIds.length}
+                            className="inline-flex items-center gap-1 border border-[#d8c99f] px-2 py-1 font-mono text-[8px] uppercase text-[#6b5a3d] hover:border-[#8f1e18] hover:text-[#8f1e18] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                          >
+                            <ScrollText size={10} />
+                            Cockpit timeline proof
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                  {backendGovernanceProofMapCards.map(card => {
+                    const cardChatProofIds = chatProofIdsFromIds(card.proofIds);
+                    return (
+                      <div key={card.key} data-testid={`proof-map-${card.key}`} className="border border-[#d8c99f] bg-[#efe2bd]/55 p-3">
+                        <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                          <div className="min-w-0">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <CheckCircle2 size={14} className={card.ready ? 'text-green-700' : 'text-[#8f1e18]'} />
+                              <div className="font-serif text-base leading-tight">{card.title}</div>
+                              {managerReadModelSourceBadge(card.source, `proof-map-${card.key}-source`)}
+                              <span className={`node-status-tag ${card.ready ? 'bg-green-700 text-white' : 'bg-[#8f1e18] text-white'}`}>
+                                {card.ready ? 'Route ready' : 'Needs proof'}
+                              </span>
+                            </div>
+                            <div className="mt-1 font-mono text-[8px] uppercase text-[#7d6a49] leading-relaxed">
+                              {card.routeLabel} / {card.summary?.routeReady ? 'summary route ready' : 'summary route open'} / {card.summary?.productionBlockerCount ?? 0} production blocker{(card.summary?.productionBlockerCount ?? 0) === 1 ? '' : 's'}
+                            </div>
+                            <div className="mt-1 font-mono text-[8px] uppercase text-[#9b875c] leading-relaxed break-words">
+                              Route: {card.route?.apiPath || card.apiPath}
+                            </div>
+                          </div>
+                          <div className="flex shrink-0 flex-wrap gap-2 md:justify-end">
+                            {managerProofMapRouteSyncButton(card.route, `proof-map-${card.key}-sync-proof-map`)}
+                            <button
+                              type="button"
+                              data-testid={`proof-map-${card.key}-sync-governance`}
+                              onClick={() => syncBackendGovernanceProofMapCard(card.syncKind)}
+                              disabled={backendStation.loading}
+                              className="inline-flex items-center gap-1 border border-[#d8c99f] px-2 py-1 font-mono text-[8px] uppercase text-[#6b5a3d] hover:border-[#8f1e18] hover:text-[#8f1e18] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                            >
+                              <Database size={10} />
+                              Sync Governance
+                            </button>
+                            <button
+                              type="button"
+                              data-testid={`proof-map-${card.key}-chat-open`}
+                              onClick={() => openProjectChatProof(activeProject, cardChatProofIds, card.route?.channelId || 'main')}
+                              disabled={!cardChatProofIds.length}
+                              className="inline-flex items-center gap-1 border border-[#d8c99f] px-2 py-1 font-mono text-[8px] uppercase text-[#6b5a3d] hover:border-[#8f1e18] hover:text-[#8f1e18] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                            >
+                              <MessageSquare size={10} />
+                              Governance chat proof
+                            </button>
+                            <button
+                              type="button"
+                              data-testid={`proof-map-${card.key}-timeline-open`}
+                              onClick={() => openProjectTimelineProof(card.timelineIds)}
+                              disabled={!card.timelineIds.length}
+                              className="inline-flex items-center gap-1 border border-[#d8c99f] px-2 py-1 font-mono text-[8px] uppercase text-[#6b5a3d] hover:border-[#8f1e18] hover:text-[#8f1e18] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                            >
+                              <ScrollText size={10} />
+                              Governance timeline proof
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {backendOutputChainProofMapCards.map(card => {
+                    const cardChatProofIds = chatProofIdsFromIds(card.proofIds);
+                    return (
+                      <div key={card.key} data-testid={`proof-map-${card.key}`} className="border border-[#d8c99f] bg-[#efe2bd]/55 p-3">
+                        <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                          <div className="min-w-0">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <CheckCircle2 size={14} className={card.ready ? 'text-green-700' : 'text-[#8f1e18]'} />
+                              <div className="font-serif text-base leading-tight">{card.title}</div>
+                              {managerReadModelSourceBadge(card.source, `proof-map-${card.key}-source`)}
+                              <span className={`node-status-tag ${card.ready ? 'bg-green-700 text-white' : 'bg-[#8f1e18] text-white'}`}>
+                                {card.ready ? 'Route ready' : 'Needs proof'}
+                              </span>
+                            </div>
+                            <div className="mt-1 font-mono text-[8px] uppercase text-[#7d6a49] leading-relaxed">
+                              {card.routeLabel} / {card.summary?.count ?? card.summary?.submissionCount ?? card.summary?.custodyRecordCount ?? 0} record{Number(card.summary?.count ?? card.summary?.submissionCount ?? card.summary?.custodyRecordCount ?? 0) === 1 ? '' : 's'} / {card.summary?.productionBlockerCount ?? 0} production blocker{(card.summary?.productionBlockerCount ?? 0) === 1 ? '' : 's'}
+                            </div>
+                            <div className="mt-1 font-mono text-[8px] uppercase text-[#9b875c] leading-relaxed break-words">
+                              Route: {card.route?.apiPath || card.apiPath}
+                            </div>
+                          </div>
+                          <div className="flex shrink-0 flex-wrap gap-2 md:justify-end">
+                            {managerProofMapRouteSyncButton(card.route, `proof-map-${card.key}-sync-proof-map`)}
+                            <button
+                              type="button"
+                              data-testid={`proof-map-${card.key}-sync-proof-models`}
+                              onClick={() => syncBackendReadyPackageSubmodels({ silent: false, projectId: activeProject.id, includeLaunchControls: true })}
+                              disabled={backendStation.loading}
+                              className="inline-flex items-center gap-1 border border-[#d8c99f] px-2 py-1 font-mono text-[8px] uppercase text-[#6b5a3d] hover:border-[#8f1e18] hover:text-[#8f1e18] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                            >
+                              <Database size={10} />
+                              Sync Proof Models
+                            </button>
+                            <button
+                              type="button"
+                              data-testid={`proof-map-${card.key}-chat-open`}
+                              onClick={() => openProjectChatProof(activeProject, cardChatProofIds, card.route?.channelId || 'main')}
+                              disabled={!cardChatProofIds.length}
+                              className="inline-flex items-center gap-1 border border-[#d8c99f] px-2 py-1 font-mono text-[8px] uppercase text-[#6b5a3d] hover:border-[#8f1e18] hover:text-[#8f1e18] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                            >
+                              <MessageSquare size={10} />
+                              Output chat proof
+                            </button>
+                            <button
+                              type="button"
+                              data-testid={`proof-map-${card.key}-timeline-open`}
+                              onClick={() => openProjectTimelineProof(card.timelineIds)}
+                              disabled={!card.timelineIds.length}
+                              className="inline-flex items-center gap-1 border border-[#d8c99f] px-2 py-1 font-mono text-[8px] uppercase text-[#6b5a3d] hover:border-[#8f1e18] hover:text-[#8f1e18] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                            >
+                              <ScrollText size={10} />
+                              Output timeline proof
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
                   {backendTranscriptProofCoverageSummary && (
                     <div data-testid="proof-map-transcript-proof-coverage" className="border border-[#d8c99f] bg-[#efe2bd]/55 p-3">
                       <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
                         <div className="min-w-0">
                           <div className="flex flex-wrap items-center gap-2">
-                            <CheckCircle2 size={14} className={backendTranscriptProofCoverageSummary.readyForBackendTranscriptProof ? 'text-green-700' : 'text-[#8f1e18]'} />
+                            <CheckCircle2 size={14} className={backendTranscriptProofCoverageReady ? 'text-green-700' : 'text-[#8f1e18]'} />
                             <div className="font-serif text-base leading-tight">Backend transcript proof coverage</div>
-                            <span className={`node-status-tag ${backendTranscriptProofCoverageSummary.readyForBackendTranscriptProof ? 'bg-green-700 text-white' : 'bg-[#8f1e18] text-white'}`}>
-                              {backendTranscriptProofCoverageSummary.readyForBackendTranscriptProof ? 'Ready' : 'Needs proof'}
+                            {managerReadModelSourceBadge(backendTranscriptProofCoverageSource, 'proof-map-transcript-proof-coverage-source')}
+                            <span className={`node-status-tag ${backendTranscriptProofCoverageReady ? 'bg-green-700 text-white' : 'bg-[#8f1e18] text-white'}`}>
+                              {backendTranscriptProofCoverageReady ? 'Ready' : 'Needs proof'}
                             </span>
                           </div>
                           <div className="mt-1 font-mono text-[8px] uppercase text-[#7d6a49] leading-relaxed">
                             Transcript coverage / {backendTranscriptProofCoverageSummary.archivedProofIdCount ?? 0} archived of {backendTranscriptProofCoverageSummary.expectedProofIdCount ?? 0} expected, {backendTranscriptProofCoverageSummary.missingProofIdCount ?? 0} missing
                           </div>
                         </div>
-                        <button
-                          type="button"
-                          data-testid="proof-map-transcript-proof-coverage-open"
-                          onClick={() => openProjectChatProof(activeProject, backendTranscriptProofCoverageIds, backendTranscriptProofCoverageRoute?.channelId || 'main')}
-                          disabled={!backendTranscriptProofCoverageIds.length}
-                          className="inline-flex shrink-0 items-center gap-1 border border-[#d8c99f] px-2 py-1 font-mono text-[8px] uppercase text-[#6b5a3d] hover:border-[#8f1e18] hover:text-[#8f1e18] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                        >
-                          <MessageSquare size={10} />
-                          Transcript coverage proof
-                        </button>
+                        <div className="flex shrink-0 flex-wrap gap-2 md:justify-end">
+                          {managerProofMapRouteSyncButton(backendTranscriptProofCoverageRoute, 'proof-map-transcript-proof-coverage-sync-proof-map')}
+                          <button
+                            type="button"
+                            data-testid="proof-map-transcript-proof-coverage-open"
+                            onClick={() => openProjectChatProof(activeProject, backendTranscriptProofCoverageIds, backendTranscriptProofCoverageRoute?.channelId || 'main')}
+                            disabled={!backendTranscriptProofCoverageIds.length}
+                            className="inline-flex shrink-0 items-center gap-1 border border-[#d8c99f] px-2 py-1 font-mono text-[8px] uppercase text-[#6b5a3d] hover:border-[#8f1e18] hover:text-[#8f1e18] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                          >
+                            <MessageSquare size={10} />
+                            Transcript coverage proof
+                          </button>
+                        </div>
                       </div>
                     </div>
                   )}
@@ -25385,10 +29734,11 @@ export default function EngineWorkspace() {
                       <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
                         <div className="min-w-0">
                           <div className="flex flex-wrap items-center gap-2">
-                            <CheckCircle2 size={14} className={backendTranscriptChannelSummary.readyForBackendTranscriptChannels ? 'text-green-700' : 'text-[#8f1e18]'} />
+                            <CheckCircle2 size={14} className={backendTranscriptChannelReady ? 'text-green-700' : 'text-[#8f1e18]'} />
                             <div className="font-serif text-base leading-tight">Backend transcript channel routes</div>
-                            <span className={`node-status-tag ${backendTranscriptChannelSummary.readyForBackendTranscriptChannels ? 'bg-green-700 text-white' : 'bg-[#8f1e18] text-white'}`}>
-                              {backendTranscriptChannelSummary.readyForBackendTranscriptChannels ? 'Ready' : 'Needs proof'}
+                            {managerReadModelSourceBadge(backendTranscriptChannelSource, 'proof-map-transcript-channel-routes-source')}
+                            <span className={`node-status-tag ${backendTranscriptChannelReady ? 'bg-green-700 text-white' : 'bg-[#8f1e18] text-white'}`}>
+                              {backendTranscriptChannelReady ? 'Ready' : 'Needs proof'}
                             </span>
                           </div>
                           <div className="mt-1 font-mono text-[8px] uppercase text-[#7d6a49] leading-relaxed">
@@ -25399,6 +29749,7 @@ export default function EngineWorkspace() {
                           </div>
                         </div>
                         <div className="flex shrink-0 flex-wrap gap-2 md:justify-end">
+                          {managerProofMapRouteSyncButton(backendLatestTranscriptChannelRoute, 'proof-map-transcript-channel-routes-sync-proof-map')}
                           <button
                             type="button"
                             data-testid="proof-map-transcript-channel-chat-open"
@@ -25428,10 +29779,11 @@ export default function EngineWorkspace() {
                       <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
                         <div className="min-w-0">
                           <div className="flex flex-wrap items-center gap-2">
-                            <CheckCircle2 size={14} className={backendTranscriptChannelPinSummary.readyForBackendTranscriptChannelPins ? 'text-green-700' : 'text-[#8f1e18]'} />
+                            <CheckCircle2 size={14} className={backendTranscriptChannelPinReady ? 'text-green-700' : 'text-[#8f1e18]'} />
                             <div className="font-serif text-base leading-tight">Backend transcript channel pin routes</div>
-                            <span className={`node-status-tag ${backendTranscriptChannelPinSummary.readyForBackendTranscriptChannelPins ? 'bg-green-700 text-white' : 'bg-[#8f1e18] text-white'}`}>
-                              {backendTranscriptChannelPinSummary.readyForBackendTranscriptChannelPins ? 'Ready' : 'Needs proof'}
+                            {managerReadModelSourceBadge(backendTranscriptChannelPinSource, 'proof-map-transcript-channel-pin-routes-source')}
+                            <span className={`node-status-tag ${backendTranscriptChannelPinReady ? 'bg-green-700 text-white' : 'bg-[#8f1e18] text-white'}`}>
+                              {backendTranscriptChannelPinReady ? 'Ready' : 'Needs proof'}
                             </span>
                           </div>
                           <div className="mt-1 font-mono text-[8px] uppercase text-[#7d6a49] leading-relaxed">
@@ -25442,6 +29794,7 @@ export default function EngineWorkspace() {
                           </div>
                         </div>
                         <div className="flex shrink-0 flex-wrap gap-2 md:justify-end">
+                          {managerProofMapRouteSyncButton(backendLatestTranscriptChannelPinRoute, 'proof-map-transcript-channel-pin-routes-sync-proof-map')}
                           <button
                             type="button"
                             data-testid="proof-map-transcript-channel-pin-chat-open"
@@ -25471,10 +29824,11 @@ export default function EngineWorkspace() {
                       <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
                         <div className="min-w-0">
                           <div className="flex flex-wrap items-center gap-2">
-                            <CheckCircle2 size={14} className={backendTranscriptPinSummary.readyForBackendTranscriptPins ? 'text-green-700' : 'text-[#8f1e18]'} />
+                            <CheckCircle2 size={14} className={backendTranscriptPinReady ? 'text-green-700' : 'text-[#8f1e18]'} />
                             <div className="font-serif text-base leading-tight">Backend transcript pin routes</div>
-                            <span className={`node-status-tag ${backendTranscriptPinSummary.readyForBackendTranscriptPins ? 'bg-green-700 text-white' : 'bg-[#8f1e18] text-white'}`}>
-                              {backendTranscriptPinSummary.readyForBackendTranscriptPins ? 'Ready' : 'Needs proof'}
+                            {managerReadModelSourceBadge(backendTranscriptPinSource, 'proof-map-transcript-pin-routes-source')}
+                            <span className={`node-status-tag ${backendTranscriptPinReady ? 'bg-green-700 text-white' : 'bg-[#8f1e18] text-white'}`}>
+                              {backendTranscriptPinReady ? 'Ready' : 'Needs proof'}
                             </span>
                           </div>
                           <div className="mt-1 font-mono text-[8px] uppercase text-[#7d6a49] leading-relaxed">
@@ -25485,6 +29839,7 @@ export default function EngineWorkspace() {
                           </div>
                         </div>
                         <div className="flex shrink-0 flex-wrap gap-2 md:justify-end">
+                          {managerProofMapRouteSyncButton(backendLatestTranscriptPinRoute, 'proof-map-transcript-pin-routes-sync-proof-map')}
                           <button
                             type="button"
                             data-testid="proof-map-transcript-pin-chat-open"
@@ -25514,10 +29869,11 @@ export default function EngineWorkspace() {
                       <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
                         <div className="min-w-0">
                           <div className="flex flex-wrap items-center gap-2">
-                            <CheckCircle2 size={14} className={backendTranscriptReplySummary.readyForBackendTranscriptReplies ? 'text-green-700' : 'text-[#8f1e18]'} />
+                            <CheckCircle2 size={14} className={backendTranscriptReplyReady ? 'text-green-700' : 'text-[#8f1e18]'} />
                             <div className="font-serif text-base leading-tight">Backend transcript reply routes</div>
-                            <span className={`node-status-tag ${backendTranscriptReplySummary.readyForBackendTranscriptReplies ? 'bg-green-700 text-white' : 'bg-[#8f1e18] text-white'}`}>
-                              {backendTranscriptReplySummary.readyForBackendTranscriptReplies ? 'Ready' : 'Needs proof'}
+                            {managerReadModelSourceBadge(backendTranscriptReplySource, 'proof-map-transcript-reply-routes-source')}
+                            <span className={`node-status-tag ${backendTranscriptReplyReady ? 'bg-green-700 text-white' : 'bg-[#8f1e18] text-white'}`}>
+                              {backendTranscriptReplyReady ? 'Ready' : 'Needs proof'}
                             </span>
                           </div>
                           <div className="mt-1 font-mono text-[8px] uppercase text-[#7d6a49] leading-relaxed">
@@ -25528,6 +29884,7 @@ export default function EngineWorkspace() {
                           </div>
                         </div>
                         <div className="flex shrink-0 flex-wrap gap-2 md:justify-end">
+                          {managerProofMapRouteSyncButton(backendLatestTranscriptReplyRoute, 'proof-map-transcript-reply-routes-sync-proof-map')}
                           <button
                             type="button"
                             data-testid="proof-map-transcript-reply-chat-open"
@@ -25557,10 +29914,11 @@ export default function EngineWorkspace() {
                       <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
                         <div className="min-w-0">
                           <div className="flex flex-wrap items-center gap-2">
-                            <CheckCircle2 size={14} className={backendTranscriptMentionSummary.readyForBackendTranscriptMentions ? 'text-green-700' : 'text-[#8f1e18]'} />
+                            <CheckCircle2 size={14} className={backendTranscriptMentionReady ? 'text-green-700' : 'text-[#8f1e18]'} />
                             <div className="font-serif text-base leading-tight">Backend transcript mention routes</div>
-                            <span className={`node-status-tag ${backendTranscriptMentionSummary.readyForBackendTranscriptMentions ? 'bg-green-700 text-white' : 'bg-[#8f1e18] text-white'}`}>
-                              {backendTranscriptMentionSummary.readyForBackendTranscriptMentions ? 'Ready' : 'Needs proof'}
+                            {managerReadModelSourceBadge(backendTranscriptMentionSource, 'proof-map-transcript-mention-routes-source')}
+                            <span className={`node-status-tag ${backendTranscriptMentionReady ? 'bg-green-700 text-white' : 'bg-[#8f1e18] text-white'}`}>
+                              {backendTranscriptMentionReady ? 'Ready' : 'Needs proof'}
                             </span>
                           </div>
                           <div className="mt-1 font-mono text-[8px] uppercase text-[#7d6a49] leading-relaxed">
@@ -25571,6 +29929,7 @@ export default function EngineWorkspace() {
                           </div>
                         </div>
                         <div className="flex shrink-0 flex-wrap gap-2 md:justify-end">
+                          {managerProofMapRouteSyncButton(backendLatestTranscriptMentionRoute, 'proof-map-transcript-mention-routes-sync-proof-map')}
                           <button
                             type="button"
                             data-testid="proof-map-transcript-mention-chat-open"
@@ -25600,10 +29959,11 @@ export default function EngineWorkspace() {
                       <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
                         <div className="min-w-0">
                           <div className="flex flex-wrap items-center gap-2">
-                            <CheckCircle2 size={14} className={backendTranscriptAttachmentSummary.readyForBackendTranscriptAttachments ? 'text-green-700' : 'text-[#8f1e18]'} />
+                            <CheckCircle2 size={14} className={backendTranscriptAttachmentReady ? 'text-green-700' : 'text-[#8f1e18]'} />
                             <div className="font-serif text-base leading-tight">Backend transcript attachment routes</div>
-                            <span className={`node-status-tag ${backendTranscriptAttachmentSummary.readyForBackendTranscriptAttachments ? 'bg-green-700 text-white' : 'bg-[#8f1e18] text-white'}`}>
-                              {backendTranscriptAttachmentSummary.readyForBackendTranscriptAttachments ? 'Ready' : 'Needs proof'}
+                            {managerReadModelSourceBadge(backendTranscriptAttachmentSource, 'proof-map-transcript-attachment-routes-source')}
+                            <span className={`node-status-tag ${backendTranscriptAttachmentReady ? 'bg-green-700 text-white' : 'bg-[#8f1e18] text-white'}`}>
+                              {backendTranscriptAttachmentReady ? 'Ready' : 'Needs proof'}
                             </span>
                           </div>
                           <div className="mt-1 font-mono text-[8px] uppercase text-[#7d6a49] leading-relaxed">
@@ -25614,6 +29974,7 @@ export default function EngineWorkspace() {
                           </div>
                         </div>
                         <div className="flex shrink-0 flex-wrap gap-2 md:justify-end">
+                          {managerProofMapRouteSyncButton(backendLatestTranscriptAttachmentRoute, 'proof-map-transcript-attachment-routes-sync-proof-map')}
                           <button
                             type="button"
                             data-testid="proof-map-transcript-attachment-chat-open"
@@ -25643,10 +30004,11 @@ export default function EngineWorkspace() {
                       <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
                         <div className="min-w-0">
                           <div className="flex flex-wrap items-center gap-2">
-                            <CheckCircle2 size={14} className={backendTranscriptMemberPresenceSummary.readyForBackendTranscriptMemberPresence ? 'text-green-700' : 'text-[#8f1e18]'} />
+                            <CheckCircle2 size={14} className={backendTranscriptMemberPresenceReady ? 'text-green-700' : 'text-[#8f1e18]'} />
                             <div className="font-serif text-base leading-tight">Backend transcript member presence</div>
-                            <span className={`node-status-tag ${backendTranscriptMemberPresenceSummary.readyForBackendTranscriptMemberPresence ? 'bg-green-700 text-white' : 'bg-[#8f1e18] text-white'}`}>
-                              {backendTranscriptMemberPresenceSummary.readyForBackendTranscriptMemberPresence ? 'Ready' : 'Needs proof'}
+                            {managerReadModelSourceBadge(backendTranscriptMemberPresenceSource, 'proof-map-transcript-member-presence-routes-source')}
+                            <span className={`node-status-tag ${backendTranscriptMemberPresenceReady ? 'bg-green-700 text-white' : 'bg-[#8f1e18] text-white'}`}>
+                              {backendTranscriptMemberPresenceReady ? 'Ready' : 'Needs proof'}
                             </span>
                           </div>
                           <div className="mt-1 font-mono text-[8px] uppercase text-[#7d6a49] leading-relaxed">
@@ -25657,6 +30019,7 @@ export default function EngineWorkspace() {
                           </div>
                         </div>
                         <div className="flex shrink-0 flex-wrap gap-2 md:justify-end">
+                          {managerProofMapRouteSyncButton(backendLatestTranscriptMemberPresenceRoute, 'proof-map-transcript-member-presence-routes-sync-proof-map')}
                           <button
                             type="button"
                             data-testid="proof-map-transcript-member-presence-chat-open"
@@ -25686,10 +30049,11 @@ export default function EngineWorkspace() {
                       <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
                         <div className="min-w-0">
                           <div className="flex flex-wrap items-center gap-2">
-                            <CheckCircle2 size={14} className={backendAgentMessageSummary.readyForAgentMessageDelivery ? 'text-green-700' : 'text-[#8f1e18]'} />
+                            <CheckCircle2 size={14} className={backendAgentMessageProofRouteReady ? 'text-green-700' : 'text-[#8f1e18]'} />
                             <div className="font-serif text-base leading-tight">Agent-to-Agent message routes</div>
-                            <span className={`node-status-tag ${backendAgentMessageSummary.readyForAgentMessageDelivery ? 'bg-green-700 text-white' : 'bg-[#8f1e18] text-white'}`}>
-                              {backendAgentMessageSummary.readyForAgentMessageDelivery ? 'Ready' : 'Needs proof'}
+                            {managerReadModelSourceBadge(backendAgentMessageProofMapSource, 'proof-map-agent-message-routes-source')}
+                            <span className={`node-status-tag ${backendAgentMessageProofRouteReady ? 'bg-green-700 text-white' : 'bg-[#8f1e18] text-white'}`}>
+                              {backendAgentMessageProofRouteReady ? 'Ready' : 'Needs proof'}
                             </span>
                           </div>
                           <div className="mt-1 font-mono text-[8px] uppercase text-[#7d6a49] leading-relaxed">
@@ -25700,6 +30064,7 @@ export default function EngineWorkspace() {
                           </div>
                         </div>
                         <div className="flex shrink-0 flex-wrap gap-2 md:justify-end">
+                          {managerProofMapRouteSyncButton(backendLatestAgentMessageRoute, 'proof-map-agent-message-routes-sync-proof-map')}
                           <button
                             type="button"
                             data-testid="proof-map-agent-message-chat-open"
@@ -25731,6 +30096,7 @@ export default function EngineWorkspace() {
                           <div className="flex flex-wrap items-center gap-2">
                             <CheckCircle2 size={14} className={backendCollaborationIntentQueue.readyForLocalPilotIntentQueue ? 'text-green-700' : 'text-[#8f1e18]'} />
                             <div className="font-serif text-base leading-tight">Collaboration Intent Queue</div>
+                            {managerReadModelSourceBadge(backendCollaborationIntentQueueProofMapSource, 'proof-map-collaboration-intent-queue-source')}
                             <span className={`node-status-tag ${backendCollaborationIntentQueue.readyForLocalPilotIntentQueue ? 'bg-green-700 text-white' : 'bg-[#8f1e18] text-white'}`}>
                               {backendCollaborationIntentQueue.readyForLocalPilotIntentQueue ? 'Ready' : 'Needs proof'}
                             </span>
@@ -25743,6 +30109,7 @@ export default function EngineWorkspace() {
                           </div>
                         </div>
                         <div className="flex shrink-0 flex-wrap gap-2 md:justify-end">
+                          {managerProofMapRouteSyncButton(backendCollaborationIntentQueueRoute, 'proof-map-collaboration-intent-queue-sync-proof-map')}
                           <button
                             type="button"
                             data-testid="proof-map-collaboration-intent-chat-open"
@@ -25774,6 +30141,7 @@ export default function EngineWorkspace() {
                           <div className="flex flex-wrap items-center gap-2">
                             <CheckCircle2 size={14} className={backendSubmissionReviewWorkflow.readyForPrivatePilotReview ? 'text-green-700' : 'text-[#8f1e18]'} />
                             <div className="font-serif text-base leading-tight">Submission Review Workflow</div>
+                            {managerReadModelSourceBadge(backendSubmissionReviewWorkflowProofMapSource, 'proof-map-submission-review-workflow-source')}
                             <span className={`node-status-tag ${backendSubmissionReviewWorkflow.readyForPrivatePilotReview ? 'bg-green-700 text-white' : 'bg-[#8f1e18] text-white'}`}>
                               {backendSubmissionReviewWorkflow.readyForPrivatePilotReview ? 'Ready' : 'Needs review'}
                             </span>
@@ -25786,6 +30154,7 @@ export default function EngineWorkspace() {
                           </div>
                         </div>
                         <div className="flex shrink-0 flex-wrap gap-2 md:justify-end">
+                          {managerProofMapRouteSyncButton(backendSubmissionReviewWorkflowRoute, 'proof-map-submission-review-workflow-sync-proof-map')}
                           <button
                             type="button"
                             data-testid="proof-map-submission-review-chat-open"
@@ -25817,6 +30186,7 @@ export default function EngineWorkspace() {
                           <div className="flex flex-wrap items-center gap-2">
                             <CheckCircle2 size={14} className={backendProductTeamAcceptanceChainReady ? 'text-green-700' : 'text-[#8f1e18]'} />
                             <div className="font-serif text-base leading-tight">Generic Product-Team Acceptance Chain</div>
+                            {managerReadModelSourceBadge(backendProductTeamAcceptanceChainRoute, 'proof-map-product-team-acceptance-chain-source')}
                             <span className={`node-status-tag ${backendProductTeamAcceptanceChainReady ? 'bg-green-700 text-white' : 'bg-[#8f1e18] text-white'}`}>
                               {backendProductTeamAcceptanceChainReady ? 'Ready' : 'Chain open'}
                             </span>
@@ -25829,6 +30199,7 @@ export default function EngineWorkspace() {
                           </div>
                         </div>
                         <div className="flex shrink-0 flex-wrap gap-2 md:justify-end">
+                          {managerProofMapRouteSyncButton(backendProductTeamAcceptanceChainRoute, 'proof-map-product-team-acceptance-chain-sync-proof-map')}
                           <button
                             type="button"
                             data-testid="proof-map-acceptance-chain-chat-open"
@@ -25853,6 +30224,54 @@ export default function EngineWorkspace() {
                       </div>
                     </div>
                   )}
+                  {backendZeroToAutonomyReport && (
+                    <div data-testid="proof-map-zero-to-autonomy-report" className="border border-[#d8c99f] bg-[#efe2bd]/55 p-3">
+                      <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <CheckCircle2 size={14} className={backendZeroToAutonomyReport.readyForLocalMvpTrial ? 'text-green-700' : 'text-[#8f1e18]'} />
+                            <div className="font-serif text-base leading-tight">Zero-to-Autonomy Report</div>
+                            {managerReadModelSourceBadge(backendZeroToAutonomyReportProofMapSource, 'proof-map-zero-to-autonomy-report-source')}
+                            <span className={`node-status-tag ${backendZeroToAutonomyReport.readyForLocalMvpTrial ? 'bg-green-700 text-white' : 'bg-[#8f1e18] text-white'}`}>
+                              {backendZeroToAutonomyReport.readyForLocalMvpTrial ? 'Local ready' : 'Needs proof'}
+                            </span>
+                            <span className={`node-status-tag ${backendZeroToAutonomyReport.readyForPublicProduction ? 'bg-green-700 text-white' : 'bg-[#8f1e18] text-white'}`}>
+                              {backendZeroToAutonomyReport.readyForPublicProduction ? 'Production ready' : 'Production blocked'}
+                            </span>
+                          </div>
+                          <div className="mt-1 font-mono text-[8px] uppercase text-[#7d6a49] leading-relaxed">
+                            Zero-to-autonomy / {backendZeroToAutonomyReport.summary?.readyStageCount ?? 0} ready of {backendZeroToAutonomyReport.summary?.stageCount ?? backendZeroToAutonomyReportRoute?.stageCount ?? 0} stages / artifacts {backendZeroToAutonomyReport.summary?.submittedArtifactTypeCount ?? 0}/{backendZeroToAutonomyReport.summary?.requiredArtifactTypeCount ?? 0}
+                          </div>
+                          <div className="mt-1 font-mono text-[8px] uppercase text-[#9b875c] leading-relaxed break-words">
+                            Route: {backendZeroToAutonomyReportRoute?.apiPath || backendZeroToAutonomyReport.backendRoutes?.zeroToAutonomyReport || `/projects/${activeProject.id}/zero-to-autonomy-report`}
+                          </div>
+                        </div>
+                        <div className="flex shrink-0 flex-wrap gap-2 md:justify-end">
+                          {managerProofMapRouteSyncButton(backendZeroToAutonomyReportRoute, 'proof-map-zero-to-autonomy-report-sync-proof-map')}
+                          <button
+                            type="button"
+                            data-testid="proof-map-zero-to-autonomy-chat-open"
+                            onClick={() => openProjectChatProof(activeProject, backendZeroToAutonomyReportChatProofIds, backendZeroToAutonomyReportRoute?.channelId || 'main')}
+                            disabled={!backendZeroToAutonomyReportChatProofIds.length}
+                            className="inline-flex items-center gap-1 border border-[#d8c99f] px-2 py-1 font-mono text-[8px] uppercase text-[#6b5a3d] hover:border-[#8f1e18] hover:text-[#8f1e18] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                          >
+                            <MessageSquare size={10} />
+                            Report chat proof
+                          </button>
+                          <button
+                            type="button"
+                            data-testid="proof-map-zero-to-autonomy-timeline-open"
+                            onClick={() => openProjectTimelineProof(backendZeroToAutonomyReportTimelineIds)}
+                            disabled={!backendZeroToAutonomyReportTimelineIds.length}
+                            className="inline-flex items-center gap-1 border border-[#d8c99f] px-2 py-1 font-mono text-[8px] uppercase text-[#6b5a3d] hover:border-[#8f1e18] hover:text-[#8f1e18] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                          >
+                            <ScrollText size={10} />
+                            Report timeline proof
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
                   {backendProductTeamDeliveryTrace && (
                     <div data-testid="proof-map-product-team-delivery-trace" className="border border-[#d8c99f] bg-[#efe2bd]/55 p-3">
                       <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
@@ -25860,6 +30279,7 @@ export default function EngineWorkspace() {
                           <div className="flex flex-wrap items-center gap-2">
                             <CheckCircle2 size={14} className={backendProductTeamDeliveryTrace.readyForPrivatePilotDelivery ? 'text-green-700' : 'text-[#8f1e18]'} />
                             <div className="font-serif text-base leading-tight">Product Team Delivery Trace</div>
+                            {managerReadModelSourceBadge(backendProductTeamDeliveryTraceProofMapSource, 'proof-map-product-team-delivery-trace-source')}
                             <span className={`node-status-tag ${backendProductTeamDeliveryTrace.readyForPrivatePilotDelivery ? 'bg-green-700 text-white' : 'bg-[#8f1e18] text-white'}`}>
                               {backendProductTeamDeliveryTrace.readyForPrivatePilotDelivery ? 'Ready' : 'Trace open'}
                             </span>
@@ -25872,6 +30292,7 @@ export default function EngineWorkspace() {
                           </div>
                         </div>
                         <div className="flex shrink-0 flex-wrap gap-2 md:justify-end">
+                          {managerProofMapRouteSyncButton(backendProductTeamDeliveryTraceRoute, 'proof-map-product-team-delivery-trace-sync-proof-map')}
                           <button
                             type="button"
                             data-testid="proof-map-delivery-trace-chat-open"
@@ -25911,14 +30332,26 @@ export default function EngineWorkspace() {
                             {row.targetLabel} / {row.check.detail}
                           </div>
                         </div>
-                        <button
-                          type="button"
-                          onClick={() => openManagerProofMapRow(row)}
-                          className="inline-flex shrink-0 items-center gap-1 border border-[#d8c99f] px-2 py-1 font-mono text-[8px] uppercase tracking-widest text-[#6b5a3d] hover:border-[#8f1e18] hover:text-[#8f1e18] transition-colors"
-                        >
-                          {row.proofType === 'timeline' ? <ScrollText size={10} /> : row.proofType === 'chat' ? <MessageSquare size={10} /> : <Search size={10} />}
-                          {row.proofLabel}
-                        </button>
+                        {row.check.id === 'manager-proof-map-backend-required' ? (
+                          <button
+                            type="button"
+                            data-testid="manager-proof-map-sync-readiness-proof-map"
+                            onClick={() => syncBackendReadinessProofMap({ silent: false, projectId: activeProject.id })}
+                            disabled={backendStation.loading}
+                            className="inline-flex shrink-0 items-center gap-1 border border-[#8f1e18] px-2 py-1 font-mono text-[8px] uppercase tracking-widest text-[#8f1e18] hover:border-[#251b13] hover:text-[#251b13] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                          >
+                            <FileText size={10} /> Sync Proof Map
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => openManagerProofMapRow(row)}
+                            className="inline-flex shrink-0 items-center gap-1 border border-[#d8c99f] px-2 py-1 font-mono text-[8px] uppercase tracking-widest text-[#6b5a3d] hover:border-[#8f1e18] hover:text-[#8f1e18] transition-colors"
+                          >
+                            {row.proofType === 'timeline' ? <ScrollText size={10} /> : row.proofType === 'chat' ? <MessageSquare size={10} /> : <Search size={10} />}
+                            {row.proofLabel}
+                          </button>
+                        )}
                       </div>
                     </div>
                   ))}
@@ -25943,8 +30376,17 @@ export default function EngineWorkspace() {
                   </div>
                 </div>
                 {collaborationHealth.frontendMockSuppressed && (
-                  <div data-testid="collaboration-health-backend-required" className="mb-3 border border-[#8f1e18] bg-red-50 px-3 py-2 font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">
-                    Backend Team Collaboration Diagnostics required. Local collaboration health is suppressed for this backend project.
+                  <div data-testid="collaboration-health-backend-required" className="mb-3 flex flex-col gap-2 border border-[#8f1e18] bg-red-50 px-3 py-2 font-mono text-[8px] uppercase tracking-widest text-[#8f1e18] md:flex-row md:items-center md:justify-between">
+                    <span>Backend Team Collaboration Diagnostics required. Local collaboration health is suppressed for this backend project.</span>
+                    <button
+                      type="button"
+                      data-testid="collaboration-health-sync-diagnostics"
+                      onClick={() => syncBackendReadyPackageSubmodels({ silent: false, projectId: activeProject.id, includeLaunchControls: true })}
+                      disabled={backendStation.loading}
+                      className="inline-flex shrink-0 items-center justify-center gap-1 border border-[#8f1e18] bg-red-50 px-2 py-1 text-[#8f1e18] hover:border-[#251b13] hover:text-[#251b13] disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      <FileText size={10} /> Sync Proof Models
+                    </button>
                   </div>
                 )}
                 <div className="space-y-2">
@@ -26011,8 +30453,17 @@ export default function EngineWorkspace() {
                       </div>
                     </div>
                     {assignmentTimelineMatrix.frontendMockSuppressed && (
-                      <div data-testid="assignment-timeline-matrix-backend-required" className="mt-3 border border-[#8f1e18] bg-red-50 px-3 py-2 font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">
-                        Backend Assignment Timeline Matrix required. Local assignment/work-progress rows are suppressed for this backend project.
+                      <div data-testid="assignment-timeline-matrix-backend-required" className="mt-3 flex flex-col gap-2 border border-[#8f1e18] bg-red-50 px-3 py-2 font-mono text-[8px] uppercase tracking-widest text-[#8f1e18] md:flex-row md:items-center md:justify-between">
+                        <span>Backend Assignment Timeline Matrix required. Local assignment/work-progress rows are suppressed for this backend project.</span>
+                        <button
+                          type="button"
+                          data-testid="assignment-timeline-matrix-sync-cockpit"
+                          onClick={() => syncBackendCockpitReadModels({ silent: false, projectId: activeProject.id })}
+                          disabled={backendStation.loading}
+                          className="inline-flex shrink-0 items-center justify-center gap-1 border border-[#8f1e18] bg-red-50 px-2 py-1 text-[#8f1e18] hover:border-[#251b13] hover:text-[#251b13] disabled:opacity-40 disabled:cursor-not-allowed"
+                        >
+                          <Database size={10} /> Sync Cockpit
+                        </button>
                       </div>
                     )}
                     <div className="mt-3 space-y-2">
@@ -26209,51 +30660,69 @@ export default function EngineWorkspace() {
               <div className="grid md:grid-cols-2 gap-5">
                 <div className="bg-[#f7edcf]/70 border border-[#b8a57d] p-5">
                   <div className="font-mono text-[10px] uppercase tracking-widest text-[#8f1e18] mb-4">Active Threads</div>
+                  {taskProofBackendRequired && (
+                    <div data-testid="active-threads-task-proof-backend-required" className="mb-4 border border-[#8f1e18] bg-red-50 px-3 py-2 font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">
+                      Backend Manager Dashboard task rows are required before this real project can show active threads or task proof.
+                      <button
+                        type="button"
+                        data-testid="active-threads-sync-manager-dashboard"
+                        onClick={() => syncBackendManagerDashboard({ silent: false, projectId: activeProject.id })}
+                        disabled={backendStation.loading}
+                        className="mt-3 inline-flex items-center gap-1 border border-[#8f1e18] px-2 py-1 font-mono text-[8px] uppercase tracking-widest text-[#8f1e18] hover:border-[#251b13] hover:text-[#251b13] disabled:opacity-40 disabled:cursor-not-allowed"
+                      >
+                        <Database size={10} /> Sync Manager Dashboard
+                      </button>
+                    </div>
+                  )}
                   <div className="space-y-3">
-                    {activeProject.tasks.map(task => (
-                      <div key={task.id} className="flex items-start gap-3">
-                        <CircleDot size={14} className={task.status === 'done' ? 'text-green-700 mt-1' : 'text-[#8f1e18] mt-1'} />
-                        <div className="min-w-0">
-                          <div className="font-serif text-lg leading-tight">{task.text}</div>
-                          <div className="font-mono text-[9px] uppercase tracking-widest text-[#7d6a49]">
-                            Owner: {task.assignee} / {task.status}
-                          </div>
-                          <div className="mt-1 flex flex-wrap gap-1.5">
-                            {task.assignedBy && <span className="node-status-tag bg-[#251b13] text-[#efe2bd]">Assigned by Leader</span>}
-                            {task.sourceChannelId && <span className="node-status-tag bg-[#d8c99f] text-[#251b13]">From {channelNameById[task.sourceChannelId] || task.sourceChannelId}</span>}
-                            {taskEvidence(task).hasAssignment && <span className="node-status-tag bg-[#b9782b] text-white">Assignment proof</span>}
-                            {taskEvidence(task).hasAcknowledgement && <span className="node-status-tag bg-[#59684b] text-white">Accepted</span>}
-                            {taskEvidence(task).hasOwnerSync && <span className="node-status-tag bg-[#efe2bd] text-[#251b13]">Owner synced</span>}
-                            {task.workPulseCount > 0 && <span className="node-status-tag bg-[#59684b] text-white">{task.workPulseCount} pulse{task.workPulseCount === 1 ? '' : 's'}</span>}
-                            {(task.completedAt || taskEvidence(task).timelineCount > 0) && <span className="node-status-tag bg-green-700 text-white">{taskEvidence(task).timelineCount || 1} timeline proof{(taskEvidence(task).timelineCount || 1) === 1 ? '' : 's'}</span>}
-                          </div>
-                          <div className="mt-2 flex flex-wrap gap-2">
-                            {task.sourceChannelId && (
-                              <button
-                                type="button"
-                                onClick={() => openProjectChatProof(activeProject, taskEvidence(task).chatIds, task.sourceChannelId)}
-                                className="inline-flex items-center gap-1 border border-[#d8c99f] px-2 py-1 font-mono text-[8px] uppercase tracking-widest text-[#6b5a3d] hover:border-[#8f1e18] hover:text-[#8f1e18] transition-colors"
-                              >
-                                <MessageSquare size={10} /> Chat proof
-                              </button>
-                            )}
-                            {taskEvidence(task).timelineCount > 0 && (
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setFocusedTimelineProofIds(taskEvidence(task).timelineIds);
-                                  setSelectedTimelineEventId(taskEvidence(task).timelineIds[0] || null);
-                                  enterProjectScene('timeline');
-                                }}
-                                className="inline-flex items-center gap-1 border border-[#d8c99f] px-2 py-1 font-mono text-[8px] uppercase tracking-widest text-[#6b5a3d] hover:border-[#8f1e18] hover:text-[#8f1e18] transition-colors"
-                              >
-                                <ScrollText size={10} /> Timeline proof
-                              </button>
-                            )}
+                    {activeThreadRows.map(task => {
+                      const evidence = taskEvidence(task);
+                      const chatProofChannel = task.sourceChannelId || task.channelId || 'main';
+                      return (
+                        <div key={task.id} data-testid={`active-thread-task-row-${task.id}`} className="flex items-start gap-3">
+                          <CircleDot size={14} className={task.status === 'done' ? 'text-green-700 mt-1' : 'text-[#8f1e18] mt-1'} />
+                          <div className="min-w-0">
+                            <div className="font-serif text-lg leading-tight">{task.text || task.title || task.label || 'Task'}</div>
+                            <div className="font-mono text-[9px] uppercase tracking-widest text-[#7d6a49]">
+                              Owner: {task.assignee || task.ownerName || task.ownerId || 'Unassigned'} / {task.status || 'pending'}
+                            </div>
+                            <div className="mt-1 flex flex-wrap gap-1.5">
+                              {task.assignedBy && <span className="node-status-tag bg-[#251b13] text-[#efe2bd]">Assigned by Leader</span>}
+                              {(task.sourceChannelId || task.channelId) && <span className="node-status-tag bg-[#d8c99f] text-[#251b13]">From {channelNameById[task.sourceChannelId || task.channelId] || task.sourceChannelId || task.channelId}</span>}
+                              {evidence.hasAssignment && <span className="node-status-tag bg-[#b9782b] text-white">Assignment proof</span>}
+                              {evidence.hasAcknowledgement && <span className="node-status-tag bg-[#59684b] text-white">Accepted</span>}
+                              {evidence.hasOwnerSync && <span className="node-status-tag bg-[#efe2bd] text-[#251b13]">Owner synced</span>}
+                              {task.workPulseCount > 0 && <span className="node-status-tag bg-[#59684b] text-white">{task.workPulseCount} pulse{task.workPulseCount === 1 ? '' : 's'}</span>}
+                              {(task.completedAt || evidence.timelineCount > 0) && <span className="node-status-tag bg-green-700 text-white">{evidence.timelineCount || 1} timeline proof{(evidence.timelineCount || 1) === 1 ? '' : 's'}</span>}
+                            </div>
+                            <div className="mt-2 flex flex-wrap gap-2">
+                              {evidence.chatIds.length > 0 && (
+                                <button
+                                  type="button"
+                                  onClick={() => openProjectChatProof(activeProject, evidence.chatIds, chatProofChannel)}
+                                  className="inline-flex items-center gap-1 border border-[#d8c99f] px-2 py-1 font-mono text-[8px] uppercase tracking-widest text-[#6b5a3d] hover:border-[#8f1e18] hover:text-[#8f1e18] transition-colors"
+                                >
+                                  <MessageSquare size={10} /> Chat proof
+                                </button>
+                              )}
+                              {evidence.timelineCount > 0 && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setFocusedTimelineProofIds(evidence.timelineIds);
+                                    setSelectedTimelineEventId(evidence.timelineIds[0] || null);
+                                    enterProjectScene('timeline');
+                                  }}
+                                  className="inline-flex items-center gap-1 border border-[#d8c99f] px-2 py-1 font-mono text-[8px] uppercase tracking-widest text-[#6b5a3d] hover:border-[#8f1e18] hover:text-[#8f1e18] transition-colors"
+                                >
+                                  <ScrollText size={10} /> Timeline proof
+                                </button>
+                              )}
+                            </div>
                           </div>
                         </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </div>
                 <div className="bg-[#f7edcf]/70 border border-[#b8a57d] p-5">
@@ -26262,55 +30731,6 @@ export default function EngineWorkspace() {
                     {activeProject.team.map(agent => {
                       const state = agentStates[agent.id] || null;
                       const latestAgentWorker = latestAgentWorkerById[agent.id] || null;
-                      const priorityReasons = latestAgentWorker?.managementReasons || [];
-                      const latestInbox = state?.inbox?.[0] || null;
-                      const latestObligation = state?.obligations?.find(item => item.status !== 'done' && item.status !== 'resolved') || state?.obligations?.[0] || null;
-                      const latestWorklog = state?.worklog?.[0] || null;
-                      const obligationTask = latestObligation?.taskId ? activeProject.tasks.find(task => String(task.id) === String(latestObligation.taskId)) : null;
-                      const worklogTaskId = latestWorklog?.taskId || state?.currentPlan?.taskId || state?.taskIds?.[0] || null;
-                      const worklogTask = worklogTaskId ? activeProject.tasks.find(task => String(task.id) === String(worklogTaskId)) : null;
-                      const inboxProofIds = [latestInbox?.sourceMessageId || latestInbox?.messageId].filter(Boolean);
-                      const inboxProofChannel = latestInbox?.channelId || latestInbox?.sourceChannelId || 'main';
-                      const obligationEvidence = obligationTask ? taskEvidence(obligationTask) : null;
-                      const obligationProofIds = [
-                        latestObligation?.sourceMessageId,
-                        ...(obligationEvidence?.chatIds || []),
-                      ].filter(Boolean);
-                      const obligationTimelineIds = obligationEvidence?.timelineIds || [];
-                      const obligationProofChannel = latestObligation?.channelId || latestObligation?.sourceChannelId || obligationTask?.sourceChannelId || 'main';
-                      const worklogEvidence = worklogTask ? taskEvidence(worklogTask) : null;
-                      const worklogProofIds = [
-                        latestWorklog?.sourceMessageId,
-                        ...(worklogEvidence?.chatIds || []),
-                      ].filter(Boolean);
-                      const worklogTimelineIds = [
-                        latestAgentWorker?.agentId === agent.id ? latestAgentWorker.logId : null,
-                        ...(worklogEvidence?.timelineIds || []),
-                      ].filter(Boolean);
-                      const worklogProofChannel = latestWorklog?.channelId || worklogTask?.sourceChannelId || latestAgentWorker?.channelId || 'main';
-                      const messageTargetOptions = activeProject.team.filter(member => member.id !== agent.id);
-                      const agentMessageDraft = agentMessageDraftFor(agent.id, activeProject?.id);
-                      const agentWorkDraft = agentWorkDraftFor(agent.id, activeProject?.id);
-                      const selectedMessageTarget = agentMessageDraft.targetAgentId || messageTargetOptions[0]?.id || '';
-                      const agentOwnedTasks = activeProject.tasks.filter(task => (
-                        task.ownerId === agent.id
-                        || task.assignee === agent.id
-                        || task.assignee === agent.name
-                        || task.ownerName === agent.name
-                        || (state?.taskIds || []).map(String).includes(String(task.id))
-                      ));
-                      const agentProofChatIds = [
-                        ...inboxProofIds,
-                        ...obligationProofIds,
-                        ...worklogProofIds,
-                        ...agentOwnedTasks.flatMap(task => taskEvidence(task).chatIds),
-                      ].filter(Boolean);
-                      const agentProofTimelineIds = [
-                        ...obligationTimelineIds,
-                        ...worklogTimelineIds,
-                        ...agentOwnedTasks.flatMap(task => taskEvidence(task).timelineIds),
-                      ].filter(Boolean);
-                      const agentFocusOpen = selectedAgentFocusId === agent.id;
                       const agentBackendDashboard = agentDashboardSnapshotFor(agent.id, activeProject?.id);
                       const backendAgentDashboardRequired = shouldRequireBackendAgentDashboard(activeProject);
                       const backendAgentDashboardMissing = backendAgentDashboardRequired && !agentBackendDashboard;
@@ -26321,9 +30741,121 @@ export default function EngineWorkspace() {
                           : isManagerDemoProject(activeProject)
                             ? 'sample-fixture'
                             : 'frontend-fallback';
+                      const agentSignalUsesBackendDashboard = Boolean(agentBackendDashboard);
+                      const localAgentSignalProofAllowed = !backendAgentDashboardRequired;
+                      const signalState = agentSignalUsesBackendDashboard ? agentBackendDashboard.state || {} : state || {};
+                      const agentTeamDisplayState = agentSignalUsesBackendDashboard
+                        ? agentBackendDashboard.state || null
+                        : localAgentSignalProofAllowed ? state : null;
+                      const displayLatestAgentWorker = agentSignalUsesBackendDashboard
+                        ? agentBackendDashboard.latestWorker || null
+                        : localAgentSignalProofAllowed ? latestAgentWorker : null;
+                      const latestAgentWorkerManagementPriority = latestAgentWorker ? latestAgentWorker.managementPriority : null;
+                      const displayAgentWorkerManagementPriority = displayLatestAgentWorker?.managementPriority ?? latestAgentWorkerManagementPriority ?? 0;
+                      const priorityReasons = displayLatestAgentWorker?.managementReasons || displayLatestAgentWorker?.priorityReasons || [];
+                      const latestInbox = agentSignalUsesBackendDashboard
+                        ? agentBackendDashboard.latestInbox || agentBackendDashboard.inbox?.[0] || null
+                        : localAgentSignalProofAllowed ? state?.inbox?.[0] || null : null;
+                      const latestObligation = agentSignalUsesBackendDashboard
+                        ? agentBackendDashboard.latestObligation
+                          || agentBackendDashboard.obligations?.find(item => item.status !== 'done' && item.status !== 'resolved')
+                          || agentBackendDashboard.obligations?.[0]
+                          || null
+                        : localAgentSignalProofAllowed ? state?.obligations?.find(item => item.status !== 'done' && item.status !== 'resolved') || state?.obligations?.[0] || null : null;
+                      const latestWorklog = agentSignalUsesBackendDashboard
+                        ? agentBackendDashboard.latestWorklog || agentBackendDashboard.worklog?.[0] || null
+                        : localAgentSignalProofAllowed ? state?.worklog?.[0] || null : null;
+                      const proofSignalAllowed = agentSignalUsesBackendDashboard || localAgentSignalProofAllowed;
+                      const localAgentOwnedTasks = activeProject.tasks.filter(task => (
+                        task.ownerId === agent.id
+                        || task.assignee === agent.id
+                        || task.assignee === agent.name
+                        || task.ownerName === agent.name
+                        || (state?.taskIds || []).map(String).includes(String(task.id))
+                      ));
+                      const agentOwnedTasks = agentSignalUsesBackendDashboard && Array.isArray(agentBackendDashboard.ownedTasks)
+                        ? agentBackendDashboard.ownedTasks
+                        : localAgentSignalProofAllowed ? localAgentOwnedTasks : [];
+                      const agentDashboardTaskFor = (taskId) => {
+                        if (!taskId) return null;
+                        const dashboardTask = agentOwnedTasks.find(task => String(task.id) === String(taskId));
+                        if (dashboardTask) return dashboardTask;
+                        return localAgentSignalProofAllowed
+                          ? activeProject.tasks.find(task => String(task.id) === String(taskId)) || null
+                          : null;
+                      };
+                      const obligationTask = agentDashboardTaskFor(latestObligation?.taskId);
+                      const worklogTaskId = latestWorklog?.taskId || signalState.currentPlan?.taskId || signalState.taskIds?.[0] || null;
+                      const worklogTask = agentDashboardTaskFor(worklogTaskId);
+                      const inboxProofIds = proofSignalAllowed ? [latestInbox?.sourceMessageId || latestInbox?.messageId].filter(Boolean) : [];
+                      const inboxProofChannel = latestInbox?.channelId || latestInbox?.sourceChannelId || 'main';
+                      const obligationEvidence = obligationTask ? taskEvidence(obligationTask) : null;
+                      const obligationProofIds = proofSignalAllowed ? [
+                        latestObligation?.sourceMessageId,
+                        ...(obligationEvidence?.chatIds || []),
+                      ].filter(Boolean) : [];
+                      const obligationTimelineIds = proofSignalAllowed ? obligationEvidence?.timelineIds || [] : [];
+                      const obligationProofChannel = latestObligation?.channelId
+                        || latestObligation?.sourceChannelId
+                        || (agentSignalUsesBackendDashboard ? null : obligationTask?.sourceChannelId)
+                        || 'main';
+                      const worklogEvidence = worklogTask ? taskEvidence(worklogTask) : null;
+                      const worklogProofIds = proofSignalAllowed ? [
+                        latestWorklog?.sourceMessageId,
+                        ...(worklogEvidence?.chatIds || []),
+                      ].filter(Boolean) : [];
+                      const proofLatestAgentWorker = agentSignalUsesBackendDashboard ? agentBackendDashboard.latestWorker || null : latestAgentWorker;
+                      const worklogTimelineIds = proofSignalAllowed ? [
+                        proofLatestAgentWorker?.agentId === agent.id
+                          ? proofLatestAgentWorker?.logId
+                          : null,
+                        ...(worklogEvidence?.timelineIds || []),
+                      ].filter(Boolean) : [];
+                      const worklogProofChannel = latestWorklog?.channelId
+                        || (agentSignalUsesBackendDashboard ? proofLatestAgentWorker?.channelId : worklogTask?.sourceChannelId || latestAgentWorker?.channelId)
+                        || 'main';
+                      const messageTargetOptions = activeProject.team.filter(member => member.id !== agent.id);
+                      const agentMessageDraft = agentMessageDraftFor(agent.id, activeProject?.id);
+                      const agentWorkDraft = agentWorkDraftFor(agent.id, activeProject?.id);
+                      const selectedMessageTarget = agentMessageDraft.targetAgentId || messageTargetOptions[0]?.id || '';
+                      const agentFocusState = agentSignalUsesBackendDashboard
+                        ? agentBackendDashboard.state || {}
+                        : localAgentSignalProofAllowed ? state || {} : {};
+                      const agentFocusCurrentPlan = backendAgentDashboardMissing
+                        ? 'backend required'
+                        : agentFocusState.currentPlan?.focus || 'monitor project lane';
+                      const agentFocusInboxCount = backendAgentDashboardMissing
+                        ? 'backend required'
+                        : agentSignalUsesBackendDashboard
+                          ? agentBackendDashboard.inbox?.length ?? agentBackendDashboard.openInboxCount ?? 0
+                          : state?.inbox?.length || 0;
+                      const agentFocusObligationCount = backendAgentDashboardMissing
+                        ? 'backend required'
+                        : agentSignalUsesBackendDashboard
+                          ? agentBackendDashboard.obligations?.length ?? agentBackendDashboard.openObligationCount ?? 0
+                          : state?.obligations?.length || 0;
+                      const agentFocusOwnedTaskCount = backendAgentDashboardMissing ? 'backend required' : agentOwnedTasks.length;
+                      const agentProofChatIds = [
+                        ...inboxProofIds,
+                        ...obligationProofIds,
+                        ...worklogProofIds,
+                        ...(proofSignalAllowed ? agentOwnedTasks.flatMap(task => taskEvidence(task).chatIds) : []),
+                      ].filter(Boolean);
+                      const agentProofTimelineIds = [
+                        ...obligationTimelineIds,
+                        ...worklogTimelineIds,
+                        ...(proofSignalAllowed ? agentOwnedTasks.flatMap(task => taskEvidence(task).timelineIds) : []),
+                      ].filter(Boolean);
+                      const agentFocusOpen = selectedAgentFocusId === agent.id;
                       const agentBackendRunReceipt = agentBackendDashboard?.autonomousRunControlRuns?.latestRun || null;
-                      const workbenchTaskOptions = agentOwnedTasks.length ? agentOwnedTasks : activeProject.tasks.slice(0, 6);
-                      const selectedWorkbenchTaskId = agentWorkDraft.taskId || workbenchTaskOptions[0]?.id || '';
+                      const workbenchBackendContextMissing = backendAgentDashboardRequired && !agentBackendDashboard;
+                      const localWorkbenchOptionsAllowed = !backendAgentDashboardRequired;
+                      const workbenchTaskOptions = agentBackendDashboard
+                        ? agentBackendDashboard.ownedTasks || []
+                        : localWorkbenchOptionsAllowed ? (agentOwnedTasks.length ? agentOwnedTasks : activeProject.tasks.slice(0, 6)) : [];
+                      const selectedWorkbenchTaskId = workbenchTaskOptions.some(task => String(task.id) === String(agentWorkDraft.taskId))
+                        ? agentWorkDraft.taskId
+                        : workbenchTaskOptions[0]?.id || '';
                       const selectedWorkbenchArtifactType = agentWorkDraft.artifactType || 'discovery-report';
                       const workbenchRevisionDefaults = agentWorkbenchRevisionDefaults(agent.id, agentWorkDraft, selectedWorkbenchArtifactType);
                       const workbenchReviewOptions = workbenchRevisionDefaults.reviewOptions;
@@ -26333,29 +30865,50 @@ export default function EngineWorkspace() {
                       const latestWorkbenchReceipt = agentWorkDraft.lastReceipt || null;
                       const latestWorkbenchReceiptFailed = latestWorkbenchReceipt?.status === 'failed'
                         || latestWorkbenchReceipt?.localProofCreated === false;
-                      const focusManagerIds = Array.from(new Set([state?.managerId, ...(state?.peerManagerIds || [])].filter(Boolean)));
-                      const focusManagedIds = Array.from(new Set([...(state?.managedIds || agent.managedIds || []), ...(state?.peerManagedIds || [])].filter(Boolean)));
-                      const focusManagerNames = agentBackendDashboard?.management?.managerNames?.length
-                        ? agentBackendDashboard.management.managerNames
-                        : focusManagerIds.map(id => agentNameById[id] || id).filter(Boolean);
-                      const focusManagedNames = [
+                      const workbenchWriteDisabled = !backendCommandAvailable || backendStation.loading || workbenchBackendContextMissing;
+                      const localFocusState = localAgentSignalProofAllowed ? state || {} : {};
+                      const focusManagerIds = Array.from(new Set([localFocusState?.managerId, ...(localFocusState?.peerManagerIds || [])].filter(Boolean)));
+                      const focusManagedIds = Array.from(new Set([...(localFocusState?.managedIds || agent.managedIds || []), ...(localFocusState?.peerManagedIds || [])].filter(Boolean)));
+                      const backendFocusManagerNames = agentBackendDashboard?.management?.managerNames || [];
+                      const backendFocusManagedNames = [
                         ...(agentBackendDashboard?.management?.managedNames || []),
                         ...(agentBackendDashboard?.management?.peerManagedNames || []),
-                      ].length
-                        ? Array.from(new Set([
-                          ...(agentBackendDashboard?.management?.managedNames || []),
-                          ...(agentBackendDashboard?.management?.peerManagedNames || []),
-                        ]))
+                      ];
+                      const focusManagementUsesBackend = Boolean(agentBackendDashboard);
+                      const focusManagerNames = focusManagementUsesBackend
+                        ? backendFocusManagerNames
+                        : focusManagerIds.map(id => agentNameById[id] || id).filter(Boolean);
+                      const focusManagedNames = focusManagementUsesBackend
+                        ? Array.from(new Set(backendFocusManagedNames))
                         : focusManagedIds.map(id => agentNameById[id] || id).filter(Boolean);
+                      const focusPeerManagedCount = focusManagementUsesBackend
+                        ? agentBackendDashboard?.management?.peerManagedCount ?? agentBackendDashboard?.management?.peerManagedNames?.length ?? 0
+                        : (localFocusState?.peerManagedIds || []).length;
+                      const focusPeerManagerCount = focusManagementUsesBackend
+                        ? agentBackendDashboard?.management?.peerManagerCount ?? agentBackendDashboard?.management?.managerNames?.length ?? 0
+                        : (localFocusState?.peerManagerIds || []).length;
+                      const localAgentManagementProofIdsAllowed = !backendAgentDashboardRequired;
                       const agentManagementProofIds = agentBackendDashboard?.proof?.managementProofLogIds?.length
                         ? agentBackendDashboard.proof.managementProofLogIds
-                        : (activeProject.logs || [])
+                        : localAgentManagementProofIdsAllowed ? (activeProject.logs || [])
                           .filter(log => (
                             ['management-check-in', 'peer-management-check-in', 'review-sweep', 'management-response'].includes(log.eventType)
                             && (log.agentId === agent.id || log.targetAgentId === agent.id || log.agent === agent.name)
                           ))
                           .map(log => log.id)
-                          .filter(Boolean);
+                          .filter(Boolean)
+                          : [];
+                      const localOwnedTaskFallbackRows = localAgentSignalProofAllowed
+                        ? [{ id: `${agent.id}_monitor`, text: state?.currentPlan?.next || 'Monitor project lane and publish useful progress', status: 'monitoring' }]
+                        : [];
+                      const agentOwnedTaskEvidenceRows = agentOwnedTasks.length ? agentOwnedTasks : localOwnedTaskFallbackRows;
+                      const agentStatusDotClass = backendAgentDashboardMissing
+                        ? 'bg-[#8f1e18]'
+                        : agentTeamDisplayState?.status === 'blocked'
+                          ? 'bg-[#8f1e18]'
+                          : agentTeamDisplayState
+                            ? 'bg-green-700'
+                            : 'bg-[#b9782b]';
                       return (
                       <div key={agent.id} className="flex flex-col gap-3 border-b border-[#d8c99f] pb-2">
                         <div className="min-w-0 w-full">
@@ -26364,26 +30917,31 @@ export default function EngineWorkspace() {
                             {agent.isLeader && <span className="node-status-tag bg-[#8f1e18] text-white">Leader</span>}
                           </div>
                           <div className="font-mono text-[9px] uppercase tracking-widest text-[#7d6a49]">{agent.role}</div>
-                          {state && (
+                          {backendAgentDashboardMissing && (
+                            <div data-testid={`agent-team-dashboard-required-${agent.id}`} className="mt-2 border border-[#8f1e18] bg-red-50 px-2 py-1 font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">
+                              Backend Agent Dashboard required before showing confirmed Agent state.
+                            </div>
+                          )}
+                          {agentTeamDisplayState && (
                             <div className="mt-2 space-y-1">
                               <div className="flex flex-wrap gap-1.5">
-                                <span className="node-status-tag bg-[#251b13] text-[#efe2bd]">{state.status}</span>
-                                {state.managerId && <span className="node-status-tag bg-[#d8c99f] text-[#251b13]">Managed by {activeProject.team.find(item => item.id === state.managerId)?.name || state.managerId}</span>}
-                                {state.managedIds?.length > 0 && <span className="node-status-tag bg-[#59684b] text-white">Manages {state.managedIds.length}</span>}
-                                {state.peerManagedIds?.length > 0 && <span className="node-status-tag bg-[#b9782b] text-white">Peer manages {state.peerManagedIds.length}</span>}
-                                {state.peerManagerIds?.length > 0 && <span className="node-status-tag bg-[#efe2bd] text-[#251b13]">Peer managed</span>}
+                                <span className="node-status-tag bg-[#251b13] text-[#efe2bd]">{agentTeamDisplayState.status || 'synced'}</span>
+                                {agentTeamDisplayState.managerId && <span className="node-status-tag bg-[#d8c99f] text-[#251b13]">Managed by {activeProject.team.find(item => item.id === agentTeamDisplayState.managerId)?.name || agentTeamDisplayState.managerId}</span>}
+                                {agentTeamDisplayState.managedIds?.length > 0 && <span className="node-status-tag bg-[#59684b] text-white">Manages {agentTeamDisplayState.managedIds.length}</span>}
+                                {agentTeamDisplayState.peerManagedIds?.length > 0 && <span className="node-status-tag bg-[#b9782b] text-white">Peer manages {agentTeamDisplayState.peerManagedIds.length}</span>}
+                                {agentTeamDisplayState.peerManagerIds?.length > 0 && <span className="node-status-tag bg-[#efe2bd] text-[#251b13]">Peer managed</span>}
                               </div>
                               <div className="font-mono text-[8px] uppercase tracking-widest text-[#9b875c] leading-relaxed">
-                                Plan: {state.currentPlan?.focus || 'monitor'} / inbox {state.inbox?.length || 0} / obligations {state.obligations?.length || 0} / worklog {state.worklog?.length || 0}
+                                Plan: {agentTeamDisplayState.currentPlan?.focus || 'monitor'} / inbox {agentTeamDisplayState.inbox?.length || 0} / obligations {agentTeamDisplayState.obligations?.length || 0} / worklog {agentTeamDisplayState.worklog?.length || 0}
                               </div>
-                              {state.currentPlan?.routine && (
+                              {agentTeamDisplayState.currentPlan?.routine && (
                                 <div className="font-mono text-[8px] uppercase tracking-widest text-[#6b5a3d] leading-relaxed">
-                                  Routine: {state.currentPlan.routine.label} / {state.currentPlan.routine.artifact}
+                                  Routine: {agentTeamDisplayState.currentPlan.routine.label} / {agentTeamDisplayState.currentPlan.routine.artifact}
                                 </div>
                               )}
-                              {latestAgentWorker && (
+                              {displayLatestAgentWorker && (
                                 <div data-testid={`agent-priority-${agent.id}`} className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18] leading-relaxed">
-                                  Priority {latestAgentWorker.managementPriority || 0} / {latestAgentWorker.trigger || 'agent-worker'}{priorityReasons.length ? ` / ${priorityReasons.slice(0, 2).join(' / ')}` : ' / routine cadence'}{latestAgentWorker.managementResponseCount ? ` / RESPONDED TO ${(latestAgentWorker.managementResponseTargetIds || []).map(id => agentNameById[id] || id).filter(Boolean).join(' / ') || 'manager'}` : ''}
+                                  Priority {displayAgentWorkerManagementPriority} / {displayLatestAgentWorker.trigger || 'agent-worker'}{priorityReasons.length ? ` / ${priorityReasons.slice(0, 2).join(' / ')}` : ' / routine cadence'}{displayLatestAgentWorker.managementResponseCount ? ` / RESPONDED TO ${(displayLatestAgentWorker.managementResponseTargetIds || []).map(id => agentNameById[id] || id).filter(Boolean).join(' / ') || 'manager'}` : ''}
                                 </div>
                               )}
                               <div data-testid={`agent-state-detail-${agent.id}`} className="grid grid-cols-1 md:grid-cols-3 gap-2 pt-2">
@@ -26429,7 +30987,7 @@ export default function EngineWorkspace() {
                                 </div>
                                 <div className="border-t border-[#d8c99f] pt-1 min-w-0">
                                   <div className="font-mono text-[7px] uppercase tracking-widest text-[#8f1e18]">Latest Worklog</div>
-                                  <div className="font-mono text-[8px] text-[#4d412d] leading-relaxed break-words">{latestWorklog?.text || state.currentPlan?.next || 'waiting'}</div>
+                                  <div className="font-mono text-[8px] text-[#4d412d] leading-relaxed break-words">{latestWorklog?.text || agentTeamDisplayState.currentPlan?.next || 'waiting'}</div>
                                   <div className="mt-1 flex flex-wrap gap-1">
                                     {worklogProofIds.length > 0 && (
                                       <button
@@ -26455,7 +31013,7 @@ export default function EngineWorkspace() {
                                 </div>
                               </div>
                               <div className="font-mono text-[8px] uppercase tracking-widest text-[#7d6a49] leading-relaxed">
-                                Next Agent Run: {state.nextAgentRunAt ? new Date(state.nextAgentRunAt).toLocaleString() : 'not scheduled'}
+                                Next Agent Run: {agentTeamDisplayState.nextAgentRunAt ? new Date(agentTeamDisplayState.nextAgentRunAt).toLocaleString() : 'not scheduled'}
                               </div>
                               <button
                                 type="button"
@@ -26480,7 +31038,7 @@ export default function EngineWorkspace() {
                                     </div>
                                     <div className="flex shrink-0 flex-col items-start gap-2 md:items-end">
                                       <div className="flex flex-wrap items-center gap-1.5 md:justify-end">
-                                        <span className="node-status-tag bg-[#251b13] text-[#efe2bd]">{state.status || 'monitoring'}</span>
+                                        <span className="node-status-tag bg-[#251b13] text-[#efe2bd]">{agentFocusState.status || 'monitoring'}</span>
                                         <span
                                           data-testid={`agent-focus-dashboard-source-${agent.id}`}
                                           className={`node-status-tag ${
@@ -26510,19 +31068,19 @@ export default function EngineWorkspace() {
                                   <div className="mt-3 grid grid-cols-1 md:grid-cols-4 gap-2">
                                     <div className="border border-[#d8c99f] bg-[#efe2bd]/55 px-2 py-2">
                                       <div className="font-mono text-[7px] uppercase tracking-widest text-[#8f1e18]">Current Plan</div>
-                                      <div className="font-serif text-base leading-tight">{state.currentPlan?.focus || 'monitor project lane'}</div>
+                                      <div className="font-serif text-base leading-tight">{agentFocusCurrentPlan}</div>
                                     </div>
                                     <div className="border border-[#d8c99f] bg-[#efe2bd]/55 px-2 py-2">
                                       <div className="font-mono text-[7px] uppercase tracking-widest text-[#8f1e18]">Open Inbox</div>
-                                      <div className="font-serif text-base leading-tight">{state.inbox?.length || 0} item{(state.inbox?.length || 0) === 1 ? '' : 's'}</div>
+                                      <div className="font-serif text-base leading-tight">{agentFocusInboxCount}{typeof agentFocusInboxCount === 'number' ? ` item${agentFocusInboxCount === 1 ? '' : 's'}` : ''}</div>
                                     </div>
                                     <div className="border border-[#d8c99f] bg-[#efe2bd]/55 px-2 py-2">
                                       <div className="font-mono text-[7px] uppercase tracking-widest text-[#8f1e18]">Obligations</div>
-                                      <div className="font-serif text-base leading-tight">{state.obligations?.length || 0} item{(state.obligations?.length || 0) === 1 ? '' : 's'}</div>
+                                      <div className="font-serif text-base leading-tight">{agentFocusObligationCount}{typeof agentFocusObligationCount === 'number' ? ` item${agentFocusObligationCount === 1 ? '' : 's'}` : ''}</div>
                                     </div>
                                     <div className="border border-[#d8c99f] bg-[#efe2bd]/55 px-2 py-2">
                                       <div className="font-mono text-[7px] uppercase tracking-widest text-[#8f1e18]">Owned Tasks</div>
-                                      <div className="font-serif text-base leading-tight">{agentOwnedTasks.length} task{agentOwnedTasks.length === 1 ? '' : 's'}</div>
+                                      <div className="font-serif text-base leading-tight">{agentFocusOwnedTaskCount}{typeof agentFocusOwnedTaskCount === 'number' ? ` task${agentFocusOwnedTaskCount === 1 ? '' : 's'}` : ''}</div>
                                     </div>
                                   </div>
                                   {backendAgentDashboardMissing && (
@@ -26594,7 +31152,7 @@ export default function EngineWorkspace() {
                                         </div>
                                         <div>
                                           <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">Routine</div>
-                                          <div className="font-mono text-[8px] leading-tight">{agentBackendDashboard.routine?.label || state.currentPlan?.routine?.label || 'fixed routine'}</div>
+                                          <div className="font-mono text-[8px] leading-tight">{agentBackendDashboard.routine?.label || agentBackendDashboard.state?.currentPlan?.routine?.label || 'fixed routine'}</div>
                                         </div>
                                       </div>
                                       <div className="mt-1 font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">
@@ -26759,6 +31317,11 @@ export default function EngineWorkspace() {
                                         {latestWorkbenchReceiptFailed ? 'write failed' : latestWorkbenchReceipt?.readModels?.included === false ? 'lightweight receipt' : 'backend write'}
                                       </span>
                                     </div>
+                                    {workbenchBackendContextMissing && (
+                                      <div data-testid={`agent-workbench-backend-dashboard-required-${agent.id}`} className="mt-2 border border-[#8f1e18] bg-red-50 px-2 py-1.5 font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">
+                                        Backend Agent Dashboard is required before this real project can submit Agent Workbench evidence, artifacts, drafts, reviews, or final delivery from this Agent context.
+                                      </div>
+                                    )}
                                     <div className="mt-2 grid grid-cols-1 md:grid-cols-2 gap-2">
                                       <select
                                         data-testid={`agent-workbench-artifact-type-${agent.id}`}
@@ -26768,7 +31331,7 @@ export default function EngineWorkspace() {
                                           respondsToReviewId: '',
                                           revisesSubmissionId: '',
                                         })}
-                                        disabled={!backendCommandAvailable || backendStation.loading}
+                                        disabled={workbenchWriteDisabled}
                                         className="w-full border border-[#d8c99f] bg-[#f7edcf] px-2 py-1.5 font-mono text-[8px] uppercase tracking-widest text-[#251b13] disabled:opacity-50"
                                       >
                                         {AGENT_WORKBENCH_ARTIFACT_TYPES.map(type => (
@@ -26779,7 +31342,7 @@ export default function EngineWorkspace() {
                                         data-testid={`agent-workbench-task-${agent.id}`}
                                         value={selectedWorkbenchTaskId || ''}
                                         onChange={(event) => updateAgentWorkDraft(agent.id, { taskId: event.target.value })}
-                                        disabled={!backendCommandAvailable || backendStation.loading || workbenchTaskOptions.length === 0}
+                                        disabled={workbenchWriteDisabled || workbenchTaskOptions.length === 0}
                                         className="w-full border border-[#d8c99f] bg-[#f7edcf] px-2 py-1.5 font-mono text-[8px] uppercase tracking-widest text-[#251b13] disabled:opacity-50"
                                       >
                                         {workbenchTaskOptions.length === 0 && <option value="">No task</option>}
@@ -26797,7 +31360,7 @@ export default function EngineWorkspace() {
                                             revisesSubmissionId: review?.submissionId || '',
                                           });
                                         }}
-                                        disabled={!backendCommandAvailable || backendStation.loading || workbenchReviewOptions.length === 0}
+                                        disabled={workbenchWriteDisabled || workbenchReviewOptions.length === 0}
                                         className="w-full border border-[#d8c99f] bg-[#f7edcf] px-2 py-1.5 font-mono text-[8px] uppercase tracking-widest text-[#251b13] disabled:opacity-50"
                                       >
                                         <option value="">No review link</option>
@@ -26809,7 +31372,7 @@ export default function EngineWorkspace() {
                                         data-testid={`agent-workbench-revises-submission-${agent.id}`}
                                         value={selectedWorkbenchRevisesSubmissionId}
                                         onChange={(event) => updateAgentWorkDraft(agent.id, { revisesSubmissionId: event.target.value })}
-                                        disabled={!backendCommandAvailable || backendStation.loading || workbenchSubmissionOptions.length === 0}
+                                        disabled={workbenchWriteDisabled || workbenchSubmissionOptions.length === 0}
                                         className="w-full border border-[#d8c99f] bg-[#f7edcf] px-2 py-1.5 font-mono text-[8px] uppercase tracking-widest text-[#251b13] disabled:opacity-50"
                                       >
                                         <option value="">No revision target</option>
@@ -26821,7 +31384,7 @@ export default function EngineWorkspace() {
                                         data-testid={`agent-workbench-title-${agent.id}`}
                                         value={agentWorkDraft.title || ''}
                                         onChange={(event) => updateAgentWorkDraft(agent.id, { title: event.target.value })}
-                                        disabled={!backendCommandAvailable || backendStation.loading}
+                                        disabled={workbenchWriteDisabled}
                                         placeholder={`${agent.name} ${selectedWorkbenchArtifactType.replace(/-/g, ' ')}`}
                                         className="w-full min-w-0 border border-[#d8c99f] bg-[#f7edcf] px-2 py-1.5 font-mono text-[8px] text-[#251b13] placeholder:text-[#9b875c] disabled:opacity-50"
                                       />
@@ -26829,7 +31392,7 @@ export default function EngineWorkspace() {
                                         data-testid={`agent-workbench-query-${agent.id}`}
                                         value={agentWorkDraft.query || ''}
                                         onChange={(event) => updateAgentWorkDraft(agent.id, { query: event.target.value })}
-                                        disabled={!backendCommandAvailable || backendStation.loading}
+                                        disabled={workbenchWriteDisabled}
                                         placeholder={`${activeProject.name} evidence query`}
                                         className="w-full min-w-0 border border-[#d8c99f] bg-[#f7edcf] px-2 py-1.5 font-mono text-[8px] text-[#251b13] placeholder:text-[#9b875c] disabled:opacity-50"
                                       />
@@ -26837,7 +31400,7 @@ export default function EngineWorkspace() {
                                         data-testid={`agent-workbench-source-url-${agent.id}`}
                                         value={agentWorkDraft.sourceUrl || ''}
                                         onChange={(event) => updateAgentWorkDraft(agent.id, { sourceUrl: event.target.value })}
-                                        disabled={!backendCommandAvailable || backendStation.loading}
+                                        disabled={workbenchWriteDisabled}
                                         placeholder="https://source.example"
                                         className="w-full min-w-0 border border-[#d8c99f] bg-[#f7edcf] px-2 py-1.5 font-mono text-[8px] text-[#251b13] placeholder:text-[#9b875c] disabled:opacity-50"
                                       />
@@ -26845,7 +31408,7 @@ export default function EngineWorkspace() {
                                         data-testid={`agent-workbench-instruction-${agent.id}`}
                                         value={agentWorkDraft.instruction || ''}
                                         onChange={(event) => updateAgentWorkDraft(agent.id, { instruction: event.target.value })}
-                                        disabled={!backendCommandAvailable || backendStation.loading}
+                                        disabled={workbenchWriteDisabled}
                                         placeholder={`${selectedWorkbenchArtifactType.replace(/-/g, ' ')} instruction`}
                                         className="w-full min-w-0 border border-[#d8c99f] bg-[#f7edcf] px-2 py-1.5 font-mono text-[8px] text-[#251b13] placeholder:text-[#9b875c] disabled:opacity-50"
                                       />
@@ -26854,7 +31417,7 @@ export default function EngineWorkspace() {
                                       data-testid={`agent-workbench-summary-${agent.id}`}
                                       value={agentWorkDraft.summary || ''}
                                       onChange={(event) => updateAgentWorkDraft(agent.id, { summary: event.target.value })}
-                                      disabled={!backendCommandAvailable || backendStation.loading}
+                                      disabled={workbenchWriteDisabled}
                                       rows={3}
                                       placeholder={`${agent.name} work summary`}
                                       className="mt-2 w-full min-w-0 resize-none border border-[#d8c99f] bg-[#f7edcf] px-2 py-1.5 font-mono text-[8px] leading-relaxed text-[#251b13] placeholder:text-[#9b875c] disabled:opacity-50"
@@ -26863,7 +31426,7 @@ export default function EngineWorkspace() {
                                       data-testid={`agent-workbench-body-${agent.id}`}
                                       value={agentWorkDraft.body || ''}
                                       onChange={(event) => updateAgentWorkDraft(agent.id, { body: event.target.value })}
-                                      disabled={!backendCommandAvailable || backendStation.loading}
+                                      disabled={workbenchWriteDisabled}
                                       rows={4}
                                       placeholder={`${selectedWorkbenchArtifactType.replace(/-/g, ' ')} body`}
                                       className="mt-2 w-full min-w-0 resize-none border border-[#d8c99f] bg-[#f7edcf] px-2 py-1.5 font-mono text-[8px] leading-relaxed text-[#251b13] placeholder:text-[#9b875c] disabled:opacity-50"
@@ -26873,7 +31436,7 @@ export default function EngineWorkspace() {
                                         type="button"
                                         data-testid={`agent-workbench-evidence-${agent.id}`}
                                         onClick={() => runBackendAgentEvidenceSearch(agent.id)}
-                                        disabled={!backendCommandAvailable || backendStation.loading}
+                                        disabled={workbenchWriteDisabled}
                                         className="inline-flex items-center justify-center gap-1.5 border border-[#7b6542] bg-[#efe2bd] px-3 py-1.5 font-mono text-[8px] uppercase tracking-widest text-[#251b13] hover:border-[#251b13] disabled:opacity-40 disabled:cursor-not-allowed"
                                       >
                                         <Search size={11} /> Evidence
@@ -26882,7 +31445,7 @@ export default function EngineWorkspace() {
                                         type="button"
                                         data-testid={`agent-workbench-submit-${agent.id}`}
                                         onClick={() => runBackendAgentArtifactSubmission(agent.id)}
-                                        disabled={!backendCommandAvailable || backendStation.loading}
+                                        disabled={workbenchWriteDisabled}
                                         className="inline-flex items-center justify-center gap-1.5 border border-[#7b6542] bg-[#efe2bd] px-3 py-1.5 font-mono text-[8px] uppercase tracking-widest text-[#251b13] hover:border-[#251b13] disabled:opacity-40 disabled:cursor-not-allowed"
                                       >
                                         <FileText size={11} /> Submit
@@ -26891,7 +31454,7 @@ export default function EngineWorkspace() {
                                         type="button"
                                         data-testid={`agent-workbench-draft-submit-${agent.id}`}
                                         onClick={() => runBackendAgentArtifactDraft(agent.id)}
-                                        disabled={!backendCommandAvailable || backendStation.loading}
+                                        disabled={workbenchWriteDisabled}
                                         className="inline-flex items-center justify-center gap-1.5 border border-[#7b6542] bg-[#efe2bd] px-3 py-1.5 font-mono text-[8px] uppercase tracking-widest text-[#251b13] hover:border-[#251b13] disabled:opacity-40 disabled:cursor-not-allowed"
                                       >
                                         <Sparkles size={11} /> Draft + Submit
@@ -26934,7 +31497,7 @@ export default function EngineWorkspace() {
                                       <div className="border border-[#d8c99f] bg-[#f7edcf] px-2 py-1 min-w-0">
                                         <div className="font-mono text-[7px] uppercase tracking-widest text-[#8f1e18]">Peer Management</div>
                                         <div className="font-mono text-[8px] uppercase tracking-widest text-[#4d412d] leading-relaxed break-words">
-                                          {(state.peerManagedIds || []).length} targets / {(state.peerManagerIds || []).length} managers
+                                          {focusPeerManagedCount} targets / {focusPeerManagerCount} managers
                                         </div>
                                       </div>
                                     </div>
@@ -26951,7 +31514,12 @@ export default function EngineWorkspace() {
                                   </div>
                                   <div data-testid={`agent-focus-owned-tasks-${agent.id}`} className="mt-3 space-y-2">
                                     <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">Owned Task Evidence</div>
-                                    {(agentOwnedTasks.length ? agentOwnedTasks : [{ id: `${agent.id}_monitor`, text: state.currentPlan?.next || 'Monitor project lane and publish useful progress', status: 'monitoring' }]).slice(0, 4).map(task => (
+                                    {agentOwnedTaskEvidenceRows.length === 0 && (
+                                      <div data-testid={`agent-focus-owned-tasks-empty-${agent.id}`} className="border border-[#8f1e18] bg-red-50 px-2 py-1 font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">
+                                        No backend owned task evidence returned yet.
+                                      </div>
+                                    )}
+                                    {agentOwnedTaskEvidenceRows.slice(0, 4).map(task => (
                                       <div key={`agent-focus-task-${agent.id}-${task.id}`} className="border border-[#d8c99f] bg-[#efe2bd]/55 p-2">
                                         <div className="flex items-start justify-between gap-3">
                                           <div className="min-w-0">
@@ -27032,7 +31600,7 @@ export default function EngineWorkspace() {
                           >
                             <Activity size={12} /> Agent Pulse
                           </button>
-                          <div className={`w-2 h-2 rounded-full ${agentStates[agent.id]?.status === 'blocked' ? 'bg-[#8f1e18]' : 'bg-green-700'}`} />
+                          <div className={`w-2 h-2 rounded-full ${agentStatusDotClass}`} />
                         </div>
                       </div>
                     );
@@ -27048,6 +31616,20 @@ export default function EngineWorkspace() {
               <div className="font-mono text-[10px] uppercase tracking-[0.26em] text-[#8f1e18] mb-4">Recent Commit Line</div>
               <div className="relative pl-7 space-y-5">
                 <div className="absolute left-[7px] top-2 bottom-2 w-px bg-[#8f1e18]" />
+                {recentLineBackendRequired && (
+                  <div data-testid="recent-commit-line-backend-required" className="relative flex flex-col gap-2 border border-[#8f1e18] bg-red-50 p-4 font-mono text-[8px] uppercase tracking-widest text-[#8f1e18] md:flex-row md:items-center md:justify-between">
+                    <span>Backend timeline read model is required before this real project can show recent commit history.</span>
+                    <button
+                      type="button"
+                      data-testid="recent-commit-line-sync-timeline-events"
+                      onClick={() => syncBackendTimelineAndEvents({ silent: false, projectId: activeProject.id })}
+                      disabled={backendStation.loading}
+                      className="inline-flex shrink-0 items-center justify-center gap-1 border border-[#8f1e18] bg-red-50 px-2 py-1 text-[#8f1e18] hover:border-[#251b13] hover:text-[#251b13] disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      <GitCommit size={10} /> Sync Timeline
+                    </button>
+                  </div>
+                )}
                 {recentLine.map(event => (
                   <div key={event.id} className="relative bg-[#f7edcf]/75 border border-[#b8a57d] p-4">
                     <div className="absolute -left-[26px] top-5 w-3 h-3 rounded-full bg-[#8f1e18] ring-4 ring-[#efe2bd]" />
@@ -27462,6 +32044,26 @@ export default function EngineWorkspace() {
       ? mergeProjectMessages(localVisibleMessages, backendVisibleMessages)
         .filter(message => message.channelId === activeChannelId)
       : (backendChannelTranscriptRequired ? [] : localVisibleMessages);
+    const localChatCardProofRowsAllowed = !backendChannelTranscriptRequired;
+    const chatBackendManagerDashboard = String(backendStation.managerDashboard?.projectId || '').toLowerCase() === String(activeProject.id || '').toLowerCase()
+      ? backendStation.managerDashboard
+      : null;
+    const backendCollaborationProofReadModel = chatBackendManagerDashboard
+      && Array.isArray(chatBackendManagerDashboard.evidenceSearches?.rows)
+      && Array.isArray(chatBackendManagerDashboard.submissions?.rows)
+      && Array.isArray(chatBackendManagerDashboard.submissionReviews?.rows)
+      && Array.isArray(chatBackendManagerDashboard.evidenceSourceReviews?.rows)
+      ? {
+        evidenceRows: chatBackendManagerDashboard.evidenceSearches.rows,
+        submissionRows: chatBackendManagerDashboard.submissions.rows,
+        reviewRows: chatBackendManagerDashboard.submissionReviews.rows,
+        sourceReviewRows: chatBackendManagerDashboard.evidenceSourceReviews.rows,
+      }
+      : null;
+    const chatCardEvidenceRows = backendCollaborationProofReadModel?.evidenceRows || (localChatCardProofRowsAllowed ? activeProject.evidenceSearches || [] : []);
+    const chatCardSubmissionRows = backendCollaborationProofReadModel?.submissionRows || (localChatCardProofRowsAllowed ? activeProject.agentSubmissions || [] : []);
+    const chatCardReviewRows = backendCollaborationProofReadModel?.reviewRows || (localChatCardProofRowsAllowed ? activeProject.submissionReviews || [] : []);
+    const chatCardSourceReviewRows = backendCollaborationProofReadModel?.sourceReviewRows || (localChatCardProofRowsAllowed ? activeProject.evidenceSourceReviews || [] : []);
     const activeTranscriptSearchKey = `${activeProject.id}:${activeChannelId}`;
     const transcriptSearchResult = transcriptSearchResults[activeTranscriptSearchKey]
       || backendStation.transcriptSearches?.[activeTranscriptSearchKey]
@@ -27545,6 +32147,14 @@ export default function EngineWorkspace() {
     };
     const canCreateLocalChannel = allowLocalRuntimeFallbackForActiveProject(activeProject);
     const canCreateChannel = Boolean(activeProject) && (canCreateLocalChannel || shouldAttemptBackendProjectWrite(activeProject));
+    const canSendLocalChat = allowLocalRuntimeFallbackForActiveProject(activeProject);
+    const canSendChat = Boolean(activeProject)
+      && Boolean(chatInput.trim())
+      && (canSendLocalChat || shouldAttemptBackendProjectWrite(activeProject))
+      && !backendStation.loading;
+    const backendChatSendRequired = Boolean(activeProject)
+      && !canSendLocalChat
+      && !shouldAttemptBackendProjectWrite(activeProject);
 
     const shouldMerge = (prev, curr) => {
       if (!prev || prev.author !== curr.author) return false;
@@ -27575,7 +32185,7 @@ export default function EngineWorkspace() {
       if (!['submission', 'submission-review', 'evidence-search', 'evidence-source-review'].includes(message.type)) return null;
       const projectId = activeProject.id;
       if (message.type === 'submission') {
-        const submission = (activeProject.agentSubmissions || []).find(item => String(item.id || '') === String(message.submissionId || '')) || {};
+        const submission = chatCardSubmissionRows.find(item => String(item.id || '') === String(message.submissionId || '')) || {};
         const artifactType = submission.artifactType || message.artifactType || 'artifact';
         const isRevision = artifactType === 'revision-note' || submission.respondsToReviewId || submission.revisesSubmissionId;
         const isFinal = artifactType === 'final-deliverable' || submission.status === 'final';
@@ -27595,8 +32205,8 @@ export default function EngineWorkspace() {
         };
       }
       if (message.type === 'submission-review') {
-        const review = (activeProject.submissionReviews || []).find(item => String(item.id || '') === String(message.reviewId || '')) || {};
-        const submission = (activeProject.agentSubmissions || []).find(item => String(item.id || '') === String(message.submissionId || review.submissionId || '')) || {};
+        const review = chatCardReviewRows.find(item => String(item.id || '') === String(message.reviewId || '')) || {};
+        const submission = chatCardSubmissionRows.find(item => String(item.id || '') === String(message.submissionId || review.submissionId || '')) || {};
         return {
           kind: 'submission-review',
           label: 'Submission Review',
@@ -27613,7 +32223,7 @@ export default function EngineWorkspace() {
         };
       }
       if (message.type === 'evidence-source-review') {
-        const review = (activeProject.evidenceSourceReviews || []).find(item => String(item.id || '') === String(message.reviewId || '')) || {};
+        const review = chatCardSourceReviewRows.find(item => String(item.id || '') === String(message.reviewId || '')) || {};
         return {
           kind: 'evidence-source-review',
           label: 'Source Review',
@@ -27629,7 +32239,7 @@ export default function EngineWorkspace() {
           subject: review.sourceKey || 'source',
         };
       }
-      const evidenceSearch = (activeProject.evidenceSearches || []).find(item => String(item.id || '') === String(message.evidenceSearchId || '')) || {};
+      const evidenceSearch = chatCardEvidenceRows.find(item => String(item.id || '') === String(message.evidenceSearchId || '')) || {};
       return {
         kind: 'evidence-search',
         label: 'Evidence Search',
@@ -27700,7 +32310,15 @@ export default function EngineWorkspace() {
             </div>
             {!canCreateChannel && (
               <div data-testid="backend-channel-create-required" className="border-b border-[#3a2a1c] bg-[#251b13] px-4 py-2 font-mono text-[8px] uppercase tracking-widest text-[#bcae86] leading-relaxed">
-                Backend channel contract unavailable; local-only rooms are disabled for this project.
+                <div>Backend target required before creating real transcript rooms; local-only rooms are disabled for this project.</div>
+                <button
+                  type="button"
+                  data-testid="backend-channel-create-open-deployment"
+                  onClick={() => { setSettingsTab('deployment'); setSettingsOpen(true); }}
+                  className="mt-2 inline-flex items-center gap-1 border border-[#7b6542] px-2 py-1 text-[#efe2bd] hover:border-[#efe2bd]"
+                >
+                  Open Settings Deployment
+                </button>
               </div>
             )}
 
@@ -28211,6 +32829,19 @@ export default function EngineWorkspace() {
                   ))}
                 </div>
               )}
+              {backendChatSendRequired && (
+                <div data-testid="backend-chat-send-required" className="mb-2 border border-[#8f1e18] bg-[#251b13] px-3 py-2 font-mono text-[8px] uppercase tracking-widest text-[#bcae86] leading-relaxed">
+                  <div>Backend target required before sending real project chat; browser-local chat proof is disabled for this project.</div>
+                  <button
+                    type="button"
+                    data-testid="backend-chat-send-open-deployment"
+                    onClick={() => { setSettingsTab('deployment'); setSettingsOpen(true); }}
+                    className="mt-2 inline-flex items-center gap-1 border border-[#7b6542] px-2 py-1 text-[#efe2bd] hover:border-[#efe2bd]"
+                  >
+                    Open Settings Deployment
+                  </button>
+                </div>
+              )}
               <div className="flex items-center gap-2 bg-[#251b13] border border-[#3a2a1c] rounded-lg px-3 py-2 focus-within:border-[#7b6542] transition-colors">
                 <input
                   ref={chatAttachmentInputRef}
@@ -28234,8 +32865,13 @@ export default function EngineWorkspace() {
                 <input value={chatInput} onChange={handleChatChange} onKeyDown={handleChatKeyDown}
                   placeholder={activeLanguage === 'zh' ? `发送到 #${activeChannel?.name || '频道'}...` : `Message #${activeChannel?.name || 'channel'}...`}
                   className="flex-1 bg-transparent outline-none font-serif text-base text-[#efe2bd] placeholder-[#7d6a49]/60" />
-                <button onClick={submitChatInput}
-                  className="bg-[#8f1e18] hover:bg-[#a62a22] text-white px-4 py-1.5 rounded flex items-center gap-2 font-mono text-[9px] uppercase tracking-widest transition-colors">
+                <button
+                  type="button"
+                  data-testid="project-chat-send"
+                  onClick={submitChatInput}
+                  disabled={!canSendChat}
+                  title={backendChatSendRequired ? 'Configure the backend URL before sending real project chat.' : 'Send project chat'}
+                  className="bg-[#8f1e18] hover:bg-[#a62a22] text-white px-4 py-1.5 rounded flex items-center gap-2 font-mono text-[9px] uppercase tracking-widest transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
                   <Send size={13} /> {chatText('Send')}
                 </button>
               </div>
@@ -28495,6 +33131,26 @@ export default function EngineWorkspace() {
     }
 
     const selected = visibleEvents.find(e => e.id === selectedTimelineEventId) || null;
+    const backendCommandAvailable = shouldAttemptBackendProjectWrite(activeProject);
+    const canRecordTimelineAction = Boolean(selected && backendCommandAvailable && !backendStation.loading);
+    const submitSelectedTimelineAction = async (action = 'note') => {
+      if (!selected) return null;
+      const note = timelineActionDraft.trim();
+      if (['note', 'edit'].includes(action) && !note) return null;
+      const payload = await recordTimelineAction({
+        timelineLogId: selected.id,
+        action,
+        note,
+      });
+      if (payload?.timelineActionReceipt) {
+        setTimelineActionDraft('');
+        setFocusedTimelineProofIds(prev => Array.from(new Set([
+          ...(Array.isArray(prev) ? prev : []),
+          payload.timelineActionReceipt.timelineLogId,
+        ].filter(Boolean))));
+      }
+      return payload;
+    };
     const timelineAgentName = (agentId) => activeProject.team.find(agent => agent.id === agentId || agent.name === agentId)?.name || agentId;
     const timelineDirectTargetNames = selected?.directTargetIds?.map(timelineAgentName).filter(Boolean) || [];
     const selectedNeighborIds = [];
@@ -29132,9 +33788,60 @@ export default function EngineWorkspace() {
                     )}
                   </div>
 
-                  <div data-testid="legacy-timeline-actions-backend-required" className="flex-shrink-0 border-t border-[#2a2118] px-5 py-3">
-                    <div className="border border-[#3a2a1c] bg-[#0d0c0b]/70 px-3 py-2 font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">
-                      Backend timeline action route required before comments, completion, or edits can create proof.
+                  <div data-testid="timeline-actions-backend-contract" className="flex-shrink-0 border-t border-[#2a2118] px-5 py-3">
+                    <div className="grid gap-2">
+                      <div className="flex items-center justify-between gap-3 font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">
+                        <span>Backend timeline action receipt</span>
+                        <span className={backendCommandAvailable ? 'text-[#59684b]' : 'text-[#8f1e18]'}>
+                          {backendCommandAvailable ? '/timeline/actions' : 'backend route required'}
+                        </span>
+                      </div>
+                      <textarea
+                        data-testid="timeline-action-note-input"
+                        value={timelineActionDraft}
+                        onChange={(event) => setTimelineActionDraft(event.target.value)}
+                        placeholder="Record manager note for this timeline node..."
+                        className="min-h-[58px] resize-none border border-[#3a2a1c] bg-[#0d0c0b]/70 px-3 py-2 font-serif text-sm leading-relaxed text-[#efe2bd] outline-none placeholder-[#7d6a49]/70 focus:border-[#bcae86]"
+                      />
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          data-testid="timeline-action-save-note"
+                          onClick={() => submitSelectedTimelineAction('note')}
+                          disabled={!canRecordTimelineAction || !timelineActionDraft.trim()}
+                          className="inline-flex items-center gap-1.5 border border-[#59684b] bg-[#59684b] px-3 py-2 font-mono text-[8px] uppercase tracking-widest text-white disabled:cursor-not-allowed disabled:opacity-40">
+                          <Save size={12} /> Save Note
+                        </button>
+                        <button
+                          type="button"
+                          data-testid="timeline-action-acknowledge"
+                          onClick={() => submitSelectedTimelineAction('acknowledge')}
+                          disabled={!canRecordTimelineAction}
+                          className="inline-flex items-center gap-1.5 border border-[#3a2a1c] px-3 py-2 font-mono text-[8px] uppercase tracking-widest text-[#bcae86] hover:border-[#7b6542] hover:text-[#efe2bd] disabled:cursor-not-allowed disabled:opacity-40">
+                          <CheckCircle2 size={12} /> Ack
+                        </button>
+                        <button
+                          type="button"
+                          data-testid="timeline-action-complete"
+                          onClick={() => submitSelectedTimelineAction('complete')}
+                          disabled={!canRecordTimelineAction}
+                          className="inline-flex items-center gap-1.5 border border-[#59684b] px-3 py-2 font-mono text-[8px] uppercase tracking-widest text-[#c7d7b7] hover:border-[#8aa073] hover:text-white disabled:cursor-not-allowed disabled:opacity-40">
+                          <PackageCheck size={12} /> Mark Complete
+                        </button>
+                        <button
+                          type="button"
+                          data-testid="timeline-action-edit"
+                          onClick={() => submitSelectedTimelineAction('edit')}
+                          disabled={!canRecordTimelineAction || !timelineActionDraft.trim()}
+                          className="inline-flex items-center gap-1.5 border border-[#3a2a1c] px-3 py-2 font-mono text-[8px] uppercase tracking-widest text-[#bcae86] hover:border-[#7b6542] hover:text-[#efe2bd] disabled:cursor-not-allowed disabled:opacity-40">
+                          <FileSignature size={12} /> Edit Note
+                        </button>
+                        {backendTimelineActionReceipt?.id && (
+                          <div data-testid="timeline-action-latest-receipt" className="min-w-0 flex-1 break-all border border-[#3a2a1c] bg-[#0d0c0b]/70 px-3 py-2 font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">
+                            Latest receipt: {backendTimelineActionReceipt.id}
+                          </div>
+                        )}
+                      </div>
                     </div>
                   </div>
                 </>
@@ -29239,12 +33946,26 @@ export default function EngineWorkspace() {
         },
       };
     };
-    const backendFlowGraph = backendStation.managerFlowGraph || backendStation.managerReadyPackage?.managerFlowGraph || null;
-    const backendTimelineProofMap = backendStation.managerDashboard?.readinessProofMap
-      || backendStation.managerReadyPackage?.managerDashboard?.readinessProofMap
-      || backendStation.managerReadyPackage?.readinessProofMap
+    const activeFlowGraphProjectId = String(activeProject.id || '').toLowerCase();
+    const backendFlowGraphFromStation = String(backendStation.managerFlowGraph?.projectId || '').toLowerCase() === activeFlowGraphProjectId
+      ? backendStation.managerFlowGraph
+      : null;
+    const backendReadyPackageForFlowGraph = String(backendStation.managerReadyPackage?.projectId || '').toLowerCase() === activeFlowGraphProjectId
+      ? backendStation.managerReadyPackage
+      : null;
+    const backendFlowGraph = backendFlowGraphFromStation || backendReadyPackageForFlowGraph?.managerFlowGraph || null;
+    const backendDashboardForFlowGraph = String(backendStation.managerDashboard?.projectId || '').toLowerCase() === activeFlowGraphProjectId
+      ? backendStation.managerDashboard
+      : null;
+    const backendProofMapFromStationForFlowGraph = String(backendStation.readinessProofMap?.projectId || '').toLowerCase() === activeFlowGraphProjectId
+      ? backendStation.readinessProofMap
+      : null;
+    const backendReadinessProofMapForFlowGraph = backendProofMapFromStationForFlowGraph
+      || backendDashboardForFlowGraph?.readinessProofMap
+      || backendReadyPackageForFlowGraph?.managerDashboard?.readinessProofMap
+      || backendReadyPackageForFlowGraph?.readinessProofMap
       || null;
-    const graphProjectMatches = !backendFlowGraph?.projectId || backendFlowGraph.projectId === activeProject.id;
+    const backendTimelineProofMap = backendReadinessProofMapForFlowGraph || null;
     const buildFallbackFlowGraph = () => {
       const agentStatusNodes = activeProject.team.map((agent, index) => {
         const state = activeProject.agentStates?.[agent.id] || {};
@@ -29349,7 +34070,7 @@ export default function EngineWorkspace() {
           agentStates: Object.keys(activeProject.agentStates || {}).length,
           kickoffCharter: Boolean(activeProject.kickoffCharter),
           changeLedger: activeProject.changeLedger?.length || 0,
-          managerDashboard: Boolean(backendStation.managerDashboard),
+          managerDashboard: Boolean(backendDashboardForFlowGraph),
         },
         nodes,
         edges,
@@ -29358,7 +34079,7 @@ export default function EngineWorkspace() {
     const backendOnline = backendStation.connectionStatus === 'online';
     const backendCommandAvailable = shouldAttemptBackendProjectWrite(activeProject);
     const allowFlowFrontendFallbacks = allowLocalRuntimeFallbackForActiveProject(activeProject);
-    const backendFlowGraphReady = graphProjectMatches && backendFlowGraph?.nodes?.length;
+    const backendFlowGraphReady = Boolean(backendFlowGraph?.nodes?.length);
     const missingBackendFlowGraph = {
       projectId: activeProject.id,
       schemaVersion: 'manager-flow-graph/missing-backend',
@@ -29384,8 +34105,8 @@ export default function EngineWorkspace() {
       },
       dataSources: {
         managerFlowGraphRoute: `/projects/${activeProject.id}/manager-flow-graph`,
-        managerReadyPackage: Boolean(backendStation.managerReadyPackage),
-        managerDashboard: Boolean(backendStation.managerDashboard),
+        managerReadyPackage: Boolean(backendReadyPackageForFlowGraph),
+        managerDashboard: Boolean(backendDashboardForFlowGraph),
       },
       nodes: [],
       edges: [],
@@ -29843,6 +34564,15 @@ export default function EngineWorkspace() {
                 <div className="mt-2 font-serif text-sm leading-relaxed text-[#d8c99f]">
                   This real project is connected to the backend, so frontend-generated flow nodes are suppressed until `/manager-flow-graph` returns a read model.
                 </div>
+                <button
+                  type="button"
+                  data-testid="manager-flow-backend-required-sync"
+                  onClick={() => syncBackendManagerFlowGraph({ silent: false })}
+                  disabled={!backendCommandAvailable || backendStation.loading}
+                  className="mt-3 inline-flex items-center gap-1.5 border border-[#8f1e18] px-3 py-1.5 font-mono text-[8px] uppercase tracking-widest text-[#efe2bd] hover:border-[#d8c99f] disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  <Database size={11} /> Sync Graph
+                </button>
               </div>
             )}
 
@@ -29926,6 +34656,12 @@ export default function EngineWorkspace() {
                 const commitMessage = compactText(node.commitMessage || node.summary || node.title, zoomDetail === 'compact' ? 72 : zoomDetail === 'medium' ? 92 : 118);
                 const fullCommitMessage = node.commitMessage || node.summary || node.title;
                 const attachmentCount = node.attachments?.length || node.submission?.attachmentIds?.length || 0;
+                const artifactTypeLabel = node.artifactType
+                  || node.submission?.artifactType
+                  || node.attachmentType
+                  || node.attachments?.[0]?.type
+                  || node.metadata?.artifactType
+                  || '';
                 return (
                   <button
                     key={node.id}
@@ -29955,7 +34691,9 @@ export default function EngineWorkspace() {
                     <div className="flex shrink-0 items-center justify-between gap-2 border-t border-[#2a2118] bg-[#0d0c0b]/78 px-3 py-2">
                       <div className="min-w-0">
                         <div className="truncate font-mono text-[8px] uppercase tracking-widest text-[#bcae86]">{committersLabel(node)}</div>
-                        <div className="truncate font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">{primarySubmitter.role} / {attachmentCount} attachments</div>
+                        <div className="truncate font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">
+                          {artifactTypeLabel ? `${artifactTypeLabel} / ` : ''}{primarySubmitter.role} / {attachmentCount} attachments
+                        </div>
                       </div>
                       <span className={`node-status-tag shrink-0 ${node.status === 'blocked' ? 'bg-[#8f1e18] text-white' : node.status === 'confirmed' ? 'bg-green-700 text-white' : node.status === 'resolved' ? 'bg-[#59684b] text-white' : 'bg-[#3a2a1c] text-[#bcae86]'}`}>
                         {node.importance}
@@ -30423,7 +35161,7 @@ export default function EngineWorkspace() {
             <p className="font-mono text-[10px] text-gray-500 tracking-widest mt-1">SECURE CONNECTION ESTABLISHED</p>
           </div>
           
-          <button onClick={endMeeting} className="absolute top-6 right-6 font-mono text-xs border border-red-900 text-red-500 px-4 py-2 hover:bg-red-900 hover:text-white transition-colors flex items-center gap-2 z-20 bg-[#0d0c0b]">
+          <button data-testid="legacy-war-room-end-meeting" onClick={endMeeting} className="absolute top-6 right-6 font-mono text-xs border border-red-900 text-red-500 px-4 py-2 hover:bg-red-900 hover:text-white transition-colors flex items-center gap-2 z-20 bg-[#0d0c0b]">
             <StopCircle size={14} /> End Protocol
           </button>
         </div>
@@ -30434,7 +35172,7 @@ export default function EngineWorkspace() {
            {/* Transcript Area (Professional Steno style) */}
            <div className="flex-1 overflow-y-auto py-8 warroom-scrollbar pr-4 flex flex-col gap-6">
               {meetingState === 'idle' ? (
-                <div className="h-full flex flex-col items-center justify-center text-gray-600 group cursor-pointer" onClick={startMeeting}>
+                <div data-testid="legacy-war-room-start-meeting" className="h-full flex flex-col items-center justify-center text-gray-600 group cursor-pointer" onClick={startMeeting}>
                    <Fingerprint size={48} className="mb-4 opacity-30 group-hover:opacity-100 transition-opacity group-hover:text-white" />
                    <p className="font-mono text-xs tracking-widest uppercase">Awaiting Director Authentication to Start</p>
                 </div>
@@ -30511,6 +35249,7 @@ export default function EngineWorkspace() {
                    <CornerDownRight size={16} className="text-black" />
                  </div>
                  <input 
+                   data-testid="legacy-war-room-terminal-input"
                    autoFocus
                    type="text"
                    value={terminalInput}

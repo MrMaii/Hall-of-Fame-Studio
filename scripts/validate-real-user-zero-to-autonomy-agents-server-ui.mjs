@@ -8,9 +8,10 @@ import { chromium } from 'playwright';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const distDir = resolve(repoRoot, 'dist');
-const tempRoot = resolve(repoRoot, '.tmp', 'real-user-zero-to-autonomy-agents-server-ui-validate');
+const tempRoot = resolve(repoRoot, '.tmp', `real-user-zero-to-autonomy-agents-server-ui-validate-${process.pid}`);
 const serverScript = resolve(repoRoot, 'scripts', 'agent-project-server.mjs');
 const secretVaultRecordsFile = resolve(tempRoot, 'secret-vault-records.json');
+const boundWorkspaceRoot = resolve(tempRoot, 'bound-workspace');
 const backendStorageKey = 'hall_of_fame_studio.agent_backend_url.v1';
 const languageStorageKey = 'hall_of_fame_studio.language.v1';
 const projectId = 'p_roundtable_001';
@@ -325,13 +326,32 @@ async function assertPanelTextIncludes(page, testId, expectedValues = [], messag
 }
 
 async function fillControlledInput(page, testId, value) {
-  const input = page.getByTestId(testId);
-  await input.fill(value);
-  await page.waitForFunction(
-    ({ selector, expected }) => document.querySelector(selector)?.value === expected,
-    { selector: `[data-testid="${testId}"]`, expected: value },
-    { timeout: 10000 },
-  );
+  let actual = '';
+  for (let attempt = 1; attempt <= 4; attempt += 1) {
+    const input = page.getByTestId(testId);
+    try {
+      await input.waitFor({ state: 'visible', timeout: 10000 });
+      await input.scrollIntoViewIfNeeded({ timeout: 10000 });
+      await input.fill(value);
+      await page.waitForTimeout(200 * attempt);
+      actual = await input.inputValue().catch(() => '<unreadable>');
+      if (actual === value) return;
+    } catch (error) {
+      actual = `<${error.message || String(error)}>`;
+      await page.waitForTimeout(250 * attempt);
+    }
+  }
+  throw new Error(`Controlled input ${testId} did not retain filled value. Expected ${value}, actual ${actual}.`);
+}
+
+async function waitForSettingsProviderIdle(page) {
+  const syncStatusButton = page.getByRole('button', { name: /Sync status/i });
+  await syncStatusButton.waitFor({ state: 'visible', timeout: 10000 });
+  await page.waitForFunction(() => {
+    const button = Array.from(document.querySelectorAll('button'))
+      .find((element) => /Sync status/i.test(element.textContent || ''));
+    return Boolean(button && !button.disabled);
+  }, null, { timeout: 15000 });
 }
 
 async function scrollDashboardToStation(page) {
@@ -467,6 +487,7 @@ const backendChild = spawn(process.execPath, [serverScript], {
 let browser = null;
 const consoleDiagnostics = [];
 const backendResponses = [];
+const backendCriticalTraffic = [];
 
 try {
   const backendUrl = await waitForServerUrl(backendChild);
@@ -475,13 +496,9 @@ try {
 
   browser = await launchBrowserWithRetry();
   const context = await browser.newContext({ viewport: { width: 1440, height: 1100 } });
-  await context.addInitScript(({ targetBackendUrl, storageKey, languageKey }) => {
-    window.__AGENT_BACKEND_URL__ = targetBackendUrl;
-    window.localStorage.setItem(storageKey, JSON.stringify(targetBackendUrl));
+  await context.addInitScript(({ languageKey }) => {
     window.localStorage.setItem(languageKey, 'en');
   }, {
-    targetBackendUrl: backendUrl,
-    storageKey: backendStorageKey,
     languageKey: languageStorageKey,
   });
 
@@ -491,15 +508,50 @@ try {
       consoleDiagnostics.push(`${message.type()}: ${message.text()}`);
     }
   });
+  page.on('request', (request) => {
+    if (/collaboration-intent-queue/.test(request.url()) || request.method() === 'POST') {
+      backendCriticalTraffic.push(`REQUEST ${request.method()} ${request.url()}`);
+    }
+  });
   page.on('response', (response) => {
     if (/\/(projects|product-team-missions|workers|kickoff-meetings|secret-vault)\b/.test(response.url())) {
-      backendResponses.push(`${response.status()} ${response.request().method()} ${response.url()}`);
+      const entry = `${response.status()} ${response.request().method()} ${response.url()}`;
+      backendResponses.push(entry);
+      if (/collaboration-intent-queue/.test(response.url()) || response.request().method() === 'POST') {
+        backendCriticalTraffic.push(entry);
+      }
+    }
+  });
+  page.on('requestfailed', (request) => {
+    if (/\/(projects|product-team-missions|workers|kickoff-meetings|secret-vault)\b/.test(request.url())) {
+      backendCriticalTraffic.push(`FAILED ${request.method()} ${request.url()} ${request.failure()?.errorText || ''}`.trim());
     }
   });
 
   await page.goto(staticRuntime.url, { waitUntil: 'networkidle' });
 
   await page.getByTestId('open-settings-button').click();
+  await page.getByTestId('settings-tab-deployment').click();
+  await page.getByTestId('settings-deployment-backend-url-input').waitFor({ state: 'visible', timeout: 10000 });
+  await fillControlledInput(page, 'settings-deployment-backend-url-input', backendUrl);
+  await page.getByTestId('settings-deployment-save-backend-url').click();
+  await page.waitForFunction(({ storageKey, expectedUrl }) => {
+    const stored = JSON.parse(window.localStorage.getItem(storageKey) || '""');
+    return String(stored || '').replace(/\/+$/, '') === expectedUrl;
+  }, { storageKey: backendStorageKey, expectedUrl: backendUrl }, { timeout: 10000 });
+  await assertPanelTextIncludes(page, 'settings-deployment-runtime-boundary', [
+    backendUrl,
+    '/workers/autonomous/status',
+  ], 'Real-user Settings Deployment must let the user set the active backend API target before sealing providers.');
+  await page.getByTestId('settings-tab-keys').click();
+  await page.getByTestId('settings-provider-boundary').waitFor({ state: 'visible', timeout: 10000 });
+  await page.getByTestId('settings-provider-open-backend-target').click();
+  await page.getByTestId('settings-deployment-backend-url-input').waitFor({ state: 'visible', timeout: 10000 });
+  const linkedBackendUrl = await page.getByTestId('settings-deployment-backend-url-input').inputValue();
+  assert(
+    normalizeBaseUrl(linkedBackendUrl) === backendUrl,
+    `Settings Keys backend URL shortcut must open the active backend target. Expected ${backendUrl}, got ${linkedBackendUrl}.`,
+  );
   await page.getByTestId('settings-tab-keys').click();
   await page.getByTestId('settings-provider-boundary').waitFor({ state: 'visible', timeout: 10000 });
   await page.getByRole('button', { name: /Sync status/i }).click();
@@ -507,14 +559,17 @@ try {
     const statusCard = document.querySelector('[data-testid="settings-secret-vault-status"]');
     return Boolean(statusCard && /ready/i.test(statusCard.textContent || ''));
   }, null, { timeout: 10000 });
+  await waitForSettingsProviderIdle(page);
   await fillControlledInput(page, 'settings-provider-model-key-input', modelPlaintext);
   const sealModelButton = await waitForButtonEnabled(page, 'settings-provider-seal-model-key', 'Real user must be able to seal a model key before project startup.');
   await sealModelButton.click();
   await page.getByTestId('settings-provider-seal-receipt').waitFor({ state: 'visible', timeout: 10000 });
+  await waitForSettingsProviderIdle(page);
   await fillControlledInput(page, 'settings-provider-search-key-input', searchPlaintext);
   const sealSearchButton = await waitForButtonEnabled(page, 'settings-provider-seal-search-key', 'Real user must be able to seal a search key before project startup.');
   await sealSearchButton.click();
   await page.waitForFunction(() => document.body.innerText.includes('search.apiKey'), null, { timeout: 10000 });
+  await waitForSettingsProviderIdle(page);
   await fillControlledInput(page, 'settings-provider-search-endpoint-input', `${mockSearchRuntime.url}/search`);
   const sealSearchEndpointButton = await waitForButtonEnabled(page, 'settings-provider-seal-search-endpoint', 'Real user must be able to seal a search endpoint before project startup.');
   await sealSearchEndpointButton.click();
@@ -540,13 +595,50 @@ try {
   await page.getByRole('button', { name: /Close/i }).last().click();
   await page.getByText('Workspace Hub', { exact: false }).click();
   await assertPageContains(page, 'ACTIVE PROJECTS', 'Workspace dashboard must be reachable before starting a real initiation.');
+  await page.getByTestId('workspace-local-mvp-startup-readiness').waitFor({ state: 'visible', timeout: 10000 });
+  await assertPanelTextIncludes(page, 'workspace-local-mvp-startup-readiness', [
+    '/local-mvp-startup-readiness',
+    'First project run',
+    'Next action',
+  ], 'Workspace Hub must show backend startup readiness before a real user starts initiation.');
+  const firstRunReadinessText = await page.getByTestId('workspace-local-mvp-first-run').innerText({ timeout: 5000 });
+  if (!/ready/i.test(firstRunReadinessText)) {
+    const startupSyncButton = await waitForButtonEnabled(
+      page,
+      'workspace-sync-local-mvp-startup',
+      'Workspace startup readiness sync must be available before initiation.',
+      { timeoutMs: 10000 },
+    );
+    await startupSyncButton.click();
+  }
+  await page.waitForFunction(() => {
+    const text = document.querySelector('[data-testid="workspace-local-mvp-first-run"]')?.textContent || '';
+    return /ready/i.test(text);
+  }, null, { timeout: 15000 });
+  const startupReadinessResponse = await fetchJson(`${backendUrl}/local-mvp-startup-readiness`);
+  const startupReadiness = startupReadinessResponse.body.localMvpStartupReadiness || {};
+  const serializedStartupReadiness = JSON.stringify(startupReadiness);
+  assert(startupReadinessResponse.status === 200 && startupReadiness.schemaVersion === 'local-mvp-startup-readiness/v1', 'Real-user browser gate must read the backend startup readiness contract before Start Initiation.');
+  assert(startupReadiness.readyForFirstProjectRun === true && startupReadiness.status === 'ready-for-local-mvp-session', 'Real-user browser gate must prove first-project readiness before clicking Start Initiation.');
+  assert(startupReadiness.nextAction?.id === 'start-product-team-mission' && startupReadiness.nextAction?.route === '/product-team-missions', 'Browser startup readiness must route the ready user into Product Team Mission Runner.');
+  assert(startupReadiness.summary?.modelRuntimeReady === true && startupReadiness.summary?.searchRuntimeReady === true, 'Browser startup readiness must confirm model and search runtime readiness before project startup.');
+  assert(startupReadiness.providerVaultBindings?.redaction?.rawLeakCount === 0, 'Browser startup readiness must keep provider-vault metadata redacted before project startup.');
+  assert(!serializedStartupReadiness.includes(modelPlaintext) && !serializedStartupReadiness.includes(searchPlaintext), 'Browser startup readiness must not expose plaintext provider keys.');
+  assert(!serializedStartupReadiness.includes('ciphertext'), 'Browser startup readiness must not expose encrypted vault ciphertext.');
   await page.getByTestId('start-initiation-button').click();
   await assertPageContains(page, 'Project Initiation Flow', 'A fresh user must be able to open project initiation.');
+  await assertPanelTextIncludes(page, 'initiation-startup-readiness-gate', [
+    '/local-mvp-startup-readiness',
+    'first project run: ready',
+  ], 'Project Initiation must preserve backend startup readiness before starting kickoff.');
   await page.getByTestId('initiation-next-invite').click();
   await page.getByTestId('initiation-next-lobby').click();
   await page.getByTestId('initiation-start-meeting').click();
   await assertPageContains(page, 'INITIATION ROUNDTABLE', 'Initiation must reach the kickoff meeting.');
   await page.getByTestId('initiation-meeting-session-proof').waitFor({ state: 'visible', timeout: 8000 });
+  await page.getByTestId('initiation-meeting-leader-candidate-claim-turing').waitFor({ state: 'visible', timeout: 8000 });
+  const turingLeaderClaimText = await page.getByTestId('initiation-meeting-leader-candidate-claim-turing').innerText();
+  assert(turingLeaderClaimText.trim().length >= 30, 'Kickoff meeting must show the Agent self-marketing claim before Leader confirmation.');
   await page.getByTestId('initiation-meeting-director-clarification').waitFor({ state: 'visible', timeout: 8000 });
   await page.getByTestId('initiation-meeting-clarification-input').fill('Manager clarified from zero setup: Turing owns backend proof, Curie reviews evidence, and the team must produce a generic product-team deliverable.');
   await page.getByTestId('initiation-meeting-save-clarification').click();
@@ -590,6 +682,100 @@ try {
   const briefTaskId = findProjectTaskId(projectTasks, [/brief|draft|artifact|report|backend/i], 1);
   const reviewTaskId = findProjectTaskId(projectTasks, [/review|risk|final|decision/i], 2);
 
+  const projectSettingsProviderReadinessResponse = await fetchJson(`${backendUrl}/projects/${projectId}/settings-provider-readiness`);
+  const projectSettingsProviderReadiness = projectSettingsProviderReadinessResponse.body.settingsProviderReadiness || {};
+  let serializedProjectSettingsReadiness = JSON.stringify(projectSettingsProviderReadiness);
+  assert(projectSettingsProviderReadinessResponse.status === 200 && projectSettingsProviderReadiness.schemaVersion === 'settings-provider-readiness/v1', 'Real-user browser gate must read project-scoped Settings provider readiness after project creation.');
+  assert(projectSettingsProviderReadiness.projectId === projectId, 'Project-scoped Settings provider readiness must carry the UI-created project id.');
+  assert(projectSettingsProviderReadiness.backendRoutes?.settingsProviderReadiness === `/projects/${projectId}/settings-provider-readiness`, 'Project-scoped Settings provider readiness must expose its route.');
+  assert(projectSettingsProviderReadiness.canTypeApiFields === true && projectSettingsProviderReadiness.canSealSecrets === true, 'Project-scoped Settings provider readiness must keep API entry usable after Vault setup.');
+  assert(projectSettingsProviderReadiness.providerVaultBindings?.redaction?.rawLeakCount === 0, 'Project-scoped Settings provider readiness must keep provider-vault metadata redacted.');
+  assert(!serializedProjectSettingsReadiness.includes(modelPlaintext) && !serializedProjectSettingsReadiness.includes(searchPlaintext), 'Project-scoped Settings provider readiness must not expose plaintext provider keys.');
+  assert(!serializedProjectSettingsReadiness.includes('ciphertext'), 'Project-scoped Settings provider readiness must not expose encrypted vault ciphertext.');
+
+  const projectSettingsRuntimeReadinessResponse = await fetchJson(`${backendUrl}/projects/${projectId}/settings-runtime-readiness`);
+  const projectSettingsRuntimeReadiness = projectSettingsRuntimeReadinessResponse.body.settingsRuntimeReadiness || {};
+  serializedProjectSettingsReadiness = JSON.stringify(projectSettingsRuntimeReadiness);
+  assert(projectSettingsRuntimeReadinessResponse.status === 200 && projectSettingsRuntimeReadiness.schemaVersion === 'settings-runtime-readiness/v1', 'Real-user browser gate must read project-scoped Settings runtime readiness after project creation.');
+  assert(projectSettingsRuntimeReadiness.projectId === projectId, 'Project-scoped Settings runtime readiness must carry the UI-created project id.');
+  assert(projectSettingsRuntimeReadiness.backendRoutes?.settingsRuntimeReadiness === `/projects/${projectId}/settings-runtime-readiness`, 'Project-scoped Settings runtime readiness must expose its route.');
+  assert(projectSettingsRuntimeReadiness.rows?.some((row) => row.id === 'model-runtime' && row.status === 'pass'), 'Project-scoped Settings runtime readiness must pass the sealed model runtime.');
+  assert(projectSettingsRuntimeReadiness.rows?.some((row) => row.id === 'search-runtime' && row.status === 'pass'), 'Project-scoped Settings runtime readiness must pass the sealed search runtime.');
+  assert(projectSettingsRuntimeReadiness.modelRuntime?.providerVaultBindings?.redaction?.rawLeakCount === 0, 'Project-scoped Settings runtime readiness must keep provider-vault metadata redacted.');
+  assert(projectSettingsRuntimeReadiness.readyForProduction === false, 'Project-scoped Settings runtime readiness must not claim public-production readiness.');
+  assert(!serializedProjectSettingsReadiness.includes(modelPlaintext) && !serializedProjectSettingsReadiness.includes(searchPlaintext), 'Project-scoped Settings runtime readiness must not expose plaintext provider keys.');
+
+  const projectSettingsIntegrationReadinessResponse = await fetchJson(`${backendUrl}/projects/${projectId}/settings-integration-readiness`);
+  const projectSettingsIntegrationReadiness = projectSettingsIntegrationReadinessResponse.body.settingsIntegrationReadiness || {};
+  assert(projectSettingsIntegrationReadinessResponse.status === 200 && projectSettingsIntegrationReadiness.schemaVersion === 'settings-integration-readiness/v1', 'Real-user browser gate must read project-scoped Settings integration readiness after project creation.');
+  assert(projectSettingsIntegrationReadiness.projectId === projectId, 'Project-scoped Settings integration readiness must carry the UI-created project id.');
+  assert(projectSettingsIntegrationReadiness.readyForSettingsIntegrationsPanel === true, 'Settings Integrations panel must be route-backed after UI project creation.');
+  assert(projectSettingsIntegrationReadiness.backendRoutes?.settingsIntegrationReadiness === `/projects/${projectId}/settings-integration-readiness`, 'Project-scoped Settings integration readiness must expose its aggregate route.');
+  assert(projectSettingsIntegrationReadiness.summary?.rowCount >= 7, 'Settings integration readiness must cover every Settings integration row.');
+  assert(projectSettingsIntegrationReadiness.summary?.routeReadyCount === projectSettingsIntegrationReadiness.summary.rowCount, 'Every Settings integration row must be route-backed for the UI-created project.');
+  for (const id of ['provider-budget-policy', 'agent-tool-grant-policy', 'vector-store', 'proxy-webhook', 'mcp-tools', 'budget-alerts', 'error-reporting']) {
+    const row = projectSettingsIntegrationReadiness.rows?.find((item) => item.id === id);
+    assert(row?.routeReady === true, `${id} Settings integration row must be route-backed after UI project creation.`);
+    assert(row.requiredBackendRoute?.includes(projectId), `${id} Settings integration row must expose a project-scoped backend route.`);
+  }
+
+  await page.getByTestId('open-settings-button').click();
+  await page.getByTestId('settings-tab-deployment').click();
+  await page.getByRole('button', { name: /Sync runtime/i }).click();
+  await page.waitForFunction((expectedValues) => {
+    const text = document.querySelector('[data-testid="settings-runtime-readiness-contract"]')?.textContent || '';
+    return expectedValues.every((value) => text.includes(value));
+  }, [`/projects/${projectId}/settings-runtime-readiness`, '/workers/autonomous/status'], { timeout: 15000 });
+  await assertPanelTextIncludes(page, 'settings-runtime-readiness-contract', [
+    `/projects/${projectId}/settings-runtime-readiness`,
+    '/workers/autonomous/status',
+  ], 'Real-user Settings Deployment must show the project-scoped runtime readiness route after project creation.');
+  await page.getByTestId('settings-tab-keys').click();
+  await page.getByRole('button', { name: /Sync status/i }).click();
+  await page.waitForFunction((expectedRoute) => {
+    const text = document.querySelector('[data-testid="settings-provider-readiness-contract"]')?.textContent || '';
+    return text.includes(expectedRoute);
+  }, `/projects/${projectId}/settings-provider-readiness`, { timeout: 15000 });
+  await assertPanelTextIncludes(page, 'settings-provider-readiness-contract', [
+    `/projects/${projectId}/settings-provider-readiness`,
+    'API fields: editable',
+  ], 'Real-user Settings Keys must show the project-scoped provider readiness route after project creation.');
+  await page.getByTestId('settings-tab-integrations').click();
+  await page.getByRole('button', { name: /Sync integration readiness/i }).click();
+  await page.getByTestId('settings-integration-readiness-contract').waitFor({ state: 'visible', timeout: 15000 });
+  await assertPanelTextIncludes(page, 'settings-integration-readiness-route', [
+    `/projects/${projectId}/settings-integration-readiness`,
+  ], 'Real-user Settings Integrations must show the project-scoped integration readiness route after project creation.');
+  await assertPanelTextIncludes(page, 'settings-integration-readiness-contract', [
+    '/evidence-index-readiness',
+    '/adapter-gateway-preflight',
+    '/budget-alert-readiness',
+    '/error-reporting-readiness',
+  ], 'Real-user Settings Integrations must render backend route rows instead of fake editable integration controls.');
+  await page.getByTestId('settings-tab-workspace').click();
+  await page.getByTestId('settings-workspace-bind-contract').waitFor({ state: 'visible', timeout: 10000 });
+  await assertPanelTextIncludes(page, 'settings-workspace-bind-contract', [
+    `/projects/${projectId}/workspace/bind`,
+    `/projects/${projectId}/local-runtime`,
+    'not bound',
+  ], 'Real-user Settings Workspace must expose the backend workspace bind contract after project creation.');
+  await fillControlledInput(page, 'settings-workspace-bind-path-input', boundWorkspaceRoot);
+  await page.getByTestId('settings-workspace-bind-create-if-missing').check();
+  const workspaceBindButton = await waitForButtonEnabled(
+    page,
+    'settings-workspace-bind-submit',
+    'A real user must be able to bind a backend local workspace after project creation.',
+    { timeoutMs: 10000 },
+  );
+  await workspaceBindButton.click();
+  await page.waitForFunction(() => {
+    const text = document.querySelector('[data-testid="settings-workspace-bind-receipt"]')?.textContent || '';
+    return /workspace-bound|backend-bound/i.test(text);
+  }, null, { timeout: 10000 });
+  const localRuntime = await fetchJson(`${backendUrl}/projects/${projectId}/local-runtime`);
+  assert(localRuntime.status === 200 && localRuntime.body.localRuntime?.workspacePath === boundWorkspaceRoot, 'Real-user Settings Workspace bind must persist through the backend local runtime route.');
+  await page.getByRole('button', { name: /Close/i }).last().click();
+
   await scrollDashboardToStation(page);
   await page.getByTestId('backend-product-team-mission-runs-snapshot').waitFor({ state: 'visible', timeout: 20000 });
   await page.getByTestId('backend-collaboration-intent-queue-snapshot').waitFor({ state: 'visible', timeout: 25000 });
@@ -600,8 +786,14 @@ try {
     { timeoutMs: 30000 },
   );
   await intentRunButton.click();
-  await page.getByTestId('backend-collaboration-intent-run-output').waitFor({ state: 'visible', timeout: 30000 });
-  await page.getByTestId('backend-collaboration-intent-output-work-submission').waitFor({ state: 'visible', timeout: 30000 });
+  await page.getByTestId('backend-collaboration-intent-run-output').waitFor({ state: 'visible', timeout: 120000 });
+  try {
+    await page.getByTestId('backend-collaboration-intent-output-work-submission').waitFor({ state: 'visible', timeout: 120000 });
+  } catch (error) {
+    const outputText = await page.getByTestId('backend-collaboration-intent-run-output').innerText().catch(() => '');
+    console.error(`Collaboration intent output panel:\n${outputText.slice(0, 1200)}`);
+    throw error;
+  }
   const intentOutputText = await page.getByTestId('backend-collaboration-intent-run-output').innerText();
   assert(/Intent Output Nodes/i.test(intentOutputText), 'Real-user intent run must render output nodes.');
   assert(/Agent Submission/i.test(intentOutputText), 'Real-user intent run must create an Agent Submission output node.');
@@ -645,6 +837,38 @@ try {
   assert(providerEvidenceResponse.body.providerUsage?.providerVaultBindingChecksum, 'Real-user Agent evidence search must write provider usage with provider-vault proof.');
   assert(searchRequests.length >= 2 && searchRequests.at(-1).authorization === `Bearer ${searchPlaintext}`, 'Real-user Agent evidence search must reach the configured endpoint with the sealed key.');
 
+  const initialSourceReviewWorkflow = await fetchJson(`${backendUrl}/projects/${projectId}/evidence-source-review-workflow`);
+  assert(initialSourceReviewWorkflow.status === 200 && initialSourceReviewWorkflow.body.evidenceSourceReviewWorkflow?.schemaVersion === 'evidence-source-review-workflow/v1', 'Real-user Evidence Source Review Workflow must expose pending source decisions after provider evidence.');
+  const pendingSourceReviewItems = (initialSourceReviewWorkflow.body.evidenceSourceReviewWorkflow.reviewItems || [])
+    .filter((item) => item.decisionRequired && !item.latestDecisionId);
+  assert(pendingSourceReviewItems.length >= providerEvidenceSearch.sources.length, 'Real-user Evidence Source Review Workflow must queue every provider-backed source that requires Reviewer judgement.');
+
+  const sourceReviewResponses = [];
+  for (const [index, source] of pendingSourceReviewItems.entries()) {
+    const sourceReviewResponse = await fetchJson(`${backendUrl}/projects/${projectId}/evidence-source-review-workflow`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        includeReadModels: false,
+        evidenceSearchId: source.evidenceSearchId,
+        sourceId: source.sourceId,
+        reviewerAgentId: source.reviewerAgentId || evidenceReviewerAgentId,
+        decision: 'approved',
+        comments: `Approved source ${index + 1} for local MVP use: it is provider-backed, checksummed, and linked to the generic product-team validation chain.`,
+      }),
+    });
+    assert(sourceReviewResponse.status === 200, `Real-user evidence source review ${index + 1} returned ${sourceReviewResponse.status}.`);
+    const sourceReview = sourceReviewResponse.body.evidenceSourceReview || {};
+    assert(sourceReview.id && sourceReview.decision === 'approved' && sourceReview.messageId && sourceReview.timelineLogId && sourceReview.eventId, `Real-user evidence source review ${index + 1} must persist reviewer decision proof.`);
+    sourceReviewResponses.push(sourceReview);
+  }
+  assert(sourceReviewResponses.length === pendingSourceReviewItems.length, 'Every real-user pending provider-backed evidence source must receive a Reviewer decision before artifact drafting.');
+  const sourceReviewRefs = sourceReviewResponses.map((review) => ({
+    type: 'evidence-source-review',
+    id: review.id,
+    route: `/projects/${projectId}/evidence-source-review-workflow#${review.id}`,
+  }));
+
   let submissions = await fetchJson(`${backendUrl}/projects/${projectId}/submissions`);
   let submissionRows = submissions.body.submissions?.submissions || submissions.body.submissions?.rows || submissions.body.submissions || [];
   assert(Array.isArray(submissionRows) && submissionRows.length >= 1, 'Real-user backend must persist at least one Agent submission after C/A handoff run.');
@@ -668,8 +892,11 @@ try {
     body: '# Generic product-team validation evidence packet\n\nThe evidence packet links the user-configured search provider result, source snapshot, confidence judgement, and downstream product-team decisions.',
     taskId: evidenceTaskId,
     reviewerAgentId: evidenceReviewerAgentId,
-    sourceRefs: [{ type: 'evidence-search', id: providerEvidenceSearch.id, route: `/projects/${projectId}/evidence-searches/${providerEvidenceSearch.id}` }],
-    dependsOn: [providerEvidenceSearch.id],
+    sourceRefs: [
+      { type: 'evidence-search', id: providerEvidenceSearch.id, route: `/projects/${projectId}/evidence-searches/${providerEvidenceSearch.id}` },
+      ...sourceReviewRefs,
+    ],
+    dependsOn: [providerEvidenceSearch.id, ...sourceReviewResponses.map((review) => review.id)],
   });
 
   const brainstormSubmission = await submitArtifact(backendUrl, {
@@ -884,6 +1111,7 @@ try {
   const requiredTraceIds = [
     discoverySubmission.id,
     providerEvidenceSearch.id,
+    ...sourceReviewResponses.map((review) => review.id),
     evidencePacketSubmission.id,
     brainstormSubmission.id,
     productBriefSubmission.id,
@@ -909,7 +1137,10 @@ try {
   assert(serializedProofMap.includes('/readiness-proof-map') && serializedProofMap.includes('/manager-flow-graph'), 'Readiness Proof Map must expose proof routes after real-user handoff.');
   assert(serializedProofMap.includes('/submissions') || serializedProofMap.includes(handoffSubmission.id), 'Readiness Proof Map must trace Agent submission proof after real-user handoff.');
   assert(requiredTraceIds.filter((id) => id !== productBriefReview.id && id !== finalReview.id).every((id) => serializedProofMap.includes(id)), 'Readiness Proof Map must trace every required generic submission and provider-backed evidence proof.');
-  assert(serializedProofMap.includes('/submission-review-workflow') && serializedProofMap.includes('/product-team-delivery-trace'), 'Readiness Proof Map must expose review workflow and product-team delivery trace routes.');
+  assert(serializedProofMap.includes('/submission-review-workflow') && serializedProofMap.includes('/product-team-delivery-trace') && serializedProofMap.includes('/zero-to-autonomy-report'), 'Readiness Proof Map must expose review workflow, product-team delivery trace, and zero-to-autonomy report routes.');
+  assert(proofMap.body.settingsProviderReadinessRoutes?.[0]?.apiPath === `/projects/${projectId}/settings-provider-readiness`, 'Readiness Proof Map must expose the project-scoped Settings provider readiness route after real-user UI setup.');
+  assert(proofMap.body.settingsRuntimeReadinessRoutes?.[0]?.apiPath === `/projects/${projectId}/settings-runtime-readiness`, 'Readiness Proof Map must expose the project-scoped Settings runtime readiness route after real-user UI setup.');
+  assert(proofMap.body.settingsIntegrationReadinessRoutes?.[0]?.apiPath === `/projects/${projectId}/settings-integration-readiness`, 'Readiness Proof Map must expose the project-scoped Settings integration readiness route after real-user UI setup.');
   assert(proofMap.body.projectMemoryReadinessRoutes?.[0]?.apiPath === `/projects/${projectId}/memory-readiness`, 'Readiness Proof Map must expose the memory readiness proof route after real-user handoff.');
 
   const deliveryTrace = await fetchJson(`${backendUrl}/projects/${projectId}/product-team-delivery-trace`);
@@ -958,6 +1189,19 @@ try {
   );
   assert(traceModel.readyForProduction === false, 'Real-user delivery trace must not overclaim production readiness.');
 
+  const zeroToAutonomyReport = await fetchJson(`${backendUrl}/projects/${projectId}/zero-to-autonomy-report`);
+  assert(zeroToAutonomyReport.status === 200 && zeroToAutonomyReport.body.zeroToAutonomyReport?.schemaVersion === 'project-zero-to-autonomy-report/v1', 'Real-user chain must expose the project zero-to-autonomy report read model.');
+  const zeroToAutonomyReportModel = zeroToAutonomyReport.body.zeroToAutonomyReport;
+  const zeroToAutonomySerialized = JSON.stringify(zeroToAutonomyReportModel);
+  assert(zeroToAutonomyReportModel.readyForLocalMvpTrial === true, 'Project zero-to-autonomy report must mark the real-user local MVP trial ready.');
+  assert(zeroToAutonomyReportModel.readyForPrivatePilotDelivery === true, 'Project zero-to-autonomy report must mark private-pilot delivery ready.');
+  assert(zeroToAutonomyReportModel.readyForPublicProduction === false, 'Project zero-to-autonomy report must not overclaim public production readiness.');
+  assert(zeroToAutonomyReportModel.backendRoutes?.zeroToAutonomyReport === `/projects/${projectId}/zero-to-autonomy-report`, 'Project zero-to-autonomy report must expose its backend route.');
+  assert(zeroToAutonomyReportModel.summary?.submittedArtifactTypeCount >= requiredGenericArtifactTypes.length, 'Project zero-to-autonomy report must cover all required generic artifact types.');
+  assert(zeroToAutonomyReportModel.stageRows?.some((row) => row.id === 'brainstorm-draft-review-revision-final' && row.ready), 'Project zero-to-autonomy report must include a ready brainstorm/draft/review/revision/final stage.');
+  assert(requiredTraceIds.every((id) => zeroToAutonomySerialized.includes(id)), 'Project zero-to-autonomy report must trace required generic artifacts, evidence, review, revision, final, and final acceptance proof.');
+  assert(!zeroToAutonomySerialized.includes(modelPlaintext) && !zeroToAutonomySerialized.includes(searchPlaintext) && !zeroToAutonomySerialized.includes('"ciphertext":'), 'Project zero-to-autonomy report must not leak provider secrets or vault ciphertext.');
+
   const reviewWorkflow = await fetchJson(`${backendUrl}/projects/${projectId}/submission-review-workflow`);
   assert(reviewWorkflow.status === 200 && reviewWorkflow.body.submissionReviewWorkflow?.schemaVersion === 'submission-review-workflow/v1', 'Real-user chain must expose the submission review workflow read model.');
   const reviewWorkflowModel = reviewWorkflow.body.submissionReviewWorkflow;
@@ -977,6 +1221,12 @@ try {
   assert(artifactQuality.body.artifactQualityAudit.gates?.some((gate) => gate.id === 'generic-artifact-type-coverage' && gate.passed), 'Real-user artifact quality audit must prove all required generic artifact types.');
   assert(artifactQuality.body.artifactQualityAudit.summary?.missingArtifactTypeCount === 0, 'Real-user artifact quality audit must report no missing generic artifact types.');
 
+  const sourceReviewWorkflow = await fetchJson(`${backendUrl}/projects/${projectId}/evidence-source-review-workflow`);
+  assert(sourceReviewWorkflow.status === 200 && sourceReviewWorkflow.body.evidenceSourceReviewWorkflow?.schemaVersion === 'evidence-source-review-workflow/v1', 'Real-user chain must expose the evidence source review workflow read model.');
+  assert(sourceReviewWorkflow.body.evidenceSourceReviewWorkflow.readyForLocalPilot === true, 'Real-user evidence source review workflow must become local-ready after every source receives a Reviewer decision.');
+  assert(sourceReviewWorkflow.body.evidenceSourceReviewWorkflow.summary?.sourceReviewDecisionCount >= providerEvidenceSearch.sources.length, 'Real-user evidence source review workflow must count every source decision.');
+  assert(sourceReviewWorkflow.body.evidenceSourceReviewWorkflow.summary?.pendingDecisionSourceCount === 0, 'Real-user evidence source review workflow must have no pending source decisions before archive handoff.');
+
   const evidenceIndex = await fetchJson(`${backendUrl}/projects/${projectId}/evidence-index-readiness`);
   assert(evidenceIndex.status === 200 && evidenceIndex.body.evidenceIndexReadiness?.schemaVersion === 'evidence-index-readiness/v1', 'Real-user chain must expose the evidence index readiness contract.');
   const evidenceIndexModel = evidenceIndex.body.evidenceIndexReadiness;
@@ -988,9 +1238,38 @@ try {
   assert(evidenceIndexModel.summary?.artifactStorageProofCount >= requiredGenericArtifactTypes.length, 'Real-user evidence index must count required artifact storage proofs.');
   assert(evidenceIndexModel.summary?.sourceSnapshotCount >= 1, 'Real-user evidence index must count source snapshots.');
   assert(evidenceIndexModel.backendRoutes?.evidenceIndexReadiness === `/projects/${projectId}/evidence-index-readiness`, 'Real-user evidence index must expose its project route.');
-  assert(requiredTraceIds.filter((id) => id !== productBriefReview.id && id !== finalReview.id).every((id) => serializedEvidenceIndex.includes(id)), 'Real-user evidence index must trace required evidence and artifact ids.');
+  const sourceReviewTraceIdSet = new Set(sourceReviewResponses.map((review) => review.id));
+  assert(
+    requiredTraceIds
+      .filter((id) => !sourceReviewTraceIdSet.has(id) && id !== productBriefReview.id && id !== finalReview.id)
+      .every((id) => serializedEvidenceIndex.includes(id)),
+    'Real-user evidence index must trace required evidence and artifact ids.',
+  );
   assert(evidenceIndexModel.gates?.some((gate) => gate.id === 'managed-vector-adapter-production-blocked' && gate.status === 'blocked'), 'Real-user evidence index must keep managed vector adapter as a production blocker.');
   assert(!serializedEvidenceIndex.includes(modelPlaintext) && !serializedEvidenceIndex.includes(searchPlaintext), 'Real-user evidence index must not leak sealed provider secrets.');
+
+  const projectEvidenceArchive = await fetchJson(`${backendUrl}/projects/${projectId}/project-evidence-archive`);
+  assert(projectEvidenceArchive.status === 200 && projectEvidenceArchive.body.projectEvidenceArchive?.schemaVersion === 'project-evidence-archive/v1', 'Real-user chain must expose the Project Evidence Archive contract.');
+  const projectEvidenceArchiveModel = projectEvidenceArchive.body.projectEvidenceArchive;
+  const archiveArtifactProofManifest = projectEvidenceArchiveModel.manifest?.find((entry) => entry.id === 'artifact-storage-proofs');
+  assert(projectEvidenceArchiveModel.backendRoutes?.projectEvidenceArchive === `/projects/${projectId}/project-evidence-archive`, 'Real-user Project Evidence Archive must expose its backend route.');
+  assert(projectEvidenceArchiveModel.readyForManagerHandoff === true && projectEvidenceArchiveModel.status === 'archive-ready', 'Real-user Project Evidence Archive must become ready after evidence source decisions, artifact proofs, reviews, and final delivery are archived.');
+  assert(projectEvidenceArchiveModel.summary?.finalDeliverableCount >= 1, 'Real-user Project Evidence Archive must include the accepted final deliverable.');
+  assert(projectEvidenceArchiveModel.summary?.evidenceSourceReviewDecisionCount >= providerEvidenceSearch.sources.length, 'Real-user Project Evidence Archive must include every Reviewer source decision.');
+  assert(projectEvidenceArchiveModel.summary?.rawLeakCount === 0, 'Real-user Project Evidence Archive must stay redacted.');
+  assert(
+    projectEvidenceArchiveModel.summary?.artifactStorageProofCoverageReady === true
+      && projectEvidenceArchiveModel.summary?.artifactStorageProofCount >= requiredGenericArtifactTypes.length
+      && projectEvidenceArchiveModel.summary?.workspaceFileProofCount >= requiredGenericArtifactTypes.length,
+    'Real-user Project Evidence Archive must prove storage/workspace-file coverage for required Agent submissions.',
+  );
+  assert(
+    archiveArtifactProofManifest?.ready === true
+      && archiveArtifactProofManifest.storageProofCount >= requiredGenericArtifactTypes.length
+      && archiveArtifactProofManifest.workspaceFileProofCount >= requiredGenericArtifactTypes.length,
+    'Real-user Project Evidence Archive manifest must expose ready artifact-storage-proof coverage.',
+  );
+
   const memoryReadiness = await fetchJson(`${backendUrl}/projects/${projectId}/memory-readiness`);
   assert(memoryReadiness.status === 200 && memoryReadiness.body.projectMemoryReadiness?.schemaVersion === 'project-memory-readiness/v1', 'Real-user chain must expose the project memory readiness contract.');
   assert(memoryReadiness.body.projectMemoryReadiness.readyForProduction === false, 'Real-user memory readiness must not claim managed memory production readiness.');
@@ -1014,8 +1293,10 @@ try {
   await page.getByTestId('backend-sync-proof-models').click();
   await page.getByTestId('backend-artifact-quality-audit-snapshot').waitFor({ state: 'visible', timeout: 25000 });
   await page.getByTestId('backend-product-team-delivery-trace-snapshot').waitFor({ state: 'visible', timeout: 25000 });
+  await page.getByTestId('backend-zero-to-autonomy-report-snapshot').waitFor({ state: 'visible', timeout: 25000 });
   await page.getByTestId('backend-submission-review-workflow-snapshot').waitFor({ state: 'visible', timeout: 25000 });
   await page.getByTestId('backend-evidence-index-readiness-snapshot').waitFor({ state: 'visible', timeout: 25000 });
+  await page.getByTestId('backend-project-evidence-archive-snapshot').waitFor({ state: 'visible', timeout: 25000 });
   await page.waitForFunction(
     (artifactTypes) => {
       const audit = document.querySelector('[data-testid="backend-artifact-quality-audit-snapshot"]');
@@ -1044,6 +1325,13 @@ try {
     'Final Accepted',
     '/product-team-delivery-trace',
   ], 'Manager UI must render the complete product-team delivery trace from backend proof models.');
+  await assertPanelTextIncludes(page, 'backend-zero-to-autonomy-report-snapshot', [
+    'Zero-to-autonomy',
+    'local trial ready',
+    'production blocked',
+    'Artifact Types',
+    '/zero-to-autonomy-report',
+  ], 'Manager UI must render the zero-to-autonomy report from backend proof models.');
   await assertPanelTextIncludes(page, 'backend-submission-review-workflow-snapshot', [
     'Submission Review Workflow',
     'loop closed',
@@ -1062,11 +1350,20 @@ try {
     'blocked',
     '/evidence-index-readiness',
   ], 'Manager UI must render evidence/artifact index readiness instead of hiding it in Settings only.');
+  await assertPanelTextIncludes(page, 'backend-project-evidence-archive-snapshot', [
+    'Project Evidence Archive',
+    'ready',
+    'Storage Proofs',
+    'Workspace Files',
+    'Source Decisions',
+    '/project-evidence-archive',
+  ], 'Manager UI must render the Project Evidence Archive storage/workspace proof handoff from backend proof models.');
   await assertPanelTextIncludes(page, 'manager-proof-map', [
     '/manager-flow-graph',
     '/submissions',
     '/submission-review-workflow',
     '/product-team-delivery-trace',
+    '/zero-to-autonomy-report',
     '/readiness-proof-map',
   ], 'Manager UI Proof Map must expose the real-user proof routes.');
 
@@ -1080,6 +1377,9 @@ try {
     'final-deliverable',
   ], 'Manager Flow Graph canvas must render a final-deliverable submission node.');
 
+  const duplicateKeyWarnings = consoleDiagnostics.filter((message) => /Encountered two children with the same key/i.test(message));
+  assert(!duplicateKeyWarnings.length, `Real-user UI must not emit duplicate React key warnings. First warning: ${duplicateKeyWarnings[0] || ''}`);
+
   console.log('Real-user zero-to-autonomy agents:server UI validation passed.');
 } catch (error) {
   const page = browser?.contexts?.()[0]?.pages?.()[0] || null;
@@ -1088,6 +1388,7 @@ try {
     if (bodyText) console.error(`Visible page excerpt:\n${bodyText.slice(0, 1800)}`);
   }
   if (backendResponses.length) console.error(`Backend traffic tail:\n${backendResponses.slice(-30).join('\n')}`);
+  if (backendCriticalTraffic.length) console.error(`Backend critical traffic:\n${backendCriticalTraffic.slice(-40).join('\n')}`);
   if (consoleDiagnostics.length) console.error(`Console diagnostics:\n${consoleDiagnostics.slice(-20).join('\n')}`);
   throw error;
 } finally {

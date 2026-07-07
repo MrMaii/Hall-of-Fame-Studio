@@ -382,6 +382,7 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
       artifactQualityAuditRoute: projectId ? `/projects/${projectId}/artifact-quality-audit` : null,
       submissionReviewWorkflowRoute: projectId ? `/projects/${projectId}/submission-review-workflow` : null,
       productTeamDeliveryTraceRoute: projectId ? `/projects/${projectId}/product-team-delivery-trace` : null,
+      zeroToAutonomyReportRoute: projectId ? `/projects/${projectId}/zero-to-autonomy-report` : null,
       evidenceQualityAuditRoute: projectId ? `/projects/${projectId}/evidence-quality-audit` : null,
       evidenceIndexReadinessRoute: projectId ? `/projects/${projectId}/evidence-index-readiness` : null,
       evidenceSourceReviewWorkflowRoute: projectId ? `/projects/${projectId}/evidence-source-review-workflow` : null,
@@ -395,6 +396,11 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
       runtimeAutonomyStatusRoute: projectId ? `/projects/${projectId}/runtime-autonomy-status` : null,
       autonomousRunControlRoute: projectId ? `/projects/${projectId}/autonomous-run-control` : null,
       agentAutonomousActionQueueRoute: projectId ? `/projects/${projectId}/agent-autonomous-action-queue` : null,
+      governanceProtocolRoute: projectId ? `/projects/${projectId}/governance-protocol` : null,
+      agentStateSummaryRoute: projectId ? `/projects/${projectId}/agent-state-summary` : null,
+      assignmentTimelineMatrixRoute: projectId ? `/projects/${projectId}/assignment-timeline-matrix` : null,
+      changeFlowRoute: projectId ? `/projects/${projectId}/change-flow` : null,
+      continuousWorkLoopRoute: projectId ? `/projects/${projectId}/continuous-work-loop` : null,
       agentDashboardRoute: projectId && agentId ? `/projects/${projectId}/agents/${agentId}/dashboard` : null,
       ...extraRoutes,
     },
@@ -584,6 +590,13 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
               summary: { readyForProduction: false },
             },
         });
+      }
+      if (method === 'POST' && path === '/settings/workflow-smoke') {
+        if (typeof service.runSettingsWorkflowSmoke !== 'function') {
+          return json(400, { error: 'settings-workflow-smoke-not-configured' });
+        }
+        const result = service.runSettingsWorkflowSmoke({ ...body, language });
+        return json(200, result);
       }
       if (method === 'GET' && path === '/settings/runtime-readiness') {
         return json(200, {
@@ -1146,6 +1159,12 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
               },
           });
         }
+        if (method === 'POST' && path === '/settings/workflow-smoke') {
+          if (typeof service.runSettingsWorkflowSmoke !== 'function') {
+            return json(400, { error: 'settings-workflow-smoke-not-configured' });
+          }
+          return json(200, service.runSettingsWorkflowSmoke({ ...body, language }));
+        }
         if (method === 'GET' && path === '/settings/runtime-readiness') {
           return json(200, {
             settingsRuntimeReadiness: service.getSettingsRuntimeReadiness
@@ -1562,6 +1581,36 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
         if (method === 'GET' && route.action === 'timeline') {
           return json(200, service.getTimeline(route.projectId));
         }
+        if (method === 'POST' && route.action === 'timeline' && route.tail[0] === 'actions') {
+          const result = service.recordTimelineAction({
+            projectId: route.projectId,
+            ...body,
+          });
+          const resultProjectId = result.project?.id || route.projectId;
+          const includeReadModels = shouldIncludeReadModels(body);
+          return json(200, {
+            ...publicProjectResult(result, resultProjectId, language, { includeReadModels }),
+            timelineActionReceipt: result.timelineActionReceipt,
+            timelineActionLog: result.log,
+            ...(includeReadModels
+              ? {
+                  timeline: service.getTimeline(resultProjectId),
+                  events: service.getEventLedger(resultProjectId),
+                }
+              : deferredReadModels(resultProjectId, '', {
+                  timelineActionsRoute: `/projects/${resultProjectId}/timeline/actions`,
+                  timelineActionReceiptRoute: result.timelineActionReceipt?.id
+                    ? `/projects/${resultProjectId}/timeline/actions#${encodeURIComponent(result.timelineActionReceipt.id)}`
+                    : null,
+                  timelineLogRoute: result.log?.id
+                    ? `/projects/${resultProjectId}/timeline#${encodeURIComponent(result.log.id)}`
+                    : null,
+                  eventLedgerRoute: result.timelineActionReceipt?.eventId
+                    ? `/projects/${resultProjectId}/events#${encodeURIComponent(result.timelineActionReceipt.eventId)}`
+                    : `/projects/${resultProjectId}/events`,
+                })),
+          });
+        }
         if (method === 'GET' && route.action === 'events') {
           return json(200, service.getEventLedger(route.projectId));
         }
@@ -1662,8 +1711,26 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
         if (method === 'GET' && route.action === 'product-team-delivery-trace') {
           return json(200, { productTeamDeliveryTrace: service.getProductTeamDeliveryTrace(route.projectId, { language }) });
         }
+        if (method === 'GET' && route.action === 'zero-to-autonomy-report') {
+          return json(200, { zeroToAutonomyReport: service.getZeroToAutonomyReport(route.projectId, { language }) });
+        }
         if (method === 'GET' && route.action === 'product-team-operating-loop') {
           return json(200, { productTeamOperatingLoop: service.getProductTeamOperatingLoop(route.projectId, { language }) });
+        }
+        if (method === 'GET' && route.action === 'continuous-work-loop') {
+          return json(200, { continuousWorkLoop: service.getContinuousWorkLoop(route.projectId, { language }) });
+        }
+        if (method === 'GET' && route.action === 'agent-state-summary') {
+          return json(200, { agentStateSummary: service.getAgentStateSummary(route.projectId, { language }) });
+        }
+        if (method === 'GET' && route.action === 'governance-protocol') {
+          return json(200, { governanceProtocol: service.getGovernanceProtocol(route.projectId, { language }) });
+        }
+        if (method === 'GET' && route.action === 'assignment-timeline-matrix') {
+          return json(200, { assignmentTimelineMatrix: service.getAssignmentTimelineMatrix(route.projectId, { language }) });
+        }
+        if (method === 'GET' && route.action === 'change-flow') {
+          return json(200, { changeFlow: service.getChangeFlow(route.projectId, { language }) });
         }
         if (method === 'GET' && route.action === 'planner-executor-reviewer-state-machine') {
           return json(200, { plannerExecutorReviewerStateMachine: service.getPlannerExecutorReviewerStateMachine(route.projectId, { language }) });

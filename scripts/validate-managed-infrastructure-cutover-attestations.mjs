@@ -448,7 +448,7 @@ function parseJson(value) {
 }
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const tempRoot = resolve(repoRoot, '.tmp', 'managed-infrastructure-cutover-attestations-validate');
+const tempRoot = resolve(repoRoot, '.tmp', `managed-infrastructure-cutover-attestations-validate-${process.pid}`);
 const projectId = 'managed_infrastructure_cutover_attestation_project';
 const authToken = 'MANAGED_INFRA_CUTOVER_GATEWAY_TOKEN';
 const signingSecret = 'MANAGED_INFRA_CUTOVER_SIGNING_SECRET_SHOULD_NOT_LEAK';

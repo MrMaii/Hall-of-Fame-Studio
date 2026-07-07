@@ -9,7 +9,7 @@ function assert(condition, message) {
 }
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const tempRoot = resolve(repoRoot, '.tmp', 'settings-health-readiness-contract-validate');
+const tempRoot = resolve(repoRoot, '.tmp', `settings-health-readiness-contract-validate-${process.pid}`);
 const plaintextSecret = 'SETTINGS_HEALTH_SECRET_SHOULD_NOT_LEAK';
 
 await rm(tempRoot, { recursive: true, force: true });
@@ -33,8 +33,33 @@ try {
   assert(readiness.rows?.some((row) => row.id === 'secret-vault' && row.status === 'fail'), 'Settings health must fail the Secret Vault row when Vault is absent.');
   assert(readiness.backendRoutes?.settingsHealthReadiness === '/settings/health-readiness', 'Settings health must expose its route.');
   assert(readiness.backendRoutes?.localMvpStartupReadiness === '/local-mvp-startup-readiness', 'Settings health must link startup readiness.');
+  assert(readiness.backendRoutes?.settingsWorkflowSmoke === '/settings/workflow-smoke', 'Settings health must expose the explicit Workflow Smoke route.');
+  assert(readiness.rows?.some((row) => row.id === 'workflow-smoke-route' && row.route === '/settings/workflow-smoke'), 'Settings health must expose Workflow Smoke as an explicit POST route, not a hidden UI routine.');
   assert(readiness.summary?.readyForProduction === false, 'Settings health must not claim production readiness.');
   assert(readiness.validationCommands?.includes('npm run agents:settings-health-readiness'), 'Settings health must expose its focused validation command.');
+
+  response = blockedApi.handle({
+    method: 'POST',
+    path: '/settings/workflow-smoke',
+    body: {
+      projectId: 'settings_workflow_smoke_contract',
+      now: '2026-06-01T10:05:00.000Z',
+    },
+  });
+  assert(response.status === 200, `Settings workflow smoke route returned ${response.status}.`);
+  const workflowSmoke = response.body.settingsWorkflowSmoke;
+  assert(workflowSmoke?.schemaVersion === 'settings-workflow-smoke/v1', 'Settings Workflow Smoke must expose its schema version.');
+  assert(workflowSmoke.status === 'passed', 'Settings Workflow Smoke must pass when the backend can create a standard Agent submission.');
+  assert(workflowSmoke.readyForLocalMvpWorkflowSmoke === true, 'Settings Workflow Smoke must mark local MVP workflow smoke ready after proof exists.');
+  assert(workflowSmoke.readyForProduction === false, 'Settings Workflow Smoke must not claim production readiness.');
+  assert(workflowSmoke.submission?.artifactType === 'product-brief', 'Settings Workflow Smoke must create a product-brief submission.');
+  assert(workflowSmoke.graphProof?.hasSubmission === true, 'Settings Workflow Smoke must verify the submission in Manager Flow Graph.');
+  assert(workflowSmoke.proofMapProof?.hasSubmission === true, 'Settings Workflow Smoke must verify the submission in Readiness Proof Map.');
+  assert(workflowSmoke.transcriptProof?.hasSubmission === true, 'Settings Workflow Smoke must verify the submission in Group Chat transcripts.');
+  assert(workflowSmoke.timelineProof?.hasSubmission === true, 'Settings Workflow Smoke must verify the submission in Timeline.');
+  assert(workflowSmoke.eventLedgerProof?.hasSubmission === true, 'Settings Workflow Smoke must verify the submission in Event Ledger.');
+  assert(workflowSmoke.backendRoutes?.settingsWorkflowSmoke === '/settings/workflow-smoke', 'Settings Workflow Smoke must expose its route.');
+  assert(workflowSmoke.summary?.detail?.includes('transcript, timeline, event ledger'), 'Settings Workflow Smoke must summarize the produced collaboration proof chain.');
 
   response = blockedApi.handle({
     method: 'POST',

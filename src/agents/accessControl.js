@@ -1093,6 +1093,7 @@ export function classifyAccessRequest({ method = 'GET', path = '/', body = {} } 
     'chat',
     'meeting',
     'transcripts',
+    'timeline',
     'autonomous-cycle',
     'manager-flow-graph',
     'manager-command-center',
@@ -1102,7 +1103,7 @@ export function classifyAccessRequest({ method = 'GET', path = '/', body = {} } 
   ].includes(action) && resolvedMethod !== 'GET') {
     return accessRoute({
       routeKey: action,
-      capability: `write ${action}`,
+      capability: action === 'timeline' ? 'write timeline action receipt' : `write ${action}`,
       sensitivity: 'project-command',
       projectId,
       allowedRoles: ['manager', 'security-admin'],
@@ -1443,6 +1444,7 @@ export function buildAccessControlPolicySnapshot() {
       { id: 'deployment-preflight-read', roles: ['manager', 'security-admin', 'observer'], examples: ['/projects/:id/deployment-preflight'] },
       { id: 'adapter-gateway-preflight-read', roles: ['manager', 'runtime-platform', 'security-admin'], examples: ['/projects/:id/adapter-gateway-preflight'] },
       { id: 'settings-integration-readiness-read', roles: ['manager', 'runtime-platform', 'security-admin'], examples: ['/projects/:id/settings-integration-readiness'] },
+      { id: 'timeline-action-write', roles: ['manager', 'security-admin'], examples: ['/projects/:id/timeline/actions'] },
       { id: 'production-launch-audit-read', roles: ['manager', 'security-admin', 'observer'], examples: ['/projects/:id/production-launch-audit'] },
       { id: 'project-evidence-archive-export', roles: ['manager', 'security-admin', 'observer'], examples: ['/projects/:id/project-evidence-archive'] },
       { id: 'project-evidence-export-approval', roles: ['manager', 'security-admin', 'operations-owner'], examples: ['/projects/:id/project-evidence-exports'] },

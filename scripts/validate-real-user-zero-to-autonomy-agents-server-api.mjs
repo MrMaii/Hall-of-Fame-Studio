@@ -5,12 +5,23 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const tempRoot = resolve(repoRoot, '.tmp', 'real-user-zero-to-autonomy-agents-server-api-validate');
+const tempRoot = resolve(repoRoot, '.tmp', `real-user-zero-to-autonomy-agents-server-api-validate-${process.pid}`);
 const serverScript = resolve(repoRoot, 'scripts', 'agent-project-server.mjs');
 const secretVaultRecordsFile = resolve(tempRoot, 'secret-vault-records.json');
+const boundWorkspaceRoot = resolve(tempRoot, 'bound-workspace');
 const projectId = 'real_user_zero_to_autonomy_api_project';
 const modelPlaintext = 'REAL_USER_ZERO_TO_AUTONOMY_API_MODEL_KEY_SHOULD_NOT_LEAK';
 const searchPlaintext = 'REAL_USER_ZERO_TO_AUTONOMY_API_SEARCH_KEY_SHOULD_NOT_LEAK';
+
+function readArg(name) {
+  const inline = process.argv.find((arg) => arg.startsWith(`${name}=`));
+  if (inline) return inline.slice(name.length + 1);
+  const index = process.argv.indexOf(name);
+  return index >= 0 ? process.argv[index + 1] || '' : '';
+}
+
+const reportRequested = process.argv.includes('--report');
+const reportFormat = readArg('--format') || 'json';
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -25,6 +36,47 @@ function bodyRows(value) {
   if (Array.isArray(value?.rows)) return value.rows;
   if (Array.isArray(value?.submissions)) return value.submissions;
   return [];
+}
+
+function stageRow({ id, label, ready, route, proofIds = [], detail = '' }) {
+  return {
+    id,
+    label,
+    ready: Boolean(ready),
+    status: ready ? 'ready' : 'blocked',
+    route: route || '',
+    proofIds: proofIds.filter(Boolean),
+    detail,
+  };
+}
+
+function formatZeroToAutonomyReportMarkdown(report) {
+  const lines = [
+    '# Real User Zero-To-Autonomy Report',
+    '',
+    `Status: ${report.status}`,
+    `Ready for local MVP trial: ${report.readyForLocalMvpTrial ? 'yes' : 'no'}`,
+    `Ready for private-pilot delivery: ${report.readyForPrivatePilotDelivery ? 'yes' : 'no'}`,
+    `Ready for public production: ${report.readyForPublicProduction ? 'yes' : 'no'}`,
+    `Ready stages: ${report.summary.readyStageCount}/${report.summary.stageCount}`,
+    `Artifact coverage: ${report.summary.submittedArtifactTypeCount}/${report.summary.requiredArtifactTypeCount}`,
+    `Provider sources reviewed: ${report.summary.sourceReviewDecisionCount}/${report.summary.providerSourceCount}`,
+    '',
+    '## Stage Rows',
+    '',
+  ];
+  for (const row of report.stageRows) {
+    lines.push(`- ${row.status}: ${row.label}`);
+    if (row.route) lines.push(`  Route: ${row.route}`);
+    if (row.detail) lines.push(`  Detail: ${row.detail}`);
+  }
+  lines.push('');
+  lines.push('## Public Production Blockers');
+  lines.push('');
+  for (const blocker of report.productionBlockers) lines.push(`- ${blocker}`);
+  lines.push('');
+  lines.push('Values are intentionally omitted. This report exposes readiness stages, proof routes, counts, and blocker categories only.');
+  return `${lines.join('\n')}\n`;
 }
 
 function assertAutonomousHandoffOutput(project, submission, { context = 'real-user API handoff' } = {}) {
@@ -332,6 +384,17 @@ try {
   assert(!serializedRecords.includes(modelPlaintext) && !serializedRecords.includes(searchPlaintext), 'Vault records must not expose plaintext keys.');
   assert(!serializedRecords.includes(mockSearchRuntime.url), 'Vault records must not expose plaintext search endpoint.');
 
+  response = await fetchJson(`${backendUrl}/local-mvp-startup-readiness`);
+  const startupReadiness = response.body.localMvpStartupReadiness || {};
+  const serializedStartupReadiness = JSON.stringify(startupReadiness);
+  assert(response.status === 200 && startupReadiness.schemaVersion === 'local-mvp-startup-readiness/v1', 'Real-user API gate must read the backend startup readiness contract before mission creation.');
+  assert(startupReadiness.readyForFirstProjectRun === true && startupReadiness.status === 'ready-for-local-mvp-session', 'Real-user API gate must prove first-project readiness before creating a product-team mission.');
+  assert(startupReadiness.nextAction?.id === 'start-product-team-mission' && startupReadiness.nextAction?.route === '/product-team-missions', 'Startup readiness must route the ready user into Product Team Mission Runner.');
+  assert(startupReadiness.summary?.modelRuntimeReady === true && startupReadiness.summary?.searchRuntimeReady === true, 'Startup readiness must confirm model and search runtime readiness before project startup.');
+  assert(startupReadiness.providerVaultBindings?.redaction?.rawLeakCount === 0, 'Startup readiness must keep provider-vault metadata redacted before project startup.');
+  assert(!serializedStartupReadiness.includes(modelPlaintext) && !serializedStartupReadiness.includes(searchPlaintext), 'Startup readiness must not expose plaintext provider keys.');
+  assert(!serializedStartupReadiness.includes('ciphertext'), 'Startup readiness must not expose encrypted vault ciphertext.');
+
   response = await fetchJson(`${backendUrl}/product-team-missions`, {
     method: 'POST',
     body: JSON.stringify({
@@ -365,6 +428,76 @@ try {
   assert(response.body.productTeamMissionRun?.schemaVersion === 'product-team-mission-run/v1', 'Mission Runner must return a product-team mission receipt.');
   assert(response.body.productTeamMissionRun.researchOnly === false && response.body.productTeamMissionRun.missionType === 'generic-product-team', 'Mission Runner must keep this flow generic, not research-only.');
   assert(response.body.meeting?.transcript?.some((turn) => turn.stage === 'leader-campaign'), 'Kickoff meeting must include Leader campaign/self-marketing turns.');
+  const missionRun = response.body.productTeamMissionRun || {};
+  const kickoffMeeting = response.body.meeting || {};
+
+  response = await fetchJson(`${backendUrl}/projects/${projectId}/settings-provider-readiness`);
+  let projectSettingsProviderReadiness = response.body.settingsProviderReadiness || {};
+  let serializedSettingsReadiness = JSON.stringify(projectSettingsProviderReadiness);
+  assert(response.status === 200 && projectSettingsProviderReadiness.schemaVersion === 'settings-provider-readiness/v1', 'Project-scoped Settings provider readiness must be readable after first project creation.');
+  assert(projectSettingsProviderReadiness.projectId === projectId, 'Project-scoped Settings provider readiness must carry the real-user project id.');
+  assert(projectSettingsProviderReadiness.backendRoutes?.settingsProviderReadiness === `/projects/${projectId}/settings-provider-readiness`, 'Project-scoped Settings provider readiness must expose its own route.');
+  assert(projectSettingsProviderReadiness.canTypeApiFields === true && projectSettingsProviderReadiness.canSealSecrets === true, 'Project-scoped Settings provider readiness must keep API entry usable after Vault setup.');
+  assert(projectSettingsProviderReadiness.providerVaultBindings?.redaction?.rawLeakCount === 0, 'Project-scoped Settings provider readiness must keep provider-vault metadata redacted.');
+  assert(!serializedSettingsReadiness.includes(modelPlaintext) && !serializedSettingsReadiness.includes(searchPlaintext), 'Project-scoped Settings provider readiness must not expose plaintext provider keys.');
+  assert(!serializedSettingsReadiness.includes('ciphertext'), 'Project-scoped Settings provider readiness must not expose encrypted vault ciphertext.');
+
+  response = await fetchJson(`${backendUrl}/projects/${projectId}/settings-runtime-readiness`);
+  const projectSettingsRuntimeReadiness = response.body.settingsRuntimeReadiness || {};
+  serializedSettingsReadiness = JSON.stringify(projectSettingsRuntimeReadiness);
+  assert(response.status === 200 && projectSettingsRuntimeReadiness.schemaVersion === 'settings-runtime-readiness/v1', 'Project-scoped Settings runtime readiness must be readable after first project creation.');
+  assert(projectSettingsRuntimeReadiness.projectId === projectId, 'Project-scoped Settings runtime readiness must carry the real-user project id.');
+  assert(projectSettingsRuntimeReadiness.backendRoutes?.settingsRuntimeReadiness === `/projects/${projectId}/settings-runtime-readiness`, 'Project-scoped Settings runtime readiness must expose its own route.');
+  assert(projectSettingsRuntimeReadiness.rows?.some((row) => row.id === 'model-runtime' && row.status === 'pass'), 'Project-scoped Settings runtime readiness must pass the sealed model runtime.');
+  assert(projectSettingsRuntimeReadiness.rows?.some((row) => row.id === 'search-runtime' && row.status === 'pass'), 'Project-scoped Settings runtime readiness must pass the sealed search runtime.');
+  assert(projectSettingsRuntimeReadiness.modelRuntime?.providerVaultBindings?.redaction?.rawLeakCount === 0, 'Project-scoped Settings runtime readiness must include redacted provider-vault proof.');
+  assert(projectSettingsRuntimeReadiness.readyForProduction === false, 'Project-scoped Settings runtime readiness must not claim public-production readiness.');
+  assert(!serializedSettingsReadiness.includes(modelPlaintext) && !serializedSettingsReadiness.includes(searchPlaintext), 'Project-scoped Settings runtime readiness must not expose plaintext provider keys.');
+
+  response = await fetchJson(`${backendUrl}/projects/${projectId}/settings-integration-readiness`);
+  const projectSettingsIntegrationReadiness = response.body.settingsIntegrationReadiness || {};
+  assert(response.status === 200 && projectSettingsIntegrationReadiness.schemaVersion === 'settings-integration-readiness/v1', 'Project-scoped Settings integration readiness must be readable after first project creation.');
+  assert(projectSettingsIntegrationReadiness.projectId === projectId, 'Project-scoped Settings integration readiness must carry the real-user project id.');
+  assert(projectSettingsIntegrationReadiness.readyForSettingsIntegrationsPanel === true, 'Settings Integrations panel must be backed by route-readable contracts for a first real-user project.');
+  assert(projectSettingsIntegrationReadiness.backendRoutes?.settingsIntegrationReadiness === `/projects/${projectId}/settings-integration-readiness`, 'Settings integration readiness must expose its project-scoped aggregate route.');
+  assert(projectSettingsIntegrationReadiness.summary?.rowCount >= 7, 'Settings integration readiness must cover every Settings integration row.');
+  assert(projectSettingsIntegrationReadiness.summary?.routeReadyCount === projectSettingsIntegrationReadiness.summary.rowCount, 'Every Settings integration row must be route-backed for the first real-user project.');
+  for (const id of ['provider-budget-policy', 'agent-tool-grant-policy', 'vector-store', 'proxy-webhook', 'mcp-tools', 'budget-alerts', 'error-reporting']) {
+    const row = projectSettingsIntegrationReadiness.rows?.find((item) => item.id === id);
+    assert(row?.routeReady === true, `${id} Settings integration row must be route-backed after first project creation.`);
+    assert(row.requiredBackendRoute?.includes(projectId), `${id} Settings integration row must expose a project-scoped backend route.`);
+  }
+
+  response = await fetchJson(`${backendUrl}/projects/${projectId}/workspace/bind`, {
+    method: 'POST',
+    body: JSON.stringify({
+      workspacePath: boundWorkspaceRoot,
+      createIfMissing: true,
+      now: '2026-06-01T09:02:00.000Z',
+    }),
+  });
+  assert(response.status === 200 && response.body.route === 'workspace-bound', 'Real-user API startup must bind a backend local workspace.');
+  assert(response.body.localRuntime?.workspacePath === boundWorkspaceRoot, 'Workspace bind receipt must return the bound workspace path.');
+
+  response = await fetchJson(`${backendUrl}/projects/${projectId}/local-runtime`);
+  assert(response.status === 200 && response.body.localRuntime?.workspacePath === boundWorkspaceRoot, 'Local runtime route must read back the real-user bound workspace path.');
+
+  response = await fetchJson(`${backendUrl}/projects/${projectId}/workspace/write`, {
+    method: 'POST',
+    body: JSON.stringify({
+      path: 'deliverables/zero-to-autonomy-workspace-proof.md',
+      content: '# Zero-to-autonomy workspace proof\n\nThe generic product-team project has a backend-bound local workspace before Agent delivery begins.',
+    }),
+  });
+  assert(response.status === 200 && response.body.file?.path === 'deliverables/zero-to-autonomy-workspace-proof.md', 'Real-user API startup must be able to write a proof file into the bound workspace.');
+
+  response = await fetchJson(`${backendUrl}/projects/${projectId}/workspace/read`, {
+    method: 'POST',
+    body: JSON.stringify({
+      path: 'deliverables/zero-to-autonomy-workspace-proof.md',
+    }),
+  });
+  assert(response.status === 200 && /backend-bound local workspace/i.test(response.body.content || ''), 'Real-user API startup must read back the proof file from the bound workspace.');
 
   response = await fetchJson(`${backendUrl}/projects/${projectId}/meeting`, {
     method: 'POST',
@@ -441,6 +574,40 @@ try {
   assert(response.body.providerReceipt?.id === evidenceSearch.providerReceiptId, 'Evidence search must link to a provider receipt.');
   assert(response.body.providerUsage?.providerVaultBindingChecksum, 'Evidence search must write provider-vault usage proof.');
 
+  const initialSourceReviewWorkflow = await fetchJson(`${backendUrl}/projects/${projectId}/evidence-source-review-workflow`);
+  assert(initialSourceReviewWorkflow.status === 200 && initialSourceReviewWorkflow.body.evidenceSourceReviewWorkflow?.schemaVersion === 'evidence-source-review-workflow/v1', 'Evidence Source Review Workflow must expose pending source decisions after provider evidence.');
+  const pendingSourceReviewItems = (initialSourceReviewWorkflow.body.evidenceSourceReviewWorkflow.reviewItems || [])
+    .filter((item) => item.decisionRequired && !item.latestDecisionId);
+  assert(pendingSourceReviewItems.length >= evidenceSearch.sources.length, 'Evidence Source Review Workflow must queue every provider-backed source that requires Reviewer judgement.');
+
+  const sourceReviewResponses = [];
+  for (const [index, source] of pendingSourceReviewItems.entries()) {
+    const reviewMinute = 11 + Math.floor(index / 30);
+    const reviewSecond = String(index % 30).padStart(2, '0');
+    response = await fetchJson(`${backendUrl}/projects/${projectId}/evidence-source-review-workflow`, {
+      method: 'POST',
+      body: JSON.stringify({
+        includeReadModels: false,
+        evidenceSearchId: source.evidenceSearchId,
+        sourceId: source.sourceId,
+        reviewerAgentId: source.reviewerAgentId || 'curie',
+        decision: 'approved',
+        comments: `Approved source ${index + 1} for local MVP use: it is provider-backed, checksummed, and linked to the generic product-team validation chain.`,
+        now: `2026-06-01T09:${reviewMinute}:${reviewSecond}.000Z`,
+      }),
+    });
+    assert(response.status === 200, `Evidence source review ${index + 1} returned ${response.status}.`);
+    const sourceReview = response.body.evidenceSourceReview || {};
+    assert(sourceReview.id && sourceReview.decision === 'approved' && sourceReview.messageId && sourceReview.timelineLogId && sourceReview.eventId, `Evidence source review ${index + 1} must persist reviewer decision proof.`);
+    sourceReviewResponses.push(sourceReview);
+  }
+  assert(sourceReviewResponses.length === pendingSourceReviewItems.length, 'Every pending provider-backed evidence source must receive a Reviewer decision before artifact drafting.');
+  const sourceReviewRefs = sourceReviewResponses.map((review) => ({
+    type: 'evidence-source-review',
+    id: review.id,
+    route: `/projects/${projectId}/evidence-source-review-workflow#${review.id}`,
+  }));
+
   const discoverySubmission = await submitArtifact(backendUrl, {
     agentId: 'jobs',
     artifactType: 'discovery-report',
@@ -458,8 +625,11 @@ try {
     summary: 'Evidence packet links provider search, judgement, confidence, and downstream decisions.',
     body: '# Real-user generic product-team evidence packet\n\nThe evidence packet links the sealed provider source, confidence judgement, source snapshot, and downstream decisions so the Manager can inspect why the team chose a direction.',
     taskId: 'task_evidence',
-    sourceRefs: [{ type: 'evidence-search', id: evidenceSearch.id, route: `/projects/${projectId}/evidence-searches/${evidenceSearch.id}` }],
-    dependsOn: [evidenceSearch.id],
+    sourceRefs: [
+      { type: 'evidence-search', id: evidenceSearch.id, route: `/projects/${projectId}/evidence-searches/${evidenceSearch.id}` },
+      ...sourceReviewRefs,
+    ],
+    dependsOn: [evidenceSearch.id, ...sourceReviewResponses.map((review) => review.id)],
     now: '2026-06-01T09:13:00.000Z',
   });
 
@@ -681,10 +851,17 @@ try {
   assert(artifactQuality.body.artifactQualityAudit?.gates?.some((gate) => gate.id === 'generic-artifact-type-coverage' && gate.passed), 'Artifact Quality Audit must prove required generic artifact type coverage.');
   assert(artifactQuality.body.artifactQualityAudit?.summary?.missingArtifactTypeCount === 0, 'Artifact Quality Audit must report no missing generic artifact types.');
 
+  const sourceReviewWorkflow = await fetchJson(`${backendUrl}/projects/${projectId}/evidence-source-review-workflow`);
+  assert(sourceReviewWorkflow.status === 200 && sourceReviewWorkflow.body.evidenceSourceReviewWorkflow?.schemaVersion === 'evidence-source-review-workflow/v1', 'Evidence Source Review Workflow must be available in the real-user chain.');
+  assert(sourceReviewWorkflow.body.evidenceSourceReviewWorkflow.readyForLocalPilot === true, 'Evidence Source Review Workflow must become local-ready after every source receives a Reviewer decision.');
+  assert(sourceReviewWorkflow.body.evidenceSourceReviewWorkflow.summary?.sourceReviewDecisionCount >= evidenceSearch.sources.length, 'Evidence Source Review Workflow must count every real-user source decision.');
+  assert(sourceReviewWorkflow.body.evidenceSourceReviewWorkflow.summary?.pendingDecisionSourceCount === 0, 'Evidence Source Review Workflow must have no pending source decisions before archive handoff.');
+
   const proofTargets = [
     handoffSubmission.id,
     discoverySubmission.id,
     evidenceSearch.id,
+    ...sourceReviewResponses.map((review) => review.id),
     evidencePacketSubmission.id,
     brainstormSubmission.id,
     productBriefSubmission.id,
@@ -700,6 +877,9 @@ try {
   assert(flowGraph.status === 200 && proofTargets.every((id) => asText(flowGraph.body).includes(id)), 'Manager Flow Graph must trace every required generic submission, evidence, review, revision, final, and acceptance node.');
   const proofMap = await fetchJson(`${backendUrl}/projects/${projectId}/readiness-proof-map`);
   assert(proofMap.status === 200 && proofTargets.filter((id) => id !== productBriefReview.id && id !== finalReview.id).every((id) => asText(proofMap.body).includes(id)), 'Readiness Proof Map must expose required generic submission and evidence proof routes.');
+  assert(proofMap.body.settingsProviderReadinessRoutes?.[0]?.apiPath === `/projects/${projectId}/settings-provider-readiness`, 'Readiness Proof Map must expose the project-scoped Settings provider readiness route.');
+  assert(proofMap.body.settingsRuntimeReadinessRoutes?.[0]?.apiPath === `/projects/${projectId}/settings-runtime-readiness`, 'Readiness Proof Map must expose the project-scoped Settings runtime readiness route.');
+  assert(proofMap.body.settingsIntegrationReadinessRoutes?.[0]?.apiPath === `/projects/${projectId}/settings-integration-readiness`, 'Readiness Proof Map must expose the project-scoped Settings integration readiness route.');
   assert(proofMap.body.projectMemoryReadinessRoutes?.[0]?.apiPath === `/projects/${projectId}/memory-readiness`, 'Readiness Proof Map must expose the memory readiness proof route.');
   const transcript = await fetchJson(`${backendUrl}/projects/${projectId}/transcripts/main`);
   assert(transcript.status === 200 && proofTargets.filter((id) => id !== evidenceSearch.id).every((id) => asText(transcript.body).includes(id)), 'Group Chat transcript must retain required submission, review, revision, final, and acceptance proof.');
@@ -711,6 +891,28 @@ try {
   assert(agentDashboard.status === 200 && [productBriefSubmission.id, implementationPlanSubmission.id, revisionSubmission.id, finalSubmission.id].every((id) => asText(agentDashboard.body).includes(id)), 'Agent Dashboard must expose Turing draft/implementation/revision/final outputs.');
   const evidenceIndex = await fetchJson(`${backendUrl}/projects/${projectId}/evidence-index-readiness`);
   assert(evidenceIndex.status === 200 && asText(evidenceIndex.body).includes(evidenceSearch.id) && asText(evidenceIndex.body).includes(finalSubmission.id), 'Evidence Index readiness must trace provider evidence and final deliverable.');
+  const projectEvidenceArchive = await fetchJson(`${backendUrl}/projects/${projectId}/project-evidence-archive`);
+  const archive = projectEvidenceArchive.body.projectEvidenceArchive;
+  const archiveArtifactProofManifest = archive?.manifest?.find((entry) => entry.id === 'artifact-storage-proofs');
+  assert(projectEvidenceArchive.status === 200 && archive?.schemaVersion === 'project-evidence-archive/v1', 'Project Evidence Archive must expose the real-user evidence handoff contract.');
+  assert(archive.backendRoutes?.projectEvidenceArchive === `/projects/${projectId}/project-evidence-archive`, 'Project Evidence Archive must expose its own backend route.');
+  assert(archive.readyForManagerHandoff === true && archive.status === 'archive-ready', 'Project Evidence Archive must become ready after evidence source decisions, artifact proofs, reviews, and final delivery are archived.');
+  assert(archive.readyForProduction === false, 'Project Evidence Archive must not overclaim production export readiness.');
+  assert(archive.summary?.finalDeliverableCount >= 1, 'Project Evidence Archive must include the accepted final deliverable.');
+  assert(archive.summary?.evidenceSourceReviewDecisionCount >= evidenceSearch.sources.length, 'Project Evidence Archive must include every Reviewer source decision.');
+  assert(archive.summary?.rawLeakCount === 0, 'Project Evidence Archive must keep the real-user archive redacted.');
+  assert(
+    archive.summary?.artifactStorageProofCoverageReady === true
+      && archive.summary?.artifactStorageProofCount >= submissionRows.length
+      && archive.summary?.workspaceFileProofCount >= submissionRows.length,
+    'Project Evidence Archive must prove storage/workspace-file proof coverage for every real-user Agent submission.',
+  );
+  assert(
+    archiveArtifactProofManifest?.ready === true
+      && archiveArtifactProofManifest.storageProofCount >= submissionRows.length
+      && archiveArtifactProofManifest.workspaceFileProofCount >= submissionRows.length,
+    'Project Evidence Archive manifest must expose ready artifact-storage-proof coverage for every real-user Agent submission.',
+  );
   const memoryReadiness = await fetchJson(`${backendUrl}/projects/${projectId}/memory-readiness`);
   assert(memoryReadiness.status === 200 && memoryReadiness.body.projectMemoryReadiness?.schemaVersion === 'project-memory-readiness/v1', 'Project memory readiness must be available after the real-user chain.');
   assert(memoryReadiness.body.projectMemoryReadiness?.readyForProduction === false, 'Project memory readiness must not claim managed memory production readiness.');
@@ -721,8 +923,173 @@ try {
   const deliveryTraceRow = (id) => (deliveryTraceModel.rows || []).find((row) => row.id === id) || {};
   assert(deliveryTraceModel.readyForPrivatePilotDelivery === true, `Product Team Delivery Trace must close all generic zero-to-autonomy stages. Missing: ${JSON.stringify(deliveryTraceModel.missingRows || [])}`);
   assert(deliveryTraceRow('draft-artifact').ready === true && deliveryTraceRow('review-and-revision').ready === true, 'Product Team Delivery Trace must mark draft and review/revision stages ready.');
+  const projectZeroToAutonomy = await fetchJson(`${backendUrl}/projects/${projectId}/zero-to-autonomy-report`);
+  const projectZeroToAutonomyModel = projectZeroToAutonomy.body.zeroToAutonomyReport || {};
+  const serializedProjectZeroToAutonomy = asText(projectZeroToAutonomy.body);
+  assert(projectZeroToAutonomy.status === 200 && projectZeroToAutonomyModel.schemaVersion === 'project-zero-to-autonomy-report/v1', 'Project zero-to-autonomy report must be available through the real backend API.');
+  assert(projectZeroToAutonomyModel.readyForLocalMvpTrial === true, `Project zero-to-autonomy report must mark the complete local MVP trial ready. Missing: ${JSON.stringify(projectZeroToAutonomyModel.missingRows || [])}`);
+  assert(projectZeroToAutonomyModel.readyForPrivatePilotDelivery === true, 'Project zero-to-autonomy report must mark private-pilot delivery ready after trace and archive proof.');
+  assert(projectZeroToAutonomyModel.readyForPublicProduction === false, 'Project zero-to-autonomy report must not claim public production readiness.');
+  assert(projectZeroToAutonomyModel.summary?.submittedArtifactTypeCount === requiredGenericArtifactTypes.length, 'Project zero-to-autonomy report must prove complete generic artifact coverage.');
+  assert((projectZeroToAutonomyModel.stageRows || []).some((row) => row.id === 'settings-byok-seal' && row.ready), 'Project zero-to-autonomy report must use the same Settings BYOK Seal stage id as the operator report.');
+  assert(!(projectZeroToAutonomyModel.stageRows || []).some((row) => row.id === 'settings-byok-readiness'), 'Project zero-to-autonomy report must not use the stale Settings BYOK readiness stage id.');
+  assert((projectZeroToAutonomyModel.stageRows || []).some((row) => row.id === 'brainstorm-draft-review-revision-final' && row.ready), 'Project zero-to-autonomy report must include the brainstorm-draft-review-revision-final stage.');
+  assert(projectZeroToAutonomyModel.backendRoutes?.zeroToAutonomyReport === `/projects/${projectId}/zero-to-autonomy-report`, 'Project zero-to-autonomy report must expose its backend route.');
+  assert(projectZeroToAutonomyModel.redaction?.plaintextProviderSecretsExposed === false && projectZeroToAutonomyModel.redaction?.ciphertextExposed === false, 'Project zero-to-autonomy report must expose explicit redaction status.');
+  assert(!serializedProjectZeroToAutonomy.includes('SHOULD_NOT_LEAK') && !serializedProjectZeroToAutonomy.includes('"ciphertext":'), 'Project zero-to-autonomy report must not leak provider secrets or vault ciphertext.');
 
-  console.log('Real-user zero-to-autonomy agents:server API validation passed.');
+  const submittedArtifactTypes = new Set(submissionRows.map((row) => row.artifactType).filter(Boolean));
+  const stageRows = [
+    stageRow({
+      id: 'settings-byok-seal',
+      label: 'Settings BYOK Secret Vault and provider runtime',
+      ready: true,
+      route: '/secret-vault/seal',
+      detail: 'Model key, search endpoint, and search key were sealed through the backend vault and bound to runtime providers.',
+    }),
+    stageRow({
+      id: 'startup-readiness',
+      label: 'Local MVP first-project readiness',
+      ready: startupReadiness.readyForFirstProjectRun === true,
+      route: '/local-mvp-startup-readiness',
+      detail: startupReadiness.nextAction?.route || '',
+    }),
+    stageRow({
+      id: 'kickoff-self-marketing',
+      label: 'Kickoff meeting, role self-marketing, Leader/Reviewer confirmation',
+      ready: missionRun.schemaVersion === 'product-team-mission-run/v1' && kickoffMeeting.transcript?.some((turn) => turn.stage === 'leader-campaign'),
+      route: '/product-team-missions',
+      proofIds: missionRun.proofIds || [],
+      detail: `${missionRun.missionType || 'unknown'} / researchOnly=${missionRun.researchOnly === false ? 'false' : 'unknown'}`,
+    }),
+    stageRow({
+      id: 'workspace-binding',
+      label: 'Local/private MVP workspace binding and file proof',
+      ready: true,
+      route: `/projects/${projectId}/local-runtime`,
+      detail: 'Workspace bind, write, and readback completed through backend routes.',
+    }),
+    stageRow({
+      id: 'ca-handoff-autonomous-agent-output',
+      label: 'C-side to A-side handoff and autonomous Agent output',
+      ready: Boolean(collaborationHandoffSubmission.id && handoffSubmission.id),
+      route: `/projects/${projectId}/collaboration-intent-queue`,
+      proofIds: [collaborationHandoffSubmission.id, handoffSubmission.id],
+      detail: 'Collaboration handoff and direct Agent Autonomous Action Queue both produced proofed submissions.',
+    }),
+    stageRow({
+      id: 'provider-evidence-source-review',
+      label: 'Provider-backed evidence and Reviewer source decisions',
+      ready: evidenceSearch.sources?.length >= 2 && sourceReviewWorkflow.body.evidenceSourceReviewWorkflow?.summary?.pendingDecisionSourceCount === 0,
+      route: `/projects/${projectId}/evidence-source-review-workflow`,
+      proofIds: [evidenceSearch.id, ...sourceReviewResponses.map((review) => review.id)],
+      detail: `${sourceReviewResponses.length} source decision(s) recorded.`,
+    }),
+    stageRow({
+      id: 'brainstorm-draft-review-revision-final',
+      label: 'Brainstorm, model-backed draft, review, revision, and final deliverable',
+      ready: deliveryTraceModel.readyForPrivatePilotDelivery === true,
+      route: `/projects/${projectId}/product-team-delivery-trace`,
+      proofIds: [
+        brainstormSubmission.id,
+        productBriefSubmission.id,
+        productBriefReview.id,
+        revisionSubmission.id,
+        finalSubmission.id,
+        finalReview.id,
+      ],
+      detail: 'The Product Team Delivery Trace closed every generic zero-to-autonomy stage.',
+    }),
+    stageRow({
+      id: 'generic-artifact-coverage',
+      label: 'Required generic Agent submission types',
+      ready: requiredGenericArtifactTypes.every((type) => submittedArtifactTypes.has(type)),
+      route: `/projects/${projectId}/artifact-quality-audit`,
+      proofIds: submissionRows.map((row) => row.id).filter(Boolean),
+      detail: `${submittedArtifactTypes.size} submitted artifact type(s), ${requiredGenericArtifactTypes.length} required.`,
+    }),
+    stageRow({
+      id: 'manager-proof-surfaces',
+      label: 'Manager Flow Graph, Proof Map, transcript, timeline, event ledger, Agent Dashboard, Evidence Index',
+      ready: true,
+      route: `/projects/${projectId}/manager-flow-graph`,
+      proofIds: proofTargets,
+      detail: 'All proof surfaces retained the required submission, evidence, review, revision, final, and acceptance ids.',
+    }),
+    stageRow({
+      id: 'project-evidence-archive',
+      label: 'Project Evidence Archive and memory readiness handoff',
+      ready: archive.readyForManagerHandoff === true && memoryReadiness.body.projectMemoryReadiness?.schemaVersion === 'project-memory-readiness/v1',
+      route: `/projects/${projectId}/project-evidence-archive`,
+      detail: `Archive status ${archive.status || 'unknown'}; productionReady=${archive.readyForProduction === true ? 'yes' : 'no'}.`,
+    }),
+  ];
+  const report = {
+    schemaVersion: 'real-user-zero-to-autonomy-operator-report/v1',
+    generatedAt: new Date().toISOString(),
+    status: stageRows.every((row) => row.ready) ? 'local-mvp-zero-to-autonomy-ready' : 'local-mvp-zero-to-autonomy-blocked',
+    readyForLocalMvpTrial: stageRows.every((row) => row.ready),
+    readyForPrivatePilotDelivery: Boolean(deliveryTraceModel.readyForPrivatePilotDelivery && archive.readyForManagerHandoff),
+    readyForPublicProduction: false,
+    missionType: missionRun.missionType || 'generic-product-team',
+    projectId,
+    summary: {
+      stageCount: stageRows.length,
+      readyStageCount: stageRows.filter((row) => row.ready).length,
+      requiredArtifactTypeCount: requiredGenericArtifactTypes.length,
+      submittedArtifactTypeCount: requiredGenericArtifactTypes.filter((type) => submittedArtifactTypes.has(type)).length,
+      submissionCount: submissionRows.length,
+      providerSourceCount: evidenceSearch.sources?.length || 0,
+      sourceReviewDecisionCount: sourceReviewResponses.length,
+      proofTargetCount: proofTargets.length,
+      artifactStorageProofCount: archive.summary?.artifactStorageProofCount || 0,
+      workspaceFileProofCount: archive.summary?.workspaceFileProofCount || 0,
+      archiveRawLeakCount: archive.summary?.rawLeakCount || 0,
+    },
+    stageRows,
+    artifactTypes: requiredGenericArtifactTypes.map((artifactType) => ({
+      artifactType,
+      present: submittedArtifactTypes.has(artifactType),
+    })),
+    backendRoutes: {
+      localMvpStartupReadiness: '/local-mvp-startup-readiness',
+      productTeamMissions: '/product-team-missions',
+      settingsProviderReadiness: `/projects/${projectId}/settings-provider-readiness`,
+      settingsRuntimeReadiness: `/projects/${projectId}/settings-runtime-readiness`,
+      settingsIntegrationReadiness: `/projects/${projectId}/settings-integration-readiness`,
+      localRuntime: `/projects/${projectId}/local-runtime`,
+      managerFlowGraph: `/projects/${projectId}/manager-flow-graph`,
+      readinessProofMap: `/projects/${projectId}/readiness-proof-map`,
+      productTeamDeliveryTrace: `/projects/${projectId}/product-team-delivery-trace`,
+      projectEvidenceArchive: `/projects/${projectId}/project-evidence-archive`,
+      projectMemoryReadiness: `/projects/${projectId}/memory-readiness`,
+      zeroToAutonomyReport: `/projects/${projectId}/zero-to-autonomy-report`,
+    },
+    productionBlockers: [
+      'managed identity and service identity',
+      'managed KMS or Secret Manager with rotation and revocation',
+      'managed database and durable queue/cron cutover',
+      'centralized audit, observability, alerting, and incident response',
+      'provider cost controls, evals, and production provider incident process',
+      'customer production acceptance policy and rollback proof',
+    ],
+    redaction: {
+      plaintextProviderSecretsExposed: false,
+      ciphertextExposed: false,
+      archiveRawLeakCount: archive.summary?.rawLeakCount || 0,
+      projectZeroToAutonomyChecksum: projectZeroToAutonomyModel.checksum || null,
+    },
+  };
+
+  if (reportRequested) {
+    if (reportFormat === 'markdown') {
+      process.stdout.write(formatZeroToAutonomyReportMarkdown(report));
+    } else {
+      process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+    }
+  } else {
+    console.log('Real-user zero-to-autonomy agents:server API validation passed.');
+  }
 } finally {
   await stopChild(backendChild);
   await closeServer(mockModelRuntime);

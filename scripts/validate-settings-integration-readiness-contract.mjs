@@ -8,7 +8,7 @@ function assert(condition, message) {
 }
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const tempRoot = resolve(repoRoot, '.tmp', 'settings-integration-readiness-contract-validate');
+const tempRoot = resolve(repoRoot, '.tmp', `settings-integration-readiness-contract-validate-${process.pid}`);
 const projectId = 'settings_integration_readiness_project';
 
 await rm(tempRoot, { recursive: true, force: true });

@@ -14,6 +14,14 @@ const tasks = [
     script: 'scripts/validate-public-production-startup-readiness-contract.mjs',
   },
   {
+    label: 'redacted public production operator report',
+    script: 'scripts/validate-public-production-readiness-report.mjs',
+  },
+  {
+    label: 'real managed environment preflight',
+    script: 'scripts/validate-managed-environment-preflight.mjs',
+  },
+  {
     label: 'shared adapter gateway contract',
     script: 'scripts/validate-adapter-gateway-contract.mjs',
   },
