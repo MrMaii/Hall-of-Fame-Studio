@@ -61,6 +61,8 @@ function formatZeroToAutonomyReportMarkdown(report) {
     `Ready stages: ${report.summary.readyStageCount}/${report.summary.stageCount}`,
     `Artifact coverage: ${report.summary.submittedArtifactTypeCount}/${report.summary.requiredArtifactTypeCount}`,
     `Provider sources reviewed: ${report.summary.sourceReviewDecisionCount}/${report.summary.providerSourceCount}`,
+    `Provider usage proof rows: ${report.summary.providerUsageCount}`,
+    `Provider receipt proof rows: ${report.summary.providerReceiptCount}`,
     '',
     '## Stage Rows',
     '',
@@ -68,6 +70,7 @@ function formatZeroToAutonomyReportMarkdown(report) {
   for (const row of report.stageRows) {
     lines.push(`- ${row.status}: ${row.label}`);
     if (row.route) lines.push(`  Route: ${row.route}`);
+    if (row.proofIds?.length) lines.push(`  Proof IDs: ${row.proofIds.length}`);
     if (row.detail) lines.push(`  Detail: ${row.detail}`);
   }
   lines.push('');
@@ -98,15 +101,29 @@ function assertAgentSubmissionNode(submission, { context = 'real-user API handof
 }
 
 async function fetchJson(url, options = {}) {
-  const response = await fetch(url, {
-    ...options,
-    headers: {
-      'content-type': 'application/json',
-      ...(options.headers || {}),
-    },
-  });
-  const body = await response.json().catch(() => ({}));
-  return { status: response.status, body };
+  const { timeoutMs = 30000, ...fetchOptions } = options;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const method = fetchOptions.method || 'GET';
+  try {
+    const response = await fetch(url, {
+      ...fetchOptions,
+      headers: {
+        'content-type': 'application/json',
+        ...(fetchOptions.headers || {}),
+      },
+      signal: controller.signal,
+    });
+    const body = await response.json().catch(() => ({}));
+    return { status: response.status, body };
+  } catch (error) {
+    const detail = error?.name === 'AbortError'
+      ? `timed out after ${timeoutMs}ms`
+      : error?.message || String(error);
+    throw new Error(`${method} ${url} ${detail}`);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function listen(server, { port = 0, host = '127.0.0.1' } = {}) {
@@ -570,9 +587,11 @@ try {
   });
   assert(response.status === 200, `Evidence search returned ${response.status}.`);
   const evidenceSearch = response.body.evidenceSearch || {};
+  const evidenceProviderReceipt = response.body.providerReceipt || {};
+  const evidenceProviderUsage = response.body.providerUsage || {};
   assert(evidenceSearch.id && evidenceSearch.provider === 'http-json' && evidenceSearch.sources?.length === 2, 'Evidence search must use the sealed search provider and persist sources.');
-  assert(response.body.providerReceipt?.id === evidenceSearch.providerReceiptId, 'Evidence search must link to a provider receipt.');
-  assert(response.body.providerUsage?.providerVaultBindingChecksum, 'Evidence search must write provider-vault usage proof.');
+  assert(evidenceProviderReceipt.id === evidenceSearch.providerReceiptId, 'Evidence search must link to a provider receipt.');
+  assert(evidenceProviderUsage.id && evidenceProviderUsage.providerVaultBindingChecksum, 'Evidence search must write provider-vault usage proof.');
 
   const initialSourceReviewWorkflow = await fetchJson(`${backendUrl}/projects/${projectId}/evidence-source-review-workflow`);
   assert(initialSourceReviewWorkflow.status === 200 && initialSourceReviewWorkflow.body.evidenceSourceReviewWorkflow?.schemaVersion === 'evidence-source-review-workflow/v1', 'Evidence Source Review Workflow must expose pending source decisions after provider evidence.');
@@ -669,6 +688,7 @@ try {
   assert(response.status === 200, `Model-backed product brief draft returned ${response.status}.`);
   assert(response.body.artifactDraft?.schemaVersion === 'agent-artifact-draft/v1' && response.body.artifactDraft?.modelUsed === true, 'Product brief must use the backend model artifact-draft contract.');
   assert(response.body.providerUsage?.operation === 'model:artifact-draft' && response.body.providerUsage?.providerVaultBindingChecksum, 'Model draft must write provider usage with vault-binding proof.');
+  const modelDraftProviderUsage = response.body.providerUsage || {};
   const productBriefSubmission = response.body.submission || {};
   assert(productBriefSubmission.id && productBriefSubmission.artifactType === 'product-brief' && productBriefSubmission.isGeneratedDraft, 'Model draft must submit a product-brief Agent node.');
 
@@ -875,12 +895,30 @@ try {
   ];
   const flowGraph = await fetchJson(`${backendUrl}/projects/${projectId}/manager-flow-graph`);
   assert(flowGraph.status === 200 && proofTargets.every((id) => asText(flowGraph.body).includes(id)), 'Manager Flow Graph must trace every required generic submission, evidence, review, revision, final, and acceptance node.');
+  const serializedFlowGraph = asText(flowGraph.body);
+  const providerAuditFlowIds = [
+    evidenceProviderUsage.id,
+    modelDraftProviderUsage.id,
+    evidenceProviderReceipt.id,
+  ].filter(Boolean);
+  assert(providerAuditFlowIds.length >= 3 && providerAuditFlowIds.every((id) => serializedFlowGraph.includes(id)), 'Manager Flow Graph must expose provider audit usage and receipt proof ids.');
+  assert(flowGraph.body.nodes?.some((node) => node.id === 'provider-usage-audit' && JSON.stringify(node).includes('/provider-readiness')), 'Manager Flow Graph must expose a provider-usage-audit node linked to provider readiness.');
+  assert(
+    ['/provider-readiness', '/evidence-source-review-workflow', '/evidence-custody-readiness'].every((route) => serializedFlowGraph.includes(route)),
+    'Manager Flow Graph provider audit must expose provider readiness, source review, and custody proof routes.',
+  );
   const proofMap = await fetchJson(`${backendUrl}/projects/${projectId}/readiness-proof-map`);
   assert(proofMap.status === 200 && proofTargets.filter((id) => id !== productBriefReview.id && id !== finalReview.id).every((id) => asText(proofMap.body).includes(id)), 'Readiness Proof Map must expose required generic submission and evidence proof routes.');
   assert(proofMap.body.settingsProviderReadinessRoutes?.[0]?.apiPath === `/projects/${projectId}/settings-provider-readiness`, 'Readiness Proof Map must expose the project-scoped Settings provider readiness route.');
   assert(proofMap.body.settingsRuntimeReadinessRoutes?.[0]?.apiPath === `/projects/${projectId}/settings-runtime-readiness`, 'Readiness Proof Map must expose the project-scoped Settings runtime readiness route.');
   assert(proofMap.body.settingsIntegrationReadinessRoutes?.[0]?.apiPath === `/projects/${projectId}/settings-integration-readiness`, 'Readiness Proof Map must expose the project-scoped Settings integration readiness route.');
   assert(proofMap.body.projectMemoryReadinessRoutes?.[0]?.apiPath === `/projects/${projectId}/memory-readiness`, 'Readiness Proof Map must expose the memory readiness proof route.');
+  const zeroToAutonomyProofRoute = proofMap.body.zeroToAutonomyReportRoutes?.[0] || {};
+  assert(zeroToAutonomyProofRoute.providerUsageProofIds?.includes(evidenceProviderUsage.id) && zeroToAutonomyProofRoute.providerUsageProofIds?.includes(modelDraftProviderUsage.id), 'Readiness Proof Map zero-to-autonomy route must expose search and model provider usage proof ids.');
+  assert(zeroToAutonomyProofRoute.providerReceiptProofIds?.includes(evidenceProviderReceipt.id), 'Readiness Proof Map zero-to-autonomy route must expose provider receipt proof ids.');
+  assert(zeroToAutonomyProofRoute.providerEvidenceRoutes?.providerReadiness === `/projects/${projectId}/provider-readiness`, 'Readiness Proof Map zero-to-autonomy route must link provider readiness.');
+  assert(zeroToAutonomyProofRoute.providerEvidenceRoutes?.evidenceSourceReviewWorkflow === `/projects/${projectId}/evidence-source-review-workflow`, 'Readiness Proof Map zero-to-autonomy route must link source review workflow.');
+  assert(zeroToAutonomyProofRoute.providerEvidenceRoutes?.evidenceCustodyReadiness === `/projects/${projectId}/evidence-custody-readiness`, 'Readiness Proof Map zero-to-autonomy route must link evidence custody readiness.');
   const transcript = await fetchJson(`${backendUrl}/projects/${projectId}/transcripts/main`);
   assert(transcript.status === 200 && proofTargets.filter((id) => id !== evidenceSearch.id).every((id) => asText(transcript.body).includes(id)), 'Group Chat transcript must retain required submission, review, revision, final, and acceptance proof.');
   const timeline = await fetchJson(`${backendUrl}/projects/${projectId}/timeline`);
@@ -931,6 +969,8 @@ try {
   assert(projectZeroToAutonomyModel.readyForPrivatePilotDelivery === true, 'Project zero-to-autonomy report must mark private-pilot delivery ready after trace and archive proof.');
   assert(projectZeroToAutonomyModel.readyForPublicProduction === false, 'Project zero-to-autonomy report must not claim public production readiness.');
   assert(projectZeroToAutonomyModel.summary?.submittedArtifactTypeCount === requiredGenericArtifactTypes.length, 'Project zero-to-autonomy report must prove complete generic artifact coverage.');
+  assert(projectZeroToAutonomyModel.summary?.providerUsageCount >= 2, 'Project zero-to-autonomy report must count search and model provider usage proof.');
+  assert(projectZeroToAutonomyModel.summary?.providerReceiptCount >= 1, 'Project zero-to-autonomy report must count provider receipt proof.');
   assert((projectZeroToAutonomyModel.stageRows || []).some((row) => row.id === 'settings-byok-seal' && row.ready), 'Project zero-to-autonomy report must use the same Settings BYOK Seal stage id as the operator report.');
   assert(!(projectZeroToAutonomyModel.stageRows || []).some((row) => row.id === 'settings-byok-readiness'), 'Project zero-to-autonomy report must not use the stale Settings BYOK readiness stage id.');
   assert((projectZeroToAutonomyModel.stageRows || []).some((row) => row.id === 'brainstorm-draft-review-revision-final' && row.ready), 'Project zero-to-autonomy report must include the brainstorm-draft-review-revision-final stage.');
@@ -982,8 +1022,14 @@ try {
       label: 'Provider-backed evidence and Reviewer source decisions',
       ready: evidenceSearch.sources?.length >= 2 && sourceReviewWorkflow.body.evidenceSourceReviewWorkflow?.summary?.pendingDecisionSourceCount === 0,
       route: `/projects/${projectId}/evidence-source-review-workflow`,
-      proofIds: [evidenceSearch.id, ...sourceReviewResponses.map((review) => review.id)],
-      detail: `${sourceReviewResponses.length} source decision(s) recorded.`,
+      proofIds: [
+        evidenceSearch.id,
+        evidenceProviderReceipt.id,
+        evidenceProviderUsage.id,
+        modelDraftProviderUsage.id,
+        ...sourceReviewResponses.map((review) => review.id),
+      ],
+      detail: `${sourceReviewResponses.length} source decision(s), 2 provider usage proof row(s), and 1 provider receipt recorded.`,
     }),
     stageRow({
       id: 'brainstorm-draft-review-revision-final',
@@ -1040,6 +1086,8 @@ try {
       submittedArtifactTypeCount: requiredGenericArtifactTypes.filter((type) => submittedArtifactTypes.has(type)).length,
       submissionCount: submissionRows.length,
       providerSourceCount: evidenceSearch.sources?.length || 0,
+      providerUsageCount: [evidenceProviderUsage.id, modelDraftProviderUsage.id].filter(Boolean).length,
+      providerReceiptCount: [evidenceProviderReceipt.id].filter(Boolean).length,
       sourceReviewDecisionCount: sourceReviewResponses.length,
       proofTargetCount: proofTargets.length,
       artifactStorageProofCount: archive.summary?.artifactStorageProofCount || 0,

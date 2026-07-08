@@ -236,7 +236,7 @@ function playwrightChromiumExecutableCandidates() {
   const explicitPath = process.env.HOFS_PLAYWRIGHT_CHROMIUM || process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || '';
   const localPlaywrightPath = process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, 'ms-playwright') : '';
   const localHeadlessShells = localPlaywrightPath && existsSync(localPlaywrightPath)
-    ? readdirSync(localPlaywrightPath, { withFileTypes: true })
+    ? safeReaddirSync(localPlaywrightPath, { withFileTypes: true })
       .filter((entry) => entry.isDirectory() && /^chromium_headless_shell-/.test(entry.name))
       .map((entry) => join(localPlaywrightPath, entry.name, 'chrome-headless-shell-win64', 'chrome-headless-shell.exe'))
       .filter((candidate) => existsSync(candidate))
@@ -244,6 +244,14 @@ function playwrightChromiumExecutableCandidates() {
       .reverse()
     : [];
   return [explicitPath, ...localHeadlessShells].filter(Boolean);
+}
+
+function safeReaddirSync(path, options) {
+  try {
+    return readdirSync(path, options);
+  } catch {
+    return [];
+  }
 }
 
 async function launchBrowserWithRetry(attempts = 3) {
@@ -623,10 +631,10 @@ try {
   await assertPageContains(page, 'Backend-owned provider credentials', 'Settings Keys must render the backend provider boundary.');
   await page.getByTestId('settings-provider-api-entry-state').waitFor({ state: 'visible', timeout: 10000 });
   await assertPanelTextIncludes(page, 'settings-provider-api-entry-state', [
-    'API input fields: editable',
+    'API input fields',
     'Browser persistence: disabled',
     'Plaintext after Seal: cleared after backend receipt',
-  ], 'Settings Keys must show that API values are typeable while persistence stays backend-vault-only.');
+  ], 'Settings Keys must show that provider secrets are backend-vault-only.');
   await page.getByTestId('settings-provider-open-backend-target').click();
   await page.getByTestId('settings-deployment-backend-url-input').waitFor({ state: 'visible', timeout: 10000 });
   const shortcutBackendUrl = await page.getByTestId('settings-deployment-backend-url-input').inputValue();
@@ -654,16 +662,20 @@ try {
   await assertPanelTextIncludes(page, 'settings-provider-api-entry-state', [
     'Seal persistence: available through /secret-vault/seal',
   ], 'Settings Keys must show Seal availability only after backend Secret Vault readiness is synced.');
+  await assertPanelTextIncludes(page, 'settings-provider-readiness-contract', [
+    'backend-backed',
+    'Backend settings-provider-readiness/v1 route synced',
+  ], 'Settings Keys must expose provider readiness as a backend-backed contract after syncing provider status.');
   await assertPageContains(page, '/secret-vault/seal', 'Settings Keys must expose the backend secret-vault seal route.');
   await page.waitForFunction(() => {
     const footer = document.querySelector('[data-testid="settings-footer-backend-save-status"]')?.textContent || '';
     const entry = document.querySelector('[data-testid="settings-provider-api-entry-state"]')?.textContent || '';
-    return /backend-backed controls save on change/i.test(footer) && /seal persistence:\s*available through \/secret-vault\/seal/i.test(entry);
+    return /run health check before first project/i.test(footer) && /seal persistence:\s*available through \/secret-vault\/seal/i.test(entry);
   }, null, { timeout: 15000 }).catch(async () => {
     const footerStatus = await page.getByTestId('settings-footer-backend-save-status').innerText().catch(() => '<missing footer>');
     const entryStatus = await page.getByTestId('settings-provider-api-entry-state').innerText().catch(() => '<missing api entry>');
     const vaultStatusText = await page.getByTestId('settings-secret-vault-status').innerText().catch(() => '<missing vault status>');
-    throw new Error(`Settings footer must claim backend-backed saves after the UI reaches the real backend readiness routes. Footer: ${footerStatus}. API entry: ${entryStatus}. Vault: ${vaultStatusText}.`);
+    throw new Error(`Settings footer must require Health before claiming backend-backed saves. Footer: ${footerStatus}. API entry: ${entryStatus}. Vault: ${vaultStatusText}.`);
   });
   const footerConnectionButton = await waitForButtonEnabled(
     page,
@@ -683,6 +695,14 @@ try {
   await assertPageContains(page, 'Settings Health', 'Settings Health tab must render backend-owned health readiness rows.');
   await assertPageContains(page, '/local-mvp-startup-readiness', 'Settings Health quick check must include local MVP startup readiness from the backend contract.');
   await assertPageContains(page, '/projects', 'Settings Health quick check must include backend project catalog readiness.');
+  await page.waitForFunction(() => {
+    const footer = document.querySelector('[data-testid="settings-footer-backend-save-status"]')?.textContent || '';
+    return /health check failed or blocked/i.test(footer) && /backend setup required before first project/i.test(footer);
+  }, null, { timeout: 15000 }).catch(async () => {
+    const footerStatus = await page.getByTestId('settings-footer-backend-save-status').innerText().catch(() => '<missing footer>');
+    const healthStatusText = await page.getByTestId('settings-health-route-contract').innerText().catch(() => '<missing health status>');
+    throw new Error(`Settings footer must stay blocked after Health runs before provider secrets are sealed. Footer: ${footerStatus}. Health: ${healthStatusText}.`);
+  });
   assert(
     await page.getByTestId('settings-health-workflow-smoke').isVisible(),
     'Settings Health Workflow Smoke control must be visible before provider secrets are sealed; full smoke runs after provider secrets are sealed.',
@@ -707,6 +727,8 @@ try {
   ], 'Settings Deployment must expose the backend worker status route.');
   await assertPanelTextIncludes(page, 'settings-runtime-readiness-contract', [
     'Backend-owned runtime readiness',
+    'backend-backed',
+    'Backend settings-runtime-readiness/v1 route synced',
     '/settings/runtime-readiness',
     'npm run agents:settings-runtime-readiness',
   ], 'Settings Deployment must render backend runtime readiness instead of browser-inferred deployment state.');
@@ -715,6 +737,8 @@ try {
   await page.getByTestId('settings-model-runtime-readiness-contract').waitFor({ state: 'visible', timeout: 10000 });
   await assertPanelTextIncludes(page, 'settings-model-runtime-readiness-contract', [
     'Model policy readiness comes from the backend',
+    'backend-backed',
+    'Backend settings-runtime-readiness/v1 route synced',
     '/settings/runtime-readiness',
     'Model runtime',
     'Search runtime',
@@ -743,6 +767,8 @@ try {
   }
   await page.getByTestId('settings-integration-readiness-contract').waitFor({ state: 'visible', timeout: 10000 });
   await assertPanelTextIncludes(page, 'settings-integrations-runtime-boundary', [
+    'backend-backed',
+    'Backend settings-integration-readiness/v1 route synced',
     `/projects/${projectId}/settings-integration-readiness`,
   ], 'Settings Integrations must expose the project-scoped backend readiness proof route.');
   await assertPanelTextIncludes(page, 'settings-integration-readiness-contract', [
@@ -783,12 +809,16 @@ try {
   }, null, { timeout: 10000 });
   await assertPanelTextIncludes(page, 'settings-workspace-memory-readiness', [
     'Backend project memory readiness',
+    'backend-backed',
+    'Backend project-memory-readiness/v1 route synced',
     `/projects/${projectId}/memory-readiness`,
     'Production',
     'blocked',
   ], 'Settings Workspace must render backend memory readiness instead of a fake long-term memory toggle.');
   await assertPanelTextIncludes(page, 'settings-workspace-meeting-summaries', [
     'Backend meeting summaries',
+    'backend-backed',
+    'Backend meeting-summaries/v1 route synced',
     `/projects/${projectId}/meeting-summaries`,
     'Rows:',
     'Proof ids:',
@@ -1012,6 +1042,7 @@ try {
     'Settings Health Workflow Smoke must be available after provider secrets are sealed.',
     { timeoutMs: 20000 },
   );
+  const searchRequestsBeforeWorkflowSmoke = searchRequests.length;
   await workflowSmokeButton.scrollIntoViewIfNeeded();
   const workflowSmokeHitTarget = await workflowSmokeButton.evaluate((element) => {
     const rect = element.getBoundingClientRect();
@@ -1069,7 +1100,7 @@ try {
   try {
     await page.waitForFunction(() => {
       const text = document.body.innerText || '';
-      return /product-brief submission/i.test(text) && /flow nodes/i.test(text);
+      return /product-brief submission/i.test(text) && /provider usage/i.test(text) && /flow nodes/i.test(text);
     }, null, { timeout: 220000 });
   } catch (error) {
     const healthText = await page.getByTestId('settings-health-route-contract').innerText({ timeout: 1000 }).catch(() => '<missing settings health route contract>');
@@ -1086,6 +1117,27 @@ try {
     page,
     'product-brief submission',
     'Settings Health Workflow Smoke must prove backend Agent output through a product-brief submission.',
+  );
+  await assertPageContains(
+    page,
+    'Provider Usage',
+    'Settings Health Workflow Smoke must expose the provider usage proof created by the backend Agent workflow.',
+  );
+  await page.waitForFunction(() => {
+    const footer = document.querySelector('[data-testid="settings-footer-backend-save-status"]')?.textContent || '';
+    return /backend-backed controls save on change/i.test(footer);
+  }, null, { timeout: 15000 }).catch(async () => {
+    const footerStatus = await page.getByTestId('settings-footer-backend-save-status').innerText().catch(() => '<missing footer>');
+    const healthStatusText = await page.getByTestId('settings-health-route-contract').innerText().catch(() => '<missing health status>');
+    throw new Error(`Settings footer must claim backend-backed saves after sealed provider secrets and Workflow Smoke pass. Footer: ${footerStatus}. Health: ${healthStatusText}.`);
+  });
+  assert(
+    searchRequests.length > searchRequestsBeforeWorkflowSmoke,
+    'Settings Health Workflow Smoke must consume the Settings-sealed search endpoint after /search/test has already proven the provider.',
+  );
+  assert(
+    searchRequests.at(-1)?.authorization === `Bearer ${searchPlaintext}`,
+    'Settings Health Workflow Smoke must call the configured search endpoint with the Settings-sealed search key.',
   );
 
   console.log('Settings agents:server UI validation passed.');

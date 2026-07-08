@@ -1,6 +1,11 @@
 import { createAgentProjectService, hydrateAgentProject } from './agentProjectService.js';
 import { createAgentProjectFileStore } from './agentProjectFileStore.js';
-import { authorizeAgentProjectRequest, evaluateProjectMembershipAccess, publicAccessDecision } from './accessControl.js';
+import {
+  authorizeAgentProjectRequest,
+  buildAccessControlPolicySnapshot,
+  evaluateProjectMembershipAccess,
+  publicAccessDecision,
+} from './accessControl.js';
 import { normalizeLanguage } from '../i18n/runtime.js';
 
 const json = (status, body) => ({ status, body });
@@ -93,6 +98,7 @@ function publicResult(result = {}) {
     task: result.task,
     strategyDecision: result.strategyDecision,
     modelKickoffMeeting: result.modelKickoffMeeting,
+    modelKickoffMeetingTurn: result.modelKickoffMeetingTurn,
   };
 }
 
@@ -555,6 +561,121 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
           },
         });
       }
+      if (method === 'GET' && path === '/access-control-policy') {
+        return json(200, {
+          accessControlPolicy: service.getAccessControlPolicy
+            ? service.getAccessControlPolicy()
+            : buildAccessControlPolicySnapshot(),
+        });
+      }
+      if (method === 'GET' && path === '/managed-identity-policy') {
+        return json(200, {
+          managedIdentityPolicy: service.getManagedIdentityPolicy
+            ? service.getManagedIdentityPolicy()
+            : {
+              schemaVersion: 'managed-identity-policy/v1',
+              status: 'backend-required',
+              ready: false,
+              apiPath: '/managed-identity-policy',
+            },
+        });
+      }
+      if (method === 'GET' && path === '/managed-secret-manager-policy') {
+        return json(200, {
+          managedSecretManagerPolicy: service.getManagedSecretManagerPolicy
+            ? service.getManagedSecretManagerPolicy()
+            : {
+              schemaVersion: 'managed-secret-manager-policy/v1',
+              status: 'backend-required',
+              ready: false,
+              apiPath: '/managed-secret-manager-policy',
+            },
+        });
+      }
+      if (method === 'GET' && path === '/managed-persistence-policy') {
+        return json(200, {
+          managedPersistencePolicy: service.getManagedPersistencePolicy
+            ? service.getManagedPersistencePolicy()
+            : {
+              schemaVersion: 'managed-persistence-policy/v1',
+              status: 'backend-required',
+              ready: false,
+              apiPath: '/managed-persistence-policy',
+            },
+        });
+      }
+      if (method === 'GET' && path === '/managed-worker-queue-policy') {
+        return json(200, {
+          managedWorkerQueuePolicy: service.getManagedWorkerQueuePolicy
+            ? service.getManagedWorkerQueuePolicy()
+            : {
+              schemaVersion: 'managed-worker-queue-policy/v1',
+              status: 'backend-required',
+              ready: false,
+              apiPath: '/managed-worker-queue-policy',
+            },
+        });
+      }
+      if (method === 'GET' && path === '/production-provider-controls-policy') {
+        return json(200, {
+          productionProviderControlsPolicy: service.getProductionProviderControlsPolicy
+            ? service.getProductionProviderControlsPolicy()
+            : {
+              schemaVersion: 'production-provider-controls-policy/v1',
+              status: 'backend-required',
+              ready: false,
+              apiPath: '/production-provider-controls-policy',
+            },
+        });
+      }
+      if (method === 'GET' && path === '/production-data-governance-policy') {
+        return json(200, {
+          productionDataGovernancePolicy: service.getProductionDataGovernancePolicy
+            ? service.getProductionDataGovernancePolicy()
+            : {
+              schemaVersion: 'production-data-governance-policy/v1',
+              status: 'backend-required',
+              ready: false,
+              apiPath: '/production-data-governance-policy',
+            },
+        });
+      }
+      if (method === 'GET' && path === '/production-traffic-policy') {
+        return json(200, {
+          productionTrafficPolicy: service.getProductionTrafficPolicy
+            ? service.getProductionTrafficPolicy()
+            : {
+              schemaVersion: 'production-traffic-policy/v1',
+              status: 'backend-required',
+              ready: false,
+              apiPath: '/production-traffic-policy',
+            },
+        });
+      }
+      if (method === 'GET' && path === '/production-customer-acceptance-policy') {
+        return json(200, {
+          productionCustomerAcceptancePolicy: service.getProductionCustomerAcceptancePolicy
+            ? service.getProductionCustomerAcceptancePolicy()
+            : {
+              schemaVersion: 'production-customer-acceptance-policy/v1',
+              status: 'backend-required',
+              ready: false,
+              apiPath: '/production-customer-acceptance-policy',
+            },
+        });
+      }
+      if (method === 'GET' && path === '/production-operations-policy') {
+        return json(200, {
+          productionOperationsPolicy: service.getProductionOperationsPolicy
+            ? service.getProductionOperationsPolicy()
+            : {
+              schemaVersion: 'production-operations-policy/v1',
+              status: 'backend-required',
+              ready: false,
+              apiPath: '/production-operations-policy',
+            },
+        });
+      }
       if (method === 'GET' && path === '/local-mvp-startup-readiness') {
         return json(200, {
           localMvpStartupReadiness: service.getLocalMvpStartupReadiness
@@ -595,7 +716,9 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
         if (typeof service.runSettingsWorkflowSmoke !== 'function') {
           return json(400, { error: 'settings-workflow-smoke-not-configured' });
         }
-        const result = service.runSettingsWorkflowSmoke({ ...body, language });
+        const result = typeof service.runSettingsWorkflowSmokeWithProviderEvidence === 'function'
+          ? await service.runSettingsWorkflowSmokeWithProviderEvidence({ ...body, language })
+          : service.runSettingsWorkflowSmoke({ ...body, language });
         return json(200, result);
       }
       if (method === 'GET' && path === '/settings/runtime-readiness') {
@@ -999,6 +1122,41 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
         }
       }
 
+      if (method === 'POST' && kickoffMeetingRoute?.meetingId && kickoffMeetingRoute.action === 'clarify') {
+        try {
+          if (typeof service.clarifyKickoffMeetingAsync !== 'function') {
+            throw new Error('model-kickoff-meeting-turn-not-supported');
+          }
+          return json(200, publicResult(await service.clarifyKickoffMeetingAsync({
+            meetingId: kickoffMeetingRoute.meetingId,
+            ...body,
+            language,
+          })));
+        } catch (error) {
+          if (body.allowDeterministicFallback === false) {
+            return json(400, {
+              error: 'model-kickoff-meeting-turn-failed',
+              message: error.message || String(error),
+              modelProvider: service.getModelProviderStatus ? service.getModelProviderStatus() : { enabled: false },
+            });
+          }
+          const fallbackResult = service.clarifyKickoffMeeting({
+            meetingId: kickoffMeetingRoute.meetingId,
+            ...body,
+            language,
+          });
+          return json(200, publicResult({
+            ...fallbackResult,
+            modelKickoffMeetingTurn: {
+              ok: false,
+              fallback: true,
+              error: error.message || String(error),
+              modelProvider: service.getModelProviderStatus ? service.getModelProviderStatus() : { enabled: false },
+            },
+          }));
+        }
+      }
+
       const result = this.handle({ ...request, _accessChecked: true });
       if (
         result.status >= 400
@@ -1123,6 +1281,121 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
             },
           });
         }
+        if (method === 'GET' && path === '/access-control-policy') {
+          return json(200, {
+            accessControlPolicy: service.getAccessControlPolicy
+              ? service.getAccessControlPolicy()
+              : buildAccessControlPolicySnapshot(),
+          });
+        }
+        if (method === 'GET' && path === '/managed-identity-policy') {
+          return json(200, {
+            managedIdentityPolicy: service.getManagedIdentityPolicy
+              ? service.getManagedIdentityPolicy()
+              : {
+                schemaVersion: 'managed-identity-policy/v1',
+                status: 'backend-required',
+                ready: false,
+                apiPath: '/managed-identity-policy',
+              },
+          });
+        }
+        if (method === 'GET' && path === '/managed-secret-manager-policy') {
+          return json(200, {
+            managedSecretManagerPolicy: service.getManagedSecretManagerPolicy
+              ? service.getManagedSecretManagerPolicy()
+              : {
+                schemaVersion: 'managed-secret-manager-policy/v1',
+                status: 'backend-required',
+                ready: false,
+                apiPath: '/managed-secret-manager-policy',
+              },
+          });
+        }
+        if (method === 'GET' && path === '/managed-persistence-policy') {
+          return json(200, {
+            managedPersistencePolicy: service.getManagedPersistencePolicy
+              ? service.getManagedPersistencePolicy()
+              : {
+                schemaVersion: 'managed-persistence-policy/v1',
+                status: 'backend-required',
+                ready: false,
+                apiPath: '/managed-persistence-policy',
+              },
+          });
+        }
+        if (method === 'GET' && path === '/managed-worker-queue-policy') {
+          return json(200, {
+            managedWorkerQueuePolicy: service.getManagedWorkerQueuePolicy
+              ? service.getManagedWorkerQueuePolicy()
+              : {
+                schemaVersion: 'managed-worker-queue-policy/v1',
+                status: 'backend-required',
+                ready: false,
+                apiPath: '/managed-worker-queue-policy',
+              },
+          });
+        }
+        if (method === 'GET' && path === '/production-provider-controls-policy') {
+          return json(200, {
+            productionProviderControlsPolicy: service.getProductionProviderControlsPolicy
+              ? service.getProductionProviderControlsPolicy()
+              : {
+                schemaVersion: 'production-provider-controls-policy/v1',
+                status: 'backend-required',
+                ready: false,
+                apiPath: '/production-provider-controls-policy',
+              },
+          });
+        }
+        if (method === 'GET' && path === '/production-data-governance-policy') {
+          return json(200, {
+            productionDataGovernancePolicy: service.getProductionDataGovernancePolicy
+              ? service.getProductionDataGovernancePolicy()
+              : {
+                schemaVersion: 'production-data-governance-policy/v1',
+                status: 'backend-required',
+                ready: false,
+                apiPath: '/production-data-governance-policy',
+              },
+          });
+        }
+        if (method === 'GET' && path === '/production-traffic-policy') {
+          return json(200, {
+            productionTrafficPolicy: service.getProductionTrafficPolicy
+              ? service.getProductionTrafficPolicy()
+              : {
+                schemaVersion: 'production-traffic-policy/v1',
+                status: 'backend-required',
+                ready: false,
+                apiPath: '/production-traffic-policy',
+              },
+          });
+        }
+        if (method === 'GET' && path === '/production-customer-acceptance-policy') {
+          return json(200, {
+            productionCustomerAcceptancePolicy: service.getProductionCustomerAcceptancePolicy
+              ? service.getProductionCustomerAcceptancePolicy()
+              : {
+                schemaVersion: 'production-customer-acceptance-policy/v1',
+                status: 'backend-required',
+                ready: false,
+                apiPath: '/production-customer-acceptance-policy',
+              },
+          });
+        }
+        if (method === 'GET' && path === '/production-operations-policy') {
+          return json(200, {
+            productionOperationsPolicy: service.getProductionOperationsPolicy
+              ? service.getProductionOperationsPolicy()
+              : {
+                schemaVersion: 'production-operations-policy/v1',
+                status: 'backend-required',
+                ready: false,
+                apiPath: '/production-operations-policy',
+              },
+          });
+        }
         if (method === 'GET' && path === '/local-mvp-startup-readiness') {
           return json(200, {
             localMvpStartupReadiness: service.getLocalMvpStartupReadiness
@@ -1164,6 +1437,18 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
             return json(400, { error: 'settings-workflow-smoke-not-configured' });
           }
           return json(200, service.runSettingsWorkflowSmoke({ ...body, language }));
+        }
+        if (method === 'POST' && path === '/workspace/prepare') {
+          if (typeof service.prepareProjectWorkspace !== 'function') {
+            return json(400, { error: 'local-workspace-prepare-not-configured' });
+          }
+          return json(200, service.prepareProjectWorkspace({ ...body, language }));
+        }
+        if (method === 'POST' && path === '/workspace/pick-folder') {
+          if (typeof service.pickWorkspaceBaseFolder !== 'function') {
+            return json(400, { error: 'local-workspace-folder-picker-not-configured' });
+          }
+          return json(200, service.pickWorkspaceBaseFolder({ ...body, language }));
         }
         if (method === 'GET' && path === '/settings/runtime-readiness') {
           return json(200, {
@@ -2217,6 +2502,37 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
         if (method === 'GET' && route.action === 'private-pilot-go-live-readiness') {
           return json(200, {
             privatePilotGoLiveReadiness: service.getPrivatePilotGoLiveReadiness(route.projectId, { language }),
+          });
+        }
+        if (method === 'GET' && route.action === 'launch-operations-overview') {
+          return json(200, {
+            launchOperationsOverview: service.getLaunchOperationsOverview(route.projectId, { language }),
+          });
+        }
+        if (method === 'POST' && route.action === 'launch-operations-overview' && route.tail[0] === 'public-production-next-steps' && route.tail[2] === 'run') {
+          const stepId = decodeURIComponent(route.tail[1] || 'next');
+          const includeReadModels = shouldIncludeReadModels(body);
+          const result = service.runLaunchOperationsPublicProductionNextStep({
+            projectId: route.projectId,
+            stepId,
+            ...body,
+          });
+          const resultProjectId = result.project?.id || route.projectId;
+          return json(200, {
+            ...publicProjectResult(result, resultProjectId, language, { includeReadModels }),
+            launchOperationsNextStep: result.launchOperationsNextStep,
+            launchOperationsNextStepRun: result.launchOperationsNextStepRun,
+            launchOperationsOverview: result.launchOperationsOverview,
+            log: result.log,
+            ...(includeReadModels ? {} : deferredReadModels(resultProjectId, '', {
+              launchOperationsOverviewRoute: `/projects/${resultProjectId}/launch-operations-overview`,
+              readinessProofMapRoute: `/projects/${resultProjectId}/readiness-proof-map`,
+              managerFlowGraphRoute: `/projects/${resultProjectId}/manager-flow-graph`,
+              timelineRoute: `/projects/${resultProjectId}/timeline`,
+              eventsRoute: `/projects/${resultProjectId}/events`,
+              launchOperationsNextStepRunRoute: `/projects/${resultProjectId}/launch-operations-overview/public-production-next-steps/${encodeURIComponent(result.launchOperationsNextStepRun?.stepId || stepId)}/run`,
+              publicProductionTargetRoute: result.launchOperationsNextStepRun?.apiPath || null,
+            })),
           });
         }
         if (method === 'GET' && route.action === 'production-launch-gap-register') {

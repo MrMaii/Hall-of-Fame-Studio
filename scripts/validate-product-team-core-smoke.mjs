@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { createAgentProjectApi } from '../src/agents/agentProjectApi.js';
 import { createAgentProjectService } from '../src/agents/agentProjectService.js';
 import {
@@ -24,6 +25,7 @@ function asText(value) {
 
 const projectId = 'product_team_core_smoke_project';
 const missionBrief = 'Validate a generic AI product team using a research-style brief only as a sample customer goal.';
+const appSource = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
 const team = [
   { id: 'jobs', name: 'Steve Jobs', role: 'Product Lead', skill: 'product framing' },
   { id: 'curie', name: 'Marie Curie', role: 'Evidence Reviewer', skill: 'evidence review' },
@@ -32,6 +34,15 @@ const team = [
 ];
 
 assert(PERSON_SKILL_COUNT >= 40, 'Product-team smoke must run against the canonical Hall of Fame persona skill registry.');
+assert(
+  appSource.includes('agent-workbench-artifact-draft-proof')
+    && appSource.includes('Draft node: {latestWorkbenchReceipt.artifactDraftId}')
+    && appSource.includes('latestWorkbenchReceipt.readModels?.managerFlowGraphRoute')
+    && appSource.includes('latestWorkbenchReceipt.readModels?.readinessProofMapRoute')
+    && appSource.includes('latestWorkbenchReceipt.readModels?.timelineRoute')
+    && appSource.includes('latestWorkbenchReceipt.readModels?.eventsRoute'),
+  'Product-team smoke must pin the visible Agent Workbench artifact-draft proof receipt through Flow Graph, Proof Map, Timeline, and Event routes.',
+);
 for (const member of team) {
   const skill = getPersonSkill(member.id);
   assert(skill?.slug === member.id, `${member.id} must resolve to a canonical persona skill, not an app-only Agent definition.`);
@@ -464,8 +475,36 @@ const reviewWorkflow = request({ method: 'GET', path: `/projects/${projectId}/su
 assert(reviewWorkflow.status === 200 && asText(reviewWorkflow.body).includes(productBriefReview.id) && asText(reviewWorkflow.body).includes(finalReview.id), 'Submission Review Workflow must include requested-changes and final acceptance reviews.');
 
 const deliveryTrace = request({ method: 'GET', path: `/projects/${projectId}/product-team-delivery-trace` });
-const deliveryTraceText = asText(deliveryTrace.body);
-assert(deliveryTrace.status === 200 && ['brainstorm', 'evidence', 'draft', 'review', 'revision', 'final'].every((word) => deliveryTraceText.toLowerCase().includes(word)), 'Product Team Delivery Trace must include brainstorm, evidence, draft, review, revision, and final stages.');
+const deliveryTraceModel = deliveryTrace.body.productTeamDeliveryTrace;
+assert(deliveryTrace.status === 200 && deliveryTraceModel?.schemaVersion === 'product-team-delivery-trace/v1', 'Product Team Delivery Trace must expose its backend contract.');
+assert(deliveryTraceModel.readyForPrivatePilotDelivery === true && deliveryTraceModel.readyForProduction === false, 'Product Team Delivery Trace must close the local/private-pilot loop without production overclaim.');
+const expectedGenericTraceStageIds = [
+  'kickoff-meeting',
+  'agent-self-marketing',
+  'brainstorm-layer',
+  'evidence-quality',
+  'draft-artifact',
+  'review-and-revision',
+  'final-deliverable',
+  'proof-surfaces',
+];
+const deliveryTraceStageIds = (deliveryTraceModel.rows || []).map((row) => row.id);
+assert(
+  expectedGenericTraceStageIds.every((id) => deliveryTraceStageIds.includes(id)),
+  `Research validation sample must prove generic product-team delivery stages, not research-only stages. Got: ${deliveryTraceStageIds.join(', ')}.`,
+);
+assert(
+  (deliveryTraceModel.rows || []).every((row) => (
+    row.ready === true
+    && ((row.proofIds || []).length || (row.timelineLogIds || []).length || (row.eventIds || []).length)
+  )),
+  'Every ready Product Team Delivery Trace stage must carry proof, timeline, or event evidence.',
+);
+assert(
+  (deliveryTraceModel.rows || []).every((row) => !/\b(paper|thesis|manuscript)\b|论文/i.test(`${row.id || ''} ${row.stage || ''} ${row.label || ''} ${row.detail || ''}`)),
+  'Research validation sample trace rows must not introduce paper/thesis/manuscript-specific protocol fields.',
+);
+assert(deliveryTraceModel.backendRoutes?.productTeamDeliveryTrace === `/projects/${projectId}/product-team-delivery-trace`, 'Product Team Delivery Trace must expose its own backend route.');
 
 const stateMachine = request({ method: 'GET', path: `/projects/${projectId}/planner-executor-reviewer-state-machine` });
 const stateMachineModel = stateMachine.body.plannerExecutorReviewerStateMachine;
@@ -486,6 +525,7 @@ assert(readyPackage.status === 200 && readyPackage.body.plannerExecutorReviewerS
 
 const flowGraph = request({ method: 'GET', path: `/projects/${projectId}/manager-flow-graph` });
 const flowText = asText(flowGraph.body);
+const flowNodes = flowGraph.body.nodes || [];
 const requiredTraceIds = [
   discoverySubmission.id,
   evidencePacketSubmission.id,
@@ -503,6 +543,63 @@ const requiredTraceIds = [
   finalReview.id,
 ];
 assert(flowGraph.status === 200 && requiredTraceIds.every((id) => flowText.includes(id)), 'Manager Flow Graph must trace all required generic submission/evidence/review nodes.');
+const flowSubmissionNodes = flowGraph.body.nodes?.filter((node) => node.category === 'submission' && node.source === 'agentSubmissions') || [];
+const flowSubmissionNodesMissingRoute = flowSubmissionNodes.filter((node) => !(
+  node.submissionId
+  && node.submissionRoute === `/projects/${projectId}/submissions/${encodeURIComponent(node.submissionId)}`
+  && node.route === node.submissionRoute
+  && node.attachments?.some((attachment) => (
+    attachment.submissionId === node.submissionId
+    && attachment.submissionRoute === node.submissionRoute
+  ))
+));
+assert(
+  flowSubmissionNodes.length >= requiredGenericArtifactTypes.length
+    && flowSubmissionNodesMissingRoute.length === 0,
+  `Manager Flow Graph submission nodes must expose explicit backend submissionId/submissionRoute fields on nodes and artifact attachments. Missing: ${flowSubmissionNodesMissingRoute.map((node) => `${node.id}:${node.subtype}:${node.source}`).join(', ') || 'none'}.`,
+);
+const flowEvidenceNode = flowNodes.find((node) => node.source === 'evidenceSearches' && node.evidenceSearchId === evidenceSearch.id);
+assert(
+  flowEvidenceNode?.evidenceSearchRoute === `/projects/${projectId}/evidence-searches/${encodeURIComponent(evidenceSearch.id)}`
+    && flowEvidenceNode.route === flowEvidenceNode.evidenceSearchRoute
+    && flowEvidenceNode.attachments?.some((attachment) => (
+      attachment.evidenceSearchId === evidenceSearch.id
+      && attachment.evidenceSearchRoute === flowEvidenceNode.evidenceSearchRoute
+    )),
+  'Manager Flow Graph evidence-search nodes must expose explicit backend evidenceSearchId/evidenceSearchRoute fields on nodes and attachments.',
+);
+const flowSourceReviewNodes = flowNodes.filter((node) => node.source === 'evidenceSourceReviews');
+assert(
+  flowSourceReviewNodes.length >= 2
+    && flowSourceReviewNodes.every((node) => (
+      node.evidenceSourceReviewId
+      && node.evidenceSourceReviewRoute === `/projects/${projectId}/evidence-source-review-workflow#${encodeURIComponent(node.evidenceSourceReviewId)}`
+      && node.route === node.evidenceSourceReviewRoute
+      && node.evidenceSearchId === evidenceSearch.id
+      && node.evidenceSearchRoute === `/projects/${projectId}/evidence-searches/${encodeURIComponent(evidenceSearch.id)}`
+      && node.attachments?.some((attachment) => (
+        attachment.evidenceSourceReviewId === node.evidenceSourceReviewId
+        && attachment.evidenceSourceReviewRoute === node.evidenceSourceReviewRoute
+      ))
+    )),
+  'Manager Flow Graph evidence-source-review nodes must expose explicit backend evidenceSourceReviewRoute and evidenceSearchRoute fields.',
+);
+const flowSubmissionReviewNodes = flowNodes.filter((node) => node.source === 'submissionReviews');
+assert(
+  flowSubmissionReviewNodes.length >= 2
+    && flowSubmissionReviewNodes.every((node) => (
+      node.submissionReviewId
+      && node.submissionReviewRoute === `/projects/${projectId}/submission-reviews/${encodeURIComponent(node.submissionReviewId)}`
+      && node.route === node.submissionReviewRoute
+      && node.submissionId
+      && node.submissionRoute === `/projects/${projectId}/submissions/${encodeURIComponent(node.submissionId)}`
+      && node.attachments?.some((attachment) => (
+        attachment.submissionReviewId === node.submissionReviewId
+        && attachment.submissionReviewRoute === node.submissionReviewRoute
+      ))
+    )),
+  'Manager Flow Graph submission-review nodes must expose explicit backend submissionReviewId/submissionReviewRoute fields on nodes and attachments.',
+);
 assert(flowText.includes('planner-executor-reviewer-state-machine'), 'Manager Flow Graph must expose the Planner / Executor / Reviewer state machine node.');
 [
   'governance-protocol',
@@ -520,6 +617,48 @@ assert(flowText.includes('planner-executor-reviewer-state-machine'), 'Manager Fl
 const proofMap = request({ method: 'GET', path: `/projects/${projectId}/readiness-proof-map` });
 const proofText = asText(proofMap.body);
 assert(proofMap.status === 200 && requiredTraceIds.filter((id) => id !== productBriefReview.id && id !== finalReview.id).every((id) => proofText.includes(id)), 'Readiness Proof Map must expose required generic submission and evidence proof routes.');
+assert(
+  requiredGenericArtifactTypes.every((artifactType) => {
+    const route = proofMap.body.submissionRoutes?.find((item) => item.artifactType === artifactType);
+    return route?.id
+      && route.submissionId === route.id
+      && route.submissionRoute === `/projects/${projectId}/submissions/${encodeURIComponent(route.submissionId)}`
+      && route.apiPath === route.submissionRoute;
+  }),
+  'Readiness Proof Map submission routes must expose explicit backend submissionId/submissionRoute fields for every generic artifact type.',
+);
+assert(
+  proofMap.body.evidenceSearchRoutes?.some((route) => (
+    route.id === evidenceSearch.id
+    && route.evidenceSearchId === evidenceSearch.id
+    && route.evidenceSearchRoute === `/projects/${projectId}/evidence-searches/${encodeURIComponent(evidenceSearch.id)}`
+    && route.apiPath === route.evidenceSearchRoute
+  )),
+  'Readiness Proof Map evidence-search routes must expose explicit backend evidenceSearchId/evidenceSearchRoute fields.',
+);
+const proofMapSourceReviewRoutes = proofMap.body.evidenceSourceReviewRoutes?.filter((route) => route.evidenceSearchId === evidenceSearch.id) || [];
+assert(
+  proofMapSourceReviewRoutes.length >= 2
+    && proofMapSourceReviewRoutes.every((route) => (
+    route.id
+    && route.evidenceSourceReviewId === route.id
+    && route.evidenceSourceReviewRoute === `/projects/${projectId}/evidence-source-review-workflow#${encodeURIComponent(route.evidenceSourceReviewId)}`
+    && route.apiPath === route.evidenceSourceReviewRoute
+    && route.evidenceSearchRoute === `/projects/${projectId}/evidence-searches/${encodeURIComponent(evidenceSearch.id)}`
+  )),
+  'Readiness Proof Map evidence-source-review routes must expose explicit backend review and evidence-search resource fields.',
+);
+assert(
+  proofMap.body.submissionReviewRoutes?.every((route) => (
+    route.id
+    && route.submissionReviewId === route.id
+    && route.submissionReviewRoute === `/projects/${projectId}/submission-reviews/${encodeURIComponent(route.submissionReviewId)}`
+    && route.apiPath === route.submissionReviewRoute
+    && route.submissionId
+    && route.submissionRoute === `/projects/${projectId}/submissions/${encodeURIComponent(route.submissionId)}`
+  )),
+  'Readiness Proof Map submission-review routes must expose explicit backend review and submission resource fields.',
+);
 assert(proofMap.body.projectMemoryReadinessRoutes?.[0]?.apiPath === `/projects/${projectId}/memory-readiness`, 'Readiness Proof Map must expose the project memory readiness proof route.');
 assert(proofMap.body.plannerExecutorReviewerStateMachineRoutes?.[0]?.apiPath === `/projects/${projectId}/planner-executor-reviewer-state-machine`, 'Readiness Proof Map must expose the Planner / Executor / Reviewer state machine proof route.');
 assert(proofMap.body.plannerExecutorReviewerStateMachineSummary?.readyForLocalProductTeamStateMachine === true, 'Readiness Proof Map must mark the Planner / Executor / Reviewer state machine local-ready.');
@@ -547,6 +686,12 @@ assert(
 const transcript = request({ method: 'GET', path: `/projects/${projectId}/transcripts/main` });
 const transcriptText = asText(transcript.body);
 assert(transcript.status === 200 && requiredTraceIds.filter((id) => id !== evidenceSearch.id).every((id) => transcriptText.includes(id)), 'Group Chat transcript must retain required submission, review, revision, final, and acceptance proof.');
+const transcriptMessages = transcript.body.messages || [];
+assert(transcriptMessages.some((message) => message.type === 'submission' && message.submissionId === finalSubmission.id && message.submissionRoute === `/projects/${projectId}/submissions/${encodeURIComponent(finalSubmission.id)}` && message.resourceRoute === message.submissionRoute), 'Group Chat submission messages must carry the backend submission route for collaboration cards.');
+assert(transcriptMessages.some((message) => message.type === 'evidence-search' && message.evidenceSearchId === evidenceSearch.id && message.evidenceSearchRoute === `/projects/${projectId}/evidence-searches/${encodeURIComponent(evidenceSearch.id)}` && message.resourceRoute === message.evidenceSearchRoute), 'Group Chat evidence-search messages must carry the backend evidence-search route for collaboration cards.');
+const sourceReviewTranscriptMessages = transcriptMessages.filter((message) => message.type === 'evidence-source-review' && message.evidenceSearchId === evidenceSearch.id);
+assert(sourceReviewTranscriptMessages.length >= 2 && sourceReviewTranscriptMessages.every((message) => message.evidenceSourceReviewRoute === `/projects/${projectId}/evidence-source-review-workflow#${encodeURIComponent(message.reviewId)}` && message.evidenceSearchRoute === `/projects/${projectId}/evidence-searches/${encodeURIComponent(evidenceSearch.id)}` && message.resourceRoute === message.evidenceSourceReviewRoute), 'Group Chat evidence-source-review messages must carry backend source-review and evidence-search routes for collaboration cards.');
+assert(transcriptMessages.some((message) => message.type === 'submission-review' && message.reviewId === finalReview.id && message.submissionReviewRoute === `/projects/${projectId}/submission-reviews/${encodeURIComponent(finalReview.id)}` && message.submissionRoute === `/projects/${projectId}/submissions/${encodeURIComponent(finalSubmission.id)}` && message.resourceRoute === message.submissionReviewRoute), 'Group Chat submission-review messages must carry backend review and submission routes for collaboration cards.');
 
 const timeline = request({ method: 'GET', path: `/projects/${projectId}/timeline` });
 const events = request({ method: 'GET', path: `/projects/${projectId}/events` });

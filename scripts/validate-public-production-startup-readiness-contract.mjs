@@ -336,6 +336,25 @@ try {
     && row.anyOfEnvVarGroups?.flat?.().includes('PRODUCTION_PAGERDUTY_ROUTING_KEY')
   )), 'Production environment setup matrix must show concrete incident-response env gaps.');
   assert(readiness.productionEnvironmentSetup?.nextAction?.validationCommand === 'npm run agents:public-production-startup-readiness', 'Production environment setup next action must point to the focused validation command.');
+  assert(readiness.publicProductionActionPlan?.schemaVersion === 'public-production-action-plan/v1', 'Public production startup readiness must expose the public production action plan.');
+  assert(readiness.publicProductionActionPlan?.readyForPublicProduction === false, 'Public production action plan must keep public production blocked.');
+  assert(readiness.publicProductionActionPlan?.actionCount >= readiness.productionEnvironmentSetup.summary.blockedRowCount, 'Public production action plan must cover blocked setup rows.');
+  assert(readiness.publicProductionActionPlan?.actions?.some((action) => (
+    action.id === 'setup-managed-persistence'
+    && action.validationCommand
+    && action.requiredEnvVars?.includes('MANAGED_PERSISTENCE_REQUIRE_REAL_ADAPTER')
+  )), 'Public production action plan must include a routed managed persistence action.');
+  assert(readiness.publicProductionActionPlan?.validationCommands?.includes('npm run agents:production-provider-controls'), 'Public production action plan must aggregate focused provider/BYOK validation commands.');
+  assert(readiness.publicProductionActionPlan?.actions?.some((action) => (
+    action.id === 'setup-production-cost-controls'
+    && action.validationCommand === 'npm run agents:production-provider-controls'
+    && action.requiredEnvVars?.includes('PRODUCTION_PROVIDER_DAILY_BUDGET_CENTS')
+  )), 'Public production action plan must include a focused provider/BYOK setup action.');
+  assert(readiness.publicProductionActionPlan?.actions?.some((action) => (
+    action.id === 'setup-customer-production-acceptance'
+    && action.domain === 'governance'
+    && action.requiredEnvVars?.includes('PRODUCTION_CUSTOMER_ACCEPTANCE_POLICY_ID')
+  )), 'Public production action plan must include a customer production acceptance action.');
 
   response = blockedApi.handle({
     method: 'GET',
@@ -804,6 +823,9 @@ try {
   assert(appSource.includes('backend-production-operations-startup-row-') && appSource.includes('evidenceReady') && appSource.includes('attestationSignatureReady'), 'Manager UI must render production operations startup rows from backend data.');
   assert(appSource.includes('backend-production-environment-setup-matrix'), 'Manager UI must expose the production environment setup matrix.');
   assert(appSource.includes('backend-production-environment-setup-row-') && appSource.includes('Production Environment Setup'), 'Manager UI must render production environment setup rows.');
+  assert(appSource.includes('backend-public-production-action-plan') && appSource.includes('Public Production Action Plan'), 'Manager UI must expose the backend public production action plan.');
+  assert(appSource.includes('backend-public-production-action-plan-row-') && appSource.includes('publicProductionActionPlan.actions'), 'Manager UI must render public production action plan rows from backend data.');
+  assert(appSource.includes('backend-public-production-action-plan-required-env-') && appSource.includes('backend-public-production-action-plan-route-'), 'Manager UI must render required env names and routes for public production action plan rows.');
   assert(appSource.includes('publicProductionEnvironmentSetupOpenCount') && appSource.includes('Env Setup'), 'Manager UI gap register must surface public production environment setup gap counts.');
 
   console.log('Public production startup readiness contract validation passed.');

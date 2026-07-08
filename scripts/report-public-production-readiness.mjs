@@ -65,14 +65,109 @@ function redactedManagedEnvironmentPreflight(report = {}) {
   };
 }
 
+function uniqueValues(values = []) {
+  return [...new Set(values.filter(Boolean).map((value) => String(value).trim()).filter(Boolean))];
+}
+
+function actionFromSetupRow(row = {}, index = 0) {
+  return {
+    id: `setup-${row.id || index}`,
+    source: 'production-environment-setup',
+    domain: row.domain || 'unknown',
+    label: row.label || row.id || `Setup action ${index + 1}`,
+    status: row.status || 'blocked',
+    nextAction: row.nextAction || row.detail || 'Complete the missing production setup evidence.',
+    apiPath: row.apiPath || '/public-production-startup-readiness',
+    validationCommand: row.validationCommand || 'npm run agents:public-production-startup-readiness',
+    requiredEnvVars: uniqueValues([
+      ...toArray(row.requiredEnvVars),
+      ...toArray(row.missingEnvVars),
+      ...toArray(row.missingAnyOfGroups).flat(),
+    ]),
+  };
+}
+
+function actionFromManagedPreflightRow(row = {}, index = 0) {
+  return {
+    id: `managed-preflight-${row.id || index}`,
+    source: 'managed-environment-preflight',
+    domain: row.domain || 'unknown',
+    label: row.label || row.id || `Managed preflight action ${index + 1}`,
+    status: row.status || 'blocked',
+    nextAction: row.nextAction || row.detail || 'Complete the managed environment preflight evidence.',
+    apiPath: '/public-production-startup-readiness',
+    validationCommand: 'npm run agents:managed-environment-preflight',
+    requiredEnvVars: uniqueValues([
+      ...toArray(row.requiredEnvVars),
+      ...toArray(row.anyOfEnvVarGroups).flat(),
+    ]),
+  };
+}
+
+function buildOperatorActionPlan({
+  readiness = {},
+  managedEnvironmentPreflight = {},
+  blockedRows = [],
+  baseActionPlan = null,
+} = {}) {
+  const actions = [];
+  const seen = new Set();
+  const baseActions = toArray(baseActionPlan?.actions).length
+    ? toArray(baseActionPlan.actions)
+    : blockedRows.map(actionFromSetupRow);
+  for (const action of [
+    ...baseActions,
+    ...toArray(managedEnvironmentPreflight.blockedRows).map(actionFromManagedPreflightRow),
+  ]) {
+    const key = `${action.source}:${action.id}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    actions.push(action);
+  }
+  const validationCommands = uniqueValues([
+    ...toArray(baseActionPlan?.validationCommands),
+    ...actions.map((action) => action.validationCommand),
+    'npm run agents:public-production-startup-readiness',
+    'npm run agents:managed-environment-preflight',
+    'npm run launch:public-production:no-go',
+  ]);
+
+  return {
+    schemaVersion: 'public-production-action-plan/v1',
+    status: baseActionPlan?.status || (readiness.readyForPublicProduction ? 'ready-for-public-production' : 'public-production-blocked'),
+    readyForPublicProduction: Boolean(readiness.readyForPublicProduction),
+    actionCount: actions.length,
+    blockedDomains: uniqueValues(actions.map((action) => action.domain)).sort(),
+    nextAction: actions[0] || {
+      id: 'public-production-ready',
+      source: 'public-production-startup-readiness',
+      domain: 'launch',
+      label: 'Public production startup readiness',
+      status: 'ready',
+      nextAction: 'Public production startup readiness has no blocked action rows.',
+      apiPath: readiness.backendRoutes?.publicProductionStartupReadiness || '/public-production-startup-readiness',
+      validationCommand: 'npm run launch:public-production:no-go',
+      requiredEnvVars: [],
+    },
+    validationCommands,
+    actions,
+  };
+}
+
 async function buildReport() {
   const service = createAgentProjectService();
   const readiness = service.getPublicProductionStartupReadiness();
-  const managedEnvironmentPreflight = await buildManagedEnvironmentPreflightReport();
+  const managedEnvironmentPreflight = redactedManagedEnvironmentPreflight(await buildManagedEnvironmentPreflightReport());
   const setup = readiness.productionEnvironmentSetup || {};
   const rows = toArray(setup.rows).map(redactedRow);
   const blockedRows = rows.filter((row) => !row.ready);
   const blockedDomains = [...new Set(blockedRows.map((row) => row.domain))].sort();
+  const operatorActionPlan = buildOperatorActionPlan({
+    readiness,
+    managedEnvironmentPreflight,
+    blockedRows,
+    baseActionPlan: readiness.publicProductionActionPlan,
+  });
 
   return {
     schemaVersion: 'public-production-readiness-operator-report/v1',
@@ -98,7 +193,8 @@ async function buildReport() {
       publicProductionStartupReadiness: readiness.backendRoutes?.publicProductionStartupReadiness || '/public-production-startup-readiness',
       productionEnvironmentSetup: readiness.backendRoutes?.publicProductionStartupReadiness || '/public-production-startup-readiness',
     },
-    managedEnvironmentPreflight: redactedManagedEnvironmentPreflight(managedEnvironmentPreflight),
+    managedEnvironmentPreflight,
+    operatorActionPlan,
     blockedRows,
     rows,
   };
@@ -125,19 +221,35 @@ function formatMarkdown(report) {
     '',
     '## Next Action',
     '',
-    report.nextAction
-      ? `- ${report.nextAction.label || report.nextAction.id}: ${report.nextAction.detail || ''}`
+    report.operatorActionPlan?.nextAction
+      ? `- ${report.operatorActionPlan.nextAction.label || report.operatorActionPlan.nextAction.id}: ${report.operatorActionPlan.nextAction.nextAction || ''}`
       : '- None',
     '',
-    '## Blocked Rows',
+    '## Validation Commands',
+    '',
+    ...toArray(report.operatorActionPlan?.validationCommands).map((command) => `- ${command}`),
+    ...(toArray(report.operatorActionPlan?.validationCommands).length ? [] : ['- None']),
+    '',
+    '## Operator Action Plan',
     '',
   ];
 
+  for (const action of toArray(report.operatorActionPlan?.actions)) {
+    lines.push(`- ${action.domain} / ${action.label}: ${action.nextAction}`);
+    if (action.apiPath) lines.push(`  Route: ${action.apiPath}`);
+    if (action.validationCommand) lines.push(`  Validate: ${action.validationCommand}`);
+    if (action.requiredEnvVars.length) lines.push(`  Required env names: ${action.requiredEnvVars.join(', ')}`);
+  }
+
+  if (!toArray(report.operatorActionPlan?.actions).length) lines.push('- None');
+  lines.push(
+    '',
+    '## Blocked Rows',
+    '',
+  );
+
   for (const row of report.blockedRows) {
     lines.push(`- ${row.domain} / ${row.label}: ${row.nextAction || row.detail}`);
-    if (row.apiPath) lines.push(`  Route: ${row.apiPath}`);
-    if (row.validationCommand) lines.push(`  Validate: ${row.validationCommand}`);
-    if (row.requiredEnvVars.length) lines.push(`  Required env names: ${row.requiredEnvVars.join(', ')}`);
   }
 
   if (!report.blockedRows.length) lines.push('- None');

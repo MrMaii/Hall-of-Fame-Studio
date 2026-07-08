@@ -119,6 +119,62 @@ export function createLocalProjectRuntime({
     ensureProject(projectId) {
       return projectPaths(projectId);
     },
+    prepareWorkspace({ workspacePath, basePath, folderName, createIfMissing = true } = {}) {
+      const targetPath = workspacePath
+        ? resolve(workspacePath)
+        : resolve(basePath || resolvedRoot, folderName || 'agent-project-workspace');
+      if (!existsSync(targetPath)) {
+        if (!createIfMissing) throw new Error(`Workspace path does not exist: ${targetPath}`);
+        mkdirSync(targetPath, { recursive: true });
+      }
+      if (!statSync(targetPath).isDirectory()) {
+        throw new Error(`Workspace path is not a directory: ${targetPath}`);
+      }
+      return {
+        workspacePath: targetPath,
+        exists: true,
+        file: fileRecord(dirname(targetPath), targetPath),
+      };
+    },
+    pickWorkspaceBaseFolder({ title = 'Choose project workspace folder', initialPath = '' } = {}) {
+      if (process.platform !== 'win32') {
+        throw new Error('Native folder picker is only implemented for Windows local runtime.');
+      }
+      const powershell = `${process.env.SystemRoot || 'C:\\Windows'}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`;
+      const escapedTitle = String(title || 'Choose project workspace folder').replace(/'/g, "''");
+      const escapedInitialPath = String(initialPath || '').replace(/'/g, "''");
+      const script = [
+        'Add-Type -AssemblyName System.Windows.Forms',
+        '$dialog = New-Object System.Windows.Forms.FolderBrowserDialog',
+        `$dialog.Description = '${escapedTitle}'`,
+        '$dialog.ShowNewFolderButton = $true',
+        escapedInitialPath ? `$dialog.SelectedPath = '${escapedInitialPath}'` : '',
+        'if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {',
+        '  [Console]::OutputEncoding = [System.Text.Encoding]::UTF8',
+        '  Write-Output $dialog.SelectedPath',
+        '  exit 0',
+        '}',
+        'exit 2',
+      ].filter(Boolean).join('; ');
+      const result = spawnSync(powershell, ['-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-Command', script], {
+        encoding: 'utf8',
+        timeout: 120_000,
+        windowsHide: false,
+      });
+      if (result.status === 2) {
+        return { selected: false, folderPath: null };
+      }
+      if (result.error) throw new Error(result.error.message);
+      if (result.status !== 0) {
+        throw new Error((result.stderr || result.stdout || `Folder picker failed with status ${result.status}`).trim());
+      }
+      const folderPath = String(result.stdout || '').trim().split(/\r?\n/).filter(Boolean).at(-1) || '';
+      if (!folderPath) return { selected: false, folderPath: null };
+      if (!existsSync(folderPath) || !statSync(folderPath).isDirectory()) {
+        throw new Error(`Selected path is not a directory: ${folderPath}`);
+      }
+      return { selected: true, folderPath };
+    },
     attachProject(project = {}) {
       if (!project?.id) return project;
       const localRuntime = publicRuntime(project);
@@ -150,11 +206,28 @@ export function createLocalProjectRuntime({
       const absolutePath = safeJoin(paths.artifacts, relativePath);
       mkdirSync(dirname(absolutePath), { recursive: true });
       writeFileSync(absolutePath, artifact.content || '', 'utf8');
+      const workspacePath = context.project?.localRuntime?.workspacePath;
+      let workspaceFile = null;
+      if (workspacePath && existsSync(workspacePath) && statSync(workspacePath).isDirectory()) {
+        const workspaceAbsolutePath = safeJoin(workspacePath, `agent-artifacts/${relativePath}`);
+        mkdirSync(dirname(workspaceAbsolutePath), { recursive: true });
+        writeFileSync(workspaceAbsolutePath, artifact.content || '', 'utf8');
+        workspaceFile = {
+          absolutePath: workspaceAbsolutePath,
+          path: workspaceAbsolutePath,
+          relativePath: relative(workspacePath, workspaceAbsolutePath).replace(/\\/g, '/'),
+          url: `file://${workspaceAbsolutePath.replace(/\\/g, '/')}`,
+        };
+      }
       return {
         absolutePath,
         path: absolutePath,
         relativePath: relative(paths.artifacts, absolutePath).replace(/\\/g, '/'),
         url: `file://${absolutePath.replace(/\\/g, '/')}`,
+        workspaceFile,
+        workspaceAbsolutePath: workspaceFile?.absolutePath || null,
+        workspaceRelativePath: workspaceFile?.relativePath || null,
+        workspaceUrl: workspaceFile?.url || null,
       };
     },
     bindWorkspace(project = {}, workspacePath, { createIfMissing = false, now = new Date().toISOString() } = {}) {

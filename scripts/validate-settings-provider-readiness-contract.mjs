@@ -29,12 +29,12 @@ try {
   let readiness = response.body.settingsProviderReadiness;
   assert(readiness?.schemaVersion === 'settings-provider-readiness/v1', 'Settings provider readiness must expose its schema version.');
   assert(readiness.status === 'backend-vault-required', 'Readiness must block sealing when the Secret Vault is not configured.');
-  assert(readiness.canTypeApiFields === true, 'Readiness must say API fields can be typed in the UI.');
+  assert(readiness.canTypeApiFields === true, 'Readiness must allow transient provider draft entry even before the Secret Vault is ready.');
   assert(readiness.canSealSecrets === false, 'Readiness must deny Seal until the Secret Vault is ready.');
   assert(readiness.browserPersistsSecrets === false, 'Readiness must forbid browser-local provider secret persistence.');
   assert(readiness.actionRequired?.id === 'start-secret-vault-backend', 'Readiness must point users to backend Vault startup when blocked.');
-  assert(readiness.actionRequired?.detail?.includes('API fields can be typed in the UI'), 'Readiness must explain that typing is allowed even when saving requires the backend Vault.');
-  assert(readiness.uiGuidance?.message?.includes('API fields are editable now'), 'Readiness guidance must distinguish editable input fields from disabled Seal persistence.');
+  assert(readiness.actionRequired?.detail?.includes('Seal stays locked'), 'Readiness must explain that Seal is locked until the backend Vault is ready.');
+  assert(readiness.uiGuidance?.message?.includes('Provider secret draft fields are editable'), 'Readiness guidance must explain draft entry before Vault readiness.');
   assert(readiness.backendRoutes?.secretVaultSeal === '/secret-vault/seal', 'Readiness must expose the backend seal route.');
 
   const secretVault = createLocalSecretVault({
@@ -55,6 +55,7 @@ try {
   assert(response.status === 200, `Ready readiness route returned ${response.status}.`);
   readiness = response.body.settingsProviderReadiness;
   assert(readiness.status === 'ready-to-seal-provider-secrets', 'Ready Vault should move Settings into ready-to-seal state before provider values exist.');
+  assert(readiness.canTypeApiFields === true, 'Ready Vault must allow provider secret entry.');
   assert(readiness.canSealSecrets === true, 'Ready Vault must allow Seal.');
   assert(readiness.uiGuidance?.message?.includes('sealed through the backend Vault'), 'Readiness must provide user-facing backend Vault guidance.');
   assert(readiness.steps?.some((step) => step.id === 'model-provider-runtime' && step.status === 'action-required'), 'Readiness must identify model provider sealing as an action-required step.');
@@ -132,7 +133,7 @@ try {
   assert(response.status === 200, `Settings provider Manager Ready Package returned ${response.status}.`);
   const managerReadyPackage = response.body;
   assert(managerReadyPackage.settingsProviderReadiness?.schemaVersion === 'settings-provider-readiness/v1', 'Manager Ready Package must include Settings provider readiness.');
-  assert(managerReadyPackage.summary?.settingsProviderCanTypeApiFields === true, 'Manager Ready Package summary must report API fields are editable.');
+  assert(managerReadyPackage.summary?.settingsProviderCanTypeApiFields === true, 'Manager Ready Package summary must report provider secret fields are enabled after Vault readiness.');
   assert(managerReadyPackage.summary?.settingsProviderProductionReady === false, 'Manager Ready Package must keep provider setup production-blocked.');
 
   console.log('Settings provider readiness contract validation passed.');

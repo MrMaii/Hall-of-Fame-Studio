@@ -149,6 +149,65 @@ try {
   assert(!serialized.includes(plaintextSecret), 'Settings health must not expose plaintext provider secrets.');
   assert(readiness.summary?.readyForProduction === false, 'Settings health must keep production readiness false after local secret sealing.');
 
+  const providerBackedApi = createFileBackedAgentProjectApi({
+    filePath: resolve(tempRoot, 'provider-backed-store.json'),
+    replaceWithSeed: true,
+    searchProvider: {
+      status() {
+        return {
+          provider: 'deterministic',
+          enabled: true,
+          configured: true,
+          runtimeEnabled: true,
+          apiKeySource: 'not-required',
+          hasApiKey: false,
+          maxResults: 3,
+        };
+      },
+      async search({ query, purpose, now }) {
+        return {
+          ok: true,
+          provider: 'deterministic',
+          searchMode: 'deterministic-provider',
+          query,
+          confidence: 'high',
+          sources: [
+            {
+              id: 'settings_workflow_provider_source_1',
+              title: 'Settings workflow provider evidence',
+              kind: 'runtime-proof',
+              summary: purpose,
+              confidence: 'high',
+              capturedAt: now,
+            },
+          ],
+          findings: ['Settings Workflow Smoke consumed the configured search provider.'],
+        };
+      },
+    },
+  });
+  response = await providerBackedApi.handleAsync({
+    method: 'POST',
+    path: '/settings/workflow-smoke',
+    body: {
+      projectId: 'settings_workflow_smoke_provider_backed',
+      now: '2026-06-01T10:10:00.000Z',
+      useProviderEvidenceSearch: true,
+      requireProviderEvidenceSearch: true,
+    },
+  });
+  assert(response.status === 200, `Provider-backed Settings workflow smoke returned ${response.status}.`);
+  const providerBackedSmoke = response.body.settingsWorkflowSmoke;
+  assert(providerBackedSmoke?.schemaVersion === 'settings-workflow-smoke/v1', 'Provider-backed Settings Workflow Smoke must keep the Settings smoke schema.');
+  assert(providerBackedSmoke.readyForLocalMvpWorkflowSmoke === true, 'Provider-backed Settings Workflow Smoke must pass after provider evidence is recorded.');
+  assert(providerBackedSmoke.providerEvidenceProof?.schemaVersion === 'settings-workflow-smoke-provider-evidence/v1', 'Settings Workflow Smoke must expose provider evidence proof.');
+  assert(providerBackedSmoke.providerEvidenceProof?.status === 'completed', 'Settings Workflow Smoke provider evidence must complete.');
+  assert(providerBackedSmoke.providerEvidenceProof?.providerUsageId, 'Settings Workflow Smoke must expose provider usage proof id.');
+  assert(providerBackedSmoke.providerEvidenceProof?.evidenceSearchRoute?.includes('/evidence-searches/'), 'Settings Workflow Smoke must expose the provider-backed evidence search route.');
+  assert(providerBackedSmoke.providerEvidenceProof?.sourceCount >= 1, 'Settings Workflow Smoke must expose provider source count.');
+  assert(providerBackedSmoke.summary?.providerUsageCreated === true, 'Settings Workflow Smoke summary must report provider usage creation.');
+  assert(providerBackedSmoke.summary?.detail?.includes('Provider-backed evidence'), 'Settings Workflow Smoke summary must tell the Manager that provider evidence was consumed.');
+
   console.log('Settings health readiness contract validation passed.');
 } finally {
   await rm(tempRoot, { recursive: true, force: true });

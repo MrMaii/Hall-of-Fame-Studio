@@ -131,7 +131,7 @@ function playwrightChromiumExecutableCandidates() {
   const explicitPath = process.env.HOFS_PLAYWRIGHT_CHROMIUM || process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || '';
   const localPlaywrightPath = process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, 'ms-playwright') : '';
   const localHeadlessShells = localPlaywrightPath && existsSync(localPlaywrightPath)
-    ? readdirSync(localPlaywrightPath, { withFileTypes: true })
+    ? safeReaddirSync(localPlaywrightPath, { withFileTypes: true })
       .filter((entry) => entry.isDirectory() && /^chromium_headless_shell-/.test(entry.name))
       .map((entry) => join(localPlaywrightPath, entry.name, 'chrome-headless-shell-win64', 'chrome-headless-shell.exe'))
       .filter((candidate) => existsSync(candidate))
@@ -139,6 +139,14 @@ function playwrightChromiumExecutableCandidates() {
       .reverse()
     : [];
   return [explicitPath, ...localHeadlessShells].filter(Boolean);
+}
+
+function safeReaddirSync(path, options) {
+  try {
+    return readdirSync(path, options);
+  } catch {
+    return [];
+  }
 }
 
 async function launchBrowserWithRetry(attempts = 3) {

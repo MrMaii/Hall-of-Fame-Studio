@@ -3,8 +3,9 @@ import { createLocalProjectRuntime } from '../src/agents/localProjectRuntime.js'
 import { createModelProviderFromEnv } from '../src/agents/modelProvider.js';
 import { createSearchProviderFromEnv } from '../src/agents/searchProvider.js';
 import { createSecretVaultFromEnv } from '../src/agents/secretVault.js';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 function loadEnvFile(filePath) {
@@ -49,6 +50,34 @@ const defaultRuntimeRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../
 const runtimeRoot = resolve(process.env.AGENT_PROJECT_RUNTIME_ROOT || defaultRuntimeRoot);
 const defaultSecretVaultRecordsFile = resolve(dirname(fileURLToPath(import.meta.url)), '../.tmp/agent-secret-vault-records.json');
 if (!process.env.SECRET_VAULT_RECORDS_FILE) process.env.SECRET_VAULT_RECORDS_FILE = defaultSecretVaultRecordsFile;
+const localUserRuntimeSettingsFile = resolve(workspaceRoot, '.tmp/agent-local-user-runtime.json');
+function loadLocalUserRuntimeSettings() {
+  let settings = {};
+  if (existsSync(localUserRuntimeSettingsFile)) {
+    try {
+      settings = JSON.parse(readFileSync(localUserRuntimeSettingsFile, 'utf8')) || {};
+    } catch {
+      settings = {};
+    }
+  }
+  const hasLegacyLocalDevVault = existsSync(process.env.SECRET_VAULT_RECORDS_FILE)
+    && readFileSync(process.env.SECRET_VAULT_RECORDS_FILE, 'utf8').includes('"keyId": "local-dev"');
+  const nextSettings = {
+    schemaVersion: 'agent-local-user-runtime/v1',
+    secretVaultEnabled: true,
+    secretVaultKey: settings.secretVaultKey || (hasLegacyLocalDevVault ? 'local-dev-vault-key' : `hof-local-${randomUUID()}`),
+    secretVaultKeyId: settings.secretVaultKeyId || (hasLegacyLocalDevVault ? 'local-dev' : 'local-user'),
+  };
+  if (!settings.secretVaultKey || !settings.secretVaultKeyId || settings.secretVaultEnabled !== true) {
+    mkdirSync(dirname(localUserRuntimeSettingsFile), { recursive: true });
+    writeFileSync(localUserRuntimeSettingsFile, `${JSON.stringify(nextSettings, null, 2)}\n`, 'utf8');
+  }
+  return nextSettings;
+}
+const localUserRuntimeSettings = loadLocalUserRuntimeSettings();
+if (!process.env.SECRET_VAULT_ENABLED) process.env.SECRET_VAULT_ENABLED = String(localUserRuntimeSettings.secretVaultEnabled);
+if (!process.env.SECRET_VAULT_KEY) process.env.SECRET_VAULT_KEY = localUserRuntimeSettings.secretVaultKey;
+if (!process.env.SECRET_VAULT_KEY_ID) process.env.SECRET_VAULT_KEY_ID = localUserRuntimeSettings.secretVaultKeyId;
 const port = Number(process.env.AGENT_PROJECT_PORT || 8787);
 const host = process.env.AGENT_PROJECT_HOST || '127.0.0.1';
 const autonomousSchedulerEnabled = envFlag('AGENT_AUTONOMOUS_SCHEDULER');

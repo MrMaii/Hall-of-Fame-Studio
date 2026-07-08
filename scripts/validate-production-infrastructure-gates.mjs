@@ -14,6 +14,46 @@ const tasks = [
     script: 'scripts/validate-public-production-startup-readiness-contract.mjs',
   },
   {
+    label: 'production access-control enforcement',
+    script: 'scripts/validate-production-access-control-contract.mjs',
+  },
+  {
+    label: 'production managed identity enforcement',
+    script: 'scripts/validate-production-managed-identity-contract.mjs',
+  },
+  {
+    label: 'production managed secrets enforcement',
+    script: 'scripts/validate-production-managed-secrets-contract.mjs',
+  },
+  {
+    label: 'production managed persistence enforcement',
+    script: 'scripts/validate-production-managed-persistence-contract.mjs',
+  },
+  {
+    label: 'production managed worker queue enforcement',
+    script: 'scripts/validate-production-managed-worker-queue-contract.mjs',
+  },
+  {
+    label: 'production provider/BYOK controls enforcement',
+    script: 'scripts/validate-production-provider-controls-contract.mjs',
+  },
+  {
+    label: 'production data governance enforcement',
+    script: 'scripts/validate-production-data-governance-contract.mjs',
+  },
+  {
+    label: 'production traffic/rollback enforcement',
+    script: 'scripts/validate-production-traffic-controls-contract.mjs',
+  },
+  {
+    label: 'production customer acceptance enforcement',
+    script: 'scripts/validate-production-customer-acceptance-contract.mjs',
+  },
+  {
+    label: 'production operations startup enforcement',
+    script: 'scripts/validate-production-operations-startup-contract.mjs',
+  },
+  {
     label: 'redacted public production operator report',
     script: 'scripts/validate-public-production-readiness-report.mjs',
   },

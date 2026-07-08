@@ -123,8 +123,17 @@ function assertIncludes(value, pattern, message) {
 }
 
 const scenarioStartedAt = Date.now();
+const scenarioWatchdogTimeoutMs = Number(process.env.HOFS_MANAGER_SCENARIO_TIMEOUT_MS || 300000);
+let lastScenarioCheckpoint = 'startup';
+const scenarioWatchdog = setTimeout(() => {
+  const elapsedSeconds = ((Date.now() - scenarioStartedAt) / 1000).toFixed(1);
+  console.error(`[manager-scenario +${elapsedSeconds}s] timed out after ${scenarioWatchdogTimeoutMs}ms at ${lastScenarioCheckpoint}`);
+  process.exit(1);
+}, scenarioWatchdogTimeoutMs);
+scenarioWatchdog.unref?.();
 
 function checkpoint(label) {
+  lastScenarioCheckpoint = label;
   if (process.env.HOFS_TRACE_MANAGER_SCENARIO !== '0') {
     const elapsedSeconds = ((Date.now() - scenarioStartedAt) / 1000).toFixed(1);
     console.error(`[manager-scenario +${elapsedSeconds}s] ${label}`);
@@ -150,6 +159,29 @@ async function waitForCondition(read, predicate, message, { timeoutMs = 5000, in
   assert(false, message);
   return lastValue;
 }
+
+async function fetchWithRouteTimeout(url, options = {}) {
+  const { timeoutMs = 30000, ...fetchOptions } = options;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const method = fetchOptions.method || 'GET';
+  const requestUrl = typeof url === 'string' ? url : url?.url || String(url);
+  try {
+    return await globalThis.fetch(url, {
+      ...fetchOptions,
+      signal: controller.signal,
+    });
+  } catch (error) {
+    const detail = error?.name === 'AbortError'
+      ? `timed out after ${timeoutMs}ms`
+      : error?.message || String(error);
+    throw new Error(`${method} ${requestUrl} ${detail}`);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+const fetch = fetchWithRouteTimeout;
 
 const appSource = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
 const serviceSource = readFileSync(new URL('../src/agents/agentProjectService.js', import.meta.url), 'utf8');
@@ -324,7 +356,7 @@ assert(serviceSource.includes('runRoundtableExchange') && serviceSource.includes
 assert(apiSource.includes('meetingAgentTurns: result.meetingAgentTurns || []') && apiSource.includes('meetingProtocol: result.meetingProtocol || null'), 'Backend API must expose generated Agent meeting turns to frontend War Room consumers.');
 assert(appSource.includes('playBackendMeetingTurns') && appSource.includes('backendResult?.meetingAgentTurns') && appSource.includes("source: turn.source || 'war-room-meeting-agent-turn'") && appSource.includes('backendTurnEvents.length') && appSource.includes('blockMissingBackendMeetingTurns') && appSource.includes('Backend meeting returned no Agent turns; local simulation blocked; draft restored') && !appSource.includes('if (!renderedBackendTurns) runRoomSimulation(text, nextProject);'), 'React War Room must play backend-authored meeting turns, restore unsent drafts, and block frontend local meeting simulation when backend-online projects return no Agent turns.');
 assert(appSource.includes('const startMeeting = async') && appSource.includes("const backendResult = await runBackendProjectCommand('meeting'") && appSource.includes('BACKEND WAR ROOM SESSION OPENED') && appSource.includes('Backend meeting start failed; local fallback disabled for backend-online project'), 'Legacy War Room session start must write through the backend meeting command and fail closed for backend-online real projects.');
-assert(appSource.includes('const handleTerminalSubmit = async') && appSource.includes("const backendResult = await runBackendProjectCommand('meeting'") && appSource.includes('Backend legacy terminal meeting failed; local fallback disabled for backend-online project') && appSource.includes('Backend legacy terminal meeting returned no Agent turns; local route simulation blocked') && appSource.includes('Backend legacy terminal meeting response lacked meetingAgentTurns; no local mock meeting was created.'), 'Legacy War Room terminal input must use the same backend-first meeting command and fail closed for backend-online real projects, including missing backend Agent turns.');
+assert(appSource.includes('const handleTerminalSubmit = async') && appSource.includes("const backendResult = await runBackendProjectCommand('meeting'") && appSource.includes('Backend legacy terminal meeting failed; local fallback disabled for backend-online project') && appSource.includes('Backend legacy terminal meeting returned no Agent turns; local route simulation blocked') && appSource.includes('Backend legacy terminal meeting response lacked meetingAgentTurns; browser-local meeting fallback was suppressed.'), 'Legacy War Room terminal input must use the same backend-first meeting command and fail closed for backend-online real projects, including missing backend Agent turns.');
 assert(!appSource.includes('Backend chat failed, used local runtime') && !appSource.includes('Backend meeting failed, used local runtime'), 'Backend-connected chat and meeting inputs must not silently create local fallback success by default.');
 assert(appSource.includes('submission-review-failed') && appSource.includes('Review write failed:') && appSource.includes('No local review receipt was created.') && appSource.includes("reviewReceipt?.action === 'submission-review-failed'"), 'Reviewer composer backend failures must replace pending receipts with a visible failed state and must not create local review proof.');
 assert(serviceSource.includes('contractProjectAgent') && serviceSource.includes("schemaVersion: 'agent-contract/v1'") && serviceSource.includes("eventType: 'agent-contracted'") && serviceSource.includes("type: 'agent-contracted'"), 'Backend service must expose a proofed Agent contract roster mutation.');
@@ -459,12 +491,13 @@ assert(
   'Product-team private-pilot validation stages must stop after each receipt is proven, not when the script merely reaches the section.',
 );
 assert(
-  privatePilotUiValidationSource.includes('private-pilot-ui-launch-approval-prep')
+  privatePilotUiValidationSource.includes('validate-private-pilot-handoff-contract.mjs')
     && privatePilotUiValidationSource.includes('ACCEPTANCE_RUN_ID')
     && privatePilotUiValidationSource.includes('HOFS_MANAGER_PRIVATE_PILOT_RUN_ID')
-    && privatePilotUiValidationSource.includes('HOFS_PRODUCT_TEAM_RUN_ID: ACCEPTANCE_RUN_ID')
+    && privatePilotUiValidationSource.includes("HOFS_PRIVATE_PILOT_FOCUSED_FILE_BACKED: '1'")
+    && privatePilotUiValidationSource.includes('HOFS_PRIVATE_PILOT_FOCUSED_TEMP_ROOT: ACCEPTANCE_ROOT')
     && privatePilotUiValidationSource.includes('HANDOFF_PREP_TIMEOUT_MS')
-    && privatePilotUiValidationSource.includes('Private-pilot launch-approval UI preparation timed out')
+    && privatePilotUiValidationSource.includes('Private-pilot focused UI preparation timed out')
     && privatePilotUiValidationSource.includes('../.tmp/product-team-acceptance/${ACCEPTANCE_RUN_ID}/store.json')
     && privatePilotUiValidationSource.includes('backend-launch-approval-record-manager')
     && privatePilotUiValidationSource.includes('backend-launch-approval-record-security')
@@ -4198,4 +4231,5 @@ assert(persistedKickoffProject.agentWorkerLedger?.[0]?.agentId === 'turing', 'Fi
 const assignmentText = assignmentPackage.assignmentMessages.map((message) => message.text).join(' ');
 assertIncludes(assignmentText, /@/, 'Leader assignment transcript must include mentions');
 
+clearTimeout(scenarioWatchdog);
 console.log('Agent manager scenario validation passed.');

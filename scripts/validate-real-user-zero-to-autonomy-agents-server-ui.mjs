@@ -250,7 +250,7 @@ function playwrightChromiumExecutableCandidates() {
   const explicitPath = process.env.HOFS_PLAYWRIGHT_CHROMIUM || process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || '';
   const localPlaywrightPath = process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, 'ms-playwright') : '';
   const localHeadlessShells = localPlaywrightPath && existsSync(localPlaywrightPath)
-    ? readdirSync(localPlaywrightPath, { withFileTypes: true })
+    ? safeReaddirSync(localPlaywrightPath, { withFileTypes: true })
       .filter((entry) => entry.isDirectory() && /^chromium_headless_shell-/.test(entry.name))
       .map((entry) => join(localPlaywrightPath, entry.name, 'chrome-headless-shell-win64', 'chrome-headless-shell.exe'))
       .filter((candidate) => existsSync(candidate))
@@ -258,6 +258,14 @@ function playwrightChromiumExecutableCandidates() {
       .reverse()
     : [];
   return [explicitPath, ...localHeadlessShells].filter(Boolean);
+}
+
+function safeReaddirSync(path, options) {
+  try {
+    return readdirSync(path, options);
+  } catch {
+    return [];
+  }
 }
 
 async function launchBrowserWithRetry(attempts = 3) {
@@ -738,7 +746,7 @@ try {
   }, `/projects/${projectId}/settings-provider-readiness`, { timeout: 15000 });
   await assertPanelTextIncludes(page, 'settings-provider-readiness-contract', [
     `/projects/${projectId}/settings-provider-readiness`,
-    'API fields: editable',
+    'API fields: enabled for draft entry',
   ], 'Real-user Settings Keys must show the project-scoped provider readiness route after project creation.');
   await page.getByTestId('settings-tab-integrations').click();
   await page.getByRole('button', { name: /Sync integration readiness/i }).click();
@@ -831,10 +839,12 @@ try {
   });
   assert(providerEvidenceResponse.status === 200, `Real-user provider-backed evidence search returned ${providerEvidenceResponse.status}.`);
   const providerEvidenceSearch = providerEvidenceResponse.body.evidenceSearch || {};
+  const evidenceProviderReceipt = providerEvidenceResponse.body.providerReceipt || {};
+  const evidenceProviderUsage = providerEvidenceResponse.body.providerUsage || {};
   assert(providerEvidenceSearch.id && providerEvidenceSearch.provider === 'http-json', 'Real-user Agent evidence search must use the user-configured search provider.');
   assert(providerEvidenceSearch.sources?.length === 2, 'Real-user Agent evidence search must persist provider sources.');
-  assert(providerEvidenceSearch.providerReceiptId && providerEvidenceResponse.body.providerReceipt?.id === providerEvidenceSearch.providerReceiptId, 'Real-user Agent evidence search must link to a provider receipt.');
-  assert(providerEvidenceResponse.body.providerUsage?.providerVaultBindingChecksum, 'Real-user Agent evidence search must write provider usage with provider-vault proof.');
+  assert(providerEvidenceSearch.providerReceiptId && evidenceProviderReceipt.id === providerEvidenceSearch.providerReceiptId, 'Real-user Agent evidence search must link to a provider receipt.');
+  assert(evidenceProviderUsage.providerVaultBindingChecksum, 'Real-user Agent evidence search must write provider usage with provider-vault proof.');
   assert(searchRequests.length >= 2 && searchRequests.at(-1).authorization === `Bearer ${searchPlaintext}`, 'Real-user Agent evidence search must reach the configured endpoint with the sealed key.');
 
   const initialSourceReviewWorkflow = await fetchJson(`${backendUrl}/projects/${projectId}/evidence-source-review-workflow`);
@@ -929,6 +939,7 @@ try {
   assert(productBriefDraftResponse.body.artifactDraft?.source === 'model-artifact-draft' && productBriefDraftResponse.body.artifactDraft?.modelUsed === true, 'Real-user product brief must exercise the configured model provider path.');
   assert(productBriefDraftResponse.body.providerUsage?.operation === 'model:artifact-draft' && productBriefDraftResponse.body.providerUsage?.allowed === true, 'Real-user model-backed draft must write allowed provider usage proof.');
   assert(productBriefDraftResponse.body.providerUsage?.providerVaultBindingChecksum, 'Real-user model-backed draft must bind provider usage to provider-vault proof.');
+  const modelDraftProviderUsage = productBriefDraftResponse.body.providerUsage || {};
   const productBriefSubmission = productBriefDraftResponse.body.submission || {};
   assert(productBriefSubmission.id && productBriefSubmission.artifactType === 'product-brief' && productBriefSubmission.isGeneratedDraft, 'Real-user model-backed draft must submit a product-brief Agent node.');
 
@@ -1129,6 +1140,17 @@ try {
   assert(flowGraph.body.nodes?.some((node) => node.id === `product-team-mission-run-${missionRun.id}`), 'Manager Flow Graph must expose the Mission Runner receipt node.');
   assert(serializedFlowGraph.includes(handoffSubmission.id), 'Manager Flow Graph must trace the Agent submission created by the real-user handoff.');
   assert(requiredTraceIds.every((id) => serializedFlowGraph.includes(id)), 'Manager Flow Graph must trace every required generic artifact, evidence, review, revision, final, and acceptance node.');
+  const providerAuditFlowIds = [
+    evidenceProviderUsage.id,
+    modelDraftProviderUsage.id,
+    evidenceProviderReceipt.id,
+  ].filter(Boolean);
+  assert(providerAuditFlowIds.length >= 3 && providerAuditFlowIds.every((id) => serializedFlowGraph.includes(id)), 'Manager Flow Graph must expose provider audit usage and receipt proof ids after real-user UI setup.');
+  assert(flowGraph.body.nodes?.some((node) => node.id === 'provider-usage-audit' && JSON.stringify(node).includes('/provider-readiness')), 'Manager Flow Graph must expose a provider-usage-audit node linked to provider readiness after real-user UI setup.');
+  assert(
+    ['/provider-readiness', '/evidence-source-review-workflow', '/evidence-custody-readiness'].every((route) => serializedFlowGraph.includes(route)),
+    'Manager Flow Graph provider audit must expose provider readiness, source review, and custody proof routes after real-user UI setup.',
+  );
   const finalFlowNode = flowGraph.body.nodes?.find((node) => JSON.stringify(node).includes(finalSubmission.id)) || null;
   assert(finalFlowNode?.id, 'Manager Flow Graph must expose a visible node for the final deliverable.');
 
@@ -1142,6 +1164,12 @@ try {
   assert(proofMap.body.settingsRuntimeReadinessRoutes?.[0]?.apiPath === `/projects/${projectId}/settings-runtime-readiness`, 'Readiness Proof Map must expose the project-scoped Settings runtime readiness route after real-user UI setup.');
   assert(proofMap.body.settingsIntegrationReadinessRoutes?.[0]?.apiPath === `/projects/${projectId}/settings-integration-readiness`, 'Readiness Proof Map must expose the project-scoped Settings integration readiness route after real-user UI setup.');
   assert(proofMap.body.projectMemoryReadinessRoutes?.[0]?.apiPath === `/projects/${projectId}/memory-readiness`, 'Readiness Proof Map must expose the memory readiness proof route after real-user handoff.');
+  const zeroToAutonomyProofRoute = proofMap.body.zeroToAutonomyReportRoutes?.[0] || {};
+  assert((zeroToAutonomyProofRoute.providerUsageProofIds || []).length >= 2, 'Readiness Proof Map zero-to-autonomy route must expose provider usage proof ids after real-user UI setup.');
+  assert((zeroToAutonomyProofRoute.providerReceiptProofIds || []).length >= 1, 'Readiness Proof Map zero-to-autonomy route must expose provider receipt proof ids after real-user UI setup.');
+  assert(zeroToAutonomyProofRoute.providerEvidenceRoutes?.providerReadiness === `/projects/${projectId}/provider-readiness`, 'Readiness Proof Map zero-to-autonomy route must link provider readiness after real-user UI setup.');
+  assert(zeroToAutonomyProofRoute.providerEvidenceRoutes?.evidenceSourceReviewWorkflow === `/projects/${projectId}/evidence-source-review-workflow`, 'Readiness Proof Map zero-to-autonomy route must link source review workflow after real-user UI setup.');
+  assert(zeroToAutonomyProofRoute.providerEvidenceRoutes?.evidenceCustodyReadiness === `/projects/${projectId}/evidence-custody-readiness`, 'Readiness Proof Map zero-to-autonomy route must link evidence custody readiness after real-user UI setup.');
 
   const deliveryTrace = await fetchJson(`${backendUrl}/projects/${projectId}/product-team-delivery-trace`);
   assert(deliveryTrace.status === 200 && deliveryTrace.body.productTeamDeliveryTrace?.schemaVersion === 'product-team-delivery-trace/v1', 'Real-user chain must expose the product-team delivery trace read model.');
@@ -1198,6 +1226,8 @@ try {
   assert(zeroToAutonomyReportModel.readyForPublicProduction === false, 'Project zero-to-autonomy report must not overclaim public production readiness.');
   assert(zeroToAutonomyReportModel.backendRoutes?.zeroToAutonomyReport === `/projects/${projectId}/zero-to-autonomy-report`, 'Project zero-to-autonomy report must expose its backend route.');
   assert(zeroToAutonomyReportModel.summary?.submittedArtifactTypeCount >= requiredGenericArtifactTypes.length, 'Project zero-to-autonomy report must cover all required generic artifact types.');
+  assert(zeroToAutonomyReportModel.summary?.providerUsageCount >= 2, 'Project zero-to-autonomy report must count search and model provider usage proof.');
+  assert(zeroToAutonomyReportModel.summary?.providerReceiptCount >= 1, 'Project zero-to-autonomy report must count provider receipt proof.');
   assert(zeroToAutonomyReportModel.stageRows?.some((row) => row.id === 'brainstorm-draft-review-revision-final' && row.ready), 'Project zero-to-autonomy report must include a ready brainstorm/draft/review/revision/final stage.');
   assert(requiredTraceIds.every((id) => zeroToAutonomySerialized.includes(id)), 'Project zero-to-autonomy report must trace required generic artifacts, evidence, review, revision, final, and final acceptance proof.');
   assert(!zeroToAutonomySerialized.includes(modelPlaintext) && !zeroToAutonomySerialized.includes(searchPlaintext) && !zeroToAutonomySerialized.includes('"ciphertext":'), 'Project zero-to-autonomy report must not leak provider secrets or vault ciphertext.');
@@ -1330,6 +1360,11 @@ try {
     'local trial ready',
     'production blocked',
     'Artifact Types',
+    'Provider Usage',
+    'Provider Receipts',
+    'Proof IDs',
+    'Stage route',
+    '/product-team-delivery-trace',
     '/zero-to-autonomy-report',
   ], 'Manager UI must render the zero-to-autonomy report from backend proof models.');
   await assertPanelTextIncludes(page, 'backend-submission-review-workflow-snapshot', [
@@ -1364,6 +1399,11 @@ try {
     '/submission-review-workflow',
     '/product-team-delivery-trace',
     '/zero-to-autonomy-report',
+    'Provider audit',
+    '/provider-readiness',
+    '/evidence-source-review-workflow',
+    '/evidence-custody-readiness',
+    'Proof IDs',
     '/readiness-proof-map',
   ], 'Manager UI Proof Map must expose the real-user proof routes.');
 
@@ -1379,6 +1419,12 @@ try {
 
   const duplicateKeyWarnings = consoleDiagnostics.filter((message) => /Encountered two children with the same key/i.test(message));
   assert(!duplicateKeyWarnings.length, `Real-user UI must not emit duplicate React key warnings. First warning: ${duplicateKeyWarnings[0] || ''}`);
+  const defaultBackendTraffic = [...backendResponses, ...backendCriticalTraffic]
+    .filter((entry) => entry.includes('http://127.0.0.1:8787'));
+  assert(
+    normalizeBaseUrl(backendUrl) === 'http://127.0.0.1:8787' || defaultBackendTraffic.length === 0,
+    `Real-user UI must not auto-probe the default backend before the user saves the active backend URL. Traffic: ${defaultBackendTraffic.slice(0, 4).join(' | ')}`,
+  );
 
   console.log('Real-user zero-to-autonomy agents:server UI validation passed.');
 } catch (error) {

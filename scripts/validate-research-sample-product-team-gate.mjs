@@ -23,6 +23,9 @@ const requiredContractMarkers = [
   'product-brief',
   'agent-artifact-draft/v1',
   'local-artifact-draft-generator',
+  'agent-workbench-artifact-draft-proof',
+  'Draft node: {latestWorkbenchReceipt.artifactDraftId}',
+  'latestWorkbenchReceipt.readModels?.readinessProofMapRoute',
   'decision-proposal',
   'risk-review',
   'implementation-plan',
@@ -32,6 +35,16 @@ const requiredContractMarkers = [
   'accepted',
   '/brainstorm-layer',
   '/artifact-quality-audit',
+  "schemaVersion === 'product-team-delivery-trace/v1'",
+  'expectedGenericTraceStageIds',
+  'kickoff-meeting',
+  'agent-self-marketing',
+  'evidence-quality',
+  'draft-artifact',
+  'review-and-revision',
+  'proof-surfaces',
+  'Every ready Product Team Delivery Trace stage must carry proof, timeline, or event evidence.',
+  'Research validation sample trace rows must not introduce paper/thesis/manuscript-specific protocol fields.',
   'draft-review-revision-final-loop',
   'generic-artifact-type-coverage',
   '/submission-review-workflow',
@@ -48,6 +61,20 @@ const requiredContractMarkers = [
   'Manager Flow Graph must expose ${nodeId} as a C-side governance/action route node.',
   'manager-action-queue/:actionId/run',
   '/manager-flow-graph',
+  'submissionId/submissionRoute',
+  'Manager Flow Graph submission nodes must expose explicit backend submissionId/submissionRoute fields on nodes and artifact attachments.',
+  'Readiness Proof Map submission routes must expose explicit backend submissionId/submissionRoute fields for every generic artifact type.',
+  'evidenceSearchId/evidenceSearchRoute',
+  'Manager Flow Graph evidence-search nodes must expose explicit backend evidenceSearchId/evidenceSearchRoute fields on nodes and attachments.',
+  'Readiness Proof Map evidence-search routes must expose explicit backend evidenceSearchId/evidenceSearchRoute fields.',
+  'evidenceSourceReviewRoute',
+  'submissionReviewId/submissionReviewRoute',
+  'Manager Flow Graph submission-review nodes must expose explicit backend submissionReviewId/submissionReviewRoute fields on nodes and attachments.',
+  'Readiness Proof Map submission-review routes must expose explicit backend review and submission resource fields.',
+  'Group Chat submission messages must carry the backend submission route for collaboration cards.',
+  'Group Chat evidence-search messages must carry the backend evidence-search route for collaboration cards.',
+  'Group Chat evidence-source-review messages must carry backend source-review and evidence-search routes for collaboration cards.',
+  'Group Chat submission-review messages must carry backend review and submission routes for collaboration cards.',
   '/readiness-proof-map',
   '/transcripts/main',
   '/timeline',
@@ -66,11 +93,6 @@ const requiredContractMarkers = [
 for (const marker of requiredContractMarkers) {
   assert(coreSmokeSource.includes(marker), `Research validation sample gate requires core smoke marker: ${marker}`);
 }
-
-assert(
-  !/\b(paper|thesis|manuscript)\b|论文/i.test(coreSmokeSource),
-  'Research validation sample gate must not depend on paper/thesis/manuscript-specific protocol fields.',
-);
 
 await import('./validate-product-team-core-smoke.mjs');
 

@@ -48,6 +48,7 @@ const packageJson = JSON.parse(read('package.json'));
 const scripts = packageJson.scripts || {};
 const gateDoc = read(gateDocPath);
 const infraGateSource = read('scripts/validate-production-infrastructure-gates.mjs');
+const publicProductionNoGoSource = read('scripts/validate-public-production-no-go.mjs');
 
 const requiredScripts = [
   'build',
@@ -59,6 +60,16 @@ const requiredScripts = [
   'agents:server:validate',
   'agents:local-mvp-startup-readiness',
   'agents:public-production-startup-readiness',
+  'agents:production-access-control',
+  'agents:production-managed-identity',
+  'agents:production-managed-secrets',
+  'agents:production-managed-persistence',
+  'agents:production-managed-worker-queue',
+  'agents:production-provider-controls',
+  'agents:production-data-governance',
+  'agents:production-traffic-controls',
+  'agents:production-customer-acceptance',
+  'agents:production-operations-startup',
   'agents:public-production-readiness-report',
   'agents:public-production-readiness-report:validate',
   'agents:managed-environment-preflight',
@@ -76,6 +87,7 @@ const requiredScripts = [
   'agents:search-provider:vault-endpoint',
   'agents:agent-workbench-contract',
   'agents:agent-message-contract',
+  'agents:agent-contract',
   'agents:manager-chat-command-contract',
   'agents:project-settings:privacy',
   'agents:project-settings:provider-budget',
@@ -85,15 +97,21 @@ const requiredScripts = [
   'agents:product-team:smoke',
   'agents:mission-runner:startup',
   'agents:mvp-readiness:operator-actions',
+  'agents:product-team:local-mvp',
   'agents:product-team:core',
+  'agents:product-team:core:file-backed',
   'agents:real-user-zero-to-autonomy',
   'agents:real-user-zero-to-autonomy-report',
   'agents:real-user-zero-to-autonomy-report:validate',
+  'agents:private-mvp-launch-package',
+  'agents:private-mvp-launch-package:validate',
+  'agents:launch-operations:private-mvp',
   'agents:product-team:research-sample',
   'agents:product-team:cycle-consistency',
   'agents:product-team:private-pilot:handoff-focused',
   'agents:product-team:private-pilot:release-focused',
   'agents:product-team:private-pilot:launch-acceptance-focused',
+  'agents:product-team:private-pilot:focused',
   'agents:product-team:private-pilot:release',
   'agents:product-team:private-pilot:launch',
   'agents:product-team:private-pilot:health',
@@ -254,12 +272,22 @@ assert(
   'Real-user zero-to-autonomy operator report scripts must stay wired to the real backend API validation path.',
 );
 assert(
+  scripts['agents:private-mvp-launch-package'] === 'node scripts/report-private-mvp-launch-package.mjs'
+    && scripts['agents:private-mvp-launch-package:validate'] === 'node scripts/validate-private-mvp-launch-package.mjs',
+  'Private MVP launch package scripts must stay wired to the launch-package report and validator.',
+);
+assert(
   existsSync(resolve(repoRoot, 'scripts/validate-real-user-zero-to-autonomy-agents-server-api.mjs')),
   'Real-user zero-to-autonomy agents:server API validation script must exist.',
 );
 assert(
   existsSync(resolve(repoRoot, 'scripts/validate-real-user-zero-to-autonomy-report.mjs')),
   'Real-user zero-to-autonomy operator report validation script must exist.',
+);
+assert(
+  existsSync(resolve(repoRoot, 'scripts/report-private-mvp-launch-package.mjs'))
+    && existsSync(resolve(repoRoot, 'scripts/validate-private-mvp-launch-package.mjs')),
+  'Private MVP launch package report and validation scripts must exist.',
 );
 assert(
   scripts['ui:real-user-zero-to-autonomy']?.includes('validate-real-user-zero-to-autonomy-agents-server-ui.mjs'),
@@ -279,22 +307,112 @@ assert(
   `${gateDocPath} must explain when to use the aggregate P1 release gate versus component gates.`,
 );
 assert(
-  scripts['launch:public-production:no-go'] === 'npm run launch:infra',
-  'launch:public-production:no-go must reuse launch:infra instead of duplicating the heavy production rehearsal chain.',
+  scripts['launch:public-production:no-go'] === 'node scripts/validate-public-production-no-go.mjs',
+  'launch:public-production:no-go must use the dedicated public-production no-go validator.',
 );
 assert(
   gateDoc.includes('`npm run launch:public-production:no-go` is the operator-facing public-production decision check')
-    && gateDoc.includes('its correct current result is a verified rehearsal plus explicit public-production no-go')
+    && gateDoc.includes('scripts/validate-public-production-no-go.mjs')
+    && gateDoc.includes('directly checks `public-production-startup-readiness/v1` and the redacted operator report still return explicit public-production no-go')
     && gateDoc.includes('Use it when the question is "can we open public traffic now"'),
   `${gateDocPath} must explain the public-production no-go aggregate and prevent interpreting rehearsal as approval.`,
 );
 assert(
+  gateDoc.includes('`npm run agents:production-access-control` is the focused production access-control contract')
+    && gateDoc.includes('setup-access-control')
+    && gateDoc.includes('signed request enforcement')
+    && gateDoc.includes('fail-closed audit-sink behavior')
+    && gateDoc.includes('GET /access-control-policy'),
+  `${gateDocPath} must document the focused production access-control gate.`,
+);
+assert(
+  gateDoc.includes('`npm run agents:production-managed-identity` is the focused managed identity startup contract')
+    && gateDoc.includes('setup-managed-identity')
+    && gateDoc.includes('service identity')
+    && gateDoc.includes('signed managed-production identity evidence')
+    && gateDoc.includes('GET /managed-identity-policy'),
+  `${gateDocPath} must document the focused production managed identity gate.`,
+);
+assert(
+  gateDoc.includes('`npm run agents:production-managed-secrets` is the focused managed Secret Manager/KMS startup contract')
+    && gateDoc.includes('setup-managed-secrets')
+    && gateDoc.includes('managed provider')
+    && gateDoc.includes('raw secret exposure')
+    && gateDoc.includes('GET /managed-secret-manager-policy'),
+  `${gateDocPath} must document the focused production managed secrets gate.`,
+);
+assert(
+  gateDoc.includes('`npm run agents:production-managed-persistence` is the focused managed database persistence startup contract')
+    && gateDoc.includes('setup-managed-persistence')
+    && gateDoc.includes('real adapter')
+    && gateDoc.includes('signed managed-production cutover evidence')
+    && gateDoc.includes('GET /managed-persistence-policy'),
+  `${gateDocPath} must document the focused production managed persistence gate.`,
+);
+assert(
+  gateDoc.includes('`npm run agents:production-managed-worker-queue` is the focused managed durable queue startup contract')
+    && gateDoc.includes('setup-managed-worker-queue')
+    && gateDoc.includes('signed managed-production queue cutover evidence')
+    && gateDoc.includes('GET /managed-worker-queue-policy'),
+  `${gateDocPath} must document the focused production managed worker queue gate.`,
+);
+assert(
+  gateDoc.includes('`npm run agents:production-provider-controls` is the focused production provider/BYOK controls startup contract')
+    && gateDoc.includes('setup-production-cost-controls')
+    && gateDoc.includes('signed managed-production cost-control evidence')
+    && gateDoc.includes('GET /production-provider-controls-policy'),
+  `${gateDocPath} must document the focused production provider/BYOK controls gate.`,
+);
+assert(
+  gateDoc.includes('`npm run agents:production-data-governance` is the focused production data governance startup contract')
+    && gateDoc.includes('setup-production-data-governance')
+    && gateDoc.includes('signed managed-production data-governance evidence')
+    && gateDoc.includes('GET /production-data-governance-policy'),
+  `${gateDocPath} must document the focused production data governance gate.`,
+);
+assert(
+  gateDoc.includes('`npm run agents:production-traffic-controls` is the focused production traffic/rollback startup contract')
+    && gateDoc.includes('setup-production-traffic')
+    && gateDoc.includes('signed managed-production traffic-control evidence')
+    && gateDoc.includes('GET /production-traffic-policy'),
+  `${gateDocPath} must document the focused production traffic/rollback gate.`,
+);
+assert(
+  gateDoc.includes('`npm run agents:production-customer-acceptance` is the focused production customer acceptance startup contract')
+    && gateDoc.includes('setup-customer-production-acceptance')
+    && gateDoc.includes('signed managed-production customer-acceptance evidence')
+    && gateDoc.includes('GET /production-customer-acceptance-policy'),
+  `${gateDocPath} must document the focused production customer acceptance gate.`,
+);
+assert(
+  gateDoc.includes('`npm run agents:production-operations-startup` is the focused production operations startup contract')
+    && gateDoc.includes('setup-observability')
+    && gateDoc.includes('signed managed-production operations evidence')
+    && gateDoc.includes('GET /production-operations-policy'),
+  `${gateDocPath} must document the focused production operations startup gate.`,
+);
+assert(
   gateDoc.includes('`npm run agents:public-production-readiness-report` is the low-write operator report')
     && gateDoc.includes('production-environment-setup/v1')
+    && gateDoc.includes('public-production-action-plan/v1')
     && gateDoc.includes('managed-environment-preflight-report/v1')
     && gateDoc.includes('intentionally omits configured values')
     && gateDoc.includes('does not leak production URLs'),
   `${gateDocPath} must document the redacted public-production operator report.`,
+);
+assert(
+  gateDoc.includes('`npm run agents:private-mvp-launch-package` emits `private-mvp-launch-package/v1`')
+    && gateDoc.includes('private-mvp-ready-public-production-blocked')
+    && gateDoc.includes('must not be used as public-production approval')
+    && gateDoc.includes('`npm run agents:launch-operations:private-mvp`')
+    && gateDoc.includes('Launch Operations Private MVP visibility')
+    && gateDoc.includes('hides the package boundary')
+    && gateDoc.includes('Public Production Next Steps')
+    && gateDoc.includes('owner, action, why-blocked, validation-command, route, and run-route fields')
+    && gateDoc.includes('launch-operations-next-step-run/v1')
+    && gateDoc.includes('hides public-production next steps')
+    && gateDoc.includes('drops the next-step receipt'),
+  `${gateDocPath} must document the Private MVP launch package boundary.`,
 );
 assert(
   gateDoc.includes('`npm run agents:managed-environment-preflight` is the low-write bridge from rehearsal to real managed infrastructure')
@@ -309,6 +427,46 @@ assert(
   'launch:infra must run the public production startup readiness blocker contract.',
 );
 assert(
+  infraGateSource.includes('scripts/validate-production-access-control-contract.mjs'),
+  'launch:infra must run the production access-control enforcement contract.',
+);
+assert(
+  infraGateSource.includes('scripts/validate-production-managed-identity-contract.mjs'),
+  'launch:infra must run the production managed identity enforcement contract.',
+);
+assert(
+  infraGateSource.includes('scripts/validate-production-managed-secrets-contract.mjs'),
+  'launch:infra must run the production managed secrets enforcement contract.',
+);
+assert(
+  infraGateSource.includes('scripts/validate-production-managed-persistence-contract.mjs'),
+  'launch:infra must run the production managed persistence enforcement contract.',
+);
+assert(
+  infraGateSource.includes('scripts/validate-production-managed-worker-queue-contract.mjs'),
+  'launch:infra must run the production managed worker queue enforcement contract.',
+);
+assert(
+  infraGateSource.includes('scripts/validate-production-provider-controls-contract.mjs'),
+  'launch:infra must run the production provider/BYOK controls enforcement contract.',
+);
+assert(
+  infraGateSource.includes('scripts/validate-production-data-governance-contract.mjs'),
+  'launch:infra must run the production data governance enforcement contract.',
+);
+assert(
+  infraGateSource.includes('scripts/validate-production-traffic-controls-contract.mjs'),
+  'launch:infra must run the production traffic/rollback enforcement contract.',
+);
+assert(
+  infraGateSource.includes('scripts/validate-production-customer-acceptance-contract.mjs'),
+  'launch:infra must run the production customer acceptance enforcement contract.',
+);
+assert(
+  infraGateSource.includes('scripts/validate-production-operations-startup-contract.mjs'),
+  'launch:infra must run the production operations startup enforcement contract.',
+);
+assert(
   infraGateSource.includes('scripts/validate-public-production-readiness-report.mjs'),
   'launch:infra must run the redacted public production operator report validation.',
 );
@@ -319,6 +477,14 @@ assert(
 assert(
   infraGateSource.includes('scripts/validate-managed-infrastructure-cutover-attestations.mjs'),
   'launch:infra must run the managed infrastructure cutover attestation bridge.',
+);
+assert(
+  publicProductionNoGoSource.includes('scripts/validate-production-infrastructure-gates.mjs')
+    && publicProductionNoGoSource.includes('getPublicProductionStartupReadiness')
+    && publicProductionNoGoSource.includes("readyForPublicProduction === false")
+    && publicProductionNoGoSource.includes('scripts/report-public-production-readiness.mjs')
+    && publicProductionNoGoSource.includes("status === 'public-production-blocked'"),
+  'launch:public-production:no-go must reuse infrastructure rehearsal and explicitly assert public-production no-go readiness/report status.',
 );
 
 for (const currentEvidence of [

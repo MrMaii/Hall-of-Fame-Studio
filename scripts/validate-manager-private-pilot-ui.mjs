@@ -648,12 +648,38 @@ try {
       )),
     'Readiness Proof Map must prove the private-pilot acceptance report after C-side receipt clicks.',
   );
+  assert(
+    proofMap.launchOperationsOverviewSummary?.routeReady === true
+      && proofMap.launchOperationsOverviewRoutes?.some((route) => route.apiPath?.endsWith('/launch-operations-overview')),
+    'Readiness Proof Map must expose the backend launch operations overview route.',
+  );
+
+  const launchOperationsPayload = await getBackendJson(backendRuntime.url, `/projects/${PROJECT_ID}/launch-operations-overview`);
+  const launchOperationsReadModel = launchOperationsPayload.launchOperationsOverview;
+  assert(
+    launchOperationsReadModel?.schemaVersion === 'launch-operations-overview/v1'
+      && launchOperationsReadModel.readyForPrivatePilotAcceptance === true
+      && launchOperationsReadModel.readyForPublicProduction === false
+      && launchOperationsReadModel.publicProductionDecision === 'no-go'
+      && launchOperationsReadModel.backendRoutes?.launchOperationsOverview?.endsWith('/launch-operations-overview'),
+    'Backend launch operations overview must summarize private-pilot acceptance and keep public production no-go.',
+  );
 
   const acceptancePanelText = await page.getByTestId('backend-private-pilot-acceptance-report-workflow-snapshot').innerText();
   assert(
     /Acceptance Ready/i.test(acceptancePanelText),
     'C-side Ready Package must show private-pilot acceptance readiness after the final backend receipt.',
   );
+  const launchOperationsOverview = page.getByTestId('backend-launch-operations-overview');
+  await launchOperationsOverview.waitFor({ state: 'visible', timeout: 10000 });
+  const launchOperationsText = await launchOperationsOverview.innerText();
+  assert(/Private pilot accepted/i.test(launchOperationsText), 'Manager UI launch operations overview must summarize private-pilot acceptance.');
+  assert(/public production no-go/i.test(launchOperationsText), 'Manager UI launch operations overview must keep public production no-go.');
+  assert(/Customer Acceptance/i.test(launchOperationsText) && /accepted/i.test(launchOperationsText), 'Manager UI launch operations overview must expose customer acceptance state.');
+  assert(/Evidence Package/i.test(launchOperationsText) && /download audited/i.test(launchOperationsText), 'Manager UI launch operations overview must expose evidence package download audit state.');
+  assert(/\/launch-operations-overview/i.test(launchOperationsText), 'Manager UI launch operations overview must link the backend overview route.');
+  assert(/\/private-pilot-go-live-readiness/i.test(launchOperationsText), 'Manager UI launch operations overview must link the private-pilot go-live route.');
+  assert(/\/public-production-startup-readiness/i.test(launchOperationsText), 'Manager UI launch operations overview must link the public-production startup route.');
 
   if (RUN_PRODUCTION_CONTROLS) {
     await recordPrivatePilotReceipt({
@@ -740,6 +766,9 @@ try {
     await syncReadyPackageModels(page);
     const productionLaunchControlText = await page.getByTestId('backend-production-launch-control-center-snapshot').innerText();
     assert(/no-go/i.test(productionLaunchControlText), 'Manager UI must keep production launch control center no-go after local rehearsal receipts.');
+    const productionOverviewText = await page.getByTestId('backend-launch-operations-overview').innerText();
+    assert(/public production no-go/i.test(productionOverviewText), 'Launch operations overview must keep public production no-go after local rehearsal receipts.');
+    assert(/Production Blockers/i.test(productionOverviewText), 'Launch operations overview must keep production blocker counts visible.');
     console.log('Manager production controls UI validation passed.');
   }
 
