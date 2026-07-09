@@ -52,6 +52,10 @@ import {
   submitProjectChatMessage,
   submitProjectMeetingMessage,
 } from './agents/agentProjectService.js';
+import {
+  MEETING_TURN_SPEAK_DURATION_MS,
+  meetingTurnDelayMs,
+} from './agents/meetingQueueProtocol.js';
 
 const DEFAULT_AGENT_BACKEND_URL = import.meta.env?.VITE_AGENT_BACKEND_URL || 'http://127.0.0.1:8787';
 const normalizeBackendBaseUrl = (value = DEFAULT_AGENT_BACKEND_URL) => (
@@ -117,9 +121,20 @@ function mergeProjectMessages(existing = [], incoming = []) {
   const byId = new Map();
   [...existing, ...incoming].forEach((message) => {
     if (!message?.id) return;
+    const previous = byId.get(message.id) || {};
+    const confirmsPendingMessage = previous.pendingBackendWrite
+      && message.pendingBackendWrite !== true
+      && (
+        message.backendBacked
+        || message.source !== 'pending-backend-project-chat'
+        || message.schemaVersion !== 'pending-director-message/v1'
+        || (Array.isArray(message.proofIds) && message.proofIds.length)
+        || (Array.isArray(message.timelineLogIds) && message.timelineLogIds.length)
+      );
     byId.set(message.id, {
-      ...(byId.get(message.id) || {}),
+      ...previous,
       ...message,
+      ...(confirmsPendingMessage ? { pendingBackendWrite: false } : {}),
     });
   });
   return [...byId.values()]
@@ -1312,32 +1327,16 @@ const readStoredProjectArray = () => {
   return Array.isArray(stored) ? stored : [];
 };
 
-const isBackendManagedBrowserCacheProject = (project = {}) => (
-  Boolean(project?.id)
-  && !isManagerDemoProject(project)
-  && !isDevelopmentFallbackProject(project)
-  && (isBackendKickoffProject(project) || hasBackendManagedProjectMarker(project))
-);
-
-const cachedBackendManagedProjectIds = () => new Set(
-  readStoredProjectArray()
-    .filter(isBackendManagedBrowserCacheProject)
-    .map(project => project.id)
-    .filter(Boolean)
-);
-
 const cachedBrowserProjectIds = () => new Set(
   readStoredProjectArray()
     .filter(project => !isManagerDemoProject(project))
-    .filter(project => !isBackendManagedBrowserCacheProject(project))
     .map(project => project.id)
     .filter(Boolean)
 );
 
 const loadInitialProjects = () => {
   const storedProjects = readStoredProjectArray()
-    .filter(project => !isManagerDemoProject(project))
-    .filter(project => !isBackendManagedBrowserCacheProject(project));
+    .filter(project => !isManagerDemoProject(project));
   return storedProjects.map(hydrateProject);
 };
 
@@ -1635,12 +1634,10 @@ const hydrateChatMessage = (message) => ({
 
 const loadInitialChatMessages = () => {
   const stored = readStoredJson(STORAGE_KEYS.chatMessages, null);
-  const backendManagedCachedIds = cachedBackendManagedProjectIds();
   const browserProjectIds = cachedBrowserProjectIds();
   return (Array.isArray(stored) ? stored : [])
     .map(hydrateChatMessage)
     .filter(message => !isManagerDemoMessage(message))
-    .filter(message => !backendManagedCachedIds.has(message.projectId || DEFAULT_CHAT_PROJECT_ID))
     .filter(message => {
       const projectId = message.projectId || DEFAULT_CHAT_PROJECT_ID;
       return projectId === DEFAULT_CHAT_PROJECT_ID || browserProjectIds.has(projectId);
@@ -2162,7 +2159,7 @@ export default function EngineWorkspace() {
   );
   const canPersistProjectToBrowserCache = (project = {}) => (
     Boolean(project?.id)
-    && !isBackendManagedRealProject(project)
+    && !isManagerDemoProject(project)
   );
   const isUnscopedProofLikeChatMessage = (message = {}) => {
     if ((message.projectId || DEFAULT_CHAT_PROJECT_ID) !== DEFAULT_CHAT_PROJECT_ID) return false;
@@ -6355,6 +6352,8 @@ export default function EngineWorkspace() {
     }), 0);
     setTimeout(() => syncBackendTimelineAndEvents({ silent: true, projectId: payload.project?.id || activeProject.id }), 0);
     setTimeout(() => syncBackendReadyPackageSubmodels({ silent: true, projectId: payload.project?.id || activeProject.id }), 0);
+    setTimeout(() => syncBackendCollaborationIntentQueue({ silent: true, projectId: payload.project?.id || activeProject.id }), 0);
+    setTimeout(() => syncBackendAgentAutonomousActionQueue({ silent: true, projectId: payload.project?.id || activeProject.id }), 0);
     return payload;
   };
 
@@ -10113,8 +10112,15 @@ export default function EngineWorkspace() {
         autonomousRunControl: kickoffResult.autonomousRunControl || prev.autonomousRunControl,
         productTeamOperatingLoop: kickoffResult.productTeamOperatingLoop || prev.productTeamOperatingLoop,
         collaborationIntentQueue: kickoffResult.collaborationIntentQueue || prev.collaborationIntentQueue,
+        agentAutonomousActionQueue: kickoffResult.agentAutonomousActionQueue || kickoffResult.managerDashboard?.agentAutonomousActionQueue || prev.agentAutonomousActionQueue,
         lastProductTeamMissionSyncAt: kickoffResult.productTeamMissionRun ? new Date().toISOString() : prev.lastProductTeamMissionSyncAt,
         productTeamMissionSyncCount: kickoffResult.productTeamMissionRun ? (prev.productTeamMissionSyncCount || 0) + 1 : prev.productTeamMissionSyncCount,
+        lastAgentAutonomousActionQueueSyncAt: (kickoffResult.agentAutonomousActionQueue || kickoffResult.managerDashboard?.agentAutonomousActionQueue)
+          ? new Date().toISOString()
+          : prev.lastAgentAutonomousActionQueueSyncAt,
+        agentAutonomousActionQueueSyncCount: (kickoffResult.agentAutonomousActionQueue || kickoffResult.managerDashboard?.agentAutonomousActionQueue)
+          ? (prev.agentAutonomousActionQueueSyncCount || 0) + 1
+          : prev.agentAutonomousActionQueueSyncCount,
         error: null,
       }));
       kickoffReadModelRefresh = await refreshProjectInitiationReadModels({
@@ -10356,6 +10362,9 @@ export default function EngineWorkspace() {
     ));
     if (shouldAttemptBackendProjectWrite(projectReadyForWork)) {
       setTimeout(() => syncBackendProjectCatalog({ silent: true }), 0);
+      setTimeout(() => syncBackendAutonomousRunControl({ silent: true, projectId: createdProjectId }), 0);
+      setTimeout(() => syncBackendAgentAutonomousActionQueue({ silent: true, projectId: createdProjectId }), 0);
+      setTimeout(() => syncBackendCollaborationIntentQueue({ silent: true, projectId: createdProjectId }), 0);
     }
 
     setInitiationPhase('approved');
@@ -10556,6 +10565,115 @@ export default function EngineWorkspace() {
     openContractProjectPicker(id);
   };
 
+  const appendRoomTranscriptEntry = (entry = {}) => {
+    if (!entry?.text) return null;
+    const transcriptEntry = {
+      ...entry,
+      id: entry.id || `room_${Date.now()}`,
+    };
+    setRoomTranscript(prev => {
+      const existingIndex = prev.findIndex(item => item.id === transcriptEntry.id);
+      if (existingIndex < 0) return [...prev, transcriptEntry];
+      const next = [...prev];
+      next[existingIndex] = {
+        ...next[existingIndex],
+        ...transcriptEntry,
+      };
+      return next;
+    });
+    return transcriptEntry;
+  };
+
+  const stageMeetingUserTurn = ({
+    text = '',
+    messageId = null,
+    submittedAt = null,
+    userMessage = null,
+    source = 'war-room-meeting-message',
+  } = {}) => {
+    const entryText = String(userMessage?.text || text || '').trim();
+    if (!entryText) return null;
+    const id = userMessage?.id || messageId || `u_${Date.now()}`;
+    return appendRoomTranscriptEntry({
+      id,
+      speaker: userMessage?.speaker || userMessage?.author || 'Director',
+      role: userMessage?.role || 'User',
+      text: entryText,
+      score: userMessage?.score || 10,
+      source: userMessage?.source || source,
+      proofIds: userMessage?.proofIds || [id].filter(Boolean),
+      eventIds: userMessage?.eventIds || [],
+      submittedAt: submittedAt || userMessage?.sentAt || userMessage?.createdAt || null,
+    });
+  };
+
+  const queueMeetingIntentPreview = (text, projectOverride = activeProject, {
+    submittedAt = null,
+    messageId = null,
+    exchange = null,
+  } = {}) => {
+    const team = projectOverride?.team || [];
+    if (!team.length) {
+      setRoomSpeaker(null);
+      setRoomIntentions([]);
+      return null;
+    }
+    const meetingDirective = projectOverride?.meetingSkillBrief
+      ? `${projectOverride.meetingSkillBrief}\n\nDirector input:\n${text}`
+      : text;
+    const nextExchange = exchange || runRoundtableExchange(team, meetingDirective, {
+      projectId: projectOverride?.id,
+      projectName: projectOverride?.name,
+      meetingType: projectOverride?.lastAutonomousRunAt ? 'sync' : 'kickoff',
+      language: projectOverride?.language || activeLanguage,
+    });
+    const queuedIntentions = (nextExchange?.intentions || []).map((intent, index) => ({
+      ...intent,
+      status: 'queued',
+      queuePosition: index + 1,
+      sourceMessageId: messageId,
+      queuedAt: submittedAt,
+      notBeforeMs: meetingTurnDelayMs(index),
+      wait: index + 1,
+    }));
+    setRoomSpeaker(null);
+    setRoomIntentions(queuedIntentions);
+    return {
+      ...nextExchange,
+      intentions: queuedIntentions,
+    };
+  };
+
+  const stageProjectChatUserMessage = ({
+    text = '',
+    channelId = activeChannelId,
+    submittedAt = new Date().toISOString(),
+    messageId = `m_${Date.now()}`,
+    project = activeProject,
+  } = {}) => {
+    const messageText = String(text || '').trim();
+    if (!messageText || !project?.id) return null;
+    const team = project.team || [];
+    const message = attachMessageReceipts({
+      id: messageId,
+      projectId: project.id,
+      channelId,
+      type: 'mention',
+      author: 'Director',
+      authorId: 'director',
+      time: 'Now',
+      text: messageText,
+      targets: [],
+      source: 'pending-backend-project-chat',
+      pendingBackendWrite: true,
+      createdAt: submittedAt,
+      sentAt: submittedAt,
+      schemaVersion: 'pending-director-message/v1',
+    }, team, { seenAt: submittedAt });
+    setChatMessages(prev => mergeProjectMessages(prev, [message]));
+    return message;
+  };
+
   const playBackendMeetingTurns = ({ userMessage = null, meetingAgentTurns = [], submittedText = '', projectOverride = activeProject } = {}) => {
     const backendTurns = (meetingAgentTurns || []).filter(turn => turn?.text);
     if (!backendTurns.length) return false;
@@ -10565,6 +10683,7 @@ export default function EngineWorkspace() {
     setRoomSpeaker(null);
     setRoomIntentions(backendTurns.map((turn, index) => {
       const agent = team.find(item => item.id === turn.speakerId || item.name === turn.speaker);
+      const delayMs = meetingTurnDelayMs(index, turn.delayMs);
       return {
         id: `backend_meeting_${turn.messageId || turn.id || index}`,
         name: turn.speaker || agent?.name || 'Agent',
@@ -10574,22 +10693,23 @@ export default function EngineWorkspace() {
         score: turn.score || 8,
         rank: turn.rank || index + 1,
         speakerRank: index,
+        queuePosition: index + 1,
         wait: index + 1,
         status: 'queued',
+        queuedAt: userMessage?.sentAt || userMessage?.createdAt || null,
+        sourceMessageId: userMessage?.id || null,
+        notBeforeMs: delayMs,
         proofIds: turn.proofIds || [],
         eventIds: turn.eventIds || [],
       };
     }));
-    setRoomTranscript(prev => [...prev, {
-      id: userMessage?.id || `u_${Date.now()}`,
-      speaker: userMessage?.author || 'Director',
-      role: 'User',
-      text: userMessage?.text || submittedText,
-      score: 10,
-      source: userMessage?.source || 'war-room-meeting-message',
-      proofIds: userMessage?.id ? [userMessage.id] : [],
-    }]);
+    stageMeetingUserTurn({
+      text: submittedText,
+      messageId: userMessage?.id,
+      userMessage,
+    });
     backendTurns.forEach((turn, index) => {
+      const delayMs = meetingTurnDelayMs(index, turn.delayMs);
       const timer = setTimeout(() => {
         const agent = team.find(item => item.id === turn.speakerId || item.name === turn.speaker);
         const intentId = `backend_meeting_${turn.messageId || turn.id || index}`;
@@ -10597,7 +10717,7 @@ export default function EngineWorkspace() {
         setRoomIntentions(prev => prev.map(intent => (
           intent.id === intentId ? { ...intent, status: 'speaking' } : intent
         )));
-        setRoomTranscript(prev => [...prev, {
+        appendRoomTranscriptEntry({
           id: turn.messageId || turn.id || `backend_meeting_${Date.now()}_${index}`,
           speaker: turn.speaker || agent?.name || 'Agent',
           role: turn.role || agent?.role || 'Meeting participant',
@@ -10606,21 +10726,21 @@ export default function EngineWorkspace() {
           source: turn.source || 'war-room-meeting-agent-turn',
           proofIds: turn.proofIds || [],
           eventIds: turn.eventIds || [],
-        }]);
+        });
         const yieldTimer = setTimeout(() => {
           setRoomIntentions(prev => prev.map(intent => (
             intent.id === intentId ? { ...intent, status: 'yielded' } : intent
           )));
           if (index === backendTurns.length - 1) setRoomSpeaker(null);
-        }, 1200);
+        }, MEETING_TURN_SPEAK_DURATION_MS);
         roomSimulationTimersRef.current.push(yieldTimer);
-      }, turn.delayMs || (650 + index * 1450));
+      }, delayMs);
       roomSimulationTimersRef.current.push(timer);
     });
     const clearSpeakerTimer = setTimeout(() => {
       setRoomSpeaker(null);
       roomSimulationTimersRef.current = [];
-    }, Math.max(...backendTurns.map((turn, index) => turn.delayMs || (650 + index * 1450))) + 1800);
+    }, Math.max(...backendTurns.map((turn, index) => meetingTurnDelayMs(index, turn.delayMs))) + MEETING_TURN_SPEAK_DURATION_MS + 600);
     roomSimulationTimersRef.current.push(clearSpeakerTimer);
     return true;
   };
@@ -10639,102 +10759,45 @@ export default function EngineWorkspace() {
     return false;
   };
 
-  const runRoomSimulation = (text, projectOverride = activeProject) => {
-    const team = projectOverride?.team || [];
+  const runRoomSimulation = (text, projectOverride = activeProject, {
+    messageId = null,
+    submittedAt = null,
+    exchange: previewExchange = null,
+  } = {}) => {
     roomSimulationTimersRef.current.forEach(timer => clearTimeout(timer));
     roomSimulationTimersRef.current = [];
-    const meetingDirective = projectOverride?.meetingSkillBrief
-      ? `${projectOverride.meetingSkillBrief}\n\nDirector input:\n${text}`
-      : text;
-    const exchange = runRoundtableExchange(team, meetingDirective, {
-      projectId: projectOverride?.id,
-      projectName: projectOverride?.name,
-      meetingType: projectOverride?.lastAutonomousRunAt ? 'sync' : 'kickoff',
-      language: projectOverride?.language || activeLanguage,
+    const exchange = queueMeetingIntentPreview(text, projectOverride, {
+      submittedAt,
+      messageId,
+      exchange: previewExchange,
     });
-    const runtimeIntentions = exchange.intentions;
-
-    setRoomIntentions(runtimeIntentions);
-    setRoomTranscript(prev => [...prev, { id: `u_${Date.now()}`, speaker: 'Director', role: 'User', text, score: 10 }]);
-    exchange.responses.forEach((response) => {
+    stageMeetingUserTurn({ text, messageId, submittedAt });
+    (exchange?.responses || []).forEach((response, index) => {
+      const delayMs = meetingTurnDelayMs(index, response.delayMs);
       const timer = setTimeout(() => {
         setRoomSpeaker(response.speakerId);
         setRoomIntentions(prev => prev.map(i => i.id === response.speakerId ? { ...i, status: 'speaking' } : i));
-        setRoomTranscript(prev => [...prev, {
+        appendRoomTranscriptEntry({
           id: response.id,
           speaker: response.speaker,
           role: response.role,
           score: response.score,
           text: response.text,
-        }]);
+          source: response.source || 'local-room-runtime',
+        });
         const yieldTimer = setTimeout(() => {
           setRoomIntentions(prev => prev.map(i => i.id === response.speakerId ? { ...i, status: 'yielded' } : i));
-        }, 1200);
+        }, MEETING_TURN_SPEAK_DURATION_MS);
         roomSimulationTimersRef.current.push(yieldTimer);
-      }, response.delayMs);
+      }, delayMs);
       roomSimulationTimersRef.current.push(timer);
     });
+    const responseDelays = (exchange?.responses || []).map((response, index) => meetingTurnDelayMs(index, response.delayMs));
     const runtimeClearSpeakerTimer = setTimeout(() => {
       setRoomSpeaker(null);
       roomSimulationTimersRef.current = [];
-    }, 5600);
+    }, (responseDelays.length ? Math.max(...responseDelays) : 0) + MEETING_TURN_SPEAK_DURATION_MS + 600);
     roomSimulationTimersRef.current.push(runtimeClearSpeakerTimer);
-    return;
-
-    const skillPlan = createRoundtablePlan(team.map(agent => agent.id), text);
-    const taskMatches = new Map(skillPlan.taskMatches.map((item, index) => [item.skill.slug, { ...item, index }]));
-    const firstSpeakerRank = new Map(skillPlan.firstSpeakers.map((skill, index) => [skill.slug, index]));
-    const intentions = team.map((agent, index) => {
-      const skill = getPersonSkill(agent.id);
-      const match = taskMatches.get(agent.id);
-      const speakerRank = firstSpeakerRank.has(agent.id) ? firstSpeakerRank.get(agent.id) : 99;
-      const fallbackScore = 4 + Math.max(0, 4 - index);
-      const score = skill
-        ? Math.max(5, Math.min(10, Math.round((match?.score || 0) / 18) + 5 - Math.min(speakerRank, 2)))
-        : fallbackScore;
-      return {
-        id: agent.id,
-        name: agent.name,
-        role: agent.role,
-        target: skill ? describeSkillIntent(agent.id, text, skillPlan) : (index === 0 ? 'Project progress' : index === 1 ? 'Technical risk' : 'Experience judgment'),
-        origin: text.slice(0, 28) || 'User meeting input',
-        score,
-        rank: match?.index ?? 99,
-        speakerRank,
-        wait: index + 1,
-        status: 'queued',
-      };
-    }).sort((a, b) => a.speakerRank - b.speakerRank || b.score - a.score || a.rank - b.rank || a.wait - b.wait);
-
-    setRoomIntentions(intentions);
-    setRoomTranscript(prev => [...prev, { id: `u_${Date.now()}`, speaker: 'Director', role: 'User', text, score: 10 }]);
-    intentions.slice(0, 3).forEach((intent, index) => {
-      const timer = setTimeout(() => {
-        setRoomSpeaker(intent.id);
-        setRoomIntentions(prev => prev.map(i => i.id === intent.id ? { ...i, status: 'speaking' } : i));
-        const speakerSkill = getPersonSkill(intent.id);
-        const skillReply = speakerSkill ? buildSkillRoomReply(intent.id, text, intent) : '';
-        const replyLead = speakerSkill?.motto || intent.target;
-        const replyBody = speakerSkill?.principles?.[0] || 'Break the issue into verifiable facts before proposing a solution.';
-        setRoomTranscript(prev => [...prev, {
-          id: `${intent.id}_${Date.now()}_${index}`,
-          speaker: intent.name,
-          role: intent.role,
-          score: intent.score,
-          text: skillReply || `${replyLead}: ${intent.target} is ready to respond. For "${intent.origin}": ${replyBody}`,
-        }]);
-        const yieldTimer = setTimeout(() => {
-          setRoomIntentions(prev => prev.map(i => i.id === intent.id ? { ...i, status: 'yielded' } : i));
-        }, 1200);
-        roomSimulationTimersRef.current.push(yieldTimer);
-      }, 650 + index * 1450);
-      roomSimulationTimersRef.current.push(timer);
-    });
-    const clearSpeakerTimer = setTimeout(() => {
-      setRoomSpeaker(null);
-      roomSimulationTimersRef.current = [];
-    }, 5600);
-    roomSimulationTimersRef.current.push(clearSpeakerTimer);
   };
 
   const queueRoomChangeDiscussion = (changeResponse, projectOverride = activeProject) => {
@@ -10758,26 +10821,27 @@ export default function EngineWorkspace() {
     setRoomIntentions(prev => [...prev, ...changeIntentions].slice(-8));
     changeResponse.discussionMessages.forEach((message, index) => {
       const agent = team.find(item => item.name === message.author);
+      const delayMs = meetingTurnDelayMs(index, 1600 + index * 900);
       const startTimer = setTimeout(() => {
         if (agent) setRoomSpeaker(agent.id);
         setRoomIntentions(prev => prev.map(intent => (
           intent.id === `change_${message.id}` ? { ...intent, status: 'speaking' } : intent
         )));
-        setRoomTranscript(prev => [...prev, {
+        appendRoomTranscriptEntry({
           id: `room_${message.id}`,
           speaker: message.author,
           role: message.role || agent?.role || 'Change discussion',
           score: message.type === 'decision' ? 10 : 8,
           text: message.text,
           source: 'war-room-change',
-        }]);
-      }, 1600 + index * 900);
+        });
+      }, delayMs);
       const yieldTimer = setTimeout(() => {
         setRoomIntentions(prev => prev.map(intent => (
           intent.id === `change_${message.id}` ? { ...intent, status: 'yielded' } : intent
         )));
         if (index === changeResponse.discussionMessages.length - 1) setRoomSpeaker(null);
-      }, 2500 + index * 900);
+      }, delayMs + MEETING_TURN_SPEAK_DURATION_MS);
       roomSimulationTimersRef.current.push(startTimer, yieldTimer);
     });
   };
@@ -10788,6 +10852,11 @@ export default function EngineWorkspace() {
     const submittedAt = new Date().toISOString();
     const messageId = `room_change_user_${Date.now()}`;
     setRoomInput('');
+    stageMeetingUserTurn({ text, messageId, submittedAt });
+    const previewExchange = queueMeetingIntentPreview(text, projectOverride, {
+      submittedAt,
+      messageId,
+    });
 
     if (shouldAttemptBackendProjectWrite(projectOverride) && projectOverride?.id === activeProject?.id) {
       try {
@@ -10818,7 +10887,7 @@ export default function EngineWorkspace() {
             ...prev,
             lastAction: 'Backend meeting returned no Agent turns, used allowed local runtime fallback',
           }));
-          runRoomSimulation(text, nextProject);
+          runRoomSimulation(text, nextProject, { messageId, submittedAt, exchange: previewExchange });
         }
         const changeResponse = backendResult?.responses?.changeResponse;
         if (changeResponse) queueRoomChangeDiscussion(changeResponse, nextProject);
@@ -10855,7 +10924,7 @@ export default function EngineWorkspace() {
     if (meetingResult.messages.length) {
       setChatMessages(prev => mergeProjectMessages(prev, meetingResult.messages));
     }
-    runRoomSimulation(text, nextProject);
+    runRoomSimulation(text, nextProject, { messageId, submittedAt, exchange: previewExchange });
     if (changeResponse) queueRoomChangeDiscussion(changeResponse, nextProject);
   };
 
@@ -10886,6 +10955,13 @@ export default function EngineWorkspace() {
     setShowMentionPicker(false);
     setMentionFilter('');
     setFocusedChatProofIds([]);
+    stageProjectChatUserMessage({
+      text,
+      channelId: activeChannelId,
+      submittedAt,
+      messageId,
+      project: activeProject,
+    });
 
     if (shouldUseBackendChat) {
       try {
@@ -11039,7 +11115,7 @@ export default function EngineWorkspace() {
             name: turn.speaker || 'Agent',
             role: turn.role || 'Meeting participant',
           };
-          const delayMs = turn.delayMs || (900 + index * 950);
+          const delayMs = meetingTurnDelayMs(index, turn.delayMs);
           setTimeout(() => {
             setSpeakingAgent(agent.id);
             setMeetingLogs(prev => [...prev, {
@@ -11053,7 +11129,7 @@ export default function EngineWorkspace() {
               source: turn.source || 'war-room-meeting-agent-turn',
             }]);
           }, delayMs);
-          setTimeout(() => setSpeakingAgent(null), delayMs + 1400);
+          setTimeout(() => setSpeakingAgent(null), delayMs + MEETING_TURN_SPEAK_DURATION_MS);
         });
         if (!backendTurns.length) {
           setMeetingLogs(prev => [...prev, {
@@ -11067,7 +11143,11 @@ export default function EngineWorkspace() {
             error: 'Backend meeting start response lacked meetingAgentTurns; browser-local meeting fallback was suppressed.',
           });
         }
-        setTimeout(() => setSpeakingAgent(null), Math.max(3500, 1200 + backendTurns.length * 950));
+        const backendTurnDelays = backendTurns.map((turn, index) => meetingTurnDelayMs(index, turn.delayMs));
+        setTimeout(
+          () => setSpeakingAgent(null),
+          (backendTurnDelays.length ? Math.max(...backendTurnDelays) : 0) + MEETING_TURN_SPEAK_DURATION_MS + 600,
+        );
         return;
       } catch (error) {
         const allowFallback = allowLocalRuntimeFallbackForActiveProject(activeProject);
@@ -11117,8 +11197,8 @@ export default function EngineWorkspace() {
         id: ++logIdRef.current, type: 'ai', agent: opening.agent,
         text: opening.text
       }]);
-    }, 1500);
-    setTimeout(() => setSpeakingAgent(null), 3500);
+    }, meetingTurnDelayMs(0, opening?.delayMs));
+    setTimeout(() => setSpeakingAgent(null), meetingTurnDelayMs(0, opening?.delayMs) + MEETING_TURN_SPEAK_DURATION_MS);
   };
 
   const handleTerminalSubmit = async (e) => {
@@ -11153,7 +11233,7 @@ export default function EngineWorkspace() {
             role: turn.role || 'Meeting participant',
           },
           text: turn.text,
-          delayMs: turn.delayMs || (650 + index * 1450),
+          delayMs: meetingTurnDelayMs(index, turn.delayMs),
           proofIds: turn.proofIds || [],
           eventIds: turn.eventIds || [],
         }));
@@ -11163,6 +11243,7 @@ export default function EngineWorkspace() {
 
         meetingTurnEvents
           .forEach((event, index, events) => {
+            const delayMs = meetingTurnDelayMs(index, event.delayMs);
             setTimeout(() => {
               setSpeakingAgent(event.agent.id);
               setMeetingLogs(prev => [...prev, {
@@ -11171,16 +11252,17 @@ export default function EngineWorkspace() {
                 proofIds: event.proofIds || [],
                 eventIds: event.eventIds || [],
               }]);
-            }, event.delayMs || (2000 + index * 900));
-            setTimeout(() => setSpeakingAgent(null), (event.delayMs || (2000 + index * 900)) + 1400);
+            }, delayMs);
+            setTimeout(() => setSpeakingAgent(null), delayMs + MEETING_TURN_SPEAK_DURATION_MS);
             if (index === events.length - 1) {
-              setTimeout(() => setSpeakingAgent(null), (event.delayMs || (2000 + index * 900)) + 1800);
+              setTimeout(() => setSpeakingAgent(null), delayMs + MEETING_TURN_SPEAK_DURATION_MS + 400);
             }
           });
         if (!changeResponse) return;
         changeResponse.discussionMessages.forEach((message, index) => {
           const agent = activeProject.team.find(item => item.name === message.author);
           if (!agent) return;
+          const delayMs = meetingTurnDelayMs(index, 1600 + index * 850);
           setTimeout(() => {
             setSpeakingAgent(agent.id);
             setMeetingLogs(prev => [...prev, {
@@ -11189,8 +11271,8 @@ export default function EngineWorkspace() {
               agent,
               text: message.text,
             }]);
-          }, 1600 + index * 850);
-          setTimeout(() => setSpeakingAgent(null), 2500 + index * 850);
+          }, delayMs);
+          setTimeout(() => setSpeakingAgent(null), delayMs + MEETING_TURN_SPEAK_DURATION_MS);
         });
       };
 
@@ -14709,6 +14791,13 @@ export default function EngineWorkspace() {
                 onSubmit: submitInitiationMeetingInput,
                 hideMeetingTelemetry: true,
               })}
+
+              {initiationStep === 'meeting' && (
+                <div data-testid="initiation-meeting-generation-source" className="absolute left-6 top-6 z-30 border border-[#7b6542] bg-[#0d0c0b] px-3 py-2">
+                  <div className="font-mono text-[8px] uppercase tracking-widest text-[#bcae86]">Kickoff Generation Source</div>
+                  <div className="mt-1 font-mono text-[8px] uppercase tracking-widest text-[#efe2bd]">{initiationGenerationLabel}</div>
+                </div>
+              )}
 
               {initiationStep === 'result' && (
                 <div className="max-w-5xl mx-auto">
@@ -34380,6 +34469,15 @@ export default function EngineWorkspace() {
                 </div>
               </div>
 
+              {usesCustomMeetingSubmit && initiationMeetingSession && (
+                <div data-testid="initiation-meeting-session-proof" className="border border-[#7b6542] bg-[#0d0c0b] px-4 py-2 shrink-0">
+                  <div className="font-mono text-[8px] uppercase tracking-widest text-[#bcae86]">Backend Meeting Session</div>
+                  <div className="mt-1 font-mono text-[8px] uppercase tracking-widest text-[#efe2bd]">
+                    {initiationMeetingSession.id} / {initiationMeetingSession.status} / {initiationMeetingSession.evidence?.transcriptIds?.length || (initiationMeetingSession.transcript || []).length} transcript proofs
+                  </div>
+                </div>
+              )}
+
               {/* Input */}
               {backendMeetingSendRequired && (
                 <div data-testid="backend-meeting-send-required" className="border border-[#8f1e18] bg-[#251b13] px-3 py-2 font-mono text-[8px] uppercase tracking-widest text-[#bcae86] leading-relaxed">
@@ -34468,6 +34566,7 @@ export default function EngineWorkspace() {
       ? transcriptMessagesFromBackendChannels(activeProject.id, [backendChannelTranscript])
         .filter(message => message.channelId === activeChannelId)
       : [];
+    const pendingLocalVisibleMessages = localVisibleMessages.filter(message => message.pendingBackendWrite);
     const backendChannelTranscriptRequired = Boolean(activeProject)
       && shouldAttemptBackendProjectWrite(activeProject)
       && !allowLocalRuntimeFallbackForActiveProject(activeProject);
@@ -34478,10 +34577,11 @@ export default function EngineWorkspace() {
     );
     const visibleMessages = backendChannelTranscriptUsable
       ? (backendChannelTranscriptRequired
-          ? backendVisibleMessages
+          ? mergeProjectMessages(pendingLocalVisibleMessages, backendVisibleMessages)
+            .filter(message => message.channelId === activeChannelId)
           : mergeProjectMessages(localVisibleMessages, backendVisibleMessages)
             .filter(message => message.channelId === activeChannelId))
-      : (backendChannelTranscriptRequired ? [] : localVisibleMessages);
+      : (backendChannelTranscriptRequired ? pendingLocalVisibleMessages : localVisibleMessages);
     const localChatCardProofRowsAllowed = !backendChannelTranscriptRequired;
     const chatBackendManagerDashboard = String(backendStation.managerDashboard?.projectId || '').toLowerCase() === String(activeProject.id || '').toLowerCase()
       ? backendStation.managerDashboard

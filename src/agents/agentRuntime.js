@@ -6,6 +6,7 @@ import {
   getPersonSkill,
 } from '../skills/personSkillSystem.js';
 import { createTranslator, localizeText, normalizeLanguage } from '../i18n/runtime.js';
+import { meetingTurnDelayMs } from './meetingQueueProtocol.js';
 
 export const DIRECTOR_AGENT_ID = 'director';
 export const EVENT_LEDGER_RETAINED_LIMIT = 5000;
@@ -890,7 +891,7 @@ export function routeDirectorDirective({ team = [], directive = '', targetIds = 
       meetingType: protocol.id,
       language,
     }),
-    delayMs: 1300 + index * 900,
+    delayMs: meetingTurnDelayMs(index),
   }));
 
   const coordination = lead && reviewer && !targets.some((agent) => agent.id === lead.id)
@@ -898,7 +899,7 @@ export function routeDirectorDirective({ team = [], directive = '', targetIds = 
       kind: 'agent',
       agent: lead,
       text: t('agent.coordination', { reviewer: reviewer.name, output: protocol.output }),
-      delayMs: 1300 + replies.length * 900,
+      delayMs: meetingTurnDelayMs(replies.length),
       relation: { to: reviewer.id, type: 'delegates-review' },
     }]
     : [];
@@ -920,7 +921,11 @@ export function runRoundtableExchange(team = [], directive = '', context = {}) {
   const network = createAgentNetwork(team, { ...context, directive, topic: directive });
   const intentions = buildIntentions(network, directive);
   const intentById = new Map(intentions.map((intent) => [intent.id, intent]));
-  const speakers = intentions.slice(0, Math.min(3, intentions.length));
+  const maxSpeakers = Math.max(1, Math.min(
+    intentions.length,
+    Number(context.maxSpeakers) || intentions.length,
+  ));
+  const speakers = intentions.slice(0, maxSpeakers);
   const protocol = getMeetingProtocol(context.meetingType || 'sync', language);
   const lead = getLead(network);
   const reviewer = getReviewer(network);
@@ -937,7 +942,7 @@ export function runRoundtableExchange(team = [], directive = '', context = {}) {
         speaker: intent.name,
         role: intent.role,
         score: intent.score,
-        delayMs: 650 + index * 1450,
+        delayMs: meetingTurnDelayMs(index),
         text: buildAgentReply(agent, directive, {
           network,
           lead,

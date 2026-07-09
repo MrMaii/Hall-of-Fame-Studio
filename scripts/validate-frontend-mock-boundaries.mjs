@@ -157,9 +157,9 @@ const transcriptRenderSection = sliceBetween(
 assertIncludes(transcriptRenderSection, [
   'const backendChannelTranscriptRequired = Boolean(activeProject)',
   'const backendChannelTranscriptUsable = Boolean(backendChannelTranscript) && (',
-  '? backendVisibleMessages',
+  '? mergeProjectMessages(pendingLocalVisibleMessages, backendVisibleMessages)',
   ': mergeProjectMessages(localVisibleMessages, backendVisibleMessages)',
-  ': (backendChannelTranscriptRequired ? [] : localVisibleMessages);',
+  ': (backendChannelTranscriptRequired ? pendingLocalVisibleMessages : localVisibleMessages);',
   'const canCreateLocalChannel = allowLocalRuntimeFallbackForActiveProject(activeProject);',
   'const canCreateChannel = Boolean(activeProject) && (canCreateLocalChannel || shouldAttemptBackendProjectWrite(activeProject));',
   'const canSendLocalChat = allowLocalRuntimeFallbackForActiveProject(activeProject);',
@@ -266,11 +266,9 @@ const initialCacheSection = sliceBetween(
   'const INITIATION_MEMBERS',
 );
 assertIncludes(initialCacheSection, [
-  'const isBackendManagedBrowserCacheProject = (project = {})',
-  'const cachedBackendManagedProjectIds = () => new Set',
   'const cachedBrowserProjectIds = () => new Set',
   'const loadInitialProjects = () =>',
-  '.filter(project => !isBackendManagedBrowserCacheProject(project))',
+  '.filter(project => !isManagerDemoProject(project))',
 ], 'initial project cache boundary');
 
 const initialChatCacheSection = sliceBetween(
@@ -280,8 +278,8 @@ const initialChatCacheSection = sliceBetween(
 );
 assertIncludes(initialChatCacheSection, [
   'const loadInitialChatMessages = () =>',
-  'const backendManagedCachedIds = cachedBackendManagedProjectIds();',
-  '.filter(message => !backendManagedCachedIds.has(message.projectId || DEFAULT_CHAT_PROJECT_ID))',
+  'const browserProjectIds = cachedBrowserProjectIds();',
+  '.filter(message => !isManagerDemoMessage(message))',
   'return projectId === DEFAULT_CHAT_PROJECT_ID || browserProjectIds.has(projectId);',
 ], 'initial chat cache boundary');
 
@@ -310,7 +308,7 @@ assertIncludes(backendManagedMarkerSection, [
 ], 'backend-managed browser cache marker coverage');
 assertIncludes(browserCacheWriteSection, [
   'const canPersistProjectToBrowserCache = (project = {})',
-  '&& !isBackendManagedRealProject(project)',
+  '&& !isManagerDemoProject(project)',
   'const isUnscopedProofLikeChatMessage = (message = {})',
   'CHAT_PROOF_ID_PATTERN.test(messageId)',
   'const canPersistChatMessageToBrowserCache = (message = {}, projectById = new Map())',
@@ -1059,7 +1057,7 @@ assertIncludes(warRoomMeetingCommandSection, [
   'if (!allowFallback) {',
   'return;',
   'const meetingResult = submitProjectMeetingMessage({',
-  'runRoomSimulation(text, nextProject)',
+  'runRoomSimulation(text, nextProject,',
 ], 'War Room meeting backend fail-closed command boundary');
 assert(
   warRoomMeetingCommandSection.indexOf("runBackendProjectCommand('meeting'") < warRoomMeetingCommandSection.indexOf('const meetingResult = submitProjectMeetingMessage({'),
