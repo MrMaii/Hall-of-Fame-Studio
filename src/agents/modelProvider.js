@@ -1,4 +1,5 @@
 import { redactSensitiveText, redactUrl } from './secretRedaction.js';
+import { parseBoolean, safeJsonParse } from './sharedUtils.js';
 
 const DEFAULT_PROVIDER = 'openai-compatible';
 const DEFAULT_OPENAI_COMPATIBLE_BASE_URL = 'https://api.openai.com/v1';
@@ -43,24 +44,11 @@ function cleanBaseUrl(value = '') {
   return String(value || '').replace(/\/+$/, '');
 }
 
-function parseBoolean(value, fallback = false) {
-  if (value === undefined || value === null || value === '') return fallback;
-  return /^(1|true|yes|on)$/i.test(String(value));
-}
-
 function parseList(value = '') {
   return String(value || '')
     .split(',')
     .map((item) => item.trim())
     .filter(Boolean);
-}
-
-function safeJsonParse(value) {
-  try {
-    return JSON.parse(value);
-  } catch {
-    return null;
-  }
 }
 
 function extractJsonObject(value = '') {

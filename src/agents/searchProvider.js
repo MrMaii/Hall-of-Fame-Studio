@@ -1,22 +1,10 @@
 import { redactSensitiveText, redactUrl } from './secretRedaction.js';
+import { parseBoolean, safeJsonParse as parseJson } from './sharedUtils.js';
 
 const DEFAULT_SEARCH_PROVIDER = 'none';
 const DEFAULT_TIMEOUT_MS = 20_000;
 const DEFAULT_MAX_RESULTS = 5;
 const DEFAULT_MAX_CONCURRENCY = 2;
-
-function parseBoolean(value, fallback = false) {
-  if (value === undefined || value === null || value === '') return fallback;
-  return /^(1|true|yes|on)$/i.test(String(value));
-}
-
-function parseJson(value, fallback = null) {
-  try {
-    return JSON.parse(value);
-  } catch {
-    return fallback;
-  }
-}
 
 function cleanBaseUrl(value = '') {
   return String(value || '').replace(/\/+$/, '');

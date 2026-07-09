@@ -1,12 +1,9 @@
+import { clone, parseBoolean, safeJsonParse } from './sharedUtils.js';
+
 const DEFAULT_SECRET_VAULT_PROVIDER = 'local-aes-gcm';
 const DEFAULT_SECRET_VAULT_ALGORITHM = 'AES-GCM';
 const DEFAULT_SECRET_VAULT_KDF = 'PBKDF2-SHA256';
 const DEFAULT_SECRET_VAULT_ITERATIONS = 120_000;
-
-function parseBoolean(value, fallback = false) {
-  if (value === undefined || value === null || value === '') return fallback;
-  return /^(1|true|yes|on)$/i.test(String(value));
-}
 
 function encoder() {
   return new TextEncoder();
@@ -61,14 +58,6 @@ function base64ToBytes(value = '') {
   throw new Error('secret-vault-base64-unavailable');
 }
 
-function safeJsonParse(value, fallback = null) {
-  try {
-    return JSON.parse(value);
-  } catch {
-    return fallback;
-  }
-}
-
 function getNodeBuiltin(name = '') {
   const loader = globalThis.process?.getBuiltinModule;
   if (typeof loader !== 'function') return null;
@@ -101,10 +90,6 @@ function writeRecordFile(filePath = '', records = []) {
   if (!resolvedPath) return;
   fs.mkdirSync(path.dirname(resolvedPath), { recursive: true });
   fs.writeFileSync(resolvedPath, `${JSON.stringify(cleanRecords(records), null, 2)}\n`, 'utf8');
-}
-
-function clone(value) {
-  return JSON.parse(JSON.stringify(value ?? null));
 }
 
 function stableJson(value) {
