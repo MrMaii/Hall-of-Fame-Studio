@@ -32,11 +32,13 @@ import {
 } from './secretRedaction.js';
 import { buildAccessControlPolicySnapshot, hmacSha256Hex } from './accessControl.js';
 import { createSecretVaultFromEnv, normalizeSecretVaultStatus } from './secretVault.js';
+import { providerSecretBindingForRecord, findProviderVaultRecord } from './providerSecretBinding.js';
 import { createModelProviderFromEnv } from './modelProvider.js';
 import { createSearchProviderFromEnv } from './searchProvider.js';
 import { createManagedPersistenceAdapterFromEnv, managedPersistenceAdapterStatus } from './managedPersistenceAdapter.js';
 import { createWorkerQueueAdapterFromEnv, workerQueueAdapterStatus } from './workerQueueAdapter.js';
 import { createHttpJsonAdapterGatewayClient } from './adapterGatewayClient.js';
+import { meetingTurnDelayMs } from './meetingQueueProtocol.js';
 import { createTranslator, localizeText, normalizeLanguage } from '../i18n/runtime.js';
 
 const nowIso = () => new Date().toISOString();
@@ -3681,7 +3683,7 @@ export function submitProjectMeetingMessage({
     role: message.role || message.meetingTurn?.role || 'Meeting participant',
     score: message.score || message.meetingTurn?.score || 0,
     rank: index + 1,
-    delayMs: 650 + index * 1450,
+    delayMs: meetingTurnDelayMs(index),
     text: message.text || '',
     backendAuthored: true,
   }));
@@ -48025,65 +48027,6 @@ export function createAgentProjectService({
     response.checksum = persistenceChecksum(response);
     return response;
   };
-  const providerApiKeyNames = {
-    model: ['model.apikey', 'model.api_key', 'model.api-key', 'llm.apikey', 'llm.api_key', 'openai.apikey', 'openai.api_key'],
-    search: ['search.apikey', 'search.api_key', 'search.api-key', 'web-search.apikey', 'web_search.api_key'],
-  };
-  const providerEndpointNames = {
-    model: ['model.endpoint', 'model.url', 'model.base_url', 'model.baseurl', 'model.base-url', 'model-provider.endpoint', 'model_provider.endpoint'],
-    search: ['search.endpoint', 'search.url', 'search.base_url', 'search-provider.endpoint', 'search_provider.endpoint', 'web-search.endpoint', 'web_search.endpoint'],
-  };
-  const providerModelNames = {
-    model: ['model.name', 'model.model', 'model.id', 'model.model_id', 'model.model-id', 'model-provider.model', 'model_provider.model'],
-  };
-  const normalizeProviderSecretTarget = (value = '') => {
-    const normalized = String(value || '').toLowerCase().replace(/_/g, '-');
-    if (['api-key', 'apikey', 'key', 'token', 'credential'].includes(normalized)) return 'api-key';
-    if (['endpoint', 'url', 'base-url', 'baseurl', 'provider-endpoint'].includes(normalized)) return 'endpoint';
-    if (['model', 'model-id', 'modelid', 'model-name', 'modelname'].includes(normalized)) return 'model';
-    return '';
-  };
-  const providerSecretBindingForRecord = (record = {}) => {
-    const name = String(record.name || record.id || '').toLowerCase();
-    const scope = String(record.metadata?.scope || '').toLowerCase();
-    const target = normalizeProviderSecretTarget(
-      record.metadata?.secretKind
-      || record.metadata?.target
-      || record.metadata?.providerSecretKind
-      || '',
-    );
-    if (
-      providerModelNames.model.includes(name)
-      || (scope === 'model-provider' && target === 'model')
-    ) {
-      return { kind: 'model', target: 'model' };
-    }
-    if (
-      providerEndpointNames.model.includes(name)
-      || (scope === 'model-provider' && target === 'endpoint')
-    ) {
-      return { kind: 'model', target: 'endpoint' };
-    }
-    if (
-      providerEndpointNames.search.includes(name)
-      || (scope === 'search-provider' && target === 'endpoint')
-    ) {
-      return { kind: 'search', target: 'endpoint' };
-    }
-    if (
-      providerApiKeyNames.model.includes(name)
-      || (scope === 'model-provider' && (!target || target === 'api-key'))
-    ) {
-      return { kind: 'model', target: 'api-key' };
-    }
-    if (
-      providerApiKeyNames.search.includes(name)
-      || (scope === 'search-provider' && (!target || target === 'api-key'))
-    ) {
-      return { kind: 'search', target: 'api-key' };
-    }
-    return { kind: '', target: '' };
-  };
   const providerKindForSecretRecord = (record = {}) => {
     const binding = providerSecretBindingForRecord(record);
     return binding.kind;
@@ -48133,24 +48076,6 @@ export function createAgentProjectService({
     };
     receipt.checksum = persistenceChecksum(receipt);
     return receipt;
-  };
-  const findProviderVaultRecord = ({ kind = '', target = 'api-key', records = [] } = {}) => {
-    const normalizedKind = String(kind || '').toLowerCase();
-    const expectedScope = `${normalizedKind}-provider`;
-    const expectedTarget = normalizeProviderSecretTarget(target) || 'api-key';
-    const expectedNames = expectedTarget === 'endpoint'
-      ? (providerEndpointNames[normalizedKind] || [])
-      : expectedTarget === 'model'
-        ? (providerModelNames[normalizedKind] || [])
-        : (providerApiKeyNames[normalizedKind] || []);
-    return records.find((record) => expectedNames.includes(String(record.name || record.id || '').toLowerCase()))
-      || records.find((record) => {
-        const binding = providerSecretBindingForRecord(record);
-        return binding.kind === normalizedKind
-          && binding.target === expectedTarget
-          && String(record.metadata?.scope || '').toLowerCase() === expectedScope;
-      })
-      || null;
   };
   const buildProviderVaultBindingRow = ({ kind = '', providerStatus = {}, vaultStatus = {}, records = [] } = {}) => {
     const rawStatus = providerStatus && typeof providerStatus === 'object' ? providerStatus : {};
