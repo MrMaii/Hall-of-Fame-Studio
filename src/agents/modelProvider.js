@@ -266,19 +266,37 @@ function geminiBody({ messages, temperature, maxTokens, extraBody, overrides }) 
 }
 
 function extractContent(provider, data) {
+  const textFromPart = (part) => {
+    if (typeof part === 'string') return part;
+    if (!part || typeof part !== 'object') return '';
+    if (typeof part.text === 'string') return part.text;
+    if (typeof part.content === 'string') return part.content;
+    if (typeof part.output_text === 'string') return part.output_text;
+    return '';
+  };
   if (provider === 'anthropic') {
     return (data?.content || [])
-      .map((part) => part?.text || '')
+      .map(textFromPart)
       .filter(Boolean)
       .join('\n');
   }
   if (provider === 'gemini') {
     return (data?.candidates?.[0]?.content?.parts || [])
-      .map((part) => part?.text || '')
+      .map(textFromPart)
       .filter(Boolean)
       .join('\n');
   }
-  return data?.choices?.[0]?.message?.content || '';
+  const choice = data?.choices?.[0] || {};
+  const message = choice.message || {};
+  if (typeof message.content === 'string') return message.content;
+  if (Array.isArray(message.content)) {
+    return message.content.map(textFromPart).filter(Boolean).join('\n');
+  }
+  if (typeof message.reasoning_content === 'string' && message.reasoning_content.trim()) return message.reasoning_content;
+  if (typeof choice.text === 'string') return choice.text;
+  if (typeof data?.output_text === 'string') return data.output_text;
+  if (Array.isArray(data?.output)) return data.output.map(textFromPart).filter(Boolean).join('\n');
+  return '';
 }
 
 function extractUsage(provider, data) {
@@ -365,15 +383,15 @@ export function createModelProvider({
 } = {}) {
   const resolvedProvider = normalizeProvider(provider);
   const adapterConfig = adapterConfigFor(resolvedProvider);
-  const resolvedModel = model || DEFAULT_MODEL;
-  const resolvedBaseURL = cleanBaseUrl(baseURL || defaultBaseUrlFor(resolvedProvider));
-  const blockedByPolicy = blockedModels.some((pattern) => modelMatches(resolvedModel, pattern));
+  let currentModel = model || DEFAULT_MODEL;
+  let currentBaseURL = cleanBaseUrl(baseURL || defaultBaseUrlFor(resolvedProvider));
   let currentApiKey = apiKey || '';
   let currentApiKeySource = apiKeySource || 'direct-config';
   let runtimeEnabled = Boolean(enabled);
   let runtimeEnabledSource = runtimeEnabled ? 'startup-config' : 'disabled';
   const configured = () => Boolean(currentApiKey);
-  const providerEnabled = () => Boolean(runtimeEnabled && configured() && !blockedByPolicy && typeof fetchImpl === 'function');
+  const blockedByPolicy = () => blockedModels.some((pattern) => modelMatches(currentModel, pattern));
+  const providerEnabled = () => Boolean(runtimeEnabled && configured() && !blockedByPolicy() && typeof fetchImpl === 'function');
   const limiter = createLimiter(maxConcurrency);
 
   async function performChatCompletion({ messages, json = false, signal, ...overrides } = {}) {
@@ -381,9 +399,9 @@ export function createModelProvider({
       return {
         ok: false,
         skipped: true,
-        reason: blockedByPolicy ? 'model-blocked' : configured() ? 'provider-disabled' : 'missing-api-key',
+        reason: blockedByPolicy() ? 'model-blocked' : configured() ? 'provider-disabled' : 'missing-api-key',
         provider: resolvedProvider,
-        model: resolvedModel,
+        model: currentModel,
       };
     }
 
@@ -393,9 +411,9 @@ export function createModelProvider({
     try {
       const spec = requestSpec({
         provider: resolvedProvider,
-        baseURL: resolvedBaseURL,
+        baseURL: currentBaseURL,
         apiKey: currentApiKey,
-        model: resolvedModel,
+        model: currentModel,
         messages,
         temperature,
         maxTokens,
@@ -418,17 +436,45 @@ export function createModelProvider({
           status: response.status,
           error: redactSensitiveText(data?.error?.message || data?.message || raw.slice(0, 400)),
           provider: resolvedProvider,
-          model: resolvedModel,
+          model: currentModel,
         };
       }
       const content = extractContent(resolvedProvider, data);
+      const finishReason = data?.choices?.[0]?.finish_reason || data?.candidates?.[0]?.finishReason || null;
+      if (!content.trim()) {
+        if (
+          finishReason === 'length'
+          && overrides.emptyLengthRetryMessages
+          && !overrides.__emptyLengthRetry
+        ) {
+          return performChatCompletion({
+            messages: overrides.emptyLengthRetryMessages,
+            json: Boolean(overrides.emptyLengthRetryJson),
+            timeoutMs: Math.min(Number(overrides.timeoutMs || timeoutMs), Number(overrides.emptyLengthRetryTimeoutMs || 12_000)),
+            maxTokens: Number(overrides.emptyLengthRetryMaxTokens || 32),
+            temperature: 0,
+            __emptyLengthRetry: true,
+          });
+        }
+        return {
+          ok: false,
+          status: response.status,
+          error: `model returned empty content${finishReason ? ` (finish_reason: ${finishReason})` : ''}`,
+          provider: resolvedProvider,
+          model: data?.model || currentModel,
+          finishReason,
+          usage: extractUsage(resolvedProvider, data),
+          id: data?.id || data?.responseId || null,
+        };
+      }
       return {
         ok: true,
         provider: resolvedProvider,
-        model: data?.model || resolvedModel,
+        model: data?.model || currentModel,
         content,
         json: json ? extractJsonObject(content) : null,
         usage: extractUsage(resolvedProvider, data),
+        finishReason,
         id: data?.id || data?.responseId || null,
       };
     } catch (error) {
@@ -436,7 +482,7 @@ export function createModelProvider({
         ok: false,
         error: error.name === 'AbortError' ? 'model request timed out' : redactSensitiveText(error.message || String(error)),
         provider: resolvedProvider,
-        model: resolvedModel,
+        model: currentModel,
       };
     } finally {
       clearTimeout(timeout);
@@ -451,9 +497,15 @@ export function createModelProvider({
     get configured() {
       return configured();
     },
-    blockedByPolicy,
-    model: resolvedModel,
-    baseURL: redactUrl(resolvedBaseURL),
+    get blockedByPolicy() {
+      return blockedByPolicy();
+    },
+    get model() {
+      return currentModel;
+    },
+    get baseURL() {
+      return redactUrl(currentBaseURL);
+    },
     setEnabled(nextEnabled = true, source = 'runtime-config') {
       runtimeEnabled = Boolean(nextEnabled);
       runtimeEnabledSource = source || runtimeEnabledSource;
@@ -468,6 +520,12 @@ export function createModelProvider({
       }
       return this.status();
     },
+    setConfig({ baseURL: nextBaseURL, model: nextModel } = {}, source = 'runtime-config') {
+      if (nextBaseURL) currentBaseURL = cleanBaseUrl(nextBaseURL);
+      if (nextModel) currentModel = String(nextModel || '').trim() || currentModel;
+      runtimeEnabledSource = source || runtimeEnabledSource;
+      return this.status();
+    },
     status() {
       return {
         provider: resolvedProvider,
@@ -475,9 +533,9 @@ export function createModelProvider({
         runtimeEnabled,
         enabledSource: runtimeEnabledSource,
         configured: configured(),
-        blockedByPolicy,
-        model: resolvedModel,
-        baseURL: redactUrl(resolvedBaseURL),
+        blockedByPolicy: blockedByPolicy(),
+        model: currentModel,
+        baseURL: redactUrl(currentBaseURL),
         hasApiKey: Boolean(currentApiKey),
         apiKeySource: currentApiKey ? currentApiKeySource : 'missing',
         secretVault: secretVaultStatus
@@ -515,14 +573,24 @@ export function createModelProvider({
         intent: completion.json || (completion.ok ? { intent: completion.content } : null),
       };
     },
-    async test(prompt = 'Return JSON: {"ok": true, "message": "ready"}') {
+    async test(input = {}) {
+      const options = typeof input === 'string' ? { prompt: input } : (input || {});
+      const prompt = String(options.prompt || 'Reply exactly: OK');
       return this.createChatCompletion({
         messages: [
-          { role: 'system', content: 'Return concise JSON only.' },
+          { role: 'system', content: 'Health check. Reply with the exact text OK and nothing else.' },
           { role: 'user', content: prompt },
         ],
-        json: true,
-        maxTokens: Math.max(512, Number(maxTokens) || DEFAULT_MAX_TOKENS),
+        json: false,
+        maxTokens: Math.max(64, Math.min(128, Number(options.maxTokens) || 64)),
+        timeoutMs: Number(options.timeoutMs || 15_000),
+        temperature: 0,
+        emptyLengthRetryMessages: [
+          { role: 'system', content: 'Reply exactly: OK' },
+          { role: 'user', content: 'OK' },
+        ],
+        emptyLengthRetryMaxTokens: 64,
+        emptyLengthRetryTimeoutMs: 8_000,
       });
     },
   };
@@ -542,8 +610,8 @@ export function createModelProviderFromEnv(env = globalThis.process?.env || {}, 
       || env.GEMINI_API_KEY,
     apiKeySource: options.apiKeySource || (options.apiKey ? 'local-secret-vault' : (options.secretVaultStatus?.ready ? 'local-secret-vault' : 'environment')),
     secretVaultStatus: options.secretVaultStatus || null,
-    baseURL: env.MODEL_BASE_URL || env[`${providerPrefix}_BASE_URL`] || defaultBaseUrlFor(provider),
-    model: env.MODEL_NAME || env[`${providerPrefix}_MODEL`] || DEFAULT_MODEL,
+    baseURL: options.baseURL || env.MODEL_BASE_URL || env[`${providerPrefix}_BASE_URL`] || defaultBaseUrlFor(provider),
+    model: options.model || env.MODEL_NAME || env[`${providerPrefix}_MODEL`] || DEFAULT_MODEL,
     enabled: parseBoolean(env.MODEL_PROVIDER_ENABLED || env.AGENT_LLM_ENABLED, providerEnabledDefault),
     temperature: Number(env.MODEL_TEMPERATURE || 0.2),
     maxTokens: Number(env.MODEL_MAX_TOKENS || DEFAULT_MAX_TOKENS),

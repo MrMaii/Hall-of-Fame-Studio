@@ -32,6 +32,8 @@ import {
 } from './secretRedaction.js';
 import { buildAccessControlPolicySnapshot, hmacSha256Hex } from './accessControl.js';
 import { createSecretVaultFromEnv, normalizeSecretVaultStatus } from './secretVault.js';
+import { createModelProviderFromEnv } from './modelProvider.js';
+import { createSearchProviderFromEnv } from './searchProvider.js';
 import { createManagedPersistenceAdapterFromEnv, managedPersistenceAdapterStatus } from './managedPersistenceAdapter.js';
 import { createWorkerQueueAdapterFromEnv, workerQueueAdapterStatus } from './workerQueueAdapter.js';
 import { createHttpJsonAdapterGatewayClient } from './adapterGatewayClient.js';
@@ -6651,64 +6653,39 @@ function buildModelKickoffMeetingMessages({
   tasks = [],
   language = 'en',
   now = nowIso(),
+  strictTopic = false,
 } = {}) {
+  const roster = team.map((agent) => `${agent.id}: ${agent.name} / ${agent.role || agent.title || 'Agent'} / ${agent.duty || agent.skill || ''}`).join('\n');
+  const requestedActions = (tasks || []).map((task, index) => `${task.id || `task_${index + 1}`}: ${typeof task === 'string' ? task : task.text || ''}`).join('\n');
   return [
     {
       role: 'system',
       content: [
         'You are the real kickoff meeting engine for Hall of Fame Studio.',
-        'Generate a concise, usable project-initiation meeting from the supplied project brief and agent roster.',
-        'Every agent turn must be grounded in the agent role and the user brief. Do not invent hidden requirements, API keys, fake progress, or completed work.',
+        'Return the final JSON immediately. Do not reason step by step.',
+        'Generate only the opening clarification stage of a project-initiation meeting.',
+        'The project topic is fixed. Never replace it with another research topic or generic AI/model-performance work.',
+        'Every text field must mention or clearly refer to the project topic.',
+        'Use 2 or 3 roleTurns only. Do not generate leaderCampaigns or nextActions in the opening stage.',
+        'Keep each text under 32 Chinese characters or 24 English words.',
+        'Required JSON keys: roleTurns, decisionSummary, risks.',
+        'roleTurns item: {agentId,type,text,hears}. Use type "role-question" or "role-volunteer".',
+        strictTopic ? 'Strict topic retry: every agent turn, leader claim, next action, and risk must explicitly concern the exact project name and brief.' : '',
         'Return JSON only. No markdown.',
-      ].join('\n'),
+      ].filter(Boolean).join('\n'),
     },
     {
       role: 'user',
-      content: JSON.stringify({
-        now,
-        project: { id: projectId, name, brief, language },
-        meetingId,
-        team: team.map((agent) => ({
-          id: agent.id,
-          name: agent.name,
-          role: agent.role || agent.title || 'Agent',
-          duty: agent.duty || agent.skill || '',
-        })),
-        requestedNextActions: (tasks || []).map((task, index) => ({
-          id: task.id || `task_${index + 1}`,
-          text: typeof task === 'string' ? task : task.text,
-          ownerId: task.ownerId || null,
-          assignee: task.assignee || null,
-        })),
-        requiredShape: {
-          roleTurns: [
-            {
-              agentId: 'agent id from team',
-              type: 'role-question or role-volunteer',
-              text: 'one meeting turn in the project language',
-              hears: ['other agent ids that heard this turn'],
-            },
-          ],
-          leaderCampaigns: [
-            {
-              agentId: 'agent id from team',
-              score: 1,
-              claim: 'why this agent should or should not lead this specific project',
-              hears: ['other agent ids that heard this turn'],
-            },
-          ],
-          recommendedLeaderId: 'agent id from team',
-          reviewerId: 'agent id from team',
-          nextActions: [
-            {
-              text: 'concrete first action',
-              ownerId: 'agent id from team',
-            },
-          ],
-          decisionSummary: 'one sentence meeting result',
-          risks: ['real risk or ambiguity from the brief'],
-        },
-      }),
+      content: [
+        `PROJECT NAME: ${name}`,
+        `PROJECT BRIEF: ${brief || name}`,
+        `PROJECT LANGUAGE: ${language}`,
+        `MEETING ID: ${meetingId}`,
+        `NOW: ${now}`,
+        `AGENTS:\n${roster}`,
+        requestedActions ? `REQUESTED ACTIONS:\n${requestedActions}` : '',
+        'You must keep all meeting content on this project topic.',
+      ].filter(Boolean).join('\n\n'),
     },
   ];
 }
@@ -6725,10 +6702,12 @@ function buildModelKickoffMeetingTurnMessages({
       role: 'system',
       content: [
         'You are the live kickoff meeting engine for Hall of Fame Studio.',
+        'Return the final JSON immediately. Do not reason step by step.',
         'Continue the meeting as a natural multi-agent conversation. Do not turn leader selection, role split, or next actions into dashboard controls.',
         'Agents should ask clarifying questions, decompose the work, volunteer for responsibility areas, and self-nominate for leader only when the conversation is ready.',
         'The user is the final decision maker. Do not claim the leader is confirmed unless the user explicitly confirms it.',
         'If the team has no more useful agenda, agents may say they are ready to close, but only the user can end the meeting.',
+        'Use 1 to 3 short agentTurns. Keep each text under 36 Chinese characters or 28 English words.',
         'Return JSON only. No markdown.',
       ].join('\n'),
     },
@@ -6783,6 +6762,123 @@ function buildModelKickoffMeetingTurnMessages({
       }),
     },
   ];
+}
+
+function buildModelKickoffOpeningLineMessages({
+  name = 'Untitled Agent Project',
+  brief = '',
+  team = [],
+  language = 'en',
+} = {}) {
+  return [
+    {
+      role: 'system',
+      content: [
+        'You open a project kickoff meeting.',
+        'Return only 2 or 3 lines. No markdown. No JSON.',
+        'Each line format: agentId | type | text',
+        'type must be role-question or role-volunteer.',
+        'Every line must be about the exact project topic.',
+        'Keep each text under 32 Chinese characters or 24 English words.',
+      ].join('\n'),
+    },
+    {
+      role: 'user',
+      content: [
+        `PROJECT: ${name}`,
+        `BRIEF: ${brief || name}`,
+        `LANGUAGE: ${language}`,
+        'AGENTS:',
+        team.map((agent) => `${agent.id}: ${agent.name} / ${agent.role || agent.title || 'Agent'} / ${agent.duty || agent.skill || ''}`).join('\n'),
+      ].join('\n'),
+    },
+  ];
+}
+
+function buildModelKickoffTurnLineMessages({
+  meeting = {},
+  latestDirectorInput = '',
+  language = 'en',
+} = {}) {
+  const team = meeting.team || [];
+  return [
+    {
+      role: 'system',
+      content: [
+        'Continue a live project kickoff meeting.',
+        'Return only 1 to 3 lines. No markdown. No JSON.',
+        'Each line format: agentId | type | text',
+        'type must be clarifying-question, role-volunteer, task-decomposition, leader-campaign, adjustment, or next-action.',
+        'Every line must respond to the latest Director input and stay on the project topic.',
+        'Keep each text under 36 Chinese characters or 28 English words.',
+      ].join('\n'),
+    },
+    {
+      role: 'user',
+      content: [
+        `PROJECT: ${meeting.name || 'Untitled Agent Project'}`,
+        `BRIEF: ${meeting.brief || meeting.name || ''}`,
+        `LANGUAGE: ${language}`,
+        `LATEST DIRECTOR INPUT: ${latestDirectorInput}`,
+        'AGENTS:',
+        team.map((agent) => `${agent.id}: ${agent.name} / ${agent.role || agent.title || 'Agent'} / ${agent.duty || agent.skill || ''}`).join('\n'),
+      ].join('\n'),
+    },
+  ];
+}
+
+function parseModelLineTurns(content = '', team = [], { mode = 'opening' } = {}) {
+  const lines = String(content || '')
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^[-*\d.\s]+/, '').trim())
+    .filter(Boolean)
+    .slice(0, mode === 'opening' ? 3 : 4);
+  return lines.map((line) => {
+    const parts = line.split('|').map((part) => part.trim()).filter(Boolean);
+    const agent = findMeetingAgent(team, parts[0]) || findMeetingAgent(team, line);
+    if (!agent) return null;
+    const type = parts.length >= 3 ? parts[1] : 'role-question';
+    const text = parts.length >= 3
+      ? parts.slice(2).join(' | ')
+      : line.replace(new RegExp(`^${agent.id}\\s*[:：-]?\\s*`, 'i'), '').replace(new RegExp(`^${agent.name}\\s*[:：-]?\\s*`, 'i'), '').trim();
+    if (!text) return null;
+    return {
+      agentId: agent.id,
+      type,
+      text,
+      hears: team.filter((peer) => peer.id !== agent.id).map((peer) => peer.id),
+    };
+  }).filter(Boolean);
+}
+
+function parseModelOpeningLinePayload(content = '', input = {}) {
+  const jsonPayload = parseModelCompletionJson({ content });
+  if (jsonPayload && normalizeModelArray(jsonPayload.roleTurns).length) return jsonPayload;
+  const roleTurns = parseModelLineTurns(content, input.team || [], { mode: 'opening' });
+  if (!roleTurns.length) return null;
+  return {
+    roleTurns,
+    leaderCampaigns: [],
+    nextActions: [],
+    decisionSummary: 'Opening clarification started.',
+    risks: [],
+  };
+}
+
+function parseModelTurnLinePayload(content = '', meeting = {}) {
+  const jsonPayload = parseModelCompletionJson({ content });
+  if (jsonPayload && (
+    normalizeModelArray(jsonPayload.agentTurns).length
+    || normalizeModelArray(jsonPayload.roleTurns).length
+    || normalizeModelArray(jsonPayload.turns).length
+  )) return jsonPayload;
+  const agentTurns = parseModelLineTurns(content, meeting.team || [], { mode: 'turn' });
+  if (!agentTurns.length) return null;
+  return {
+    agentTurns,
+    nextActions: [],
+    risks: [],
+  };
 }
 
 function normalizeModelMeetingTurnType(value = '') {
@@ -6944,10 +7040,184 @@ function appendModelKickoffMeetingTurns({
 }
 
 function normalizeModelArray(value) {
-  return Array.isArray(value) ? value : [];
+  if (Array.isArray(value)) return value;
+  if (value && typeof value === 'object') return [value];
+  return [];
+}
+
+function normalizeJsonLikeText(value = '') {
+  return String(value || '')
+    .trim()
+    .replace(/^\uFEFF/, '')
+    .replace(/[\u201c\u201d]/g, '"')
+    .replace(/[\u2018\u2019]/g, "'")
+    .replace(/([{,]\s*)'([^']+?)'\s*:/g, '$1"$2":')
+    .replace(/:\s*'([^']*?)'(?=\s*[,}])/g, ':"$1"')
+    .replace(/,\s*([}\]])/g, '$1');
+}
+
+function safeParseModelJson(value = '') {
+  const raw = String(value || '');
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    try {
+      const parsed = JSON.parse(normalizeJsonLikeText(raw));
+      return parsed && typeof parsed === 'object' ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+}
+
+function extractBalancedJsonObject(value = '') {
+  const text = String(value || '').trim();
+  if (!text) return null;
+  const direct = safeParseModelJson(text);
+  if (direct) return direct;
+
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenced) {
+    const parsed = safeParseModelJson(fenced[1].trim());
+    if (parsed) return parsed;
+  }
+
+  let start = -1;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (start < 0) {
+      if (char === '{') {
+        start = index;
+        depth = 1;
+      }
+      continue;
+    }
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === '\\') {
+      escaped = true;
+      continue;
+    }
+    if (char === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+    if (char === '{') depth += 1;
+    if (char === '}') depth -= 1;
+    if (depth === 0) {
+      const parsed = safeParseModelJson(text.slice(start, index + 1));
+      if (parsed) return parsed;
+      start = -1;
+    }
+  }
+  const firstBrace = text.indexOf('{');
+  const lastBrace = text.lastIndexOf('}');
+  if (firstBrace >= 0 && lastBrace > firstBrace) {
+    const parsed = safeParseModelJson(text.slice(firstBrace, lastBrace + 1));
+    if (parsed) return parsed;
+  }
+  return null;
+}
+
+function parseModelCompletionJson(completion = {}) {
+  if (completion.json && typeof completion.json === 'object') return completion.json;
+  return extractBalancedJsonObject(completion.content || '');
+}
+
+function topicTermsForMeeting({ name = '', brief = '', tasks = [] } = {}) {
+  const text = [
+    name,
+    brief,
+    ...(tasks || []).map((task) => (typeof task === 'string' ? task : task?.text || '')),
+  ].join(' ');
+  const terms = new Set();
+  const latinStop = new Set(['research', 'project', 'agent', 'task', 'study']);
+  for (const match of text.matchAll(/[A-Za-z][A-Za-z0-9_-]{3,}/g)) {
+    const term = match[0].toLowerCase();
+    if (!latinStop.has(term)) terms.add(term);
+  }
+  for (const match of text.matchAll(/[\u3400-\u9fff]{2,}/g)) {
+    const segment = match[0];
+    for (let index = 0; index < segment.length - 1; index += 1) {
+      const term = segment.slice(index, index + 2);
+      if (!['项目', '研究', '问题', '范围', '方法', '最终', '交付', '之间', '关系', '明确'].includes(term)) {
+        terms.add(term);
+      }
+    }
+  }
+  return [...terms].slice(0, 24);
+}
+
+function modelKickoffPayloadText(modelPayload = {}) {
+  const parts = [
+    ...normalizeModelArray(modelPayload.roleTurns).flatMap((turn) => [turn.text, turn.question, turn.statement, turn.claim, turn.content]),
+    ...normalizeModelArray(modelPayload.leaderCampaigns).flatMap((turn) => [turn.claim, turn.text, turn.statement, turn.content]),
+    ...normalizeModelArray(modelPayload.nextActions).flatMap((action) => [action.text, action.title, action.action]),
+    ...normalizeModelArray(modelPayload.agentTurns).flatMap((turn) => [turn.text, turn.question, turn.statement, turn.claim, turn.content]),
+    modelPayload.decisionSummary,
+    ...normalizeModelArray(modelPayload.risks),
+  ];
+  return parts.map((part) => String(part || '')).filter(Boolean).join('\n').toLowerCase();
+}
+
+function modelKickoffPayloadMatchesTopic(input = {}, modelPayload = {}) {
+  const terms = topicTermsForMeeting(input);
+  if (!terms.length) return true;
+  const payloadText = modelKickoffPayloadText(modelPayload);
+  const projectName = String(input.name || '').trim().toLowerCase();
+  if (projectName && payloadText.includes(projectName)) return true;
+  const hits = terms.filter((term) => payloadText.includes(term.toLowerCase()));
+  return hits.length >= Math.min(2, terms.length);
+}
+
+async function repairModelCompletionJson({
+  llmProvider,
+  completion = {},
+  expectedShape = {},
+  purpose = 'kickoff meeting',
+  timeoutMs = 20_000,
+  maxTokens = 1200,
+} = {}) {
+  const rawOutput = String(completion.content || '').trim();
+  if (!rawOutput || typeof llmProvider?.createChatCompletion !== 'function') return null;
+  const repair = await llmProvider.createChatCompletion({
+    messages: [
+      {
+        role: 'system',
+        content: [
+          'You repair malformed model output into strict JSON.',
+          'Return exactly one valid JSON object and no markdown.',
+          'Do not add facts that are not present in the raw output unless needed to satisfy required keys.',
+        ].join('\n'),
+      },
+      {
+        role: 'user',
+        content: JSON.stringify({
+          purpose,
+          expectedShape,
+          rawOutput: rawOutput.slice(0, 12000),
+        }),
+      },
+    ],
+    json: true,
+    maxTokens,
+    timeoutMs,
+  });
+  if (!repair.ok) return null;
+  return parseModelCompletionJson(repair);
 }
 
 function normalizeModelText(value = '') {
+  if (value && typeof value === 'object') {
+    return String(value.text || value.summary || value.risk || value.title || value.claim || value.content || '').trim();
+  }
   return String(value || '').trim();
 }
 
@@ -47760,12 +48030,17 @@ export function createAgentProjectService({
     search: ['search.apikey', 'search.api_key', 'search.api-key', 'web-search.apikey', 'web_search.api_key'],
   };
   const providerEndpointNames = {
+    model: ['model.endpoint', 'model.url', 'model.base_url', 'model.baseurl', 'model.base-url', 'model-provider.endpoint', 'model_provider.endpoint'],
     search: ['search.endpoint', 'search.url', 'search.base_url', 'search-provider.endpoint', 'search_provider.endpoint', 'web-search.endpoint', 'web_search.endpoint'],
+  };
+  const providerModelNames = {
+    model: ['model.name', 'model.model', 'model.id', 'model.model_id', 'model.model-id', 'model-provider.model', 'model_provider.model'],
   };
   const normalizeProviderSecretTarget = (value = '') => {
     const normalized = String(value || '').toLowerCase().replace(/_/g, '-');
     if (['api-key', 'apikey', 'key', 'token', 'credential'].includes(normalized)) return 'api-key';
     if (['endpoint', 'url', 'base-url', 'baseurl', 'provider-endpoint'].includes(normalized)) return 'endpoint';
+    if (['model', 'model-id', 'modelid', 'model-name', 'modelname'].includes(normalized)) return 'model';
     return '';
   };
   const providerSecretBindingForRecord = (record = {}) => {
@@ -47777,6 +48052,18 @@ export function createAgentProjectService({
       || record.metadata?.providerSecretKind
       || '',
     );
+    if (
+      providerModelNames.model.includes(name)
+      || (scope === 'model-provider' && target === 'model')
+    ) {
+      return { kind: 'model', target: 'model' };
+    }
+    if (
+      providerEndpointNames.model.includes(name)
+      || (scope === 'model-provider' && target === 'endpoint')
+    ) {
+      return { kind: 'model', target: 'endpoint' };
+    }
     if (
       providerEndpointNames.search.includes(name)
       || (scope === 'search-provider' && target === 'endpoint')
@@ -47810,6 +48097,13 @@ export function createAgentProjectService({
     if (kind === 'model' && target === 'api-key' && typeof llmProvider?.setApiKey === 'function') {
       const status = llmProvider.setApiKey(secretValue, 'local-secret-vault');
       return { kind, target, bound: Boolean(status?.hasApiKey), status };
+    }
+    if (kind === 'model' && (target === 'endpoint' || target === 'model') && typeof llmProvider?.setConfig === 'function') {
+      const status = llmProvider.setConfig({
+        ...(target === 'endpoint' ? { baseURL: secretValue } : {}),
+        ...(target === 'model' ? { model: secretValue } : {}),
+      }, 'local-secret-vault');
+      return { kind, target, bound: Boolean(target === 'endpoint' ? status?.baseURL : status?.model), status };
     }
     if (kind === 'search' && target === 'api-key' && typeof searchProvider?.setApiKey === 'function') {
       const status = searchProvider.setApiKey(secretValue, 'local-secret-vault');
@@ -47846,7 +48140,9 @@ export function createAgentProjectService({
     const expectedTarget = normalizeProviderSecretTarget(target) || 'api-key';
     const expectedNames = expectedTarget === 'endpoint'
       ? (providerEndpointNames[normalizedKind] || [])
-      : (providerApiKeyNames[normalizedKind] || []);
+      : expectedTarget === 'model'
+        ? (providerModelNames[normalizedKind] || [])
+        : (providerApiKeyNames[normalizedKind] || []);
     return records.find((record) => expectedNames.includes(String(record.name || record.id || '').toLowerCase()))
       || records.find((record) => {
         const binding = providerSecretBindingForRecord(record);
@@ -51181,6 +51477,29 @@ export function createAgentProjectService({
       };
     },
     async testModelProvider(input = {}) {
+      const transientApiKey = String(input.apiKey || input.modelApiKey || '').trim();
+      const transientBaseURL = String(input.baseURL || input.baseUrl || input.modelBaseUrl || input.endpoint || '').trim();
+      const transientModel = String(input.model || input.modelName || input.modelId || input.modelID || '').trim();
+      if (transientApiKey || transientBaseURL || transientModel) {
+        const transientProvider = createModelProviderFromEnv(globalThis.process?.env || {}, {
+          apiKey: transientApiKey,
+          apiKeySource: transientApiKey ? 'transient-settings-test' : 'missing',
+          baseURL: transientBaseURL || undefined,
+          model: transientModel || undefined,
+          secretVaultStatus: secretVaultStatus(),
+        });
+        const result = await transientProvider.test({
+          prompt: input.prompt,
+          maxTokens: input.maxTokens,
+          timeoutMs: input.timeoutMs,
+        });
+        return {
+          ...result,
+          status: transientProvider.status(),
+          transient: true,
+          persisted: false,
+        };
+      }
       if (typeof llmProvider?.test !== 'function') {
         return {
           ok: false,
@@ -51189,13 +51508,36 @@ export function createAgentProjectService({
           status: modelProviderStatus(),
         };
       }
-      const result = await llmProvider.test(input.prompt);
+      const result = await llmProvider.test({
+        prompt: input.prompt,
+        maxTokens: input.maxTokens,
+        timeoutMs: input.timeoutMs,
+      });
       return {
         ...result,
         status: modelProviderStatus(),
       };
     },
     async testSearchProvider(input = {}) {
+      const transientApiKey = String(input.apiKey || input.searchApiKey || '').trim();
+      const transientEndpoint = String(input.endpoint || input.searchEndpoint || '').trim();
+      if (transientApiKey || transientEndpoint) {
+        const transientProvider = createSearchProviderFromEnv(globalThis.process?.env || {}, {
+          apiKey: transientApiKey,
+          apiKeySource: transientApiKey ? 'transient-settings-test' : 'missing',
+          endpoint: transientEndpoint,
+          endpointSource: transientEndpoint ? 'transient-settings-test' : 'missing',
+          provider: transientEndpoint ? 'http-json' : undefined,
+          secretVaultStatus: secretVaultStatus(),
+        });
+        const result = await transientProvider.test(input.query || input.prompt);
+        return {
+          ...result,
+          status: transientProvider.status(),
+          transient: true,
+          persisted: false,
+        };
+      }
       if (typeof searchProvider?.test !== 'function') {
         return {
           ok: false,
@@ -51243,28 +51585,98 @@ export function createAgentProjectService({
       }
       const now = input.now || nowIso();
       const meetingId = input.meetingId || `kickoff_meeting_${Date.parse(now) || Date.now()}`;
-      const completion = await llmProvider.createChatCompletion({
-        messages: buildModelKickoffMeetingMessages({
+      let completion = await llmProvider.createChatCompletion({
+        messages: buildModelKickoffOpeningLineMessages({
           ...input,
           meetingId,
           now,
         }),
-        json: true,
-        maxTokens: Math.max(1800, Number(input.maxTokens) || 0),
+        json: false,
+        maxTokens: Math.max(320, Number(input.maxTokens) || 0),
         timeoutMs: input.timeoutMs || 45_000,
       });
+      let modelPayload = completion.ok ? parseModelOpeningLinePayload(completion.content, { ...input, meetingId, now }) : null;
+
+      if (!modelPayload) {
+        completion = await llmProvider.createChatCompletion({
+          messages: buildModelKickoffMeetingMessages({
+            ...input,
+            meetingId,
+            now,
+          }),
+          json: true,
+          maxTokens: Math.max(8192, Number(input.maxTokens) || 0),
+          timeoutMs: input.timeoutMs || 45_000,
+        });
+      }
       if (!completion.ok) {
         throw new Error(`model-kickoff-meeting-failed:${completion.error || completion.reason || 'unknown'}`);
       }
-      if (!completion.json || typeof completion.json !== 'object') {
-        throw new Error('model-kickoff-meeting-invalid-json');
+      modelPayload = modelPayload || parseModelCompletionJson(completion)
+        || await repairModelCompletionJson({
+          llmProvider,
+          completion,
+          purpose: 'create kickoff meeting',
+          expectedShape: {
+            roleTurns: [{ agentId: 'agent id from team', type: 'role-question or role-volunteer', text: 'opening clarification turn', hears: ['agent ids'] }],
+            leaderCampaigns: [],
+            recommendedLeaderId: 'agent id from team',
+            reviewerId: 'agent id from team',
+            nextActions: [],
+            decisionSummary: 'one sentence opening state',
+            risks: ['risk'],
+          },
+          timeoutMs: Math.min(20_000, input.timeoutMs || 20_000),
+          maxTokens: 4096,
+        });
+      if (!modelPayload || typeof modelPayload !== 'object') {
+        throw new Error(`model-kickoff-meeting-invalid-json:${compactPreview(completion.content || '', 240)}`);
+      }
+      if (!modelKickoffPayloadMatchesTopic({ ...input, meetingId, now }, modelPayload)) {
+        completion = await llmProvider.createChatCompletion({
+          messages: buildModelKickoffMeetingMessages({
+            ...input,
+            meetingId,
+            now,
+            strictTopic: true,
+          }),
+          json: true,
+          maxTokens: Math.max(8192, Number(input.maxTokens) || 0),
+          timeoutMs: input.timeoutMs || 45_000,
+        });
+        if (!completion.ok) {
+          throw new Error(`model-kickoff-meeting-topic-retry-failed:${completion.error || completion.reason || 'unknown'}`);
+        }
+        modelPayload = parseModelCompletionJson(completion)
+          || await repairModelCompletionJson({
+            llmProvider,
+            completion,
+            purpose: 'create kickoff meeting strict topic retry',
+            expectedShape: {
+              roleTurns: [{ agentId: 'agent id from team', type: 'role-question or role-volunteer', text: 'opening clarification turn about the exact project brief', hears: ['agent ids'] }],
+              leaderCampaigns: [],
+              recommendedLeaderId: 'agent id from team',
+              reviewerId: 'agent id from team',
+              nextActions: [],
+              decisionSummary: 'one sentence opening state about the exact project brief',
+              risks: ['risk from the exact project brief'],
+            },
+            timeoutMs: Math.min(20_000, input.timeoutMs || 20_000),
+            maxTokens: 4096,
+          });
+        if (!modelPayload || typeof modelPayload !== 'object') {
+          throw new Error(`model-kickoff-meeting-invalid-json:${compactPreview(completion.content || '', 240)}`);
+        }
+        if (!modelKickoffPayloadMatchesTopic({ ...input, meetingId, now }, modelPayload)) {
+          throw new Error(`model-kickoff-meeting-off-topic:${compactPreview(modelKickoffPayloadText(modelPayload), 240)}`);
+        }
       }
       const meeting = createModelKickoffMeetingSession({
         ...input,
         meetingId,
         now,
         modelProviderStatus: status,
-      }, completion.json, completion);
+      }, modelPayload, completion);
       saveKickoffMeeting(meeting);
       return {
         meeting,
@@ -51308,26 +51720,56 @@ export function createAgentProjectService({
         ...input,
         now,
       });
-      const completion = await llmProvider.createChatCompletion({
-        messages: buildModelKickoffMeetingTurnMessages({
+      let completion = await llmProvider.createChatCompletion({
+        messages: buildModelKickoffTurnLineMessages({
           meeting: clarifiedMeeting,
           latestDirectorInput: input.text || '',
           language: input.language || clarifiedMeeting.language || 'en',
           now,
         }),
-        json: true,
-        maxTokens: Math.max(900, Number(input.maxTokens) || 0),
+        json: false,
+        maxTokens: Math.max(420, Number(input.maxTokens) || 0),
         timeoutMs: input.timeoutMs || 30_000,
       });
+      let modelPayload = completion.ok ? parseModelTurnLinePayload(completion.content, clarifiedMeeting) : null;
+
+      if (!modelPayload) {
+        completion = await llmProvider.createChatCompletion({
+          messages: buildModelKickoffMeetingTurnMessages({
+            meeting: clarifiedMeeting,
+            latestDirectorInput: input.text || '',
+            language: input.language || clarifiedMeeting.language || 'en',
+            now,
+          }),
+          json: true,
+          maxTokens: Math.max(8192, Number(input.maxTokens) || 0),
+          timeoutMs: input.timeoutMs || 30_000,
+        });
+      }
       if (!completion.ok) {
         throw new Error(`model-kickoff-meeting-turn-failed:${completion.error || completion.reason || 'unknown'}`);
       }
-      if (!completion.json || typeof completion.json !== 'object') {
-        throw new Error('model-kickoff-meeting-turn-invalid-json');
+      modelPayload = modelPayload || parseModelCompletionJson(completion)
+        || await repairModelCompletionJson({
+          llmProvider,
+          completion,
+          purpose: 'continue kickoff meeting after Director input',
+          expectedShape: {
+            agentTurns: [{ agentId: 'agent id from team', type: 'clarifying-question or role-volunteer or task-decomposition or leader-campaign or adjustment or next-action', text: 'natural meeting turn', score: 8 }],
+            recommendedLeaderId: 'optional agent id from team',
+            nextActions: [{ text: 'optional concrete first action', ownerId: 'agent id from team' }],
+            decisionSummary: 'optional one sentence',
+            risks: ['optional risk'],
+          },
+          timeoutMs: Math.min(15_000, input.timeoutMs || 15_000),
+          maxTokens: 4096,
+        });
+      if (!modelPayload || typeof modelPayload !== 'object') {
+        throw new Error(`model-kickoff-meeting-turn-invalid-json:${compactPreview(completion.content || '', 240)}`);
       }
       const nextMeeting = appendModelKickoffMeetingTurns({
         meeting: clarifiedMeeting,
-        modelPayload: completion.json,
+        modelPayload,
         modelResult: completion,
         modelProviderStatus: status,
         now,
@@ -61005,12 +61447,13 @@ export function createAgentProjectService({
         ...projectRuntime.prepareWorkspace(input),
       };
     },
-    pickWorkspaceBaseFolder(input = {}) {
+    async pickWorkspaceBaseFolder(input = {}) {
       if (!projectRuntime?.pickWorkspaceBaseFolder) throw new Error('Local project runtime folder picker is not configured.');
+      const result = await projectRuntime.pickWorkspaceBaseFolder(input);
       return {
         route: 'workspace-folder-picked',
         pickedAt: input.now || nowIso(),
-        ...projectRuntime.pickWorkspaceBaseFolder(input),
+        ...result,
       };
     },
     bindProjectWorkspace({ projectId, workspacePath, createIfMissing = false, now = nowIso() } = {}) {

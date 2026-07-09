@@ -97,12 +97,17 @@ const providerApiKeyNames = {
   search: ['search.apikey', 'search.api_key', 'search.api-key', 'web-search.apikey', 'web_search.api_key'],
 };
 const providerEndpointNames = {
+  model: ['model.endpoint', 'model.url', 'model.base_url', 'model.baseurl', 'model.base-url', 'model-provider.endpoint', 'model_provider.endpoint'],
   search: ['search.endpoint', 'search.url', 'search.base_url', 'search-provider.endpoint', 'search_provider.endpoint', 'web-search.endpoint', 'web_search.endpoint'],
+};
+const providerModelNames = {
+  model: ['model.name', 'model.model', 'model.id', 'model.model_id', 'model.model-id', 'model-provider.model', 'model_provider.model'],
 };
 const normalizeProviderSecretTarget = (value = '') => {
   const normalized = String(value || '').toLowerCase().replace(/_/g, '-');
   if (['api-key', 'apikey', 'key', 'token', 'credential'].includes(normalized)) return 'api-key';
   if (['endpoint', 'url', 'base-url', 'baseurl', 'provider-endpoint'].includes(normalized)) return 'endpoint';
+  if (['model', 'model-id', 'modelid', 'model-name', 'modelname'].includes(normalized)) return 'model';
   return '';
 };
 const providerSecretBindingForRecord = (record = {}) => {
@@ -114,6 +119,18 @@ const providerSecretBindingForRecord = (record = {}) => {
     || record.metadata?.providerSecretKind
     || '',
   );
+  if (
+    providerModelNames.model.includes(name)
+    || (scope === 'model-provider' && target === 'model')
+  ) {
+    return { kind: 'model', target: 'model' };
+  }
+  if (
+    providerEndpointNames.model.includes(name)
+    || (scope === 'model-provider' && target === 'endpoint')
+  ) {
+    return { kind: 'model', target: 'endpoint' };
+  }
   if (
     providerEndpointNames.search.includes(name)
     || (scope === 'search-provider' && target === 'endpoint')
@@ -140,6 +157,8 @@ const findVaultProviderRecord = (kind = '', target = 'api-key') => {
   const expectedTarget = normalizeProviderSecretTarget(target) || 'api-key';
   const expectedNames = expectedTarget === 'endpoint'
     ? (providerEndpointNames[normalizedKind] || [])
+    : expectedTarget === 'model'
+      ? (providerModelNames[normalizedKind] || [])
     : (providerApiKeyNames[normalizedKind] || []);
   const records = typeof secretVault.exportRecords === 'function' ? secretVault.exportRecords() : [];
   return records.find((record) => expectedNames.includes(String(record.name || record.id || '').toLowerCase()))
@@ -161,13 +180,22 @@ const openVaultProviderEndpoint = async (kind = '') => {
   if (!record || typeof secretVault.open !== 'function') return '';
   return secretVault.open(record);
 };
+const openVaultProviderModel = async (kind = '') => {
+  const record = findVaultProviderRecord(kind, 'model');
+  if (!record || typeof secretVault.open !== 'function') return '';
+  return secretVault.open(record);
+};
 const modelApiKeyFromVault = secretVaultStatus.ready ? await openVaultProviderKey('model') : '';
+const modelBaseUrlFromVault = secretVaultStatus.ready ? await openVaultProviderEndpoint('model') : '';
+const modelNameFromVault = secretVaultStatus.ready ? await openVaultProviderModel('model') : '';
 const searchApiKeyFromVault = secretVaultStatus.ready ? await openVaultProviderKey('search') : '';
 const searchEndpointFromVault = secretVaultStatus.ready ? await openVaultProviderEndpoint('search') : '';
 const llmProvider = createModelProviderFromEnv(process.env, {
   secretVaultStatus,
   apiKey: modelApiKeyFromVault,
   apiKeySource: modelApiKeyFromVault ? 'local-secret-vault' : undefined,
+  baseURL: modelBaseUrlFromVault || undefined,
+  model: modelNameFromVault || undefined,
 });
 const searchProvider = createSearchProviderFromEnv(process.env, {
   secretVaultStatus,

@@ -8,7 +8,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { dirname, relative, resolve, sep } from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import process from 'node:process';
 
 const DEFAULT_MAX_READ_BYTES = 512 * 1024;
@@ -156,24 +156,51 @@ export function createLocalProjectRuntime({
         '}',
         'exit 2',
       ].filter(Boolean).join('; ');
-      const result = spawnSync(powershell, ['-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-Command', script], {
-        encoding: 'utf8',
-        timeout: 120_000,
-        windowsHide: false,
+      return new Promise((resolveResult, rejectResult) => {
+        const child = spawn(powershell, ['-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-Command', script], {
+          windowsHide: false,
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+        let stdout = '';
+        let stderr = '';
+        const timeout = setTimeout(() => {
+          child.kill();
+          rejectResult(new Error('Folder picker timed out.'));
+        }, 120_000);
+        child.stdout?.setEncoding('utf8');
+        child.stderr?.setEncoding('utf8');
+        child.stdout?.on('data', chunk => {
+          stdout += chunk;
+        });
+        child.stderr?.on('data', chunk => {
+          stderr += chunk;
+        });
+        child.on('error', error => {
+          clearTimeout(timeout);
+          rejectResult(error);
+        });
+        child.on('close', status => {
+          clearTimeout(timeout);
+          if (status === 2) {
+            resolveResult({ selected: false, folderPath: null });
+            return;
+          }
+          if (status !== 0) {
+            rejectResult(new Error((stderr || stdout || `Folder picker failed with status ${status}`).trim()));
+            return;
+          }
+          const folderPath = String(stdout || '').trim().split(/\r?\n/).filter(Boolean).at(-1) || '';
+          if (!folderPath) {
+            resolveResult({ selected: false, folderPath: null });
+            return;
+          }
+          if (!existsSync(folderPath) || !statSync(folderPath).isDirectory()) {
+            rejectResult(new Error(`Selected path is not a directory: ${folderPath}`));
+            return;
+          }
+          resolveResult({ selected: true, folderPath });
+        });
       });
-      if (result.status === 2) {
-        return { selected: false, folderPath: null };
-      }
-      if (result.error) throw new Error(result.error.message);
-      if (result.status !== 0) {
-        throw new Error((result.stderr || result.stdout || `Folder picker failed with status ${result.status}`).trim());
-      }
-      const folderPath = String(result.stdout || '').trim().split(/\r?\n/).filter(Boolean).at(-1) || '';
-      if (!folderPath) return { selected: false, folderPath: null };
-      if (!existsSync(folderPath) || !statSync(folderPath).isDirectory()) {
-        throw new Error(`Selected path is not a directory: ${folderPath}`);
-      }
-      return { selected: true, folderPath };
     },
     attachProject(project = {}) {
       if (!project?.id) return project;

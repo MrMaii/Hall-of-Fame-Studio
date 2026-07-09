@@ -339,8 +339,8 @@ assertIncludes(appSource, [
   "return url.protocol === 'http:' || url.protocol === 'https:';",
   'const storedBackendUrl = readStoredJson(STORAGE_KEYS.backendUrl, null);',
   'return isValidBackendBaseUrl(storedBackendUrl)',
-  'return storedBackendUrl !== null && isValidBackendBaseUrl(JSON.parse(storedBackendUrl));',
-  'return isValidBackendBaseUrl(import.meta.env?.VITE_AGENT_BACKEND_URL);',
+  'if (storedBackendUrl !== null) return isValidBackendBaseUrl(JSON.parse(storedBackendUrl));',
+  'return isValidBackendBaseUrl(import.meta.env?.VITE_AGENT_BACKEND_URL || DEFAULT_AGENT_BACKEND_URL);',
   'const [backendUrlConfigured, setBackendUrlConfigured] = useState(hasConfiguredBackendBaseUrl);',
   'const backendConfiguredTargetLabel = backendUrlConfigured',
   'const backendHealthTargetLabel = backendUrlConfigured',
@@ -967,7 +967,9 @@ const initiationStartupRenderSection = sliceBetween(
 );
 assertIncludes(initiationStartupRenderSection, [
   'const initiationStartupReadyForFirstRun = backendUrlConfigured && initiationStartupReadiness?.readyForFirstProjectRun === true;',
-  'const initiationCanStartKickoff = initiationStartupReadyForFirstRun || initiationDevelopmentFallbackAllowed;',
+  'const initiationStartupAllowsKickoff = initiationStartupReadyForFirstRun || initiationDevelopmentFallbackAllowed;',
+  'const initiationWorkspaceReady = Boolean(initiationWorkspaceDraft.receipt?.workspacePath || initiationWorkspaceDraft.preparedPath);',
+  'const initiationCanStartKickoff = initiationStartupAllowsKickoff && initiationWorkspaceReady;',
   'const initiationCanApproveProject = initiationCanStartKickoff && (Boolean(initiationMeetingSession) || initiationDevelopmentFallbackAllowed);',
   'Save Backend URL in Settings Deployment before syncing startup readiness.',
   'Sync backend startup readiness before starting a real kickoff.',
@@ -989,7 +991,7 @@ assertIncludes(appSource, [
   'data-testid="initiation-sync-startup"',
   'data-testid="initiation-open-startup-settings"',
   'setSettingsTab(initiationStartupSettingsTab);',
-  'disabled={!initiationCanStartKickoff || providerRuntimeStatus.running}',
+  'disabled={!initiationCanStartKickoff || providerRuntimeStatus.running || initiationMeetingStartState.running}',
 ], 'Initiation startup readiness UI boundary');
 assert(
   !appSource.includes('data-testid="initiation-open-settings-keys"'),
@@ -2804,6 +2806,8 @@ for (const editableSettingsInput of [
   assertInputEditableByTestId(appSource, editableSettingsInput);
 }
 for (const gatedProviderSecretInput of [
+  'settings-provider-model-base-url-input',
+  'settings-provider-model-name-input',
   'settings-provider-model-key-input',
   'settings-provider-search-key-input',
   'settings-provider-search-endpoint-input',

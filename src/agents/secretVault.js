@@ -352,7 +352,14 @@ export function createLocalSecretVault({
         keyId: currentKeyId,
         metadata,
       });
-      sealedRecords.push(record);
+      const existingIndex = sealedRecords.findIndex((item) => (
+        item.id === record.id || item.name === record.name
+      ));
+      if (existingIndex >= 0) {
+        sealedRecords.splice(existingIndex, 1, record);
+      } else {
+        sealedRecords.push(record);
+      }
       persistRecords();
       return record;
     },

@@ -568,19 +568,19 @@ try {
     return Boolean(statusCard && /ready/i.test(statusCard.textContent || ''));
   }, null, { timeout: 10000 });
   await waitForSettingsProviderIdle(page);
+  await fillControlledInput(page, 'settings-provider-model-base-url-input', `${mockModelRuntime.url}/v1`);
+  await fillControlledInput(page, 'settings-provider-model-name-input', 'gpt-4o-mini');
   await fillControlledInput(page, 'settings-provider-model-key-input', modelPlaintext);
-  const sealModelButton = await waitForButtonEnabled(page, 'settings-provider-seal-model-key', 'Real user must be able to seal a model key before project startup.');
+  const sealModelButton = await waitForButtonEnabled(page, 'settings-provider-seal-model-key', 'Real user must be able to seal a tested model configuration before project startup.');
   await sealModelButton.click();
   await page.getByTestId('settings-provider-seal-receipt').waitFor({ state: 'visible', timeout: 10000 });
   await waitForSettingsProviderIdle(page);
   await fillControlledInput(page, 'settings-provider-search-key-input', searchPlaintext);
-  const sealSearchButton = await waitForButtonEnabled(page, 'settings-provider-seal-search-key', 'Real user must be able to seal a search key before project startup.');
+  await fillControlledInput(page, 'settings-provider-search-endpoint-input', `${mockSearchRuntime.url}/search`);
+  const sealSearchButton = await waitForButtonEnabled(page, 'settings-provider-seal-search-key', 'Real user must be able to seal a tested search configuration before project startup.');
   await sealSearchButton.click();
   await page.waitForFunction(() => document.body.innerText.includes('search.apiKey'), null, { timeout: 10000 });
   await waitForSettingsProviderIdle(page);
-  await fillControlledInput(page, 'settings-provider-search-endpoint-input', `${mockSearchRuntime.url}/search`);
-  const sealSearchEndpointButton = await waitForButtonEnabled(page, 'settings-provider-seal-search-endpoint', 'Real user must be able to seal a search endpoint before project startup.');
-  await sealSearchEndpointButton.click();
   await page.waitForFunction(() => document.body.innerText.includes('search.endpoint'), null, { timeout: 10000 });
 
   const modelStatus = await fetchJson(`${backendUrl}/llm/status`);

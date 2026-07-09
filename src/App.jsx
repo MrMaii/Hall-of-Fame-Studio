@@ -843,6 +843,7 @@ const STORAGE_KEYS = {
   projects: 'hall_of_fame_studio.projects.v1',
   chatMessages: 'hall_of_fame_studio.chat_messages.v1',
   backendUrl: 'hall_of_fame_studio.agent_backend_url.v1',
+  providerRuntimeStatus: 'hall_of_fame_studio.provider_runtime_status.v1',
   devInitiationFallback: 'hall_of_fame_studio.dev_initiation_fallback.v1',
   devLocalRuntimeFallback: 'hall_of_fame_studio.dev_local_runtime_fallback.v1',
 };
@@ -1183,6 +1184,60 @@ const hasConfiguredBackendBaseUrl = () => {
     return isValidBackendBaseUrl(DEFAULT_AGENT_BACKEND_URL);
   }
   return isValidBackendBaseUrl(import.meta.env?.VITE_AGENT_BACKEND_URL || DEFAULT_AGENT_BACKEND_URL);
+};
+
+const defaultProviderRuntimeStatus = () => ({
+  running: false,
+  lastRunAt: null,
+  baseUrl: loadBackendBaseUrl(),
+  modelProvider: null,
+  searchProvider: null,
+  secretVaultStatus: null,
+  secretVaultRecords: null,
+  providerVaultBindings: null,
+  settingsProviderReadiness: null,
+  settingsRuntimeReadiness: null,
+  settingsIntegrationReadiness: null,
+  localMvpStartupReadiness: null,
+  projectId: null,
+  modelTest: null,
+  searchTest: null,
+  error: null,
+});
+
+const loadProviderRuntimeStatus = () => {
+  const fallback = defaultProviderRuntimeStatus();
+  const stored = readStoredJson(STORAGE_KEYS.providerRuntimeStatus, null);
+  if (!stored || typeof stored !== 'object') return fallback;
+  if (normalizeBackendBaseUrl(stored.baseUrl || DEFAULT_AGENT_BACKEND_URL) !== normalizeBackendBaseUrl(fallback.baseUrl)) {
+    return fallback;
+  }
+  return {
+    ...fallback,
+    ...stored,
+    running: false,
+    modelTest: null,
+    searchTest: null,
+    error: null,
+  };
+};
+
+const persistProviderRuntimeStatus = (status = {}) => {
+  if (!status || typeof status !== 'object' || status.running) return;
+  writeStoredJson(STORAGE_KEYS.providerRuntimeStatus, {
+    lastRunAt: status.lastRunAt || null,
+    baseUrl: normalizeBackendBaseUrl(status.baseUrl || DEFAULT_AGENT_BACKEND_URL),
+    modelProvider: status.modelProvider || null,
+    searchProvider: status.searchProvider || null,
+    secretVaultStatus: status.secretVaultStatus || null,
+    secretVaultRecords: status.secretVaultRecords || null,
+    providerVaultBindings: status.providerVaultBindings || null,
+    settingsProviderReadiness: status.settingsProviderReadiness || null,
+    settingsRuntimeReadiness: status.settingsRuntimeReadiness || null,
+    settingsIntegrationReadiness: status.settingsIntegrationReadiness || null,
+    localMvpStartupReadiness: status.localMvpStartupReadiness || null,
+    projectId: status.projectId || null,
+  });
 };
 
 const isDevelopmentFallbackSwitchEnabled = (windowFlag, storageKey, envFlag) => {
@@ -1711,26 +1766,11 @@ export default function EngineWorkspace() {
     error: null,
     workflowSmoke: null,
   });
-  const [providerRuntimeStatus, setProviderRuntimeStatus] = useState({
-    running: false,
-    lastRunAt: null,
-    baseUrl: loadBackendBaseUrl(),
-    modelProvider: null,
-    searchProvider: null,
-    secretVaultStatus: null,
-    secretVaultRecords: null,
-    providerVaultBindings: null,
-    settingsProviderReadiness: null,
-    settingsRuntimeReadiness: null,
-    settingsIntegrationReadiness: null,
-    localMvpStartupReadiness: null,
-    projectId: null,
-    modelTest: null,
-    searchTest: null,
-    error: null,
-  });
+  const [providerRuntimeStatus, setProviderRuntimeStatus] = useState(() => loadProviderRuntimeStatus());
   const [providerSecretDrafts, setProviderSecretDrafts] = useState({
     modelApiKey: '',
+    modelBaseUrl: providerRuntimeStatus.modelProvider?.baseURL || '',
+    modelName: providerRuntimeStatus.modelProvider?.model || '',
     searchApiKey: '',
     searchEndpoint: '',
     running: false,
@@ -1772,6 +1812,11 @@ export default function EngineWorkspace() {
   const [initiationProjectId, setInitiationProjectId] = useState(() => DEFAULT_INITIATION_PROJECT_ID);
   const [selectedLeaderCandidateId, setSelectedLeaderCandidateId] = useState(null);
   const [initiationMeetingSession, setInitiationMeetingSession] = useState(null);
+  const [initiationMeetingStartState, setInitiationMeetingStartState] = useState({
+    running: false,
+    startedAt: null,
+    label: '',
+  });
   const initialInitiationName = language === 'zh' ? '圆桌立项系统' : 'Roundtable Initiation System';
   const initialInitiationOutput = language === 'zh' ? '首个执行产物' : 'the first execution artifact';
   const [initiationActionDrafts, setInitiationActionDrafts] = useState(() => defaultInitiationActionDrafts(initialInitiationOutput, language));
@@ -2159,6 +2204,10 @@ export default function EngineWorkspace() {
       .slice(-200);
     writeStoredJson(STORAGE_KEYS.chatMessages, browserCacheMessages);
   }, [chatMessages, projects, backendStation.projectCatalog, backendStation.lastProjectSyncAt, backendStation.lastManagerDashboardSyncAt]);
+
+  useEffect(() => {
+    persistProviderRuntimeStatus(providerRuntimeStatus);
+  }, [providerRuntimeStatus]);
 
   useEffect(() => () => {
     if (sceneTransitionTimerRef.current) clearTimeout(sceneTransitionTimerRef.current);
@@ -2730,8 +2779,10 @@ export default function EngineWorkspace() {
       const modelTest = runTests
         ? (modelReady
           ? await runProviderTest('/llm/test', {
-              prompt: 'Return compact JSON only: {"ok":true,"message":"settings provider runtime ready"}',
-            }, 60000)
+              prompt: 'Reply exactly: OK',
+              maxTokens: 64,
+              timeoutMs: 15_000,
+            }, 20000)
           : { ok: false, skipped: true, reason: 'model-provider-not-configured' })
         : null;
       const searchTest = runTests
@@ -2884,10 +2935,28 @@ export default function EngineWorkspace() {
       return null;
     }
     const value = String(providerSecretDrafts[secretConfig.field] || '').trim();
+    const modelBaseUrlDraft = String(providerSecretDrafts.modelBaseUrl || '').trim();
+    const modelNameDraft = String(providerSecretDrafts.modelName || '').trim();
+    const searchApiKeyDraft = String(providerSecretDrafts.searchApiKey || '').trim();
+    const searchEndpointDraft = String(providerSecretDrafts.searchEndpoint || '').trim();
     if (!value) {
       setProviderSecretDrafts(prev => ({
         ...prev,
         error: secretConfig.requiredMessage,
+      }));
+      return null;
+    }
+    if (kind === 'model' && (!modelBaseUrlDraft || !modelNameDraft)) {
+      setProviderSecretDrafts(prev => ({
+        ...prev,
+        error: 'Model API key, Base URL, and Model ID must all be entered before testing and saving model settings.',
+      }));
+      return null;
+    }
+    if ((kind === 'search' || kind === 'searchEndpoint') && (!searchApiKeyDraft || !searchEndpointDraft)) {
+      setProviderSecretDrafts(prev => ({
+        ...prev,
+        error: 'Evidence search API key and endpoint must both be entered before testing and saving search settings.',
       }));
       return null;
     }
@@ -2913,6 +2982,167 @@ export default function EngineWorkspace() {
       error: null,
     }));
     try {
+      if (kind === 'model') {
+        await requestAgentBackend('/llm/test', {
+          method: 'POST',
+          baseUrl,
+          timeoutMs: 30_000,
+          body: {
+            apiKey: value,
+            baseURL: modelBaseUrlDraft,
+            model: modelNameDraft,
+            prompt: 'Reply exactly: OK',
+            maxTokens: 64,
+            timeoutMs: 15_000,
+          },
+        });
+        const modelKeyPayload = await requestAgentBackend('/secret-vault/seal', {
+          method: 'POST',
+          baseUrl,
+          timeoutMs: 8000,
+          body: {
+            name: 'model.apiKey',
+            value,
+            scope: 'model-provider',
+            source: 'settings-provider-boundary',
+            metadata: {
+              providerKind: 'model',
+              secretKind: 'api-key',
+              sealedFrom: 'settings-ui',
+            },
+          },
+        });
+        const modelBaseUrlPayload = await requestAgentBackend('/secret-vault/seal', {
+          method: 'POST',
+          baseUrl,
+          timeoutMs: 8000,
+          body: {
+            name: 'model.baseURL',
+            value: modelBaseUrlDraft,
+            scope: 'model-provider',
+            source: 'settings-provider-boundary',
+            metadata: {
+              providerKind: 'model',
+              secretKind: 'endpoint',
+              sealedFrom: 'settings-ui',
+            },
+          },
+        });
+        const modelNamePayload = await requestAgentBackend('/secret-vault/seal', {
+          method: 'POST',
+          baseUrl,
+          timeoutMs: 8000,
+          body: {
+            name: 'model.name',
+            value: modelNameDraft,
+            scope: 'model-provider',
+            source: 'settings-provider-boundary',
+            metadata: {
+              providerKind: 'model',
+              secretKind: 'model',
+              sealedFrom: 'settings-ui',
+            },
+          },
+        });
+        const payload = {
+          ...modelNamePayload,
+          secretVaultSealReceipt: {
+            ...(modelNamePayload.secretVaultSealReceipt || {}),
+            name: 'model configuration',
+            modelApiKeyReceipt: modelKeyPayload.secretVaultSealReceipt || null,
+            modelBaseUrlReceipt: modelBaseUrlPayload.secretVaultSealReceipt || null,
+            modelNameReceipt: modelNamePayload.secretVaultSealReceipt || null,
+          },
+        };
+        setProviderSecretDrafts(prev => ({
+          ...prev,
+          modelApiKey: '',
+          running: false,
+          lastReceipt: payload.secretVaultSealReceipt || null,
+          error: null,
+        }));
+        setProviderRuntimeStatus(prev => ({
+          ...prev,
+          baseUrl,
+          secretVaultStatus: payload.secretVaultStatus || prev.secretVaultStatus,
+          secretVaultRecords: payload.secretVaultRecords || prev.secretVaultRecords,
+          error: null,
+        }));
+        setTimeout(() => syncSettingsProviderRuntime({ runTests: false, baseUrlOverride: baseUrl }), 0);
+        return payload;
+      }
+      if (kind === 'search' || kind === 'searchEndpoint') {
+        await requestAgentBackend('/search/test', {
+          method: 'POST',
+          baseUrl,
+          timeoutMs: 30_000,
+          body: {
+            apiKey: searchApiKeyDraft,
+            endpoint: searchEndpointDraft,
+            query: 'provider settings test',
+          },
+        });
+        const searchKeyPayload = await requestAgentBackend('/secret-vault/seal', {
+          method: 'POST',
+          baseUrl,
+          timeoutMs: 8000,
+          body: {
+            name: 'search.apiKey',
+            value: searchApiKeyDraft,
+            scope: 'search-provider',
+            source: 'settings-provider-boundary',
+            metadata: {
+              providerKind: 'search',
+              secretKind: 'api-key',
+              sealedFrom: 'settings-ui',
+            },
+          },
+        });
+        const searchEndpointPayload = await requestAgentBackend('/secret-vault/seal', {
+          method: 'POST',
+          baseUrl,
+          timeoutMs: 8000,
+          body: {
+            name: 'search.endpoint',
+            value: searchEndpointDraft,
+            scope: 'search-provider',
+            source: 'settings-provider-boundary',
+            metadata: {
+              providerKind: 'search',
+              secretKind: 'endpoint',
+              provider: 'http-json',
+              sealedFrom: 'settings-ui',
+            },
+          },
+        });
+        const payload = {
+          ...searchEndpointPayload,
+          secretVaultSealReceipt: {
+            ...(searchEndpointPayload.secretVaultSealReceipt || {}),
+            name: 'search configuration',
+            searchApiKeyReceipt: searchKeyPayload.secretVaultSealReceipt || null,
+            searchEndpointReceipt: searchEndpointPayload.secretVaultSealReceipt || null,
+          },
+        };
+        setProviderSecretDrafts(prev => ({
+          ...prev,
+          searchApiKey: '',
+          searchEndpoint: '',
+          running: false,
+          lastReceipt: payload.secretVaultSealReceipt || null,
+          error: null,
+        }));
+        setProviderRuntimeStatus(prev => ({
+          ...prev,
+          baseUrl,
+          secretVaultStatus: payload.secretVaultStatus || prev.secretVaultStatus,
+          secretVaultRecords: payload.secretVaultRecords || prev.secretVaultRecords,
+          error: null,
+        }));
+        setTimeout(() => syncSettingsProviderRuntime({ runTests: false, baseUrlOverride: baseUrl }), 0);
+        return payload;
+      }
+
       const payload = await requestAgentBackend('/secret-vault/seal', {
         method: 'POST',
         baseUrl,
@@ -3848,9 +4078,11 @@ export default function EngineWorkspace() {
       const llmTest = await requestAgentBackend('/llm/test', {
         method: 'POST',
         baseUrl,
-        timeoutMs: 60000,
+        timeoutMs: 20000,
         body: {
-          prompt: 'Return compact JSON only: {"ok":true,"message":"ui health loop ready"}',
+          prompt: 'Reply exactly: OK',
+          maxTokens: 64,
+          timeoutMs: 15_000,
         },
       });
       updateRow('request', {
@@ -9607,6 +9839,28 @@ export default function EngineWorkspace() {
       startupReadiness = await refreshLocalMvpStartupReadiness({ silent: true });
     }
     if (startupReadiness?.readyForFirstProjectRun === true || isDevelopmentInitiationFallbackEnabled()) {
+      if (!isDevelopmentInitiationFallbackEnabled()) {
+        try {
+          await requestAgentBackend('/llm/test', {
+            method: 'POST',
+            body: {
+              prompt: 'Reply exactly: OK',
+              maxTokens: 64,
+              timeoutMs: 15_000,
+            },
+            timeoutMs: 20_000,
+          });
+        } catch (error) {
+          const detail = providerRuntimeErrorDetail(error);
+          setBackendStation(prev => ({
+            ...prev,
+            connectionStatus: 'offline',
+            lastAction: 'Project initiation startup blocked',
+            error: `Model provider health check failed before ${actionLabel}: ${detail}. Re-run Settings Keys verification or check model endpoint/model latency; no fallback meeting was created.`,
+          }));
+          return false;
+        }
+      }
       return true;
     }
     const nextAction = startupReadiness?.nextAction?.label || 'Sync backend startup readiness and complete Settings provider/Vault setup';
@@ -9619,21 +9873,35 @@ export default function EngineWorkspace() {
   };
 
   const startInitiationMeetingSession = async () => {
-    if (!(await ensureInitiationStartupReady('starting a real kickoff'))) return;
+    if (initiationMeetingStartState.running) return;
+    setInitiationMeetingStartState({
+      running: true,
+      startedAt: new Date().toISOString(),
+      label: 'Preparing model-backed meeting',
+    });
+    if (!(await ensureInitiationStartupReady('starting a real kickoff'))) {
+      setInitiationMeetingStartState({ running: false, startedAt: null, label: '' });
+      return;
+    }
     const sessionStartedAt = new Date().toISOString();
     const kickoffPayload = buildInitiationKickoffPayload(sessionStartedAt);
     const meetingPayload = {
       ...kickoffPayload,
       meetingId: `meeting_${kickoffPayload.projectId}`,
       language: activeLanguage,
+      allowDeterministicFallback: false,
     };
     let meeting = null;
 
     try {
+      setInitiationMeetingStartState(prev => ({
+        ...prev,
+        label: 'Asking Agents to open the meeting',
+      }));
       const payload = await requestAgentBackend('/kickoff-meetings', {
         method: 'POST',
         body: meetingPayload,
-        timeoutMs: 60_000,
+        timeoutMs: 120_000,
       });
       meeting = payload.meeting;
       setBackendStation(prev => ({
@@ -9651,6 +9919,7 @@ export default function EngineWorkspace() {
           ? 'Backend or model provider timed out. Browser-local meeting fallback was suppressed.'
           : `${error.message || String(error)} Browser-local meeting fallback was suppressed.`,
       }));
+      setInitiationMeetingStartState({ running: false, startedAt: null, label: '' });
       return;
     }
 
@@ -9719,6 +9988,7 @@ export default function EngineWorkspace() {
       }]);
     }
     setInitiationStep('meeting');
+    setInitiationMeetingStartState({ running: false, startedAt: null, label: '' });
   };
 
   const submitInitiationClarification = async () => {
@@ -9738,6 +10008,7 @@ export default function EngineWorkspace() {
           questionId: roleQuestion?.id,
           text,
           now,
+          allowDeterministicFallback: false,
         },
         timeoutMs: 20_000,
       });
@@ -11454,8 +11725,8 @@ export default function EngineWorkspace() {
       : (settingsProviderReadiness?.uiGuidance?.message || 'Provider secret draft fields are editable after a backend URL is saved, but Seal is locked until the saved backend target and Secret Vault are ready. The browser will not persist provider secrets.');
     const settingsSecretVaultSetupRows = [
       ['Target backend', backendConfiguredTargetLabel],
-      ['Required env', 'SECRET_VAULT_ENABLED=true and SECRET_VAULT_KEY set before npm run agents:server'],
-      ['Local start command', "$env:SECRET_VAULT_ENABLED='true'; $env:SECRET_VAULT_KEY='local-dev-vault-key'; npm run agents:server"],
+      ['Local vault', 'auto-loaded from .tmp/agent-local-user-runtime.json'],
+      ['API fields after refresh', 'plaintext stays blank; backend Vault status is the saved source of truth'],
       ['Startup preflight route', localMvpStartupReadiness?.backendRoutes?.localMvpStartupReadiness || '/local-mvp-startup-readiness'],
       ['Startup readiness', localMvpStartupReadiness?.status || 'not synced'],
       ['Startup next action', localMvpStartupReadiness?.nextAction?.label || 'Sync local MVP startup readiness'],
@@ -11505,6 +11776,7 @@ export default function EngineWorkspace() {
       ['API input fields', settingsProviderSecretInputReady ? 'enabled as transient draft after backend URL' : 'locked until backend URL is saved'],
       ['Seal persistence', settingsSecretVaultReady ? 'available through /secret-vault/seal' : 'waiting for backend Secret Vault'],
       ['Draft persistence', 'memory only until Seal succeeds'],
+      ['Refresh behavior', 'saved credentials stay in backend Vault; plaintext fields are intentionally empty'],
       ['Browser persistence', settingsProviderReadiness?.browserPersistsSecrets === true ? 'blocked: unexpected browser persistence' : 'disabled'],
       ['Plaintext after Seal', 'cleared after backend receipt'],
     ];
@@ -11891,7 +12163,31 @@ export default function EngineWorkspace() {
                   </div>
 
                   <div className="grid gap-5 lg:grid-cols-2">
-                    <SettingField label="Model API Key" hint="Saved through the backend secret-vault seal route; the browser clears the field after submit.">
+                    <SettingField label="Model Base URL" hint="OpenAI-compatible providers such as StepFun need their own API base URL.">
+                      <input
+                        className={`${fieldClass} ${!settingsProviderSecretInputReady ? 'cursor-not-allowed opacity-50' : ''}`}
+                        data-testid="settings-provider-model-base-url-input"
+                        type="text"
+                        autoComplete="off"
+                        value={providerSecretDrafts.modelBaseUrl}
+                        placeholder={providerRuntimeStatus.modelProvider?.baseURL || (settingsProviderSecretInputReady ? 'https://api.stepfun.ai/v1' : 'Save backend URL before entry')}
+                        disabled={!settingsProviderSecretInputReady}
+                        onChange={(event) => setProviderSecretDrafts(prev => ({ ...prev, modelBaseUrl: event.target.value, lastReceipt: null, error: null }))}
+                      />
+                    </SettingField>
+                    <SettingField label="Model ID" hint="Use the provider model name that belongs to the Base URL.">
+                      <input
+                        className={`${fieldClass} ${!settingsProviderSecretInputReady ? 'cursor-not-allowed opacity-50' : ''}`}
+                        data-testid="settings-provider-model-name-input"
+                        type="text"
+                        autoComplete="off"
+                        value={providerSecretDrafts.modelName}
+                        placeholder={providerRuntimeStatus.modelProvider?.model || (settingsProviderSecretInputReady ? 'step-3.7-flash' : 'Save backend URL before entry')}
+                        disabled={!settingsProviderSecretInputReady}
+                        onChange={(event) => setProviderSecretDrafts(prev => ({ ...prev, modelName: event.target.value, lastReceipt: null, error: null }))}
+                      />
+                    </SettingField>
+                    <SettingField label="Model API Key" hint="Tested with Base URL and Model ID first; only a passing model configuration is saved.">
                       <div className="flex gap-2">
                         <input
                           className={`${fieldClass} ${!settingsProviderSecretInputReady ? 'cursor-not-allowed opacity-50' : ''}`}
@@ -11907,8 +12203,8 @@ export default function EngineWorkspace() {
                           type="button"
                           data-testid="settings-provider-seal-model-key"
                           onClick={() => sealSettingsProviderSecret('model')}
-                          disabled={providerSecretDrafts.running || !settingsProviderSealReady || !providerSecretDrafts.modelApiKey.trim()}
-                          className={`shrink-0 border border-[#1a1a1a] px-3 py-2 font-mono text-[10px] uppercase tracking-widest transition-colors ${providerSecretDrafts.running || !settingsProviderSealReady || !providerSecretDrafts.modelApiKey.trim() ? 'cursor-not-allowed opacity-50' : 'hover:bg-[#d1d0c9] hover:text-black'}`}
+                          disabled={providerSecretDrafts.running || !settingsProviderSealReady || !providerSecretDrafts.modelApiKey.trim() || !providerSecretDrafts.modelBaseUrl.trim() || !providerSecretDrafts.modelName.trim()}
+                          className={`shrink-0 border border-[#1a1a1a] px-3 py-2 font-mono text-[10px] uppercase tracking-widest transition-colors ${providerSecretDrafts.running || !settingsProviderSealReady || !providerSecretDrafts.modelApiKey.trim() || !providerSecretDrafts.modelBaseUrl.trim() || !providerSecretDrafts.modelName.trim() ? 'cursor-not-allowed opacity-50' : 'hover:bg-[#d1d0c9] hover:text-black'}`}
                         >
                           Seal
                         </button>
@@ -11930,8 +12226,8 @@ export default function EngineWorkspace() {
                           type="button"
                           data-testid="settings-provider-seal-search-key"
                           onClick={() => sealSettingsProviderSecret('search')}
-                          disabled={providerSecretDrafts.running || !settingsProviderSealReady || !providerSecretDrafts.searchApiKey.trim()}
-                          className={`shrink-0 border border-[#1a1a1a] px-3 py-2 font-mono text-[10px] uppercase tracking-widest transition-colors ${providerSecretDrafts.running || !settingsProviderSealReady || !providerSecretDrafts.searchApiKey.trim() ? 'cursor-not-allowed opacity-50' : 'hover:bg-[#d1d0c9] hover:text-black'}`}
+                          disabled={providerSecretDrafts.running || !settingsProviderSealReady || !providerSecretDrafts.searchApiKey.trim() || !providerSecretDrafts.searchEndpoint.trim()}
+                          className={`shrink-0 border border-[#1a1a1a] px-3 py-2 font-mono text-[10px] uppercase tracking-widest transition-colors ${providerSecretDrafts.running || !settingsProviderSealReady || !providerSecretDrafts.searchApiKey.trim() || !providerSecretDrafts.searchEndpoint.trim() ? 'cursor-not-allowed opacity-50' : 'hover:bg-[#d1d0c9] hover:text-black'}`}
                         >
                           Seal
                         </button>
@@ -11953,8 +12249,8 @@ export default function EngineWorkspace() {
                           type="button"
                           data-testid="settings-provider-seal-search-endpoint"
                           onClick={() => sealSettingsProviderSecret('searchEndpoint')}
-                          disabled={providerSecretDrafts.running || !settingsProviderSealReady || !providerSecretDrafts.searchEndpoint.trim()}
-                          className={`shrink-0 border border-[#1a1a1a] px-3 py-2 font-mono text-[10px] uppercase tracking-widest transition-colors ${providerSecretDrafts.running || !settingsProviderSealReady || !providerSecretDrafts.searchEndpoint.trim() ? 'cursor-not-allowed opacity-50' : 'hover:bg-[#d1d0c9] hover:text-black'}`}
+                          disabled={providerSecretDrafts.running || !settingsProviderSealReady || !providerSecretDrafts.searchApiKey.trim() || !providerSecretDrafts.searchEndpoint.trim()}
+                          className={`shrink-0 border border-[#1a1a1a] px-3 py-2 font-mono text-[10px] uppercase tracking-widest transition-colors ${providerSecretDrafts.running || !settingsProviderSealReady || !providerSecretDrafts.searchApiKey.trim() || !providerSecretDrafts.searchEndpoint.trim() ? 'cursor-not-allowed opacity-50' : 'hover:bg-[#d1d0c9] hover:text-black'}`}
                         >
                           Seal
                         </button>
@@ -13940,6 +14236,23 @@ export default function EngineWorkspace() {
         }));
         return;
       }
+      if (initiationMeetingSession.generationProvenance?.deterministicFallback) {
+        setBackendStation(prev => ({
+          ...prev,
+          connectionStatus: 'offline',
+          lastAction: 'Kickoff meeting input blocked; model-backed meeting required',
+          error: `This meeting was created from deterministic fallback after model failure: ${initiationMeetingSession.generationProvenance?.fallbackReason || 'unknown model error'}. Fix the provider key, then start a new meeting.`,
+        }));
+        setRoomTranscript(prev => [...prev, {
+          id: `initiation_model_required_${Date.parse(new Date().toISOString()) || Date.now()}`,
+          speaker: 'System',
+          role: 'Runtime',
+          text: '当前会议不是模型驱动会议，不能继续伪装成 Agent 对话。请修正 API key 后重新开始会议。',
+          score: 0,
+          source: 'model-backed-meeting-required',
+        }]);
+        return;
+      }
       setRoomInput('');
       const now = new Date().toISOString();
       const previousTranscriptIds = new Set((initiationMeetingSession.transcript || []).map(item => item.id).filter(Boolean));
@@ -13950,6 +14263,7 @@ export default function EngineWorkspace() {
             questionId: selectedClarificationQuestion?.questionId,
             text,
             now,
+            allowDeterministicFallback: false,
           },
           timeoutMs: 20_000,
         });
@@ -14009,7 +14323,7 @@ export default function EngineWorkspace() {
           projectOverride: meetingProject,
         });
         if (!playedAgentTurns) {
-          setRoomTranscript(prev => [...prev, userMessage]);
+          throw new Error(payload.modelKickoffMeetingTurn?.error || 'Backend model returned no Agent response.');
         }
         setBackendStation(prev => ({
           ...prev,
@@ -14320,10 +14634,24 @@ export default function EngineWorkspace() {
                     <button
                       data-testid="initiation-start-meeting"
                       onClick={startInitiationMeetingSession}
-                      disabled={!initiationCanStartKickoff || providerRuntimeStatus.running}
-                      className="mt-7 w-full bg-[#8f1e18] disabled:bg-[#3a2a1c] disabled:text-[#7d6a49] hover:bg-[#a62a22] text-white px-5 py-4 flex items-center justify-center gap-3 font-mono text-[10px] uppercase tracking-widest transition-colors"
+                      disabled={!initiationCanStartKickoff || providerRuntimeStatus.running || initiationMeetingStartState.running}
+                      className="relative mt-7 w-full overflow-hidden bg-[#8f1e18] disabled:bg-[#3a2a1c] disabled:text-[#7d6a49] hover:bg-[#a62a22] text-white px-5 py-4 flex items-center justify-center gap-3 font-mono text-[10px] uppercase tracking-widest transition-colors"
                     >
-                      Start Kickoff Roundtable <Users size={15} />
+                      {initiationMeetingStartState.running && (
+                        <span className="absolute inset-y-0 left-0 w-2/3 animate-pulse bg-[#d9b56c]/30" aria-hidden="true" />
+                      )}
+                      <span className="relative z-10 flex items-center justify-center gap-3">
+                        {initiationMeetingStartState.running ? (
+                          <>
+                            <RefreshCw size={15} className="animate-spin" />
+                            {initiationMeetingStartState.label || 'Preparing meeting'}
+                          </>
+                        ) : (
+                          <>
+                            Start Kickoff Roundtable <Users size={15} />
+                          </>
+                        )}
+                      </span>
                     </button>
                   </section>
                   <aside className="hidden">
@@ -14341,10 +14669,24 @@ export default function EngineWorkspace() {
                     </div>
                     <button
                       onClick={startInitiationMeetingSession}
-                      disabled={!initiationCanStartKickoff || providerRuntimeStatus.running}
-                      className="w-full bg-[#8f1e18] disabled:bg-[#3a2a1c] disabled:text-[#7d6a49] hover:bg-[#a62a22] text-white px-5 py-4 flex items-center justify-center gap-3 font-mono text-[10px] uppercase tracking-widest transition-colors"
+                      disabled={!initiationCanStartKickoff || providerRuntimeStatus.running || initiationMeetingStartState.running}
+                      className="relative w-full overflow-hidden bg-[#8f1e18] disabled:bg-[#3a2a1c] disabled:text-[#7d6a49] hover:bg-[#a62a22] text-white px-5 py-4 flex items-center justify-center gap-3 font-mono text-[10px] uppercase tracking-widest transition-colors"
                     >
-                      开始立项圆桌 <Users size={15} />
+                      {initiationMeetingStartState.running && (
+                        <span className="absolute inset-y-0 left-0 w-2/3 animate-pulse bg-[#d9b56c]/30" aria-hidden="true" />
+                      )}
+                      <span className="relative z-10 flex items-center justify-center gap-3">
+                        {initiationMeetingStartState.running ? (
+                          <>
+                            <RefreshCw size={15} className="animate-spin" />
+                            {initiationMeetingStartState.label || 'Preparing meeting'}
+                          </>
+                        ) : (
+                          <>
+                            开始立项圆桌 <Users size={15} />
+                          </>
+                        )}
+                      </span>
                     </button>
                   </aside>
                 </div>

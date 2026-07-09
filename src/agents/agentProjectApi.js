@@ -1157,6 +1157,13 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
         }
       }
 
+      if (method === 'POST' && path === '/workspace/pick-folder') {
+        if (typeof service.pickWorkspaceBaseFolder !== 'function') {
+          return json(400, { error: 'local-workspace-folder-picker-not-configured' });
+        }
+        return json(200, await service.pickWorkspaceBaseFolder({ ...body, language }));
+      }
+
       const result = this.handle({ ...request, _accessChecked: true });
       if (
         result.status >= 400
@@ -1445,10 +1452,7 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
           return json(200, service.prepareProjectWorkspace({ ...body, language }));
         }
         if (method === 'POST' && path === '/workspace/pick-folder') {
-          if (typeof service.pickWorkspaceBaseFolder !== 'function') {
-            return json(400, { error: 'local-workspace-folder-picker-not-configured' });
-          }
-          return json(200, service.pickWorkspaceBaseFolder({ ...body, language }));
+          return json(400, { error: 'local-workspace-folder-picker-requires-async-handler' });
         }
         if (method === 'GET' && path === '/settings/runtime-readiness') {
           return json(200, {

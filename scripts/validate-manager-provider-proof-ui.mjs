@@ -86,6 +86,50 @@ function createStaticServer() {
   });
 }
 
+function createMockModelServer() {
+  return createServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    const requestBody = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({
+      id: 'chatcmpl-manager-provider-proof-ui',
+      object: 'chat.completion',
+      model: requestBody.model || 'gpt-4o-mini',
+      choices: [{
+        index: 0,
+        message: {
+          role: 'assistant',
+          content: JSON.stringify({ ok: true, message: 'provider proof model path ready' }),
+        },
+        finish_reason: 'stop',
+      }],
+      usage: { prompt_tokens: 8, completion_tokens: 8, total_tokens: 16 },
+    }));
+  });
+}
+
+function createMockSearchServer() {
+  return createServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({
+      id: 'manager-provider-proof-search-response',
+      confidence: 'high',
+      findings: ['Provider proof search endpoint is reachable.'],
+      sources: [
+        {
+          id: 'manager-provider-proof-source',
+          title: 'Provider proof source',
+          url: 'https://example.test/provider-proof',
+          snippet: 'Local mock search response for Settings provider proof.',
+        },
+      ],
+    }));
+  });
+}
+
 async function listen(server, { port = 0, host = '127.0.0.1' } = {}) {
   return new Promise((resolve, reject) => {
     server.once('error', reject);
@@ -200,6 +244,8 @@ const backendServer = createAgentProjectHttpServer({
 const backendRuntime = await backendServer.listen();
 const staticServer = createStaticServer();
 const staticRuntime = await listen(staticServer);
+const mockModelRuntime = await listen(createMockModelServer());
+const mockSearchRuntime = await listen(createMockSearchServer());
 let browser = null;
 const backendResponses = [];
 const consoleDiagnostics = [];
@@ -257,26 +303,32 @@ try {
   await assertPageContains(page, 'Provider-vault binding proof', 'Settings provider boundary must show provider-vault binding proof.');
   await page.getByTestId('settings-secret-vault-status').waitFor({ state: 'visible', timeout: 5000 });
   await assertPageContains(page, '/secret-vault/seal', 'Settings provider boundary must expose the backend secret-vault seal route.');
+  await page.getByTestId('settings-provider-model-base-url-input').fill(`${mockModelRuntime.url}/v1`);
+  await page.getByTestId('settings-provider-model-name-input').fill('gpt-4o-mini');
   await page.getByTestId('settings-provider-model-key-input').fill('provider-proof-model-key');
   const sealModelKeyButton = await waitForButtonEnabled(
     page,
     'settings-provider-seal-model-key',
-    'Settings model key seal must be enabled once the backend secret vault is ready.',
+    'Settings model configuration seal must be enabled once the backend secret vault is ready.',
   );
   await sealModelKeyButton.click();
   await page.getByTestId('settings-provider-seal-receipt').waitFor({ state: 'visible', timeout: 8000 });
   await page.getByTestId('settings-provider-search-key-input').fill('provider-proof-search-key');
+  await page.getByTestId('settings-provider-search-endpoint-input').fill(`${mockSearchRuntime.url}/search`);
   const sealSearchKeyButton = await waitForButtonEnabled(
     page,
     'settings-provider-seal-search-key',
-    'Settings search key seal must be enabled once the backend secret vault is ready.',
+    'Settings search configuration seal must be enabled once the backend secret vault is ready.',
   );
   await sealSearchKeyButton.click();
-  await page.waitForFunction(() => document.body.innerText.includes('search.apiKey'), null, { timeout: 8000 });
+  await page.getByTestId('settings-provider-seal-receipt').waitFor({ state: 'visible', timeout: 8000 });
   const secretRecordsResponse = await fetch(`${backendRuntime.url}/secret-vault/records`).then((response) => response.json());
   const serializedSecretRecords = JSON.stringify(secretRecordsResponse);
   assert(secretRecordsResponse.secretVaultRecords?.records?.some((record) => record.name === 'model.apiKey' && record.encrypted === true), 'Settings model key seal must create an encrypted backend vault record.');
+  assert(secretRecordsResponse.secretVaultRecords?.records?.some((record) => record.name === 'model.baseURL' && record.encrypted === true), 'Settings model Base URL seal must create an encrypted backend vault record.');
+  assert(secretRecordsResponse.secretVaultRecords?.records?.some((record) => record.name === 'model.name' && record.encrypted === true), 'Settings model ID seal must create an encrypted backend vault record.');
   assert(secretRecordsResponse.secretVaultRecords?.records?.some((record) => record.name === 'search.apiKey' && record.encrypted === true), 'Settings search key seal must create an encrypted backend vault record.');
+  assert(secretRecordsResponse.secretVaultRecords?.records?.some((record) => record.name === 'search.endpoint' && record.encrypted === true), 'Settings search endpoint seal must create an encrypted backend vault record.');
   assert(!serializedSecretRecords.includes('provider-proof-model-key') && !serializedSecretRecords.includes('provider-proof-search-key'), 'Settings key seal must not expose plaintext keys through backend record metadata.');
   const providerModelStatusResponse = await fetch(`${backendRuntime.url}/llm/status`).then((response) => response.json());
   assert(providerModelStatusResponse.modelProvider?.hasApiKey === true && providerModelStatusResponse.modelProvider?.apiKeySource === 'local-secret-vault', 'Settings model key seal must bind the running backend model provider to the local secret vault.');
@@ -418,4 +470,6 @@ try {
   await browser?.close().catch(() => {});
   await backendServer.close().catch(() => {});
   await new Promise((resolve) => staticRuntime.server.close(resolve)).catch(() => {});
+  await new Promise((resolve) => mockModelRuntime.server.close(resolve)).catch(() => {});
+  await new Promise((resolve) => mockSearchRuntime.server.close(resolve)).catch(() => {});
 }

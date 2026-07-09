@@ -1418,7 +1418,7 @@ assert(
     && settingsAgentsServerUiSource.includes('/settings/health-readiness')
     && settingsAgentsServerUiSource.includes('Settings Health')
     && settingsAgentsServerUiSource.includes('local MVP startup readiness')
-    && settingsAgentsServerUiSource.includes('SECRET_VAULT_ENABLED=true')
+    && settingsAgentsServerUiSource.includes('.tmp/agent-local-user-runtime.json')
     && settingsAgentsServerUiSource.includes('/local-mvp-startup-readiness')
     && settingsAgentsServerUiSource.includes('/settings/provider-readiness')
     && settingsAgentsServerUiSource.includes('settings-tab-deployment')
@@ -1773,15 +1773,18 @@ assert(
     && appSource.includes('startupReadiness = await refreshLocalMvpStartupReadiness({ silent: true });')
     && appSource.includes('startupReadiness?.readyForFirstProjectRun === true || isDevelopmentInitiationFallbackEnabled()')
     && appSource.includes("lastAction: 'Project initiation startup blocked'")
-    && appSource.includes('if (!(await ensureInitiationStartupReady(\'starting a real kickoff\'))) return;')
+    && appSource.includes("label: 'Preparing model-backed meeting'")
+    && appSource.includes("label: 'Asking Agents to open the meeting'")
+    && appSource.includes("setInitiationMeetingStartState({ running: false, startedAt: null, label: '' });")
     && appSource.includes('if (!(await ensureInitiationStartupReady(\'approving the project\'))) {')
     && appSource.includes("lastAction: 'Project initiation approval blocked'")
     && appSource.includes('const initiationStartupReadyForFirstRun = backendUrlConfigured && initiationStartupReadiness?.readyForFirstProjectRun === true;')
-    && appSource.includes('const initiationCanStartKickoff = initiationStartupReadyForFirstRun || initiationDevelopmentFallbackAllowed;')
+    && appSource.includes('const initiationStartupAllowsKickoff = initiationStartupReadyForFirstRun || initiationDevelopmentFallbackAllowed;')
+    && appSource.includes('const initiationCanStartKickoff = initiationStartupAllowsKickoff && initiationWorkspaceReady;')
     && appSource.includes('const initiationCanApproveProject = initiationCanStartKickoff && (Boolean(initiationMeetingSession) || initiationDevelopmentFallbackAllowed);')
-    && appSource.includes('disabled={!initiationCanStartKickoff || providerRuntimeStatus.running}')
+    && appSource.includes('disabled={!initiationCanStartKickoff || providerRuntimeStatus.running || initiationMeetingStartState.running}')
     && appSource.includes('disabled={!initiationCanApproveProject || providerRuntimeStatus.running}')
-    && (appSource.match(/disabled=\{!initiationCanStartKickoff \|\| providerRuntimeStatus\.running\}/g) || []).length >= 2
+    && (appSource.match(/disabled=\{!initiationCanStartKickoff \|\| providerRuntimeStatus\.running \|\| initiationMeetingStartState\.running\}/g) || []).length >= 2
     && (appSource.match(/disabled=\{!initiationCanApproveProject \|\| providerRuntimeStatus\.running\}/g) || []).length >= 2
     && appSource.includes('dashboardStartupSyncRef')
     && appSource.includes('initiationStartupSyncRef')
@@ -1817,8 +1820,8 @@ assert(
     && appSource.includes("settingsTab !== 'integrations'")
     && appSource.includes('syncSettingsIntegrationReadiness()')
     && appSource.includes('Promise.allSettled([\n      syncBackendProjectState({ silent: true }),\n      syncSettingsIntegrationReadiness(),\n    ]);')
-    && appSource.includes('SECRET_VAULT_ENABLED=true and SECRET_VAULT_KEY set before npm run agents:server')
-    && appSource.includes("$env:SECRET_VAULT_ENABLED='true'; $env:SECRET_VAULT_KEY='local-dev-vault-key'; npm run agents:server")
+    && appSource.includes('auto-loaded from .tmp/agent-local-user-runtime.json')
+    && appSource.includes('API fields after refresh')
     && appSource.includes('Provider secret draft fields are editable after a backend URL is saved')
     && appSource.includes('Backend Vault unlocks entry; saving is backend-only')
     && appSource.includes('API input fields')
@@ -1832,6 +1835,10 @@ assert(
     && appSource.includes("API field: {settingsProviderSecretInputReady ? 'draft enabled' : 'locked'} / Seal:")
     && appSource.includes("API fields: {settingsProviderSecretInputReady ? 'enabled for draft entry' : 'locked until backend URL'} / Seal:")
     && appSource.includes('settings-provider-open-backend-target')
+    && appSource.includes('settings-provider-model-base-url-input')
+    && appSource.includes('settings-provider-model-name-input')
+    && appSource.includes('Model API key, Base URL, and Model ID must all be entered before testing and saving model settings.')
+    && appSource.includes('model configuration')
     && appSource.includes("onClick={() => setSettingsTab('deployment')}")
     && appSource.includes('requires backend Vault')
     && appSource.includes('The browser will not persist provider secrets.')
@@ -1861,6 +1868,8 @@ assert(
   'Settings locale copy must not present backend configuration as Mock mode or Mock configuration.',
 );
 for (const settingsInputTestId of [
+  'settings-provider-model-base-url-input',
+  'settings-provider-model-name-input',
   'settings-provider-model-key-input',
   'settings-provider-search-key-input',
   'settings-provider-search-endpoint-input',
@@ -1868,9 +1877,9 @@ for (const settingsInputTestId of [
   assertProviderSecretInputGatedByTestId(appSource, settingsInputTestId);
 }
 assert(
-  appSource.includes('disabled={providerSecretDrafts.running || !settingsProviderSealReady || !providerSecretDrafts.modelApiKey.trim()}')
-    && appSource.includes('disabled={providerSecretDrafts.running || !settingsProviderSealReady || !providerSecretDrafts.searchApiKey.trim()}')
-    && appSource.includes('disabled={providerSecretDrafts.running || !settingsProviderSealReady || !providerSecretDrafts.searchEndpoint.trim()}'),
+  appSource.includes('disabled={providerSecretDrafts.running || !settingsProviderSealReady || !providerSecretDrafts.modelApiKey.trim() || !providerSecretDrafts.modelBaseUrl.trim() || !providerSecretDrafts.modelName.trim()}')
+    && appSource.includes('disabled={providerSecretDrafts.running || !settingsProviderSealReady || !providerSecretDrafts.searchApiKey.trim() || !providerSecretDrafts.searchEndpoint.trim()}')
+    && appSource.includes('Evidence search API key and endpoint must both be entered before testing and saving search settings.'),
   'Settings Keys must gate Seal buttons by saved backend target and Secret Vault readiness.',
 );
 assert(
@@ -4015,8 +4024,10 @@ assert(
 
 for (const text of [
   '/secret-vault/status',
+  'settings-provider-model-base-url-input',
+  'settings-provider-model-name-input',
   'settings-provider-seal-model-key',
-  'settings-provider-seal-search-endpoint',
+  'settings-provider-search-endpoint-input',
   'settings-provider-seal-search-key',
   '/secret-vault/records',
   'local-secret-vault',

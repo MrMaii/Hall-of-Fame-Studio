@@ -647,9 +647,9 @@ try {
   await page.getByTestId('settings-secret-vault-local-startup-contract').waitFor({ state: 'visible', timeout: 10000 });
   const startupContractText = await page.getByTestId('settings-secret-vault-local-startup-contract').innerText();
   assert(
-    startupContractText.includes('SECRET_VAULT_ENABLED=true')
-      && startupContractText.includes('SECRET_VAULT_KEY')
-      && startupContractText.includes("$env:SECRET_VAULT_ENABLED='true'; $env:SECRET_VAULT_KEY='local-dev-vault-key'; npm run agents:server")
+    startupContractText.includes('Local vault')
+      && startupContractText.includes('.tmp/agent-local-user-runtime.json')
+      && startupContractText.includes('API fields after refresh')
       && startupContractText.includes('/local-mvp-startup-readiness')
       && startupContractText.includes('/settings/provider-readiness')
       && startupContractText.includes('/secret-vault/status')
@@ -961,40 +961,40 @@ try {
 
   await page.getByTestId('settings-tab-keys').click();
 
+  await fillControlledInput(page, 'settings-provider-model-base-url-input', `${mockModelRuntime.url}/v1`);
+  await fillControlledInput(page, 'settings-provider-model-name-input', 'gpt-4o-mini');
   await fillControlledInput(page, 'settings-provider-model-key-input', modelPlaintext);
   const sealModelButton = await waitForButtonEnabled(
     page,
     'settings-provider-seal-model-key',
-    'Model key seal button must be enabled when agents:server Secret Vault is ready.',
+    'Model configuration seal button must be enabled when agents:server Secret Vault is ready and model key, Base URL, and Model ID are filled.',
   );
   await clickSealButtonAndWaitForRecord(page, sealModelButton, backendUrl, 'model.apiKey', 'Model key seal button');
+  await waitForVaultRecord(backendUrl, 'model.baseURL');
+  await waitForVaultRecord(backendUrl, 'model.name');
   await page.getByTestId('settings-provider-seal-receipt').waitFor({ state: 'visible', timeout: 10000 });
   await waitForSettingsProviderIdle(page);
 
-  await fillControlledInput(page, 'settings-provider-search-endpoint-input', `${mockSearchRuntime.url}/search`);
-  const sealSearchEndpointButton = await waitForButtonEnabled(
-    page,
-    'settings-provider-seal-search-endpoint',
-    'Search endpoint seal button must be enabled when agents:server Secret Vault is ready.',
-  );
-  await clickSealButtonAndWaitForRecord(page, sealSearchEndpointButton, backendUrl, 'search.endpoint', 'Search endpoint seal button');
-  await waitForSettingsProviderIdle(page);
-
   await fillControlledInput(page, 'settings-provider-search-key-input', searchPlaintext);
+  await fillControlledInput(page, 'settings-provider-search-endpoint-input', `${mockSearchRuntime.url}/search`);
   const sealSearchButton = await waitForButtonEnabled(
     page,
     'settings-provider-seal-search-key',
-    'Search key seal button must be enabled when agents:server Secret Vault is ready.',
+    'Search configuration seal button must be enabled when agents:server Secret Vault is ready and search key and endpoint are filled.',
   );
   await clickSealButtonAndWaitForRecord(page, sealSearchButton, backendUrl, 'search.apiKey', 'Search key seal button');
+  await waitForVaultRecord(backendUrl, 'search.endpoint');
 
   const recordsResponse = await fetchJson(`${backendUrl}/secret-vault/records`);
   const serializedRecords = JSON.stringify(recordsResponse.body);
   assert(recordsResponse.status === 200, `Secret Vault records route returned ${recordsResponse.status}.`);
   assert(recordsResponse.body.secretVaultRecords?.records?.some((record) => record.name === 'model.apiKey' && record.encrypted === true), 'Settings UI must seal model.apiKey into the real agents:server vault.');
+  assert(recordsResponse.body.secretVaultRecords?.records?.some((record) => record.name === 'model.baseURL' && record.encrypted === true), 'Settings UI must seal model.baseURL into the real agents:server vault.');
+  assert(recordsResponse.body.secretVaultRecords?.records?.some((record) => record.name === 'model.name' && record.encrypted === true), 'Settings UI must seal model.name into the real agents:server vault.');
   assert(recordsResponse.body.secretVaultRecords?.records?.some((record) => record.name === 'search.endpoint' && record.encrypted === true), 'Settings UI must seal search.endpoint into the real agents:server vault.');
   assert(recordsResponse.body.secretVaultRecords?.records?.some((record) => record.name === 'search.apiKey' && record.encrypted === true), 'Settings UI must seal search.apiKey into the real agents:server vault.');
   assert(!serializedRecords.includes(modelPlaintext) && !serializedRecords.includes(searchPlaintext), 'Real agents:server vault records must not expose plaintext Settings keys.');
+  assert(!serializedRecords.includes(mockModelRuntime.url), 'Real agents:server vault records must not expose the plaintext model Base URL.');
   assert(!serializedRecords.includes(mockSearchRuntime.url), 'Real agents:server vault records must not expose the plaintext Settings search endpoint.');
   assert(!serializedRecords.includes('ciphertext'), 'Real agents:server vault record metadata must not expose ciphertext.');
 
