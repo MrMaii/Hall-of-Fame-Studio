@@ -1,0 +1,14 @@
+# Normalize line endings: repository stores LF; keep LF in working tree too
+# (silences the constant CRLF warnings on Windows and keeps diffs clean).
+* text=auto eol=lf
+
+# Binary assets
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.pdf binary
