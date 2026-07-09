@@ -36,13 +36,37 @@ export function resolveProjectLanguage(project, globalLanguage = DEFAULT_LANGUAG
   return normalizeLanguage(project?.language || globalLanguage);
 }
 
+// Perf-critical: localizeText runs for every localized string of every backend
+// read model. Building and sorting the ~1600-entry phrase map (and compiling
+// word-boundary regexes) on every call made read-model localization
+// quadratic-slow, so both are memoized per language / per phrase (BUG-008).
+const phraseMapCache = new Map();
+
 function phraseMapFor(language) {
-  const phrases = dictionaries[normalizeLanguage(language)]?.display?.phrases || {};
-  return new Map(Object.entries(phrases).sort((a, b) => b[0].length - a[0].length));
+  const normalizedLanguage = normalizeLanguage(language);
+  let cached = phraseMapCache.get(normalizedLanguage);
+  if (!cached) {
+    const phrases = dictionaries[normalizedLanguage]?.display?.phrases || {};
+    cached = new Map(Object.entries(phrases).sort((a, b) => b[0].length - a[0].length));
+    phraseMapCache.set(normalizedLanguage, cached);
+  }
+  return cached;
 }
 
 function escapeRegExp(value = '') {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+const wordPhraseRegexCache = new Map();
+
+function wordPhraseRegexFor(source) {
+  let cached = wordPhraseRegexCache.get(source);
+  if (!cached) {
+    cached = new RegExp(`(^|[^A-Za-z0-9_-])${escapeRegExp(source)}(?![A-Za-z0-9_-])`, 'g');
+    wordPhraseRegexCache.set(source, cached);
+  }
+  cached.lastIndex = 0;
+  return cached;
 }
 
 function replacePhrase(text, source, localized) {
@@ -52,7 +76,7 @@ function replacePhrase(text, source, localized) {
     ));
   }
   if (/^[A-Za-z0-9_-]+$/.test(source)) {
-    return text.replace(new RegExp(`(^|[^A-Za-z0-9_-])${escapeRegExp(source)}(?![A-Za-z0-9_-])`, 'g'), (match, prefix = '') => `${prefix}${localized}`);
+    return text.replace(wordPhraseRegexFor(source), (match, prefix = '') => `${prefix}${localized}`);
   }
   return text.split(source).join(localized);
 }

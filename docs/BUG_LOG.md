@@ -62,6 +62,15 @@
 - 修复: 本轮将过期锚点替换为当前等价实现的锚点（leader 经 `/leader` 路由、澄清经 `/clarify`、缓存策略经 `canPersistProjectToBrowserCache` 等），并补回被误删的两个证据 UI 元素（`initiation-meeting-session-proof`、`initiation-meeting-generation-source`——三个 Playwright UI 验证脚本仍在等待这两个 testid）。
 - 防回归: TD-009 长期需把字符串断言迁到行为断言；短期规则：改 App.jsx 标识时先 `rg` 一遍 scripts/。
 
+## BUG-008: 后端读模型本地化触发近似二次方级性能塌陷，验证脚本挂起数小时
+
+- 状态: `fixed`
+- 现象: `validate-product-team-acceptance-scenario.mjs` 单核 CPU 拉满、运行 2.5 小时以上不结束；后端所有返回读模型的接口在中文语言下响应缓慢。
+- 根因: `src/i18n/runtime.js` 的 `localizeText` 每次调用都重建并按长度排序约 1600 条短语的 Map，并对每个词组重新编译正则；而 `localizeReadModel` 递归遍历整个读模型、对每个字符串字段都调用 `localizeText`，两者叠加造成组合爆炸（用 inspector 采样确认热点全部落在 `phraseMapFor` 与正则编译）。
+- 修复: 本轮 —— `phraseMapFor` 按语言做模块级缓存（字典是静态的），词边界正则按短语缓存并复位 `lastIndex`；行为对照验证输出不变，2000 次调用约 54ms，验收脚本从 >2.5h 降到约 10 分钟跑完。
+- 防回归: 验收脚本本身即为回归门（超时即失败）；后续 TD-004 拆解析链时给 `localizeText`/`localizeReadModel` 补基准断言。
+- 关联债务: TD-004（解析/本地化链路复杂度）、TD-001（62k 行 service 使热点难定位）。
+
 ---
 
 ## 用户报告的 bug（待录入）
