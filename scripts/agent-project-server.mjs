@@ -51,7 +51,7 @@ const defaultRuntimeRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../
 const runtimeRoot = resolve(process.env.AGENT_PROJECT_RUNTIME_ROOT || defaultRuntimeRoot);
 const defaultSecretVaultRecordsFile = resolve(dirname(fileURLToPath(import.meta.url)), '../.tmp/agent-secret-vault-records.json');
 if (!process.env.SECRET_VAULT_RECORDS_FILE) process.env.SECRET_VAULT_RECORDS_FILE = defaultSecretVaultRecordsFile;
-const localUserRuntimeSettingsFile = resolve(workspaceRoot, '.tmp/agent-local-user-runtime.json');
+const localUserRuntimeSettingsFile = resolve(process.env.AGENT_LOCAL_RUNTIME_SETTINGS_FILE || resolve(workspaceRoot, '.tmp/agent-local-user-runtime.json'));
 function loadLocalUserRuntimeSettings() {
   let settings = {};
   if (existsSync(localUserRuntimeSettingsFile)) {
