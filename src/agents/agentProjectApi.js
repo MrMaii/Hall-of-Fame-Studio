@@ -1,7 +1,7 @@
 import { createAgentProjectService, hydrateAgentProject } from './agentProjectService.js';
 import { createAgentProjectFileStore } from './agentProjectFileStore.js';
 import { buildProductionCapabilityRegistry } from './productionCapabilityRegistry.js';
-import { SUPER_AGENT_WORK_MODES, composeWorkModeTeam } from './workModes.js';
+import { SUPER_AGENT_WORK_MODES, composeWorkModeTeam, evaluateWorkModeAcceptance } from './workModes.js';
 import { PERSON_SKILLS } from '../skills/personSkillSystem.js';
 import {
   authorizeAgentProjectRequest,
@@ -2274,6 +2274,16 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
           if (section === 'task') return json(200, { task: service.getTask(route.projectId, taskId) });
           if (section === 'evidence') return json(200, service.getTaskEvidence(route.projectId, taskId));
           return json(404, { error: 'task-section-not-found', section });
+        }
+        if (method === 'GET' && route.action === 'work-mode-acceptance') {
+          const project = service.getProject(route.projectId);
+          return json(200, {
+            workModeAcceptance: evaluateWorkModeAcceptance({
+              workModeContract: project.workModeContract,
+              submissions: project.agentSubmissions || [],
+              resolvedEscalationIds: project.resolvedWorkModeEscalationIds || [],
+            }),
+          });
         }
         if (route.action === 'agents') {
           if (method === 'GET' && !route.tail.length) {
