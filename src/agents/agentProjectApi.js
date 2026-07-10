@@ -2,6 +2,7 @@ import { createAgentProjectService, hydrateAgentProject } from './agentProjectSe
 import { createAgentProjectFileStore } from './agentProjectFileStore.js';
 import { buildProductionCapabilityRegistry } from './productionCapabilityRegistry.js';
 import { SUPER_AGENT_WORK_MODES, composeWorkModeTeam } from './workModes.js';
+import { PERSON_SKILLS } from '../skills/personSkillSystem.js';
 import {
   authorizeAgentProjectRequest,
   buildAccessControlPolicySnapshot,
@@ -19,6 +20,47 @@ function normalizePath(path = '') {
 function workModeTeamRoute(path = '') {
   const match = normalizePath(path).match(/^\/work-modes\/([^/]+)\/team$/);
   return match ? decodeURIComponent(match[1]) : null;
+}
+
+function workModeInitiationInput(body = {}) {
+  if (!body.workMode) return { input: body, error: null };
+  const composition = composeWorkModeTeam({
+    workMode: body.workMode,
+    objective: body.brief || body.objective || body.name || '',
+    availablePersonaSlugs: body.availablePersonaSlugs,
+  });
+  if (!composition.readyForKickoff) return { input: null, error: composition };
+  const generatedTeam = composition.roles.map((role) => {
+    const persona = PERSON_SKILLS[role.personaSlug] || {};
+    return {
+      id: role.personaSlug,
+      name: persona.name || role.personaSlug,
+      title: role.id,
+      role: role.id,
+    };
+  });
+  const lead = composition.roles.find((role) => role.id.includes('lead')) || composition.roles[0];
+  const reviewer = composition.roles.find((role) => role.id.includes('reviewer')) || composition.roles.at(-1);
+  const projectId = body.projectId || `project_${Date.now()}`;
+  return {
+    error: null,
+    input: {
+      ...body,
+      projectId,
+      team: body.team?.length ? body.team : generatedTeam,
+      selectedLeaderId: body.selectedLeaderId || lead?.personaSlug,
+      reviewerId: body.reviewerId || reviewer?.personaSlug,
+      tasks: body.tasks?.length ? body.tasks : composition.requiredArtifacts.map((artifactType, index) => ({
+        id: `${projectId}_${artifactType}`,
+        text: `Deliver ${artifactType} for ${body.name || composition.workMode}.`,
+        assignee: composition.roles[index % composition.roles.length]?.personaSlug || lead?.personaSlug,
+        status: 'pending',
+        artifactType,
+        acceptanceChecks: composition.acceptanceChecks,
+      })),
+      workModeContract: composition,
+    },
+  };
 }
 
 function hashReplayKey(value = '') {
@@ -1236,7 +1278,14 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
           return json(200, { projects: service.listProjects() });
         }
         if (method === 'POST' && path === '/projects/initiate') {
-          const result = service.initiateProject(body);
+          const workModeInitiation = workModeInitiationInput(body);
+          if (workModeInitiation.error) {
+            return json(422, {
+              error: 'work-mode-team-coverage-incomplete',
+              workModeTeam: workModeInitiation.error,
+            });
+          }
+          const result = service.initiateProject(workModeInitiation.input);
           const resultProjectId = result.project?.id;
           const includeReadModels = shouldIncludeReadModels(body);
           return json(200, {

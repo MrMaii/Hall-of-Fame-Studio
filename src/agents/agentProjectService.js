@@ -7390,6 +7390,7 @@ export function createKickoffProjectFromMeeting({
   leaderElectionResolution: savedLeaderElectionResolution,
   nextActionResolution: savedNextActionResolution,
   generationProvenance = null,
+  workModeContract = null,
   now = nowIso(),
   autonomy = { enabled: true, cadence: 'hourly' },
   source = 'backend-kickoff-api',
@@ -7475,6 +7476,9 @@ export function createKickoffProjectFromMeeting({
     nextAutonomousRunAt: null,
     team: confirmedTeam,
     tasks: openTasks,
+    workModeContract: workModeContract?.schemaVersion === 'super-agent-work-mode-team/v1'
+      ? workModeContract
+      : null,
     logs: [
       {
         id: `log_${projectId}_approved`,

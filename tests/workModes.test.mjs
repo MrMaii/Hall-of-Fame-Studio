@@ -91,3 +91,22 @@ test('exposes work-mode composition through both API dispatch paths', async () =
     assert.equal(response.body.workModeTeam.readyForKickoff, true);
   }
 });
+
+test('persists a work-mode contract and its artifact tasks when a project is initiated', () => {
+  const api = createAgentProjectApi({ service: createAgentProjectService() });
+  const response = api.handle({
+    method: 'POST',
+    path: '/projects/initiate',
+    body: {
+      projectId: 'academic_writing_project',
+      name: 'Academic Writing Project',
+      brief: 'Draft a cited literature review.',
+      workMode: 'academic-writing',
+      includeReadModels: false,
+    },
+  });
+  assert.equal(response.status, 200);
+  assert.equal(response.body.project.workModeContract.workMode, 'academic-writing');
+  assert.equal(response.body.project.workModeContract.readyForKickoff, true);
+  assert.equal(response.body.project.tasks.some((task) => task.artifactType === 'claim-citation-graph'), true);
+});
