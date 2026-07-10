@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
   SUPER_AGENT_WORK_MODES,
   composeWorkModeTeam,
@@ -10,6 +11,8 @@ import {
 import { createAgentProjectApi } from '../src/agents/agentProjectApi.js';
 import { createAgentProjectService, reviewAgentSubmission, submitAgentArtifact } from '../src/agents/agentProjectService.js';
 
+const appSource = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
+
 test('defines five professional work modes with distinct artifacts, acceptance checks, and escalation checks', () => {
   assert.equal(Object.keys(SUPER_AGENT_WORK_MODES).length, 5);
   for (const mode of Object.values(SUPER_AGENT_WORK_MODES)) {
@@ -18,6 +21,11 @@ test('defines five professional work modes with distinct artifacts, acceptance c
     assert.ok(mode.acceptanceChecks.length >= 2);
     assert.ok(mode.escalationChecks.length >= 1);
   }
+});
+
+test('does not permit a work mode to fall back to a browser-only project without its contract', () => {
+  assert.match(appSource, /if \(confirmedKickoffPayload\.workMode \|\| !isDevelopmentInitiationFallbackEnabled\(\)\)/);
+  assert.match(appSource, /Work-mode initiation requires the local backend/);
 });
 
 test('creates a learning team with mastery and academic-integrity gates', () => {
@@ -142,6 +150,38 @@ test('persists a work-mode contract and its artifact tasks when a project is ini
   assert.equal(response.body.project.workModeContract.readyForKickoff, true);
   assert.equal(response.body.project.tasks.some((task) => task.artifactType === 'claim-citation-graph'), true);
   assert.ok(response.body.project.tasks.every((task) => Array.isArray(task.dependsOn)));
+  assert.ok(response.body.project.tasks.every((task) => task.reviewerId && task.reviewerId !== task.assignee));
+});
+
+test('starts a product-team mission with the governed work-mode roster instead of caller-selected members', () => {
+  const api = createAgentProjectApi({ service: createAgentProjectService() });
+  const response = api.handle({
+    method: 'POST',
+    path: '/product-team-missions',
+    body: {
+      projectId: 'governed_mission_project',
+      name: 'Governed technical mission',
+      brief: 'Ship a reliable local API change.',
+      workMode: 'technical-delivery',
+      team: [{ id: 'caller-selected-agent', name: 'Caller Selected Agent' }],
+      selectedTeamIds: ['caller-selected-agent'],
+      selectedLeaderId: 'caller-selected-agent',
+      reviewerId: 'caller-selected-agent',
+      reuseExistingKickoffMeeting: true,
+      kickoffMeetingId: 'untrusted-existing-meeting',
+      startAutopilot: false,
+      includeReadModels: false,
+    },
+  });
+  assert.equal(response.status, 200);
+  assert.equal(response.body.project.workModeContract.workMode, 'technical-delivery');
+  assert.equal(response.body.productTeamMissionRun.workMode, 'technical-delivery');
+  assert.equal(response.body.productTeamMissionRun.reusedKickoffMeeting, false);
+  assert.equal(response.body.project.team.some((member) => member.id === 'caller-selected-agent'), false);
+  assert.deepEqual(
+    response.body.project.team.map((member) => member.id).sort(),
+    response.body.project.workModeContract.roles.map((role) => role.personaSlug).sort(),
+  );
   assert.ok(response.body.project.tasks.every((task) => task.reviewerId && task.reviewerId !== task.assignee));
 });
 

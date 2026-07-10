@@ -6634,6 +6634,7 @@ export function createKickoffMeetingSession({
   selectedLeaderId,
   reviewerId,
   tasks = [],
+  workModeContract = null,
   now = nowIso(),
   source = 'backend-kickoff-meeting-session',
   generationProvenance = null,
@@ -6713,6 +6714,9 @@ export function createKickoffMeetingSession({
     updatedAt: now,
     team,
     tasks,
+    workModeContract: workModeContract?.schemaVersion === 'super-agent-work-mode-team/v1'
+      ? workModeContract
+      : null,
     recommendedLeaderId: recommendedLeader?.id || null,
     recommendedLeaderName: recommendedLeader?.name || null,
     reviewerId: reviewer?.id || null,
@@ -7306,6 +7310,9 @@ function buildProductTeamMissionConfig(input = {}) {
     tasks,
     selectedLeaderId: input.selectedLeaderId || leader?.id || null,
     reviewerId: input.reviewerId || reviewer?.id || null,
+    workModeContract: input.workModeContract?.schemaVersion === 'super-agent-work-mode-team/v1'
+      ? input.workModeContract
+      : null,
     language: normalizeLanguage(input.language || 'en'),
   };
 }
@@ -7403,6 +7410,7 @@ export function approveKickoffMeetingSession({
     roleQuestionResolutions: meeting.roleQuestionResolutions || meeting.evidence?.roleQuestionResolutions || [],
     leaderElectionResolution: meetingLeaderResolution,
     nextActionResolution: meetingNextActionResolution,
+    workModeContract: meeting.workModeContract,
     generationProvenance: meeting.generationProvenance || meeting.evidence?.generationProvenance || null,
     now,
     source: 'backend-kickoff-meeting-session-approval',
@@ -51609,6 +51617,7 @@ export function createAgentProjectService({
         missionName: config.name,
         missionBrief: config.brief,
         missionType: input.missionType || 'generic-product-team',
+        workMode: config.workModeContract?.workMode || null,
         validationSample: input.validationSample || null,
         researchOnly: false,
         status: session ? 'autopilot-started' : 'kickoff-approved',

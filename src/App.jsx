@@ -97,6 +97,13 @@ const SETTINGS_TOOL_GRANT_OPTIONS = [
   { id: 'search:evidence', label: 'Search evidence', detail: 'Allow Agents to collect provider-backed evidence search nodes.' },
 ];
 const DEFAULT_SETTINGS_TOOL_GRANTS = SETTINGS_TOOL_GRANT_OPTIONS.map(option => option.id);
+const INITIATION_WORK_MODES = [
+  { id: 'learning', label: 'Student learning', detail: 'Study plan, practice, and mastery evidence.' },
+  { id: 'academic-writing', label: 'Academic writing', detail: 'Citation coverage, claim support, and revision lineage.' },
+  { id: 'investigation', label: 'Investigation', detail: 'Hypotheses, source custody, and contradiction handling.' },
+  { id: 'technical-delivery', label: 'Technical delivery', detail: 'Implementation, test proof, rollback, and security review.' },
+  { id: 'creative-studio', label: 'Creative studio', detail: 'Creative brief, critique trail, and rights provenance.' },
+];
 
 function mergeProjectMessages(existing = [], incoming = []) {
   const messageTimeValue = (message = {}) => {
@@ -1875,6 +1882,7 @@ export default function EngineWorkspace() {
     reason: '',
     visibility: 'invite',
   });
+  const [initiationWorkMode, setInitiationWorkMode] = useState('technical-delivery');
   const [initiationWorkspaceDraft, setInitiationWorkspaceDraft] = useState(() => ({
     basePath: DEFAULT_INITIATION_WORKSPACE_BASE_PATH,
     folderName: defaultInitiationWorkspaceFolderName(initialInitiationName),
@@ -10027,6 +10035,7 @@ export default function EngineWorkspace() {
       language: activeLanguage,
       name: initiationDraft.name || 'Untitled Initiation',
       brief: taskText,
+      workMode: initiationWorkMode,
       meetingSkillBrief: buildInitiationMeetingSkillBrief({
         draft: initiationDraft,
         output: plannedTasks[0]?.text,
@@ -10448,14 +10457,18 @@ export default function EngineWorkspace() {
         applyBackendManagerDashboardPayload(kickoffResult);
       }
     } catch (error) {
-      if (!isDevelopmentInitiationFallbackEnabled()) {
+      if (confirmedKickoffPayload.workMode || !isDevelopmentInitiationFallbackEnabled()) {
         setBackendStation(prev => ({
           ...prev,
           connectionStatus: 'offline',
           lastAction: 'Backend initiation approval failed',
-          error: error.name === 'AbortError'
-            ? 'Backend or model provider timed out. No local fallback project was created.'
-            : `${error.message || String(error)} No local fallback project was created.`,
+          error: confirmedKickoffPayload.workMode
+            ? (error.name === 'AbortError'
+              ? 'Work-mode initiation requires the local backend; it timed out. No browser fallback project was created.'
+              : `Work-mode initiation requires the local backend. ${error.message || String(error)} No browser fallback project was created.`)
+            : (error.name === 'AbortError'
+              ? 'Backend or model provider timed out. No local fallback project was created.'
+              : `${error.message || String(error)} No local fallback project was created.`),
         }));
         setInitiationPhase('decision');
         return;
@@ -10678,7 +10691,7 @@ export default function EngineWorkspace() {
         await refreshAutonomousRunControlReadModels({
           payload: kickoffResult,
           projectId: createdProjectId,
-          agentIds: (confirmedKickoffPayload.team || []).map(agent => agent.id).filter(Boolean),
+          agentIds: (kickoffResult.project?.team || confirmedKickoffPayload.team || []).map(agent => agent.id).filter(Boolean),
         });
       } catch {
         // The mission receipt remains visible; explicit sync controls can recover the autonomy read models.
@@ -14983,6 +14996,13 @@ export default function EngineWorkspace() {
                         <span className="font-mono text-[9px] uppercase tracking-widest text-[#7d6a49]">What do you want to build?</span>
                         <textarea value={initiationDraft.intent} onChange={(e) => updateDraft('intent', e.target.value)} className="mt-2 w-full min-h-[92px] resize-none bg-[#f7edcf] border border-[#b8a57d] px-4 py-3 font-serif text-xl leading-relaxed outline-none focus:border-[#8f1e18]" />
                       </label>
+                      <label className="block">
+                        <span className="font-mono text-[9px] uppercase tracking-widest text-[#7d6a49]">Operating Mode</span>
+                        <select data-testid="initiation-work-mode" value={initiationWorkMode} onChange={(e) => setInitiationWorkMode(e.target.value)} className="mt-2 w-full bg-[#f7edcf] border border-[#b8a57d] px-4 py-3 font-serif text-lg outline-none focus:border-[#8f1e18]">
+                          {INITIATION_WORK_MODES.map(mode => <option key={mode.id} value={mode.id}>{mode.label}</option>)}
+                        </select>
+                        <p className="mt-2 font-serif text-sm leading-relaxed text-[#6a573d]">{INITIATION_WORK_MODES.find(mode => mode.id === initiationWorkMode)?.detail} The final kickoff uses a role-covered team and independent reviewer for this mode.</p>
+                      </label>
                       <div className="hidden">
                         <label className="block">
                           <span className="font-mono text-[9px] uppercase tracking-widest text-[#7d6a49]">Expected Output</span>
@@ -15263,6 +15283,7 @@ export default function EngineWorkspace() {
                     <div className="grid md:grid-cols-2 gap-4">
                       {[
                         ['Project Name', initiationDraft.name],
+                        ['Operating Mode', INITIATION_WORK_MODES.find(mode => mode.id === initiationWorkMode)?.label || initiationWorkMode],
                         ['First Leader', firstLead.name],
                         ['Reviewer', reporter.name],
                         ['Execution Members', workingGroup.map(member => member.name).join(' / ') || firstLead.name],
@@ -15404,6 +15425,7 @@ export default function EngineWorkspace() {
               {[
                 ['Current Stage', managerSteps[stepIndex]?.label],
                 ['Participants', invitedMembers.map(member => member.name).join(' / ') || 'None selected'],
+                ['Operating Mode', INITIATION_WORK_MODES.find(mode => mode.id === initiationWorkMode)?.label || initiationWorkMode],
                 ['Expected Output', initiationDraft.output],
                 ['Dashboard Gate', initiationStep === 'result' ? 'Ready to create' : 'After meeting approval'],
               ].map(([label, value]) => (

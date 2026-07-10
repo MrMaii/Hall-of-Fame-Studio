@@ -70,9 +70,11 @@ function workModeInitiationInput(body = {}) {
     input: {
       ...body,
       projectId,
-      team: body.team?.length ? body.team : generatedTeam,
-      selectedLeaderId: body.selectedLeaderId || lead?.personaSlug,
-      reviewerId: body.reviewerId || reviewer?.personaSlug,
+      // A work mode owns its roster. Caller-selected members cannot replace
+      // a required owner or the independent reviewer.
+      team: generatedTeam,
+      selectedLeaderId: lead?.personaSlug,
+      reviewerId: reviewer?.personaSlug,
       tasks: governedTasks,
       workModeContract: composition,
     },
@@ -1443,7 +1445,26 @@ export function createAgentProjectApi({ service, accessControl = {}, localAuth =
           });
         }
         if (method === 'POST' && path === '/product-team-missions') {
-          let result = service.startProductTeamMission({ ...body, language });
+          const workModeInitiation = workModeInitiationInput(body);
+          if (workModeInitiation.error) {
+            return json(422, {
+              error: 'work-mode-team-coverage-incomplete',
+              workModeTeam: workModeInitiation.error,
+            });
+          }
+          const missionInput = workModeInitiation.input;
+          const governedMission = Boolean(missionInput.workModeContract);
+          let result = service.startProductTeamMission({
+            ...missionInput,
+            language,
+            ...(governedMission ? {
+              // A generic roundtable cannot attest to a mode-specific roster.
+              meetingId: `work_mode_mission_${missionInput.projectId}`,
+              kickoffMeetingId: undefined,
+              reuseExistingKickoffMeeting: false,
+              selectedTeamIds: missionInput.team.map((member) => member.id),
+            } : {}),
+          });
           result = seedLocalProjectCreatorMembership(result, request, body);
           const resultProjectId = result.project?.id;
           const includeReadModels = shouldIncludeReadModels(body);
