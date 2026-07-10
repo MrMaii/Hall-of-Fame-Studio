@@ -110,6 +110,12 @@ try {
   await page.getByTestId('settings-local-auth-password').fill('correct horse battery staple');
   await page.getByTestId('settings-local-auth-bootstrap').click();
   await page.getByTestId('settings-local-auth-signed-in').waitFor({ state: 'visible', timeout: 15_000 });
+  await page.getByTestId('settings-local-auth-users').waitFor({ state: 'visible', timeout: 15_000 });
+  await page.getByTestId('settings-local-auth-create-username').fill('manager');
+  await page.getByTestId('settings-local-auth-create-password').fill('another correct horse battery staple');
+  await page.getByTestId('settings-local-auth-create-role').selectOption('manager');
+  await page.getByTestId('settings-local-auth-create-user').click();
+  await page.getByTestId('settings-local-auth-user-manager').waitFor({ state: 'visible', timeout: 15_000 });
   const session = await page.evaluate((storageKey) => JSON.parse(window.sessionStorage.getItem(storageKey) || 'null'), localAuthStorageKey);
   assert(session?.token && session.baseUrl === backendRuntime.url, 'Bootstrap must keep the local token in session storage bound to the active backend URL.');
   assert.equal(await page.evaluate((storageKey) => window.localStorage.getItem(storageKey), localAuthStorageKey), null, 'Local authentication must not persist the token in local storage.');

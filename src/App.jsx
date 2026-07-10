@@ -1786,6 +1786,14 @@ export default function EngineWorkspace() {
     displayName: '',
     pending: false,
   });
+  const [localAuthUsers, setLocalAuthUsers] = useState({ loading: false, rows: [], error: null });
+  const [localAuthUserDraft, setLocalAuthUserDraft] = useState({
+    username: '',
+    password: '',
+    displayName: '',
+    role: 'manager',
+    pending: false,
+  });
   const [healthCheck, setHealthCheck] = useState({
     running: false,
     lastRunAt: null,
@@ -2852,7 +2860,10 @@ export default function EngineWorkspace() {
         setLocalAuthDraft(previous => ({ ...previous, password: '' }));
       }
       await syncLocalAuthStatus();
-      if (authenticatedToken) await syncBackendProjectCatalog({ silent: true, authToken: authenticatedToken });
+      if (authenticatedToken) {
+        await syncBackendProjectCatalog({ silent: true, authToken: authenticatedToken });
+        if (action !== 'logout') await syncLocalAuthUsers({ authToken: authenticatedToken });
+      }
     } catch (error) {
       setLocalAuthStatus(previous => ({ ...previous, error: providerRuntimeErrorDetail(error) }));
     } finally {
@@ -2863,6 +2874,57 @@ export default function EngineWorkspace() {
   useEffect(() => {
     syncLocalAuthStatus();
   }, [backendStation.baseUrl]);
+
+  const syncLocalAuthUsers = async ({ authToken = '' } = {}) => {
+    const isSecurityAdmin = localAuthSessionForCurrentBackend?.user?.role === 'security-admin';
+    if (!authToken && !isSecurityAdmin) {
+      setLocalAuthUsers({ loading: false, rows: [], error: null });
+      return [];
+    }
+    setLocalAuthUsers(previous => ({ ...previous, loading: true, error: null }));
+    try {
+      const payload = await requestAgentBackend('/local-auth/users', { timeoutMs: 3000, authToken });
+      const rows = Array.isArray(payload.localAuth?.users) ? payload.localAuth.users : [];
+      setLocalAuthUsers({ loading: false, rows, error: null });
+      return rows;
+    } catch (error) {
+      setLocalAuthUsers({ loading: false, rows: [], error: providerRuntimeErrorDetail(error) });
+      return [];
+    }
+  };
+
+  const createLocalAuthUser = async (event) => {
+    event.preventDefault();
+    const username = String(localAuthUserDraft.username || '').trim();
+    const password = String(localAuthUserDraft.password || '');
+    if (!username || !password) {
+      setLocalAuthUsers(previous => ({ ...previous, error: 'Enter a username and password for the new local user.' }));
+      return;
+    }
+    setLocalAuthUserDraft(previous => ({ ...previous, pending: true }));
+    setLocalAuthUsers(previous => ({ ...previous, error: null }));
+    try {
+      await requestAgentBackend('/local-auth/users', {
+        method: 'POST',
+        timeoutMs: 10_000,
+        body: {
+          username,
+          password,
+          displayName: String(localAuthUserDraft.displayName || '').trim(),
+          role: localAuthUserDraft.role,
+        },
+      });
+      setLocalAuthUserDraft(previous => ({ ...previous, username: '', password: '', displayName: '', pending: false }));
+      await syncLocalAuthUsers();
+    } catch (error) {
+      setLocalAuthUserDraft(previous => ({ ...previous, pending: false }));
+      setLocalAuthUsers(previous => ({ ...previous, error: providerRuntimeErrorDetail(error) }));
+    }
+  };
+
+  useEffect(() => {
+    syncLocalAuthUsers();
+  }, [localAuthSession?.token, backendStation.baseUrl]);
 
   const providerRuntimeErrorDetail = (error) => (
     error?.name === 'AbortError'
@@ -12184,13 +12246,48 @@ export default function EngineWorkspace() {
                     ) : localAuthStatus.available === false ? (
                       <p data-testid="settings-local-auth-not-enabled" className="mt-4 font-mono text-[11px] leading-relaxed text-[#7d786b]">This backend has no local account store enabled. Start it with <code>AGENT_LOCAL_AUTH_REQUIRED=true</code> to require local login.</p>
                     ) : localAuthSessionForCurrentBackend ? (
-                      <div data-testid="settings-local-auth-signed-in" className="mt-4 flex flex-wrap items-center justify-between gap-3 border border-[#d1d0c9] bg-[#f8f6ee] p-3">
-                        <div>
-                          <div className="font-mono text-[11px] text-[#1a1a1a]">Signed in locally as {localAuthSessionForCurrentBackend.user?.displayName || localAuthSessionForCurrentBackend.user?.username || 'Local user'}</div>
-                          <div className="mt-1 font-mono text-[9px] uppercase tracking-[0.12em] text-[#7d786b]">{localAuthSessionForCurrentBackend.user?.role || 'observer'} · session expires {localAuthSessionForCurrentBackend.expiresAt || 'at the backend policy time'}</div>
+                      <>
+                        <div data-testid="settings-local-auth-signed-in" className="mt-4 flex flex-wrap items-center justify-between gap-3 border border-[#d1d0c9] bg-[#f8f6ee] p-3">
+                          <div>
+                            <div className="font-mono text-[11px] text-[#1a1a1a]">Signed in locally as {localAuthSessionForCurrentBackend.user?.displayName || localAuthSessionForCurrentBackend.user?.username || 'Local user'}</div>
+                            <div className="mt-1 font-mono text-[9px] uppercase tracking-[0.12em] text-[#7d786b]">{localAuthSessionForCurrentBackend.user?.role || 'observer'} · session expires {localAuthSessionForCurrentBackend.expiresAt || 'at the backend policy time'}</div>
+                          </div>
+                          <button type="button" data-testid="settings-local-auth-logout" onClick={() => submitLocalAuth('logout')} disabled={localAuthDraft.pending} className="border border-[#1a1a1a] px-3 py-2 font-mono text-[10px] uppercase tracking-widest hover:bg-[#d1d0c9] disabled:cursor-not-allowed disabled:opacity-50">Sign out</button>
                         </div>
-                        <button type="button" data-testid="settings-local-auth-logout" onClick={() => submitLocalAuth('logout')} disabled={localAuthDraft.pending} className="border border-[#1a1a1a] px-3 py-2 font-mono text-[10px] uppercase tracking-widest hover:bg-[#d1d0c9] disabled:cursor-not-allowed disabled:opacity-50">Sign out</button>
-                      </div>
+                        {localAuthSessionForCurrentBackend.user?.role === 'security-admin' && (
+                          <div data-testid="settings-local-auth-users" className="mt-4 border border-[#d1d0c9] bg-[#f8f6ee] p-4">
+                            <div className="flex flex-wrap items-start justify-between gap-3">
+                              <div>
+                                <div className={labelClass}>Local users</div>
+                                <p className="mt-1 font-mono text-[10px] leading-relaxed text-[#5f5a50]">Only public account metadata is shown here. A new password is sent once to the local backend and never rendered or stored by this screen.</p>
+                              </div>
+                              <SmallButton onClick={() => syncLocalAuthUsers()} disabled={localAuthUsers.loading}>
+                                <RefreshCw size={12} className="inline-block mr-2" />Refresh users
+                              </SmallButton>
+                            </div>
+                            <form className="mt-3 grid gap-2 md:grid-cols-4" onSubmit={createLocalAuthUser}>
+                              <input data-testid="settings-local-auth-create-username" value={localAuthUserDraft.username} onChange={(event) => setLocalAuthUserDraft(previous => ({ ...previous, username: event.target.value }))} autoComplete="username" placeholder="username" className="min-w-0 border border-[#d1d0c9] bg-[#f5f4f0] px-3 py-2 font-mono text-[11px] text-[#1a1a1a] outline-none focus:border-[#1a1a1a]" />
+                              <input data-testid="settings-local-auth-create-password" type="password" value={localAuthUserDraft.password} onChange={(event) => setLocalAuthUserDraft(previous => ({ ...previous, password: event.target.value }))} autoComplete="new-password" placeholder="password" className="min-w-0 border border-[#d1d0c9] bg-[#f5f4f0] px-3 py-2 font-mono text-[11px] text-[#1a1a1a] outline-none focus:border-[#1a1a1a]" />
+                              <select data-testid="settings-local-auth-create-role" value={localAuthUserDraft.role} onChange={(event) => setLocalAuthUserDraft(previous => ({ ...previous, role: event.target.value }))} className="border border-[#d1d0c9] bg-[#f5f4f0] px-3 py-2 font-mono text-[11px] text-[#1a1a1a] outline-none focus:border-[#1a1a1a]">
+                                <option value="manager">Manager</option>
+                                <option value="observer">Observer</option>
+                                <option value="security-admin">Security admin</option>
+                              </select>
+                              <button type="submit" data-testid="settings-local-auth-create-user" disabled={localAuthUserDraft.pending} className="border border-[#1a1a1a] bg-[#1a1a1a] px-3 py-2 font-mono text-[10px] uppercase tracking-widest text-[#f5f4f0] hover:bg-[#3b3933] disabled:cursor-not-allowed disabled:opacity-50">{localAuthUserDraft.pending ? 'Creating…' : 'Create user'}</button>
+                            </form>
+                            {localAuthUsers.error && <p data-testid="settings-local-auth-users-error" className="mt-3 font-mono text-[11px] text-[#8f1e18]">{localAuthUsers.error}</p>}
+                            <div className="mt-3 grid gap-2">
+                              {localAuthUsers.rows.map((user) => (
+                                <div key={user.id} data-testid={`settings-local-auth-user-${user.username}`} className="flex flex-wrap items-center justify-between gap-2 border border-[#d1d0c9] bg-[#f5f4f0] px-3 py-2 font-mono text-[10px] text-[#1a1a1a]">
+                                  <span>{user.displayName || user.username} <span className="text-[#7d786b]">@{user.username}</span></span>
+                                  <span className="uppercase tracking-[0.12em] text-[#5f5a50]">{user.role}</span>
+                                </div>
+                              ))}
+                              {!localAuthUsers.loading && !localAuthUsers.rows.length && <p className="font-mono text-[10px] text-[#7d786b]">No local users returned yet.</p>}
+                            </div>
+                          </div>
+                        )}
+                      </>
                     ) : (
                       <form data-testid="settings-local-auth-form" className="mt-4 grid gap-3 border border-[#d1d0c9] bg-[#f8f6ee] p-4 md:grid-cols-2" onSubmit={(event) => { event.preventDefault(); submitLocalAuth(localAuthStatus.bootstrapRequired ? 'bootstrap' : 'login'); }}>
                         <label className="font-mono text-[10px] uppercase tracking-[0.12em] text-[#5f5a50]">Username
