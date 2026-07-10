@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   SUPER_AGENT_WORK_MODES,
   composeWorkModeTeam,
+  evaluateWorkModeAcceptance,
   getSuperAgentWorkMode,
 } from '../src/agents/workModes.js';
 import { createAgentProjectApi } from '../src/agents/agentProjectApi.js';
@@ -109,4 +110,17 @@ test('persists a work-mode contract and its artifact tasks when a project is ini
   assert.equal(response.body.project.workModeContract.workMode, 'academic-writing');
   assert.equal(response.body.project.workModeContract.readyForKickoff, true);
   assert.equal(response.body.project.tasks.some((task) => task.artifactType === 'claim-citation-graph'), true);
+});
+
+test('does not accept a work-mode project until every required artifact and mode-specific review is present', () => {
+  const contract = composeWorkModeTeam({ workMode: 'technical-delivery', objective: 'Ship an API safely.' });
+  const blocked = evaluateWorkModeAcceptance({ workModeContract: contract, submissions: [] });
+  const ready = evaluateWorkModeAcceptance({
+    workModeContract: contract,
+    submissions: contract.requiredArtifacts.map((artifactType) => ({ artifactType, reviewStatus: 'accepted' })),
+    resolvedEscalationIds: ['security-release', 'irreversible-change'],
+  });
+  assert.equal(blocked.readyForAcceptance, false);
+  assert.equal(blocked.missingArtifacts.includes('test-evidence'), true);
+  assert.equal(ready.readyForAcceptance, true);
 });

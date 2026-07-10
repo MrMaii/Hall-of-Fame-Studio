@@ -100,3 +100,29 @@ export function composeWorkModeTeam({
     status: readyForKickoff ? 'team-composed' : 'team-composition-blocked',
   };
 }
+
+export function evaluateWorkModeAcceptance({
+  workModeContract = null,
+  submissions = [],
+  resolvedEscalationIds = [],
+} = {}) {
+  if (workModeContract?.schemaVersion !== 'super-agent-work-mode-team/v1') {
+    return { schemaVersion: 'super-agent-work-mode-acceptance/v1', readyForAcceptance: false, reason: 'work-mode-contract-missing', missingArtifacts: [], unresolvedEscalations: [] };
+  }
+  const acceptedArtifacts = new Set((Array.isArray(submissions) ? submissions : [])
+    .filter((submission) => submission?.reviewStatus === 'accepted')
+    .map((submission) => submission.artifactType));
+  const missingArtifacts = (workModeContract.requiredArtifacts || []).filter((artifact) => !acceptedArtifacts.has(artifact));
+  const resolved = new Set(resolvedEscalationIds || []);
+  const unresolvedEscalations = (workModeContract.escalationChecks || [])
+    .map((check) => check.id)
+    .filter((id) => !resolved.has(id));
+  return {
+    schemaVersion: 'super-agent-work-mode-acceptance/v1',
+    workMode: workModeContract.workMode,
+    missingArtifacts,
+    unresolvedEscalations,
+    acceptedArtifactCount: acceptedArtifacts.size,
+    readyForAcceptance: missingArtifacts.length === 0 && unresolvedEscalations.length === 0,
+  };
+}
