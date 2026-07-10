@@ -69,6 +69,11 @@ const stageMeetingIndex = submitRoomInputSource.indexOf('stageMeetingUserTurn');
 const backendMeetingIndex = submitRoomInputSource.indexOf("await runBackendProjectCommand('meeting'");
 assert(stageMeetingIndex >= 0 && stageMeetingIndex < backendMeetingIndex, 'Meeting input must render the Director message before awaiting the backend Agent turns.');
 assert(submitRoomInputSource.includes('queueMeetingIntentPreview'), 'Meeting input must queue visible Agent intent before awaiting backend turns.');
+assert(appSource.includes('const roomUserIntentActiveRef = useRef(false);'), 'Meeting runtime must keep a ref for Director speaking or typing intent.');
+assert(appSource.includes('const scheduleRoomAgentTurn = ({'), 'Meeting runtime must schedule Agent turns through the Director-precedence gate.');
+assert(appSource.includes('if (roomUserIntentActiveRef.current)'), 'Queued Agent turns must defer while the Director is speaking or typing.');
+assert(appSource.includes('setRoomUserIntentActive(true)'), 'Meeting input and voice controls must mark Director intent active.');
+assert(appSource.includes("status: 'paused'"), 'An Agent that is already visibly speaking must be paused when Director intent begins.');
 
 const submitChatInputStart = appSource.indexOf('const submitChatInput = async');
 const submitChatInputEnd = appSource.indexOf('const createProjectTranscriptChannel = async', submitChatInputStart);

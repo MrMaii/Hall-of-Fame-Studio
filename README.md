@@ -71,21 +71,15 @@ Open **http://localhost:5173**, then click **Load Sample Fixture** only when you
 
 ### Run the real local MVP path
 
-For a backend-backed local MVP session, start the Agents server with Secret Vault enabled before opening the UI:
+For a backend-backed local MVP session, set any required local Secret Vault variables, then use the same command for both backend and UI:
 
 ```powershell
-$env:SECRET_VAULT_ENABLED='true'
+$env:SECRET_VAULT_ENABLED='true' # optional when using the local vault
 $env:SECRET_VAULT_KEY='replace-with-a-local-dev-key'
-npm run agents:server
-```
-
-Then open a second terminal for the UI:
-
-```powershell
 npm run dev
 ```
 
-In the app, open **Settings -> Keys**, wait for backend sync, seal the model key and search endpoint/key through Secret Vault, then start from **Start Initiation**. Use the kickoff, meeting, Collaboration Intent Queue, Flow Graph, Proof Map, transcript, timeline, and event ledger to inspect the real Agent handoff. Do not use **Load Sample Fixture** to judge whether the platform can run a real project.
+`npm run dev` supervises both the backend (`127.0.0.1:8787`) and Vite UI (`127.0.0.1:5173`), so browser workspace requests no longer depend on a separately started server. In the app, open **Settings -> Keys**, wait for backend sync, seal the model key and search endpoint/key through Secret Vault, then start from **Start Initiation**. Use the kickoff, meeting, Collaboration Intent Queue, Flow Graph, Proof Map, transcript, timeline, and event ledger to inspect the real Agent handoff. After confirmation, the Leader writes the first report to `meeting-notes/kickoff-summary.md` in the bound workspace and attaches it to the Flow Graph. See [the local meeting autonomy runbook](docs/LOCAL_MEETING_AUTONOMY.md) for the queue, Director-precedence, and audit protocol. Do not use **Load Sample Fixture** to judge whether the platform can run a real project.
 
 To validate the same first-user path without doing it manually, run:
 

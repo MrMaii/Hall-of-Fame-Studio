@@ -236,7 +236,8 @@ export function createLocalProjectRuntime({
       const workspacePath = context.project?.localRuntime?.workspacePath;
       let workspaceFile = null;
       if (workspacePath && existsSync(workspacePath) && statSync(workspacePath).isDirectory()) {
-        const workspaceAbsolutePath = safeJoin(workspacePath, `agent-artifacts/${relativePath}`);
+        const workspaceRelativePath = artifact.workspaceRelativePath || `agent-artifacts/${relativePath}`;
+        const workspaceAbsolutePath = safeJoin(workspacePath, workspaceRelativePath);
         mkdirSync(dirname(workspaceAbsolutePath), { recursive: true });
         writeFileSync(workspaceAbsolutePath, artifact.content || '', 'utf8');
         workspaceFile = {

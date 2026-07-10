@@ -1856,6 +1856,7 @@ export default function EngineWorkspace() {
   // --- Project Workspace State ---
   const [roomInputDrafts, setRoomInputDrafts] = useState({});
   const [roomVoiceStatus, setRoomVoiceStatus] = useState('idle');
+  const [roomUserIntentActive, setRoomUserIntentActiveState] = useState(false);
   const [roomIntentions, setRoomIntentions] = useState([]);
   const [roomSpeaker, setRoomSpeaker] = useState(null);
   const [roomTranscript, setRoomTranscript] = useState([
@@ -2038,6 +2039,8 @@ export default function EngineWorkspace() {
   const sceneTransitionTimerRef = useRef(null);
   const roomSimulationTimersRef = useRef([]);
   const roomSpeechRecognitionRef = useRef(null);
+  const roomUserIntentActiveRef = useRef(false);
+  const roomPendingSpeechRef = useRef(new Map());
   const meetingTimerRef = useRef(null);
   const lastTimelineWheelRef = useRef(0);
   const tlPreviewTimerRef = useRef(null);
@@ -2105,6 +2108,51 @@ export default function EngineWorkspace() {
         [projectInputUiStateKey]: nextValue || '',
       };
     });
+  };
+  const resetRoomAgentSpeech = () => {
+    roomSimulationTimersRef.current.forEach(timer => clearTimeout(timer));
+    roomSimulationTimersRef.current = [];
+    roomPendingSpeechRef.current.forEach(turn => clearTimeout(turn.timer));
+    roomPendingSpeechRef.current.clear();
+    setRoomSpeaker(null);
+  };
+  const setRoomUserIntentActive = (active) => {
+    const nextActive = Boolean(active);
+    roomUserIntentActiveRef.current = nextActive;
+    setRoomUserIntentActiveState(nextActive);
+    if (!nextActive) return;
+    setRoomSpeaker(null);
+    roomPendingSpeechRef.current.forEach((turn, intentId) => {
+      if (turn.phase !== 'speaking') return;
+      clearTimeout(turn.timer);
+      roomPendingSpeechRef.current.delete(intentId);
+    });
+    setRoomIntentions(prev => prev.map(intent => (
+      intent.status === 'speaking' ? { ...intent, status: 'paused' } : intent
+    )));
+  };
+  const scheduleRoomAgentTurn = ({ intentId, delayMs, onStart, onYield }) => {
+    const turn = { intentId, phase: 'queued', timer: null };
+    const defer = (waitMs, phase) => {
+      turn.timer = setTimeout(() => {
+        if (roomPendingSpeechRef.current.get(intentId) !== turn) return;
+        if (roomUserIntentActiveRef.current) {
+          defer(250, phase);
+          return;
+        }
+        turn.phase = phase;
+        if (phase === 'start') {
+          onStart();
+          defer(MEETING_TURN_SPEAK_DURATION_MS, 'yield');
+          return;
+        }
+        onYield();
+        roomPendingSpeechRef.current.delete(intentId);
+      }, waitMs);
+      roomSimulationTimersRef.current.push(turn.timer);
+    };
+    roomPendingSpeechRef.current.set(intentId, turn);
+    defer(delayMs, 'start');
   };
   const focusedChatProofIds = focusedChatProofIdDrafts[projectInputUiStateKey] || [];
   const setFocusedChatProofIds = (value) => {
@@ -10274,6 +10322,18 @@ export default function EngineWorkspace() {
           },
           timeoutMs: 10_000,
         });
+        const meetingReportResult = await requestAgentBackend(`/projects/${encodeURIComponent(createdProjectId)}/meeting-report`, {
+          method: 'POST',
+          body: { now: new Date().toISOString() },
+          timeoutMs: 10_000,
+        });
+        if (meetingReportResult.project?.id) {
+          projectReadyForWork = {
+            ...projectReadyForWork,
+            ...meetingReportResult.project,
+            language: meetingReportResult.project.language || projectReadyForWork.language || activeLanguage,
+          };
+        }
         const verification = {
           route: 'workspace-bound-and-verified',
           projectId: createdProjectId,
@@ -10282,6 +10342,8 @@ export default function EngineWorkspace() {
           writePath: writeResult.file?.path || markerPath,
           readBytes: readResult.content?.length || 0,
           listedEntries: listResult.files?.length || 0,
+          meetingReportSubmissionId: meetingReportResult.meetingReport?.submissionId || null,
+          meetingReportPath: meetingReportResult.meetingReport?.workspaceRelativePath || null,
           verifiedAt: new Date().toISOString(),
         };
         setInitiationWorkspaceDraft(prev => ({
@@ -10293,6 +10355,8 @@ export default function EngineWorkspace() {
             projectId: createdProjectId,
             workspacePath: verification.workspacePath,
             workspaceBoundAt: bindPayload.localRuntime?.workspaceBoundAt || boundAt,
+            meetingReportSubmissionId: verification.meetingReportSubmissionId,
+            meetingReportPath: verification.meetingReportPath,
           },
           verification,
           error: null,
@@ -10300,9 +10364,11 @@ export default function EngineWorkspace() {
         setBackendStation(prev => ({
           ...prev,
           connectionStatus: 'online',
-          lastAction: 'Initiation workspace bound and verified through backend local runtime',
+          lastAction: 'Initiation workspace bound, verified, and populated with the Leader meeting report',
           error: null,
         }));
+        setTimeout(() => syncBackendManagerFlowGraph({ silent: true, projectId: createdProjectId }), 0);
+        setTimeout(() => syncBackendTimelineAndEvents({ silent: true, projectId: createdProjectId }), 0);
       } catch (error) {
         setInitiationWorkspaceDraft(prev => ({
           ...prev,
@@ -10678,9 +10744,7 @@ export default function EngineWorkspace() {
     const backendTurns = (meetingAgentTurns || []).filter(turn => turn?.text);
     if (!backendTurns.length) return false;
     const team = projectOverride?.team || [];
-    roomSimulationTimersRef.current.forEach(timer => clearTimeout(timer));
-    roomSimulationTimersRef.current = [];
-    setRoomSpeaker(null);
+    resetRoomAgentSpeech();
     setRoomIntentions(backendTurns.map((turn, index) => {
       const agent = team.find(item => item.id === turn.speakerId || item.name === turn.speaker);
       const delayMs = meetingTurnDelayMs(index, turn.delayMs);
@@ -10710,9 +10774,12 @@ export default function EngineWorkspace() {
     });
     backendTurns.forEach((turn, index) => {
       const delayMs = meetingTurnDelayMs(index, turn.delayMs);
-      const timer = setTimeout(() => {
+      const intentId = `backend_meeting_${turn.messageId || turn.id || index}`;
+      scheduleRoomAgentTurn({
+        intentId,
+        delayMs,
+        onStart: () => {
         const agent = team.find(item => item.id === turn.speakerId || item.name === turn.speaker);
-        const intentId = `backend_meeting_${turn.messageId || turn.id || index}`;
         if (turn.speakerId || agent?.id) setRoomSpeaker(turn.speakerId || agent.id);
         setRoomIntentions(prev => prev.map(intent => (
           intent.id === intentId ? { ...intent, status: 'speaking' } : intent
@@ -10727,21 +10794,15 @@ export default function EngineWorkspace() {
           proofIds: turn.proofIds || [],
           eventIds: turn.eventIds || [],
         });
-        const yieldTimer = setTimeout(() => {
+        },
+        onYield: () => {
           setRoomIntentions(prev => prev.map(intent => (
             intent.id === intentId ? { ...intent, status: 'yielded' } : intent
           )));
           if (index === backendTurns.length - 1) setRoomSpeaker(null);
-        }, MEETING_TURN_SPEAK_DURATION_MS);
-        roomSimulationTimersRef.current.push(yieldTimer);
-      }, delayMs);
-      roomSimulationTimersRef.current.push(timer);
+        },
+      });
     });
-    const clearSpeakerTimer = setTimeout(() => {
-      setRoomSpeaker(null);
-      roomSimulationTimersRef.current = [];
-    }, Math.max(...backendTurns.map((turn, index) => meetingTurnDelayMs(index, turn.delayMs))) + MEETING_TURN_SPEAK_DURATION_MS + 600);
-    roomSimulationTimersRef.current.push(clearSpeakerTimer);
     return true;
   };
 
@@ -10764,8 +10825,7 @@ export default function EngineWorkspace() {
     submittedAt = null,
     exchange: previewExchange = null,
   } = {}) => {
-    roomSimulationTimersRef.current.forEach(timer => clearTimeout(timer));
-    roomSimulationTimersRef.current = [];
+    resetRoomAgentSpeech();
     const exchange = queueMeetingIntentPreview(text, projectOverride, {
       submittedAt,
       messageId,
@@ -10774,7 +10834,10 @@ export default function EngineWorkspace() {
     stageMeetingUserTurn({ text, messageId, submittedAt });
     (exchange?.responses || []).forEach((response, index) => {
       const delayMs = meetingTurnDelayMs(index, response.delayMs);
-      const timer = setTimeout(() => {
+      scheduleRoomAgentTurn({
+        intentId: response.speakerId,
+        delayMs,
+        onStart: () => {
         setRoomSpeaker(response.speakerId);
         setRoomIntentions(prev => prev.map(i => i.id === response.speakerId ? { ...i, status: 'speaking' } : i));
         appendRoomTranscriptEntry({
@@ -10785,19 +10848,13 @@ export default function EngineWorkspace() {
           text: response.text,
           source: response.source || 'local-room-runtime',
         });
-        const yieldTimer = setTimeout(() => {
+        },
+        onYield: () => {
           setRoomIntentions(prev => prev.map(i => i.id === response.speakerId ? { ...i, status: 'yielded' } : i));
-        }, MEETING_TURN_SPEAK_DURATION_MS);
-        roomSimulationTimersRef.current.push(yieldTimer);
-      }, delayMs);
-      roomSimulationTimersRef.current.push(timer);
+          if (index === (exchange?.responses || []).length - 1) setRoomSpeaker(null);
+        },
+      });
     });
-    const responseDelays = (exchange?.responses || []).map((response, index) => meetingTurnDelayMs(index, response.delayMs));
-    const runtimeClearSpeakerTimer = setTimeout(() => {
-      setRoomSpeaker(null);
-      roomSimulationTimersRef.current = [];
-    }, (responseDelays.length ? Math.max(...responseDelays) : 0) + MEETING_TURN_SPEAK_DURATION_MS + 600);
-    roomSimulationTimersRef.current.push(runtimeClearSpeakerTimer);
   };
 
   const queueRoomChangeDiscussion = (changeResponse, projectOverride = activeProject) => {
@@ -10822,10 +10879,14 @@ export default function EngineWorkspace() {
     changeResponse.discussionMessages.forEach((message, index) => {
       const agent = team.find(item => item.name === message.author);
       const delayMs = meetingTurnDelayMs(index, 1600 + index * 900);
-      const startTimer = setTimeout(() => {
+      const intentId = `change_${message.id}`;
+      scheduleRoomAgentTurn({
+        intentId,
+        delayMs,
+        onStart: () => {
         if (agent) setRoomSpeaker(agent.id);
         setRoomIntentions(prev => prev.map(intent => (
-          intent.id === `change_${message.id}` ? { ...intent, status: 'speaking' } : intent
+          intent.id === intentId ? { ...intent, status: 'speaking' } : intent
         )));
         appendRoomTranscriptEntry({
           id: `room_${message.id}`,
@@ -10835,14 +10896,14 @@ export default function EngineWorkspace() {
           text: message.text,
           source: 'war-room-change',
         });
-      }, delayMs);
-      const yieldTimer = setTimeout(() => {
+        },
+        onYield: () => {
         setRoomIntentions(prev => prev.map(intent => (
-          intent.id === `change_${message.id}` ? { ...intent, status: 'yielded' } : intent
+          intent.id === intentId ? { ...intent, status: 'yielded' } : intent
         )));
         if (index === changeResponse.discussionMessages.length - 1) setRoomSpeaker(null);
-      }, delayMs + MEETING_TURN_SPEAK_DURATION_MS);
-      roomSimulationTimersRef.current.push(startTimer, yieldTimer);
+        },
+      });
     });
   };
 
@@ -10851,6 +10912,7 @@ export default function EngineWorkspace() {
     if (!text) return;
     const submittedAt = new Date().toISOString();
     const messageId = `room_change_user_${Date.now()}`;
+    setRoomUserIntentActive(false);
     setRoomInput('');
     stageMeetingUserTurn({ text, messageId, submittedAt });
     const previewExchange = queueMeetingIntentPreview(text, projectOverride, {
@@ -34208,7 +34270,6 @@ export default function EngineWorkspace() {
     const toggleRoomVoiceInput = () => {
       if (roomVoiceStatus === 'listening') {
         roomSpeechRecognitionRef.current?.stop?.();
-        setRoomVoiceStatus('idle');
         return;
       }
       const Recognition = speechRecognitionSupported;
@@ -34220,15 +34281,27 @@ export default function EngineWorkspace() {
       recognition.lang = activeLanguage === 'zh' ? 'zh-CN' : 'en-US';
       recognition.interimResults = false;
       recognition.continuous = false;
-      recognition.onstart = () => setRoomVoiceStatus('listening');
-      recognition.onend = () => setRoomVoiceStatus(status => (status === 'listening' ? 'idle' : status));
-      recognition.onerror = () => setRoomVoiceStatus('error');
+      let capturedSpeech = false;
+      recognition.onstart = () => {
+        setRoomUserIntentActive(true);
+        setRoomVoiceStatus('listening');
+      };
+      recognition.onend = () => {
+        if (!capturedSpeech) setRoomUserIntentActive(false);
+        setRoomVoiceStatus(status => (status === 'listening' ? 'idle' : status));
+      };
+      recognition.onerror = () => {
+        setRoomUserIntentActive(false);
+        setRoomVoiceStatus('error');
+      };
       recognition.onresult = (event) => {
         const spokenText = Array.from(event.results)
           .map(result => result[0]?.transcript || '')
           .join(' ')
           .trim();
         if (spokenText) {
+          capturedSpeech = true;
+          setRoomUserIntentActive(true);
           setRoomInput(prev => `${prev}${prev && !/\s$/.test(prev) ? ' ' : ''}${spokenText}`);
         }
       };
@@ -34512,7 +34585,13 @@ export default function EngineWorkspace() {
                 <textarea
                   data-testid="project-meeting-input"
                   value={roomInput}
-                  onChange={(e) => setRoomInput(e.target.value)}
+                  onFocus={() => setRoomUserIntentActive(true)}
+                  onBlur={() => { if (!roomInput.trim()) setRoomUserIntentActive(false); }}
+                  onCompositionStart={() => setRoomUserIntentActive(true)}
+                  onChange={(e) => {
+                    setRoomUserIntentActive(true);
+                    setRoomInput(e.target.value);
+                  }}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' && !e.shiftKey) {
                       e.preventDefault();
@@ -34528,6 +34607,9 @@ export default function EngineWorkspace() {
                   className="shrink-0 bg-[#8f1e18] hover:bg-[#a62a22] text-white px-5 py-3 rounded flex items-center gap-2 font-mono text-[9px] uppercase tracking-widest transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
                   Speak
                 </button>
+              </div>
+              <div data-testid="project-meeting-director-precedence" className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#bcae86]">
+                {roomUserIntentActive ? 'Director has the floor — Agent turns paused' : 'Agent intent queue ready'}
               </div>
               <div className="hidden">
                 <div className={`p-2 rounded ${isAnySpeaking ? 'bg-[#8f1e18]/20' : 'bg-[#3a2a1c]'}`}>

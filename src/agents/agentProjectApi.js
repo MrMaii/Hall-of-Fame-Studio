@@ -2133,6 +2133,20 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
             localRuntime: result.localRuntime,
           });
         }
+        if (method === 'POST' && route.action === 'meeting-report') {
+          const result = service.publishKickoffMeetingReport({ projectId: route.projectId, ...body });
+          const includeReadModels = shouldIncludeReadModels(body);
+          return json(200, {
+            ...publicProjectResult(result, route.projectId, language, { includeReadModels }),
+            route: result.route,
+            meetingReport: result.meetingReport,
+            submission: result.submission,
+            ...(includeReadModels ? {
+              managerFlowGraph: service.getManagerFlowGraph(route.projectId, { language }),
+              meetingSummaries: service.getMeetingSummaries(route.projectId, { language }),
+            } : deferredReadModels(route.projectId)),
+          });
+        }
         if (route.action === 'workspace') {
           if (method === 'POST' && route.tail[0] === 'bind') {
             const result = service.bindProjectWorkspace({ projectId: route.projectId, ...body });

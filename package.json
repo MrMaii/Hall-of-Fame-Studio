@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "test": "node --test \"tests/**/*.test.mjs\"",
-    "dev": "vite",
+    "dev": "node scripts/local-dev.mjs",
     "build": "vite build",
     "build:single": "vite build && node scripts/build-single-html.cjs",
     "agents:scenario": "node scripts/validate-agent-manager-scenario.mjs",
@@ -93,6 +93,7 @@
     "agents:agent-contract": "node scripts/validate-agent-contract-contract.mjs",
     "agents:manager-chat-command-contract": "node scripts/validate-manager-chat-command-contract.mjs",
     "agents:smart-meeting-runtime": "node scripts/validate-smart-meeting-runtime-contract.mjs",
+    "agents:local-meeting-autonomy": "node scripts/validate-local-meeting-autonomy-chain.mjs",
     "agents:project-settings:privacy": "node scripts/validate-project-settings-privacy-policy.mjs",
     "agents:project-settings:provider-budget": "node scripts/validate-project-settings-provider-budget-policy.mjs",
     "agents:project-settings:tool-grants": "node scripts/validate-project-settings-tool-grant-policy.mjs",

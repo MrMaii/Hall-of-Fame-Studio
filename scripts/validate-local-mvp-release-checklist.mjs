@@ -1045,7 +1045,7 @@ assert(
   frontendMockBoundariesSource.includes('Backend proof transcript missing; local recovery suppressed')
     && frontendMockBoundariesSource.includes('Backend timeline proof missing; local timeline focus suppressed')
     && frontendMockBoundariesSource.includes('Backend project missing; local seed suppressed')
-    && frontendMockBoundariesSource.includes('const isBackendManagedBrowserCacheProject = (project = {})')
+    && frontendMockBoundariesSource.includes('const isBackendManagedRealProject = (project = {})')
     && frontendMockBoundariesSource.includes('const canPersistProjectToBrowserCache = (project = {})')
     && frontendMockBoundariesSource.includes('const canPersistChatMessageToBrowserCache = (message = {}, projectById = new Map())')
     && frontendMockBoundariesSource.includes('CHAT_PROOF_ID_PATTERN.test(messageId)')

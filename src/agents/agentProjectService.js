@@ -39,6 +39,23 @@ import { createManagedPersistenceAdapterFromEnv, managedPersistenceAdapterStatus
 import { createWorkerQueueAdapterFromEnv, workerQueueAdapterStatus } from './workerQueueAdapter.js';
 import { createHttpJsonAdapterGatewayClient } from './adapterGatewayClient.js';
 import { meetingTurnDelayMs } from './meetingQueueProtocol.js';
+import {
+  buildModelKickoffMeetingMessages,
+  buildModelKickoffMeetingTurnMessages,
+  buildModelKickoffOpeningLineMessages,
+  buildModelKickoffTurnLineMessages,
+  findMeetingAgent,
+  modelKickoffPayloadMatchesTopic,
+  modelKickoffPayloadText,
+  normalizeModelArray,
+  normalizeModelMeetingTurnType,
+  normalizeModelText,
+  parseModelCompletionJson,
+  parseModelOpeningLinePayload,
+  parseModelTurnLinePayload,
+  repairModelCompletionJson,
+} from './modelKickoffParsing.js';
+import { compactPreview } from './textPreview.js';
 import { createTranslator, localizeText, normalizeLanguage } from '../i18n/runtime.js';
 
 const nowIso = () => new Date().toISOString();
@@ -4775,6 +4792,8 @@ export function submitAgentArtifact({
   tags = [],
   originDraft = null,
   channelId = 'main',
+  relativePath = '',
+  workspaceRelativePath = '',
   now = nowIso(),
   artifactWriter = null,
   language = project.language || 'en',
@@ -4857,6 +4876,12 @@ export function submitAgentArtifact({
     artifactType: normalizedType,
     timestamp,
   })}.${extension}`;
+  const defaultArtifactPath = {
+    relativePath: `submissions/${slugPart(agent.id).slice(0, 32)}/${normalizedType}/${artifactFileName}`,
+    path: `submissions/${slugPart(agent.id).slice(0, 32)}/${normalizedType}/${artifactFileName}`,
+  };
+  const isKickoffMeetingReportPath = relativePath === 'meeting-notes/kickoff-summary.md'
+    && workspaceRelativePath === 'meeting-notes/kickoff-summary.md';
   const artifactDraft = {
     id: `artifact_${submissionId}`,
     submissionId,
@@ -4866,8 +4891,12 @@ export function submitAgentArtifact({
     artifactType: normalizedType,
     summary: safeSummary,
     content,
-    relativePath: `submissions/${slugPart(agent.id).slice(0, 32)}/${normalizedType}/${artifactFileName}`,
-    path: `submissions/${slugPart(agent.id).slice(0, 32)}/${normalizedType}/${artifactFileName}`,
+    ...defaultArtifactPath,
+    ...(isKickoffMeetingReportPath ? {
+      relativePath,
+      path: relativePath,
+      workspaceRelativePath,
+    } : {}),
     createdAt: now,
     agentId: agent.id,
     taskId: task?.id || null,
@@ -4984,6 +5013,8 @@ export function submitAgentArtifact({
     artifactChecksum: artifactStorageProof.checksum,
     artifactPath: artifactRecord.absolutePath || artifactRecord.path || artifactRecord.relativePath || null,
     artifactUrl: artifactRecord.url || null,
+    workspaceRelativePath: artifactRecord.workspaceRelativePath || artifactRecord.workspaceFile?.relativePath || null,
+    workspaceUrl: artifactRecord.workspaceUrl || artifactRecord.workspaceFile?.url || null,
     artifactStorageProof,
     artifactStorageProofChecksum: artifactStorageProof.checksum,
     workspaceFileProof: artifactStorageProof,
@@ -6646,251 +6677,6 @@ export function createKickoffMeetingSession({
   };
 }
 
-function buildModelKickoffMeetingMessages({
-  projectId = '',
-  meetingId = '',
-  name = 'Untitled Agent Project',
-  brief = '',
-  team = [],
-  tasks = [],
-  language = 'en',
-  now = nowIso(),
-  strictTopic = false,
-} = {}) {
-  const roster = team.map((agent) => `${agent.id}: ${agent.name} / ${agent.role || agent.title || 'Agent'} / ${agent.duty || agent.skill || ''}`).join('\n');
-  const requestedActions = (tasks || []).map((task, index) => `${task.id || `task_${index + 1}`}: ${typeof task === 'string' ? task : task.text || ''}`).join('\n');
-  return [
-    {
-      role: 'system',
-      content: [
-        'You are the real kickoff meeting engine for Hall of Fame Studio.',
-        'Return the final JSON immediately. Do not reason step by step.',
-        'Generate only the opening clarification stage of a project-initiation meeting.',
-        'The project topic is fixed. Never replace it with another research topic or generic AI/model-performance work.',
-        'Every text field must mention or clearly refer to the project topic.',
-        'Use 2 or 3 roleTurns only. Do not generate leaderCampaigns or nextActions in the opening stage.',
-        'Keep each text under 32 Chinese characters or 24 English words.',
-        'Required JSON keys: roleTurns, decisionSummary, risks.',
-        'roleTurns item: {agentId,type,text,hears}. Use type "role-question" or "role-volunteer".',
-        strictTopic ? 'Strict topic retry: every agent turn, leader claim, next action, and risk must explicitly concern the exact project name and brief.' : '',
-        'Return JSON only. No markdown.',
-      ].filter(Boolean).join('\n'),
-    },
-    {
-      role: 'user',
-      content: [
-        `PROJECT NAME: ${name}`,
-        `PROJECT BRIEF: ${brief || name}`,
-        `PROJECT LANGUAGE: ${language}`,
-        `MEETING ID: ${meetingId}`,
-        `NOW: ${now}`,
-        `AGENTS:\n${roster}`,
-        requestedActions ? `REQUESTED ACTIONS:\n${requestedActions}` : '',
-        'You must keep all meeting content on this project topic.',
-      ].filter(Boolean).join('\n\n'),
-    },
-  ];
-}
-
-function buildModelKickoffMeetingTurnMessages({
-  meeting = {},
-  latestDirectorInput = '',
-  language = 'en',
-  now = nowIso(),
-} = {}) {
-  const team = meeting.team || [];
-  return [
-    {
-      role: 'system',
-      content: [
-        'You are the live kickoff meeting engine for Hall of Fame Studio.',
-        'Return the final JSON immediately. Do not reason step by step.',
-        'Continue the meeting as a natural multi-agent conversation. Do not turn leader selection, role split, or next actions into dashboard controls.',
-        'Agents should ask clarifying questions, decompose the work, volunteer for responsibility areas, and self-nominate for leader only when the conversation is ready.',
-        'The user is the final decision maker. Do not claim the leader is confirmed unless the user explicitly confirms it.',
-        'If the team has no more useful agenda, agents may say they are ready to close, but only the user can end the meeting.',
-        'Use 1 to 3 short agentTurns. Keep each text under 36 Chinese characters or 28 English words.',
-        'Return JSON only. No markdown.',
-      ].join('\n'),
-    },
-    {
-      role: 'user',
-      content: JSON.stringify({
-        now,
-        language,
-        meeting: {
-          id: meeting.id,
-          projectId: meeting.projectId,
-          name: meeting.name,
-          brief: meeting.brief,
-          latestDirectorInput,
-        },
-        team: team.map((agent) => ({
-          id: agent.id,
-          name: agent.name,
-          role: agent.role || agent.title || 'Agent',
-          duty: agent.duty || agent.skill || '',
-        })),
-        recentTranscript: (meeting.transcript || []).slice(-14).map((turn) => ({
-          id: turn.id,
-          speakerId: turn.speakerId || turn.agentId || null,
-          speaker: turn.speaker || turn.author || '',
-          type: turn.type || '',
-          stage: turn.stage || '',
-          text: turn.text || '',
-        })),
-        openRoleQuestions: (meeting.roleQuestionResolutions || [])
-          .filter((row) => !row.answered)
-          .slice(0, 6),
-        requiredShape: {
-          agentTurns: [
-            {
-              agentId: 'agent id from team',
-              type: 'clarifying-question, role-volunteer, task-decomposition, leader-campaign, adjustment, or next-action',
-              text: 'one natural meeting turn in the project language',
-              score: 8,
-            },
-          ],
-          recommendedLeaderId: 'optional agent id from team, only if a recommendation is emerging',
-          nextActions: [
-            {
-              text: 'optional concrete first action if the meeting has reached planning',
-              ownerId: 'agent id from team',
-            },
-          ],
-          decisionSummary: 'optional one sentence summary of the current meeting state',
-          risks: ['optional unresolved ambiguity or risk'],
-        },
-      }),
-    },
-  ];
-}
-
-function buildModelKickoffOpeningLineMessages({
-  name = 'Untitled Agent Project',
-  brief = '',
-  team = [],
-  language = 'en',
-} = {}) {
-  return [
-    {
-      role: 'system',
-      content: [
-        'You open a project kickoff meeting.',
-        'Return only 2 or 3 lines. No markdown. No JSON.',
-        'Each line format: agentId | type | text',
-        'type must be role-question or role-volunteer.',
-        'Every line must be about the exact project topic.',
-        'Keep each text under 32 Chinese characters or 24 English words.',
-      ].join('\n'),
-    },
-    {
-      role: 'user',
-      content: [
-        `PROJECT: ${name}`,
-        `BRIEF: ${brief || name}`,
-        `LANGUAGE: ${language}`,
-        'AGENTS:',
-        team.map((agent) => `${agent.id}: ${agent.name} / ${agent.role || agent.title || 'Agent'} / ${agent.duty || agent.skill || ''}`).join('\n'),
-      ].join('\n'),
-    },
-  ];
-}
-
-function buildModelKickoffTurnLineMessages({
-  meeting = {},
-  latestDirectorInput = '',
-  language = 'en',
-} = {}) {
-  const team = meeting.team || [];
-  return [
-    {
-      role: 'system',
-      content: [
-        'Continue a live project kickoff meeting.',
-        'Return only 1 to 3 lines. No markdown. No JSON.',
-        'Each line format: agentId | type | text',
-        'type must be clarifying-question, role-volunteer, task-decomposition, leader-campaign, adjustment, or next-action.',
-        'Every line must respond to the latest Director input and stay on the project topic.',
-        'Keep each text under 36 Chinese characters or 28 English words.',
-      ].join('\n'),
-    },
-    {
-      role: 'user',
-      content: [
-        `PROJECT: ${meeting.name || 'Untitled Agent Project'}`,
-        `BRIEF: ${meeting.brief || meeting.name || ''}`,
-        `LANGUAGE: ${language}`,
-        `LATEST DIRECTOR INPUT: ${latestDirectorInput}`,
-        'AGENTS:',
-        team.map((agent) => `${agent.id}: ${agent.name} / ${agent.role || agent.title || 'Agent'} / ${agent.duty || agent.skill || ''}`).join('\n'),
-      ].join('\n'),
-    },
-  ];
-}
-
-function parseModelLineTurns(content = '', team = [], { mode = 'opening' } = {}) {
-  const lines = String(content || '')
-    .split(/\r?\n/)
-    .map((line) => line.replace(/^[-*\d.\s]+/, '').trim())
-    .filter(Boolean)
-    .slice(0, mode === 'opening' ? 3 : 4);
-  return lines.map((line) => {
-    const parts = line.split('|').map((part) => part.trim()).filter(Boolean);
-    const agent = findMeetingAgent(team, parts[0]) || findMeetingAgent(team, line);
-    if (!agent) return null;
-    const type = parts.length >= 3 ? parts[1] : 'role-question';
-    const text = parts.length >= 3
-      ? parts.slice(2).join(' | ')
-      : line.replace(new RegExp(`^${agent.id}\\s*[:：-]?\\s*`, 'i'), '').replace(new RegExp(`^${agent.name}\\s*[:：-]?\\s*`, 'i'), '').trim();
-    if (!text) return null;
-    return {
-      agentId: agent.id,
-      type,
-      text,
-      hears: team.filter((peer) => peer.id !== agent.id).map((peer) => peer.id),
-    };
-  }).filter(Boolean);
-}
-
-function parseModelOpeningLinePayload(content = '', input = {}) {
-  const jsonPayload = parseModelCompletionJson({ content });
-  if (jsonPayload && normalizeModelArray(jsonPayload.roleTurns).length) return jsonPayload;
-  const roleTurns = parseModelLineTurns(content, input.team || [], { mode: 'opening' });
-  if (!roleTurns.length) return null;
-  return {
-    roleTurns,
-    leaderCampaigns: [],
-    nextActions: [],
-    decisionSummary: 'Opening clarification started.',
-    risks: [],
-  };
-}
-
-function parseModelTurnLinePayload(content = '', meeting = {}) {
-  const jsonPayload = parseModelCompletionJson({ content });
-  if (jsonPayload && (
-    normalizeModelArray(jsonPayload.agentTurns).length
-    || normalizeModelArray(jsonPayload.roleTurns).length
-    || normalizeModelArray(jsonPayload.turns).length
-  )) return jsonPayload;
-  const agentTurns = parseModelLineTurns(content, meeting.team || [], { mode: 'turn' });
-  if (!agentTurns.length) return null;
-  return {
-    agentTurns,
-    nextActions: [],
-    risks: [],
-  };
-}
-
-function normalizeModelMeetingTurnType(value = '') {
-  const raw = String(value || '').toLowerCase();
-  if (/leader|campaign|nominate|candidate/.test(raw)) return { type: 'leader-campaign', stage: 'leader-campaign' };
-  if (/next|action|plan|execution/.test(raw)) return { type: 'next-action', stage: 'execution-planning' };
-  if (/question|clarif|ask/.test(raw)) return { type: 'role-question', stage: 'role-clarification' };
-  if (/decompos|split|adjust/.test(raw)) return { type: 'role-volunteer', stage: 'task-decomposition' };
-  return { type: 'role-volunteer', stage: 'self-nomination' };
-}
 
 function appendModelKickoffMeetingTurns({
   meeting = {},
@@ -7041,195 +6827,6 @@ function appendModelKickoffMeetingTurns({
   };
 }
 
-function normalizeModelArray(value) {
-  if (Array.isArray(value)) return value;
-  if (value && typeof value === 'object') return [value];
-  return [];
-}
-
-function normalizeJsonLikeText(value = '') {
-  return String(value || '')
-    .trim()
-    .replace(/^\uFEFF/, '')
-    .replace(/[\u201c\u201d]/g, '"')
-    .replace(/[\u2018\u2019]/g, "'")
-    .replace(/([{,]\s*)'([^']+?)'\s*:/g, '$1"$2":')
-    .replace(/:\s*'([^']*?)'(?=\s*[,}])/g, ':"$1"')
-    .replace(/,\s*([}\]])/g, '$1');
-}
-
-function safeParseModelJson(value = '') {
-  const raw = String(value || '');
-  try {
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === 'object' ? parsed : null;
-  } catch {
-    try {
-      const parsed = JSON.parse(normalizeJsonLikeText(raw));
-      return parsed && typeof parsed === 'object' ? parsed : null;
-    } catch {
-      return null;
-    }
-  }
-}
-
-function extractBalancedJsonObject(value = '') {
-  const text = String(value || '').trim();
-  if (!text) return null;
-  const direct = safeParseModelJson(text);
-  if (direct) return direct;
-
-  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  if (fenced) {
-    const parsed = safeParseModelJson(fenced[1].trim());
-    if (parsed) return parsed;
-  }
-
-  let start = -1;
-  let depth = 0;
-  let inString = false;
-  let escaped = false;
-  for (let index = 0; index < text.length; index += 1) {
-    const char = text[index];
-    if (start < 0) {
-      if (char === '{') {
-        start = index;
-        depth = 1;
-      }
-      continue;
-    }
-    if (escaped) {
-      escaped = false;
-      continue;
-    }
-    if (char === '\\') {
-      escaped = true;
-      continue;
-    }
-    if (char === '"') {
-      inString = !inString;
-      continue;
-    }
-    if (inString) continue;
-    if (char === '{') depth += 1;
-    if (char === '}') depth -= 1;
-    if (depth === 0) {
-      const parsed = safeParseModelJson(text.slice(start, index + 1));
-      if (parsed) return parsed;
-      start = -1;
-    }
-  }
-  const firstBrace = text.indexOf('{');
-  const lastBrace = text.lastIndexOf('}');
-  if (firstBrace >= 0 && lastBrace > firstBrace) {
-    const parsed = safeParseModelJson(text.slice(firstBrace, lastBrace + 1));
-    if (parsed) return parsed;
-  }
-  return null;
-}
-
-function parseModelCompletionJson(completion = {}) {
-  if (completion.json && typeof completion.json === 'object') return completion.json;
-  return extractBalancedJsonObject(completion.content || '');
-}
-
-function topicTermsForMeeting({ name = '', brief = '', tasks = [] } = {}) {
-  const text = [
-    name,
-    brief,
-    ...(tasks || []).map((task) => (typeof task === 'string' ? task : task?.text || '')),
-  ].join(' ');
-  const terms = new Set();
-  const latinStop = new Set(['research', 'project', 'agent', 'task', 'study']);
-  for (const match of text.matchAll(/[A-Za-z][A-Za-z0-9_-]{3,}/g)) {
-    const term = match[0].toLowerCase();
-    if (!latinStop.has(term)) terms.add(term);
-  }
-  for (const match of text.matchAll(/[\u3400-\u9fff]{2,}/g)) {
-    const segment = match[0];
-    for (let index = 0; index < segment.length - 1; index += 1) {
-      const term = segment.slice(index, index + 2);
-      if (!['项目', '研究', '问题', '范围', '方法', '最终', '交付', '之间', '关系', '明确'].includes(term)) {
-        terms.add(term);
-      }
-    }
-  }
-  return [...terms].slice(0, 24);
-}
-
-function modelKickoffPayloadText(modelPayload = {}) {
-  const parts = [
-    ...normalizeModelArray(modelPayload.roleTurns).flatMap((turn) => [turn.text, turn.question, turn.statement, turn.claim, turn.content]),
-    ...normalizeModelArray(modelPayload.leaderCampaigns).flatMap((turn) => [turn.claim, turn.text, turn.statement, turn.content]),
-    ...normalizeModelArray(modelPayload.nextActions).flatMap((action) => [action.text, action.title, action.action]),
-    ...normalizeModelArray(modelPayload.agentTurns).flatMap((turn) => [turn.text, turn.question, turn.statement, turn.claim, turn.content]),
-    modelPayload.decisionSummary,
-    ...normalizeModelArray(modelPayload.risks),
-  ];
-  return parts.map((part) => String(part || '')).filter(Boolean).join('\n').toLowerCase();
-}
-
-function modelKickoffPayloadMatchesTopic(input = {}, modelPayload = {}) {
-  const terms = topicTermsForMeeting(input);
-  if (!terms.length) return true;
-  const payloadText = modelKickoffPayloadText(modelPayload);
-  const projectName = String(input.name || '').trim().toLowerCase();
-  if (projectName && payloadText.includes(projectName)) return true;
-  const hits = terms.filter((term) => payloadText.includes(term.toLowerCase()));
-  return hits.length >= Math.min(2, terms.length);
-}
-
-async function repairModelCompletionJson({
-  llmProvider,
-  completion = {},
-  expectedShape = {},
-  purpose = 'kickoff meeting',
-  timeoutMs = 20_000,
-  maxTokens = 1200,
-} = {}) {
-  const rawOutput = String(completion.content || '').trim();
-  if (!rawOutput || typeof llmProvider?.createChatCompletion !== 'function') return null;
-  const repair = await llmProvider.createChatCompletion({
-    messages: [
-      {
-        role: 'system',
-        content: [
-          'You repair malformed model output into strict JSON.',
-          'Return exactly one valid JSON object and no markdown.',
-          'Do not add facts that are not present in the raw output unless needed to satisfy required keys.',
-        ].join('\n'),
-      },
-      {
-        role: 'user',
-        content: JSON.stringify({
-          purpose,
-          expectedShape,
-          rawOutput: rawOutput.slice(0, 12000),
-        }),
-      },
-    ],
-    json: true,
-    maxTokens,
-    timeoutMs,
-  });
-  if (!repair.ok) return null;
-  return parseModelCompletionJson(repair);
-}
-
-function normalizeModelText(value = '') {
-  if (value && typeof value === 'object') {
-    return String(value.text || value.summary || value.risk || value.title || value.claim || value.content || '').trim();
-  }
-  return String(value || '').trim();
-}
-
-function findMeetingAgent(team = [], value = '') {
-  const normalized = String(value || '').toLowerCase();
-  if (!normalized) return null;
-  return team.find((agent) => String(agent.id || '').toLowerCase() === normalized)
-    || team.find((agent) => String(agent.name || '').toLowerCase() === normalized)
-    || null;
-}
 
 function normalizeMeetingHearIds(team = [], speakerId, value = []) {
   const ids = normalizeModelArray(value)
@@ -34447,11 +34044,6 @@ function persistenceChecksum(value) {
   return `chk_${(hash >>> 0).toString(16).padStart(8, '0')}`;
 }
 
-function compactPreview(value = '', limit = 160) {
-  const text = redactSensitiveText(String(value || '').replace(/\s+/g, ' ').trim());
-  return text.length > limit ? `${text.slice(0, limit - 1)}...` : text;
-}
-
 function summarizeSecurityAccessAudit(rows = []) {
   const list = Array.isArray(rows) ? rows : [];
   const deniedRows = list.filter((row) => !row.allowed || row.status === 'denied');
@@ -61431,6 +61023,108 @@ export function createAgentProjectService({
         project: store.getProject(projectId),
         ...input,
       }));
+    },
+    publishKickoffMeetingReport({ projectId, now = nowIso() } = {}) {
+      if (!projectRuntime?.requireWorkspace) throw new Error('Local project runtime is not configured.');
+      const project = store.getProject(projectId);
+      projectRuntime.requireWorkspace(project);
+      const meetingSummaries = buildMeetingSummaries({
+        project,
+        messages: store.getMessages(projectId),
+      });
+      const meetingSummary = meetingSummaries.rows.find((row) => row.meetingKind === 'kickoff')
+        || meetingSummaries.rows[0]
+        || {
+          id: `kickoff_charter_${projectId}`,
+          channelId: 'main',
+          topic: project.brief || project.currentObjective || project.objective || project.name || 'Project kickoff',
+          latestText: (project.tasks || []).map((task) => task.text || task.id).filter(Boolean).slice(0, 3).join('; '),
+          messageCount: project.initiationCharter?.meeting?.roleQuestionCount || 0,
+          meetingTurnCount: project.initiationCharter?.meeting?.selfNominationCount || 0,
+          proofIds: uniqueStrings(project.initiationCharter?.evidence?.assignmentMessageIds || []),
+          timelineLogIds: uniqueStrings((project.logs || []).map((log) => log.id).slice(0, 12)),
+          eventIds: uniqueStrings((project.eventLedger || []).map((event) => event.id).slice(-12)),
+          transcriptRoute: `/projects/${projectId}/transcripts/main`,
+          timelineRoute: `/projects/${projectId}/timeline`,
+          eventLedgerRoute: `/projects/${projectId}/events`,
+          source: 'kickoff-charter-derived',
+        };
+      const leaderId = project.initiationCharter?.governance?.leaderId
+        || project.team?.find((agent) => agent.isLeader)?.id
+        || project.team?.[0]?.id;
+      const leader = project.team?.find((agent) => agent.id === leaderId) || project.team?.[0] || null;
+      if (!leader?.id) throw new Error('Meeting report requires a confirmed project Leader.');
+      const reviewerId = project.initiationCharter?.governance?.reviewerId
+        || project.team?.find((agent) => agent.id !== leader.id)?.id
+        || null;
+      const reportTitle = `${leader.name || leader.id} kickoff meeting report`;
+      const reportBody = [
+        `# ${project.name || project.id} — Kickoff Meeting Report`,
+        '',
+        `- Leader: ${leader.name || leader.id}`,
+        `- Recorded: ${now}`,
+        `- Transcript messages: ${meetingSummary.messageCount}`,
+        `- Agent turns: ${meetingSummary.meetingTurnCount}`,
+        '',
+        '## Meeting focus',
+        '',
+        meetingSummary.topic,
+        '',
+        '## First execution record',
+        '',
+        `The team confirmed the kickoff context, assigned the initial work, and recorded the next evidence-bearing actions. Latest meeting turn: ${meetingSummary.latestText || 'recorded in the backend transcript.'}`,
+        '',
+        '## Audit links',
+        '',
+        `- Transcript: ${meetingSummary.transcriptRoute}`,
+        `- Timeline: ${meetingSummary.timelineRoute}`,
+        `- Event ledger: ${meetingSummary.eventLedgerRoute}`,
+      ].join('\n');
+      const result = persistResult(submitAgentArtifact({
+        project,
+        agentId: leader.id,
+        artifactType: 'progress-brief',
+        title: reportTitle,
+        summary: `${leader.name || leader.id} recorded the confirmed kickoff as a locally stored meeting report.`,
+        body: reportBody,
+        reviewerAgentId: reviewerId,
+        sourceRefs: [{
+          type: 'meeting-summary',
+          id: meetingSummary.id,
+          transcriptRoute: meetingSummary.transcriptRoute,
+          timelineRoute: meetingSummary.timelineRoute,
+          eventLedgerRoute: meetingSummary.eventLedgerRoute,
+          proofIds: meetingSummary.proofIds,
+          timelineLogIds: meetingSummary.timelineLogIds,
+          eventIds: meetingSummary.eventIds,
+        }],
+        tags: ['kickoff', 'meeting-report', 'leader-authored', 'local-workspace'],
+        relativePath: 'meeting-notes/kickoff-summary.md',
+        workspaceRelativePath: 'meeting-notes/kickoff-summary.md',
+        channelId: meetingSummary.channelId || 'main',
+        now,
+        artifactWriter: artifactWriter || projectRuntime.writeArtifact.bind(projectRuntime),
+      }));
+      return {
+        ...result,
+        route: 'kickoff-meeting-report-published',
+        meetingReport: {
+          schemaVersion: 'kickoff-meeting-report/v1',
+          projectId,
+          leaderId: leader.id,
+          leaderName: leader.name || leader.id,
+          meetingSummaryId: meetingSummary.id,
+          submissionId: result.submission?.id || null,
+          workspaceRelativePath: result.submission?.workspaceRelativePath || 'meeting-notes/kickoff-summary.md',
+          transcriptRoute: meetingSummary.transcriptRoute,
+          timelineRoute: meetingSummary.timelineRoute,
+          eventLedgerRoute: meetingSummary.eventLedgerRoute,
+          proofIds: meetingSummary.proofIds,
+          timelineLogIds: meetingSummary.timelineLogIds,
+          eventIds: meetingSummary.eventIds,
+          createdAt: now,
+        },
+      };
     },
     createTranscriptChannel({ projectId, ...input } = {}) {
       return persistResult(createProjectTranscriptChannel({
