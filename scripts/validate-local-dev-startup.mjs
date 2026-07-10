@@ -1,74 +1,97 @@
+import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { existsSync, rmSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-function assert(condition, message) {
-  if (!condition) throw new Error(message);
+const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
+const runId = randomUUID();
+const backendPort = 18_000 + Math.floor(Math.random() * 1_000);
+const uiPort = 15_000 + Math.floor(Math.random() * 1_000);
+const tempRoot = resolve(root, '.tmp', `local-dev-verify-${runId}`);
+const {
+  AGENT_LOCAL_AUTH_REQUIRED: _localAuthRequired,
+  AGENT_PROJECT_MEMBERSHIP_REQUIRED: _projectMembershipRequired,
+  ...parentEnv
+} = process.env;
+const env = {
+  ...parentEnv,
+  AGENT_PROJECT_HOST: '127.0.0.1',
+  AGENT_PROJECT_PORT: String(backendPort),
+  VITE_HOST: '127.0.0.1',
+  VITE_PORT: String(uiPort),
+  AGENT_PROJECT_STORE: resolve(tempRoot, 'projects.json'),
+  AGENT_LOCAL_AUTH_STORE: resolve(tempRoot, 'users.json'),
+  AGENT_PROJECT_RUNTIME_ROOT: resolve(tempRoot, 'projects'),
+  SECRET_VAULT_RECORDS_FILE: resolve(tempRoot, 'vault-records.json'),
+};
+let output = '';
+const child = spawn(process.execPath, ['scripts/local-dev.mjs'], {
+  cwd: root,
+  env,
+  stdio: ['ignore', 'pipe', 'pipe'],
+});
+child.stdout.on('data', (chunk) => { output += chunk.toString(); });
+child.stderr.on('data', (chunk) => { output += chunk.toString(); });
+
+function wait(ms) {
+  return new Promise((resolveWait) => setTimeout(resolveWait, ms));
 }
 
-async function fetchWithRetry(url, { timeoutMs = 12_000 } = {}) {
-  const deadline = Date.now() + timeoutMs;
+async function waitFor(url, predicate, label) {
+  const deadline = Date.now() + 30_000;
   let lastError = null;
   while (Date.now() < deadline) {
     try {
-      const response = await fetch(url, { cache: 'no-store' });
-      if (response.ok) return response;
-      lastError = new Error(`${url} returned ${response.status}.`);
+      const response = await fetch(url);
+      if (await predicate(response)) return;
+      lastError = new Error(`${label} returned ${response.status}`);
     } catch (error) {
       lastError = error;
     }
-    await new Promise((resolve) => setTimeout(resolve, 150));
+    await wait(200);
   }
-  throw lastError || new Error(`Timed out waiting for ${url}.`);
+  throw new Error(`${label} did not become ready: ${lastError?.message || 'unknown error'}\n${output.slice(-2_000)}`);
 }
 
-async function stop(child) {
-  if (!child || child.exitCode !== null) return;
+async function stopChild() {
+  if (child.exitCode !== null || child.killed) return;
   child.kill('SIGTERM');
-  await new Promise((resolve) => {
-    const timer = setTimeout(resolve, 3_000);
-    child.once('exit', () => {
-      clearTimeout(timer);
-      resolve();
-    });
-  });
+  await Promise.race([
+    new Promise((resolveExit) => child.once('exit', resolveExit)),
+    wait(5_000),
+  ]);
+  if (child.exitCode === null && !child.killed) child.kill('SIGKILL');
 }
-
-const suffix = `${process.pid}_${Date.now()}`;
-const backendPort = 18_000 + (process.pid % 1_000);
-const vitePort = backendPort + 1;
-const backendUrl = `http://127.0.0.1:${backendPort}`;
-const viteUrl = `http://127.0.0.1:${vitePort}`;
-const child = spawn(process.execPath, ['scripts/local-dev.mjs'], {
-  cwd: process.cwd(),
-  env: {
-    ...process.env,
-    AGENT_PROJECT_HOST: '127.0.0.1',
-    AGENT_PROJECT_PORT: String(backendPort),
-    AGENT_PROJECT_STORE: `.tmp/local-dev-startup-${suffix}.json`,
-    AGENT_PROJECT_RUNTIME_ROOT: `.tmp/local-dev-runtime-${suffix}`,
-    VITE_HOST: '127.0.0.1',
-    VITE_PORT: String(vitePort),
-    VITE_AGENT_BACKEND_URL: backendUrl,
-  },
-  stdio: ['ignore', 'pipe', 'pipe'],
-});
-
-let output = '';
-child.stdout.on('data', (chunk) => { output += String(chunk); });
-child.stderr.on('data', (chunk) => { output += String(chunk); });
 
 try {
-  const [backend, ui, scheduler] = await Promise.all([
-    fetchWithRetry(`${backendUrl}/projects`),
-    fetchWithRetry(viteUrl),
-    fetchWithRetry(`${backendUrl}/workers/autonomous/status`),
-  ]);
-  assert(backend.status === 200, 'npm run dev must make the local project backend reachable.');
-  assert(ui.status === 200, 'npm run dev must make the Vite UI reachable.');
-  const schedulerStatus = await scheduler.json();
-  assert(schedulerStatus.scheduler?.enabled === true, 'npm run dev must enable the local autonomous scheduler for approved projects.');
-  console.log('Local dev startup contract passed.');
-} catch (error) {
-  throw new Error(`${error.message || String(error)} Supervisor output: ${output.slice(-1600)}`);
+  await waitFor(`http://127.0.0.1:${backendPort}/local-auth/status`, async (response) => {
+    if (!response.ok) return false;
+    const body = await response.json();
+    return body.localAuth?.enabled === true
+      && body.localAuth?.bootstrapRequired === true
+      && body.localAuth?.userCount === 0;
+  }, 'local auth backend');
+  await waitFor(`http://127.0.0.1:${uiPort}/`, async (response) => response.ok, 'Vite UI');
+  const bootstrap = await fetch(`http://127.0.0.1:${backendPort}/local-auth/bootstrap`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ username: 'local-verify-owner', password: 'local-verify-password-12345' }),
+  });
+  assert.equal(bootstrap.status, 201, 'The isolated local backend must permit its first administrator bootstrap.');
+  const bootstrapBody = await bootstrap.json();
+  const headers = { 'x-hofs-local-auth-token': bootstrapBody.localAuth?.token || '' };
+  assert.ok(headers['x-hofs-local-auth-token'], 'Bootstrap must issue an in-memory verification session.');
+  const projects = await fetch(`http://127.0.0.1:${backendPort}/projects`, { headers });
+  assert.equal(projects.status, 200, 'A bootstrapped local administrator must reach the project catalog.');
+  const scheduler = await fetch(`http://127.0.0.1:${backendPort}/workers/autonomous/status`, { headers });
+  assert.equal(scheduler.status, 200, 'A bootstrapped local administrator must inspect scheduler status.');
+  const schedulerBody = await scheduler.json();
+  assert.equal(schedulerBody.scheduler?.enabled, true, 'npm run dev must enable the local autonomous scheduler for approved projects.');
+  assert.match(output, /local auth and project membership required/);
+  console.log('Local development startup verification passed.');
 } finally {
-  await stop(child);
+  await stopChild();
+  if (existsSync(tempRoot)) rmSync(tempRoot, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
 }

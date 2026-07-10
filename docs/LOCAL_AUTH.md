@@ -1,6 +1,8 @@
 # Local user accounts
 
-Hall of Fame Studio can run with a completely local account store. It does not call a cloud identity provider, send credentials over the network, or persist plaintext passwords or session tokens.
+Hall of Fame Studio can run with a completely local account store. It does not call a cloud identity provider, send credentials over the network, or persist plaintext passwords or session tokens. `npm run dev` enables local authentication and project membership enforcement by default.
+
+Before relying on a machine setup, run `npm run local:verify`. It starts an isolated local backend and UI, confirms that the bootstrap-only account state is protected, then stops both processes and removes its temporary data.
 
 Set `AGENT_LOCAL_AUTH_REQUIRED=true` when starting the backend to protect every normal API request and the scheduler controls. Accounts are stored in `AGENT_LOCAL_AUTH_STORE`; when it is omitted, the server uses `{AGENT_PROJECT_STORE}.local-auth.json`.
 

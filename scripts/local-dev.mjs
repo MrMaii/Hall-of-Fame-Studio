@@ -4,6 +4,8 @@ const host = process.env.VITE_HOST || '127.0.0.1';
 const vitePort = String(process.env.VITE_PORT || '5173');
 const localRuntimeEnv = {
   ...process.env,
+  AGENT_LOCAL_AUTH_REQUIRED: process.env.AGENT_LOCAL_AUTH_REQUIRED || 'true',
+  AGENT_PROJECT_MEMBERSHIP_REQUIRED: process.env.AGENT_PROJECT_MEMBERSHIP_REQUIRED || 'true',
   AGENT_AUTONOMOUS_SCHEDULER: process.env.AGENT_AUTONOMOUS_SCHEDULER || 'true',
   AGENT_AUTONOMOUS_AGENT_STRATEGY: process.env.AGENT_AUTONOMOUS_AGENT_STRATEGY || 'true',
   AGENT_AUTONOMOUS_AGENT_SUBMISSIONS: process.env.AGENT_AUTONOMOUS_AGENT_SUBMISSIONS || 'true',
@@ -53,4 +55,4 @@ process.on('exit', () => {
   });
 });
 
-console.log(`Local MVP: backend http://${process.env.AGENT_PROJECT_HOST || '127.0.0.1'}:${process.env.AGENT_PROJECT_PORT || '8787'} + UI http://${host}:${vitePort}`);
+console.log(`Local MVP: backend http://${process.env.AGENT_PROJECT_HOST || '127.0.0.1'}:${process.env.AGENT_PROJECT_PORT || '8787'} + UI http://${host}:${vitePort} (local auth and project membership required)`);

@@ -6,6 +6,7 @@
   "scripts": {
     "test": "node --test \"tests/**/*.test.mjs\"",
     "dev": "node scripts/local-dev.mjs",
+    "local:verify": "node scripts/validate-local-dev-startup.mjs",
     "build": "vite build",
     "build:single": "vite build && node scripts/build-single-html.cjs",
     "agents:scenario": "node scripts/validate-agent-manager-scenario.mjs",
