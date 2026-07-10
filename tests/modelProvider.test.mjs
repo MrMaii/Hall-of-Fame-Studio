@@ -120,3 +120,44 @@ test('status() redacts base URL and reports api key source', () => {
   assert.equal(status.apiKeySource, 'direct-config');
   assert.ok(!JSON.stringify(status).includes('test-key'));
 });
+
+test('applies the explicitly configured transport retry budget to direct model calls', async () => {
+  let calls = 0;
+  const provider = createModelProvider({
+    apiKey: 'test-key',
+    enabled: true,
+    transportMaxRetries: 1,
+    fetchImpl: async () => {
+      calls += 1;
+      return calls === 1
+        ? { ok: false, status: 503, text: async () => JSON.stringify({ error: { message: 'busy' } }) }
+        : okResponse({ choices: [{ message: { content: 'recovered' } }] });
+    },
+  });
+
+  const result = await provider.createChatCompletion({ messages });
+  assert.equal(result.ok, true);
+  assert.equal(result.content, 'recovered');
+  assert.equal(calls, 2);
+  assert.equal(result.transportReliability.retry.attemptCount, 2);
+  assert.equal(provider.status().transportReliability.retry.maxRetries, 1);
+});
+
+test('keeps a provider timeout active when the caller also supplies an abort signal', async () => {
+  const provider = createModelProvider({
+    apiKey: 'test-key',
+    enabled: true,
+    fetchImpl: async (_url, init) => new Promise((_resolve, reject) => {
+      init.signal.addEventListener('abort', () => {
+        const error = new Error('aborted');
+        error.name = 'AbortError';
+        reject(error);
+      }, { once: true });
+    }),
+  });
+  const caller = new AbortController();
+
+  const result = await provider.createChatCompletion({ messages, signal: caller.signal, timeoutMs: 10 });
+  assert.equal(result.ok, false);
+  assert.equal(result.error, 'model request timed out');
+});

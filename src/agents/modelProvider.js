@@ -1,5 +1,6 @@
 import { redactSensitiveText, redactUrl } from './secretRedaction.js';
 import { parseBoolean, safeJsonParse } from './sharedUtils.js';
+import { createProviderTransportPolicy, createRequestAbortSignal } from './providerTransportReliability.js';
 
 const DEFAULT_PROVIDER = 'openai-compatible';
 const DEFAULT_OPENAI_COMPATIBLE_BASE_URL = 'https://api.openai.com/v1';
@@ -322,36 +323,6 @@ function requestSpec({ provider, baseURL, apiKey, model, messages, temperature, 
   };
 }
 
-function createLimiter(maxConcurrency = DEFAULT_MAX_CONCURRENCY) {
-  const limit = Math.max(1, Number(maxConcurrency) || DEFAULT_MAX_CONCURRENCY);
-  let active = 0;
-  const queue = [];
-
-  const runNext = () => {
-    if (active >= limit || !queue.length) return;
-    const item = queue.shift();
-    active += 1;
-    item.run()
-      .then(item.resolve, item.reject)
-      .finally(() => {
-        active -= 1;
-        runNext();
-      });
-  };
-
-  return {
-    limit,
-    activeCount: () => active,
-    pendingCount: () => queue.length,
-    schedule(run) {
-      return new Promise((resolve, reject) => {
-        queue.push({ run, resolve, reject });
-        runNext();
-      });
-    },
-  };
-}
-
 export function createModelProvider({
   provider = DEFAULT_PROVIDER,
   apiKey,
@@ -364,6 +335,11 @@ export function createModelProvider({
   maxTokens = DEFAULT_MAX_TOKENS,
   timeoutMs = DEFAULT_TIMEOUT_MS,
   maxConcurrency = DEFAULT_MAX_CONCURRENCY,
+  transportMaxRetries = 0,
+  transportRetryBackoffMs = [],
+  transportCircuitFailureThreshold = 3,
+  transportCircuitFailureWindowMs = 15 * 60 * 1000,
+  transportCircuitCooldownMs = 5 * 60 * 1000,
   jsonResponseFormat = false,
   blockedModels = [],
   extraBody = {},
@@ -380,7 +356,14 @@ export function createModelProvider({
   const configured = () => Boolean(currentApiKey);
   const blockedByPolicy = () => blockedModels.some((pattern) => modelMatches(currentModel, pattern));
   const providerEnabled = () => Boolean(runtimeEnabled && configured() && !blockedByPolicy() && typeof fetchImpl === 'function');
-  const limiter = createLimiter(maxConcurrency);
+  const transport = createProviderTransportPolicy({
+    maxConcurrency,
+    maxRetries: transportMaxRetries,
+    retryBackoffMs: transportRetryBackoffMs,
+    failureThreshold: transportCircuitFailureThreshold,
+    failureWindowMs: transportCircuitFailureWindowMs,
+    cooldownMs: transportCircuitCooldownMs,
+  });
 
   async function performChatCompletion({ messages, json = false, signal, ...overrides } = {}) {
     if (!providerEnabled()) {
@@ -393,9 +376,10 @@ export function createModelProvider({
       };
     }
 
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), Number(overrides.timeoutMs || timeoutMs));
-    const linkedSignal = signal || controller.signal;
+    const requestAbort = createRequestAbortSignal({
+      signal,
+      timeoutMs: Number(overrides.timeoutMs || timeoutMs),
+    });
     try {
       const spec = requestSpec({
         provider: resolvedProvider,
@@ -414,7 +398,7 @@ export function createModelProvider({
         method: 'POST',
         headers: spec.headers,
         body: JSON.stringify(spec.body),
-        signal: linkedSignal,
+        signal: requestAbort.signal,
       });
       const raw = await response.text();
       const data = safeJsonParse(raw);
@@ -468,12 +452,16 @@ export function createModelProvider({
     } catch (error) {
       return {
         ok: false,
-        error: error.name === 'AbortError' ? 'model request timed out' : redactSensitiveText(error.message || String(error)),
+        error: requestAbort.timedOut()
+          ? 'model request timed out'
+          : error.name === 'AbortError'
+            ? 'model request aborted'
+            : redactSensitiveText(error.message || String(error)),
         provider: resolvedProvider,
         model: currentModel,
       };
     } finally {
-      clearTimeout(timeout);
+      requestAbort.dispose();
     }
   }
 
@@ -536,9 +524,10 @@ export function createModelProvider({
           }
           : null,
         hasFetch: typeof fetchImpl === 'function',
-        maxConcurrency: limiter.limit,
-        activeRequests: limiter.activeCount(),
-        queuedRequests: limiter.pendingCount(),
+        maxConcurrency: transport.status().maxConcurrency,
+        activeRequests: transport.status().activeRequests,
+        queuedRequests: transport.status().queuedRequests,
+        transportReliability: transport.status(),
         adapterContract: {
           schemaVersion: 'model-provider-adapter/v1',
           provider: adapterConfig.provider,
@@ -549,7 +538,7 @@ export function createModelProvider({
       };
     },
     createChatCompletion(input = {}) {
-      return limiter.schedule(() => performChatCompletion(input));
+      return transport.execute(() => performChatCompletion(input));
     },
     async createRuntimeIntent(input = {}) {
       const completion = await this.createChatCompletion({
@@ -605,6 +594,11 @@ export function createModelProviderFromEnv(env = globalThis.process?.env || {}, 
     maxTokens: Number(env.MODEL_MAX_TOKENS || DEFAULT_MAX_TOKENS),
     timeoutMs: Number(env.MODEL_TIMEOUT_MS || DEFAULT_TIMEOUT_MS),
     maxConcurrency: Number(env.MODEL_MAX_CONCURRENCY || DEFAULT_MAX_CONCURRENCY),
+    transportMaxRetries: options.transportMaxRetries ?? Number(env.MODEL_TRANSPORT_MAX_RETRIES || 0),
+    transportRetryBackoffMs: options.transportRetryBackoffMs || parseList(env.MODEL_TRANSPORT_RETRY_BACKOFF_MS || '').map(Number),
+    transportCircuitFailureThreshold: options.transportCircuitFailureThreshold ?? Number(env.MODEL_TRANSPORT_CIRCUIT_FAILURE_THRESHOLD || 3),
+    transportCircuitFailureWindowMs: options.transportCircuitFailureWindowMs ?? Number(env.MODEL_TRANSPORT_CIRCUIT_FAILURE_WINDOW_MS || 15 * 60 * 1000),
+    transportCircuitCooldownMs: options.transportCircuitCooldownMs ?? Number(env.MODEL_TRANSPORT_CIRCUIT_COOLDOWN_MS || 5 * 60 * 1000),
     jsonResponseFormat: parseBoolean(env.MODEL_JSON_RESPONSE_FORMAT, false),
     blockedModels: parseList(env.MODEL_BLOCKED_MODELS || env.AGENT_LLM_BLOCKED_MODELS || ''),
     extraBody: safeJsonParse(env.MODEL_EXTRA_BODY || '{}') || {},

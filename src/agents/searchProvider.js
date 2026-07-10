@@ -1,5 +1,6 @@
 import { redactSensitiveText, redactUrl } from './secretRedaction.js';
 import { parseBoolean, safeJsonParse as parseJson } from './sharedUtils.js';
+import { createProviderTransportPolicy, createRequestAbortSignal } from './providerTransportReliability.js';
 
 const DEFAULT_SEARCH_PROVIDER = 'none';
 const DEFAULT_TIMEOUT_MS = 20_000;
@@ -20,34 +21,6 @@ function normalizeProvider(value = DEFAULT_SEARCH_PROVIDER) {
 function normalizeConfidence(value = 'medium') {
   const normalized = String(value || 'medium').toLowerCase();
   return ['low', 'medium', 'high', 'unknown'].includes(normalized) ? normalized : 'medium';
-}
-
-function createLimiter(maxConcurrency = DEFAULT_MAX_CONCURRENCY) {
-  const limit = Math.max(1, Number(maxConcurrency) || DEFAULT_MAX_CONCURRENCY);
-  let active = 0;
-  const queue = [];
-  const runNext = () => {
-    if (active >= limit || !queue.length) return;
-    const item = queue.shift();
-    active += 1;
-    item.run()
-      .then(item.resolve, item.reject)
-      .finally(() => {
-        active -= 1;
-        runNext();
-      });
-  };
-  return {
-    limit,
-    activeCount: () => active,
-    pendingCount: () => queue.length,
-    schedule(run) {
-      return new Promise((resolve, reject) => {
-        queue.push({ run, resolve, reject });
-        runNext();
-      });
-    },
-  };
 }
 
 function normalizeSources(items = [], now = new Date().toISOString()) {
@@ -110,6 +83,11 @@ export function createSearchProvider({
   timeoutMs = DEFAULT_TIMEOUT_MS,
   maxResults = DEFAULT_MAX_RESULTS,
   maxConcurrency = DEFAULT_MAX_CONCURRENCY,
+  transportMaxRetries = 0,
+  transportRetryBackoffMs = [],
+  transportCircuitFailureThreshold = 3,
+  transportCircuitFailureWindowMs = 15 * 60 * 1000,
+  transportCircuitCooldownMs = 5 * 60 * 1000,
   requestTemplate = null,
   fetchImpl = globalThis.fetch,
 } = {}) {
@@ -123,7 +101,14 @@ export function createSearchProvider({
   const isConfigured = () => currentProvider === 'deterministic'
     || Boolean(currentEndpoint && (currentApiKey || currentProvider === 'http-json'));
   const providerEnabled = () => Boolean(runtimeEnabled && isConfigured() && (currentProvider === 'deterministic' || typeof fetchImpl === 'function'));
-  const limiter = createLimiter(maxConcurrency);
+  const transport = createProviderTransportPolicy({
+    maxConcurrency,
+    maxRetries: transportMaxRetries,
+    retryBackoffMs: transportRetryBackoffMs,
+    failureThreshold: transportCircuitFailureThreshold,
+    failureWindowMs: transportCircuitFailureWindowMs,
+    cooldownMs: transportCircuitCooldownMs,
+  });
 
   const status = () => ({
     provider: currentProvider,
@@ -147,9 +132,10 @@ export function createSearchProvider({
       : null,
     hasFetch: typeof fetchImpl === 'function',
     maxResults: Number(maxResults) || DEFAULT_MAX_RESULTS,
-    maxConcurrency: limiter.limit,
-    activeRequests: limiter.activeCount(),
-    queuedRequests: limiter.pendingCount(),
+    maxConcurrency: transport.status().maxConcurrency,
+    activeRequests: transport.status().activeRequests,
+    queuedRequests: transport.status().queuedRequests,
+    transportReliability: transport.status(),
   });
 
   async function performSearch({
@@ -188,9 +174,10 @@ export function createSearchProvider({
       };
     }
 
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), Number(timeoutMs) || DEFAULT_TIMEOUT_MS);
-    const linkedSignal = signal || controller.signal;
+    const requestAbort = createRequestAbortSignal({
+      signal,
+      timeoutMs: Number(timeoutMs) || DEFAULT_TIMEOUT_MS,
+    });
     try {
       const template = requestTemplate && typeof requestTemplate === 'object' ? requestTemplate : {};
       const method = String(template.method || 'POST').toUpperCase();
@@ -213,7 +200,7 @@ export function createSearchProvider({
         method,
         headers,
         ...(method === 'GET' ? {} : { body: JSON.stringify(body) }),
-        signal: linkedSignal,
+        signal: requestAbort.signal,
       });
       const raw = await response.text();
       const data = parseJson(raw, {});
@@ -245,11 +232,15 @@ export function createSearchProvider({
       return {
         ok: false,
         provider: currentProvider,
-        error: error.name === 'AbortError' ? 'search request timed out' : redactSensitiveText(error.message || String(error)),
+        error: requestAbort.timedOut()
+          ? 'search request timed out'
+          : error.name === 'AbortError'
+            ? 'search request aborted'
+            : redactSensitiveText(error.message || String(error)),
         status: status(),
       };
     } finally {
-      clearTimeout(timeout);
+      requestAbort.dispose();
     }
   }
 
@@ -286,7 +277,7 @@ export function createSearchProvider({
     },
     status,
     search(input = {}) {
-      return limiter.schedule(() => performSearch(input));
+      return transport.execute(() => performSearch(input));
     },
     async test(query = 'product team acceptance evidence') {
       return this.search({ query, purpose: 'provider health check', maxResults: Math.min(3, Number(maxResults) || DEFAULT_MAX_RESULTS) });
@@ -308,6 +299,14 @@ export function createSearchProviderFromEnv(env = globalThis.process?.env || {},
     timeoutMs: Number(env.SEARCH_TIMEOUT_MS || DEFAULT_TIMEOUT_MS),
     maxResults: Number(env.SEARCH_MAX_RESULTS || DEFAULT_MAX_RESULTS),
     maxConcurrency: Number(env.SEARCH_MAX_CONCURRENCY || DEFAULT_MAX_CONCURRENCY),
+    transportMaxRetries: options.transportMaxRetries ?? Number(env.SEARCH_TRANSPORT_MAX_RETRIES || 0),
+    transportRetryBackoffMs: options.transportRetryBackoffMs || String(env.SEARCH_TRANSPORT_RETRY_BACKOFF_MS || '')
+      .split(',')
+      .map((value) => Number(value.trim()))
+      .filter(Number.isFinite),
+    transportCircuitFailureThreshold: options.transportCircuitFailureThreshold ?? Number(env.SEARCH_TRANSPORT_CIRCUIT_FAILURE_THRESHOLD || 3),
+    transportCircuitFailureWindowMs: options.transportCircuitFailureWindowMs ?? Number(env.SEARCH_TRANSPORT_CIRCUIT_FAILURE_WINDOW_MS || 15 * 60 * 1000),
+    transportCircuitCooldownMs: options.transportCircuitCooldownMs ?? Number(env.SEARCH_TRANSPORT_CIRCUIT_COOLDOWN_MS || 5 * 60 * 1000),
     requestTemplate: parseJson(env.SEARCH_REQUEST_TEMPLATE || '{}', {}) || {},
   });
 }
