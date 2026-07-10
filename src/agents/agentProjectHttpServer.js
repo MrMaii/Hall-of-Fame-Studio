@@ -17,7 +17,7 @@ function writeJson(response, status, body) {
     'content-type': 'application/json; charset=utf-8',
     'access-control-allow-origin': '*',
     'access-control-allow-methods': 'GET,POST,PUT,OPTIONS',
-    'access-control-allow-headers': 'content-type,x-hofs-access-mode,x-hofs-role,x-hofs-agent-id,x-hofs-user-id,x-hofs-signed-at,x-hofs-request-id,x-hofs-signature',
+    'access-control-allow-headers': 'content-type,x-hofs-access-mode,x-hofs-role,x-hofs-agent-id,x-hofs-user-id,x-hofs-signed-at,x-hofs-request-id,x-hofs-signature,x-hofs-session-token,x-hofs-local-auth-token',
   });
   response.end(JSON.stringify(body));
 }
@@ -382,6 +382,8 @@ export function createAgentProjectHttpServer({
   providerPolicy = {},
   secretVault = null,
   accessControl = {},
+  localAuthFilePath = null,
+  localAuthRequired = false,
 } = {}) {
   const resolvedApi = api || createFileBackedAgentProjectApi({
     filePath,
@@ -398,6 +400,8 @@ export function createAgentProjectHttpServer({
     providerPolicy,
     secretVault,
     accessControl,
+    localAuthFilePath,
+    localAuthRequired,
   });
   const scheduler = createAutonomousSchedulerController({
     api: resolvedApi,
@@ -418,11 +422,24 @@ export function createAgentProjectHttpServer({
       const url = new URL(request.url || '/', 'http://127.0.0.1');
       const needsBody = ['POST', 'PUT', 'PATCH'].includes(request.method || '');
       const body = needsBody ? await readJsonBody(request) : {};
+      const requireLocalSchedulerAdmin = () => {
+        if (!localAuthRequired) return true;
+        const token = String(request.headers['x-hofs-local-auth-token'] || '').trim();
+        const verification = resolvedApi.localAuth?.verifySession({ token, now: body.now || new Date().toISOString() });
+        if (verification?.verified && verification.user?.role === 'security-admin') return true;
+        writeJson(response, 401, {
+          error: 'local-auth-admin-required',
+          message: 'A local security-admin session is required for scheduler controls.',
+        });
+        return false;
+      };
       if (url.pathname === '/workers/autonomous/status' && request.method === 'GET') {
+        if (!requireLocalSchedulerAdmin()) return;
         writeJson(response, 200, { scheduler: scheduler.status() });
         return;
       }
       if (url.pathname === '/workers/autonomous/start' && request.method === 'POST') {
+        if (!requireLocalSchedulerAdmin()) return;
         writeJson(response, 200, {
           scheduler: scheduler.start({
             ...body,
@@ -434,10 +451,12 @@ export function createAgentProjectHttpServer({
         return;
       }
       if (url.pathname === '/workers/autonomous/stop' && request.method === 'POST') {
+        if (!requireLocalSchedulerAdmin()) return;
         writeJson(response, 200, { scheduler: scheduler.stop() });
         return;
       }
       if (url.pathname === '/workers/autonomous/tick' && request.method === 'POST') {
+        if (!requireLocalSchedulerAdmin()) return;
         const tickResult = await scheduler.tick(body);
         writeJson(response, 200, tickResult);
         return;

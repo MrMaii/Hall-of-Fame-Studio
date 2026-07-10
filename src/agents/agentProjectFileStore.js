@@ -1,7 +1,8 @@
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createAgentProjectMemoryStore } from './agentProjectStore.js';
+import { replaceFileWithRetry } from './atomicFileReplace.js';
 
 const STORE_VERSION = 1;
 const SECURITY_AUDIT_LOG_VERSION = 1;
@@ -102,7 +103,7 @@ function writeSnapshot(filePath, snapshot) {
     securityAccessAuditRecords: snapshot.securityAccessAuditRecords || [],
     accessReplayRecords: snapshot.accessReplayRecords || [],
   }, null, 2));
-  renameSync(tempPath, filePath);
+  replaceFileWithRetry(tempPath, filePath);
 }
 
 export function createAgentProjectFileStore({

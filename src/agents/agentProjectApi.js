@@ -1,5 +1,6 @@
 import { createAgentProjectService, hydrateAgentProject } from './agentProjectService.js';
 import { createAgentProjectFileStore } from './agentProjectFileStore.js';
+import { createLocalAuthStore } from './localAuthStore.js';
 import { buildProductionCapabilityRegistry } from './productionCapabilityRegistry.js';
 import { SUPER_AGENT_WORK_MODES, composeWorkModeTeam, evaluateWorkModeAcceptance } from './workModes.js';
 import { PERSON_SKILLS } from '../skills/personSkillSystem.js';
@@ -20,6 +21,11 @@ function normalizePath(path = '') {
 function workModeTeamRoute(path = '') {
   const match = normalizePath(path).match(/^\/work-modes\/([^/]+)\/team$/);
   return match ? decodeURIComponent(match[1]) : null;
+}
+
+function localAuthRoute(path = '') {
+  const match = normalizePath(path).match(/^\/local-auth(?:\/(status|bootstrap|login|logout|users))?$/);
+  return match ? (match[1] || '') : null;
 }
 
 function workModeInitiationInput(body = {}) {
@@ -151,7 +157,7 @@ function publicResult(result = {}) {
   };
 }
 
-export function createAgentProjectApi({ service, accessControl = {} } = {}) {
+export function createAgentProjectApi({ service, accessControl = {}, localAuth = null, localAuthRequired = false } = {}) {
   if (!service) throw new Error('createAgentProjectApi requires a service.');
   const defaultAccessMode = accessControl.defaultMode || 'prototype-open';
   const accessSigningSecret = accessControl.signingSecret || '';
@@ -167,6 +173,7 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
     ? (replayStore.filePath ? 'file-store' : 'store')
     : 'api-memory';
   const replayCache = accessControl.replayCache || new Map();
+  const requireLocalAuth = Boolean(localAuthRequired);
 
   const rejectReplay = (decision, reason = 'signed-access-replay-detected') => ({
     ...decision,
@@ -346,14 +353,74 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
     };
   };
 
+  const localAuthTokenFromRequest = (request = {}) => String(
+    request.localAuthToken
+    || request.body?.localAuthToken
+    || readHeader(request.headers, 'x-hofs-local-auth-token')
+    || '',
+  ).trim();
+  const isPublicLocalAuthRoute = (request = {}) => {
+    const action = localAuthRoute(request.path || request.url || '/');
+    const method = String(request.method || 'GET').toUpperCase();
+    return (method === 'GET' && action === 'status')
+      || (method === 'POST' && ['bootstrap', 'login'].includes(action));
+  };
+  const resolveLocalAuthRequest = (request = {}) => {
+    if (!localAuth) return null;
+    const token = localAuthTokenFromRequest(request);
+    if (!token) return null;
+    const verification = localAuth.verifySession({
+      token,
+      now: request.body?.now || new Date().toISOString(),
+    });
+    if (!verification.verified) {
+      return {
+        verified: false,
+        response: json(401, {
+          error: 'local-auth-invalid',
+          message: verification.reason || 'local authentication is not valid',
+        }),
+      };
+    }
+    const user = verification.user || {};
+    const headers = request.headers || {};
+    return {
+      verified: true,
+      verification,
+      request: {
+        ...request,
+        headers: withHeader(
+          withHeader(
+            withHeader(headers, 'x-hofs-access-mode', 'enforced'),
+            'x-hofs-role',
+            user.role || 'observer',
+          ),
+          'x-hofs-user-id',
+          user.id || '',
+        ),
+        actorRole: user.role || request.actorRole,
+        actorUserId: user.id || request.actorUserId,
+      },
+    };
+  };
+
   const authorizeRequest = (request = {}) => {
-    const sessionRequest = resolveIdentitySessionRequest(request);
+    if (isPublicLocalAuthRoute(request)) return null;
+    const localAuthRequest = resolveLocalAuthRequest(request);
+    if (localAuthRequest?.response) return localAuthRequest.response;
+    const sessionRequest = localAuthRequest?.verified ? null : resolveIdentitySessionRequest(request);
     if (sessionRequest?.response) return sessionRequest.response;
-    const effectiveRequest = sessionRequest?.request || request;
+    if (requireLocalAuth && !localAuthRequest?.verified && !sessionRequest?.verified) {
+      return json(401, {
+        error: 'local-auth-required',
+        message: 'Local authentication is required for this request.',
+      });
+    }
+    const effectiveRequest = localAuthRequest?.request || sessionRequest?.request || request;
     let decision = authorizeAgentProjectRequest(effectiveRequest, {
       defaultMode: defaultAccessMode,
-      signingSecret: sessionRequest?.verified ? '' : accessSigningSecret,
-      requireSignedHeaders: sessionRequest?.verified ? false : requireSignedAccessHeaders,
+      signingSecret: localAuthRequest?.verified || sessionRequest?.verified ? '' : accessSigningSecret,
+      requireSignedHeaders: localAuthRequest?.verified || sessionRequest?.verified ? false : requireSignedAccessHeaders,
       ...(signatureMaxAgeMs === undefined ? {} : { signatureMaxAgeMs }),
     });
     decision = {
@@ -361,7 +428,19 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
       method: effectiveRequest.method || 'GET',
       path: effectiveRequest.path || effectiveRequest.url || '/',
     };
-    if (sessionRequest?.verified) {
+    if (localAuthRequest?.verified) {
+      decision = {
+        ...decision,
+        localAuth: {
+          required: requireLocalAuth,
+          verified: true,
+          userId: localAuthRequest.verification.user?.id || null,
+          role: localAuthRequest.verification.user?.role || 'observer',
+          sessionId: localAuthRequest.verification.session?.id || null,
+          expiresAt: localAuthRequest.verification.session?.expiresAt || null,
+        },
+      };
+    } else if (sessionRequest?.verified) {
       decision = {
         ...decision,
         identitySession: {
@@ -575,6 +654,39 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
           managerReadyPackage: projectId ? service.getManagerReadyPackage(projectId, { language }) : null,
         }),
   });
+  const handleLocalAuthRoute = ({ method, path, body = {}, request = {} } = {}) => {
+    const action = localAuthRoute(path);
+    if (!action || !localAuth) return null;
+    if (method === 'GET' && action === 'status') {
+      return json(200, { localAuth: localAuth.status() });
+    }
+    if (method === 'POST' && action === 'bootstrap') {
+      const result = localAuth.bootstrap(body);
+      return json(201, { localAuth: result });
+    }
+    if (method === 'POST' && action === 'login') {
+      const result = localAuth.login(body);
+      return result.verified
+        ? json(200, { localAuth: result })
+        : json(401, { error: result.reason || 'local-auth-invalid-credentials' });
+    }
+    const localRequest = resolveLocalAuthRequest({ ...request, method, path, body });
+    if (!localRequest?.verified) return localRequest?.response || json(401, {
+      error: 'local-auth-required',
+      message: 'Local authentication is required for this request.',
+    });
+    if (method === 'POST' && action === 'logout') {
+      return json(200, { localAuth: localAuth.logout({ token: localAuthTokenFromRequest({ ...request, body }), now: body.now }) });
+    }
+    if (action === 'users') {
+      if (localRequest.verification.user?.role !== 'security-admin') {
+        return json(403, { error: 'local-auth-admin-required' });
+      }
+      if (method === 'GET') return json(200, { localAuth: { users: localAuth.listUsers() } });
+      if (method === 'POST') return json(201, { localAuth: localAuth.createUser(body) });
+    }
+    return json(405, { error: 'method-not-allowed', method, path });
+  };
 
   return {
     async handleAsync(request = {}) {
@@ -1274,6 +1386,8 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
       if (denied) return denied;
 
       try {
+        const localAuthResponse = handleLocalAuthRoute({ method, path, body, request });
+        if (localAuthResponse) return localAuthResponse;
         if (method === 'GET' && path === '/projects') {
           return json(200, { projects: service.listProjects() });
         }
@@ -3373,6 +3487,8 @@ export function createFileBackedAgentProjectApi({
   providerPolicy = {},
   secretVault = null,
   accessControl = {},
+  localAuthFilePath = null,
+  localAuthRequired = false,
 } = {}) {
   const store = createAgentProjectFileStore({
     filePath,
@@ -3385,8 +3501,13 @@ export function createFileBackedAgentProjectApi({
     replaceWithSeed,
   });
   const service = createAgentProjectService({ store, artifactWriter, projectRuntime, llmProvider, searchProvider, providerPolicy, secretVault });
+  const localAuth = (localAuthFilePath || localAuthRequired)
+    ? createLocalAuthStore({ filePath: localAuthFilePath || `${store.filePath}.local-auth.json` })
+    : null;
   const api = createAgentProjectApi({
     service,
+    localAuth,
+    localAuthRequired,
     accessControl: {
       ...accessControl,
       replayStore: accessControl.replayStore || store,
@@ -3397,5 +3518,6 @@ export function createFileBackedAgentProjectApi({
     ...api,
     service,
     store,
+    localAuth,
   };
 }
