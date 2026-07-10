@@ -1,5 +1,6 @@
 import { createAgentProjectService, hydrateAgentProject } from './agentProjectService.js';
 import { createAgentProjectFileStore } from './agentProjectFileStore.js';
+import { buildProductionCapabilityRegistry } from './productionCapabilityRegistry.js';
 import {
   authorizeAgentProjectRequest,
   buildAccessControlPolicySnapshot,
@@ -698,6 +699,11 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
               readyForPublicProduction: false,
               readyForProduction: false,
             },
+        });
+      }
+      if (method === 'GET' && path === '/production-capabilities') {
+        return json(200, {
+          productionCapabilityRegistry: buildProductionCapabilityRegistry(),
         });
       }
       if (method === 'GET' && path === '/settings/health-readiness') {
@@ -1425,6 +1431,11 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
                 readyForPublicProduction: false,
                 readyForProduction: false,
               },
+          });
+        }
+        if (method === 'GET' && path === '/production-capabilities') {
+          return json(200, {
+            productionCapabilityRegistry: buildProductionCapabilityRegistry(),
           });
         }
         if (method === 'GET' && path === '/settings/health-readiness') {

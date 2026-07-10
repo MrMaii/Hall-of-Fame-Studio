@@ -1,4 +1,5 @@
 import { createAgentProjectService } from '../src/agents/agentProjectService.js';
+import { buildProductionCapabilityRegistry } from '../src/agents/productionCapabilityRegistry.js';
 import { buildManagedEnvironmentPreflightReport } from './report-managed-environment-preflight.mjs';
 
 function readArg(name) {
@@ -157,6 +158,7 @@ function buildOperatorActionPlan({
 async function buildReport() {
   const service = createAgentProjectService();
   const readiness = service.getPublicProductionStartupReadiness();
+  const productionCapabilityRegistry = buildProductionCapabilityRegistry();
   const managedEnvironmentPreflight = redactedManagedEnvironmentPreflight(await buildManagedEnvironmentPreflightReport());
   const setup = readiness.productionEnvironmentSetup || {};
   const rows = toArray(setup.rows).map(redactedRow);
@@ -182,6 +184,8 @@ async function buildReport() {
       setupRowCount: setup.summary?.rowCount || rows.length,
       blockedSetupRowCount: setup.summary?.blockedRowCount || blockedRows.length,
       blockedDomains,
+      requiredProductionCapabilityCount: productionCapabilityRegistry.summary.requiredCapabilityCount,
+      verifiedProductionCapabilityCount: productionCapabilityRegistry.summary.verifiedCapabilityCount,
     },
     nextAction: readiness.nextAction || setup.nextAction || null,
     validationCommands: [
@@ -192,6 +196,15 @@ async function buildReport() {
     backendRoutes: {
       publicProductionStartupReadiness: readiness.backendRoutes?.publicProductionStartupReadiness || '/public-production-startup-readiness',
       productionEnvironmentSetup: readiness.backendRoutes?.publicProductionStartupReadiness || '/public-production-startup-readiness',
+      productionCapabilities: '/production-capabilities',
+    },
+    productionCapabilityRegistry: {
+      schemaVersion: productionCapabilityRegistry.schemaVersion,
+      checksum: productionCapabilityRegistry.checksum,
+      readyForProduction: productionCapabilityRegistry.readyForProduction,
+      summary: productionCapabilityRegistry.summary,
+      blockers: productionCapabilityRegistry.blockers,
+      environmentAttestation: productionCapabilityRegistry.environmentAttestation,
     },
     managedEnvironmentPreflight,
     operatorActionPlan,
@@ -207,6 +220,7 @@ function formatMarkdown(report) {
     `Status: ${report.status}`,
     `Ready for public production: ${report.readyForPublicProduction ? 'yes' : 'no'}`,
     `Blocked setup rows: ${report.summary.blockedSetupRowCount}/${report.summary.setupRowCount}`,
+    `Verified production capabilities: ${report.summary.verifiedProductionCapabilityCount}/${report.summary.requiredProductionCapabilityCount}`,
     `Blocked domains: ${report.summary.blockedDomains.join(', ') || 'none'}`,
     '',
     '## Managed Environment Preflight',
