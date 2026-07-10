@@ -687,6 +687,29 @@ export function createAgentProjectApi({ service, accessControl = {}, localAuth =
     }
     return json(405, { error: 'method-not-allowed', method, path });
   };
+  const seedLocalProjectCreatorMembership = (result = {}, request = {}, body = {}) => {
+    if (!requireProjectMembership || result.project?.projectMembershipPolicy || !result.project?.id) return result;
+    const localRequest = resolveLocalAuthRequest({ ...request, body });
+    const user = localRequest?.verified ? localRequest.verification.user : null;
+    if (!user?.id || !['security-admin', 'manager'].includes(user.role)) return result;
+    const policy = user.role === 'security-admin'
+      ? { securityAdminUserIds: [user.id] }
+      : { managerUserIds: [user.id] };
+    const membership = service.setProjectMembershipPolicy({
+      projectId: result.project.id,
+      policy,
+      updatedBy: user.id,
+      source: 'local-auth-project-creator',
+      now: body.now,
+    });
+    return {
+      ...result,
+      project: membership.project,
+      projectMembershipPolicy: membership.projectMembershipPolicy,
+      projectMembershipSummary: membership.projectMembershipSummary,
+      projectMembershipAuditEntry: membership.projectMembershipAuditEntry,
+    };
+  };
 
   return {
     async handleAsync(request = {}) {
@@ -1399,7 +1422,8 @@ export function createAgentProjectApi({ service, accessControl = {}, localAuth =
               workModeTeam: workModeInitiation.error,
             });
           }
-          const result = service.initiateProject(workModeInitiation.input);
+          let result = service.initiateProject(workModeInitiation.input);
+          result = seedLocalProjectCreatorMembership(result, request, body);
           const resultProjectId = result.project?.id;
           const includeReadModels = shouldIncludeReadModels(body);
           return json(200, {
@@ -1408,7 +1432,8 @@ export function createAgentProjectApi({ service, accessControl = {}, localAuth =
           });
         }
         if (method === 'POST' && path === '/product-team-missions') {
-          const result = service.startProductTeamMission({ ...body, language });
+          let result = service.startProductTeamMission({ ...body, language });
+          result = seedLocalProjectCreatorMembership(result, request, body);
           const resultProjectId = result.project?.id;
           const includeReadModels = shouldIncludeReadModels(body);
           return json(200, {

@@ -93,6 +93,7 @@ const accessReplayProtection = envFlag('AGENT_ACCESS_REPLAY_PROTECTION');
 const accessAuditFailClosed = envFlag('AGENT_ACCESS_AUDIT_FAIL_CLOSED');
 const localAuthRequired = envFlag('AGENT_LOCAL_AUTH_REQUIRED');
 const localAuthFilePath = process.env.AGENT_LOCAL_AUTH_STORE || undefined;
+const projectMembershipRequired = envFlag('AGENT_PROJECT_MEMBERSHIP_REQUIRED');
 const secretVault = createSecretVaultFromEnv(process.env);
 const secretVaultStatus = secretVault.status();
 const findVaultProviderRecord = (kind = '', target = 'api-key') => {
@@ -169,6 +170,7 @@ const httpServer = createAgentProjectHttpServer({
     signingSecret: accessSigningSecret,
     requireSignedRequestIds: accessReplayProtection,
     failClosedOnAuditError: accessAuditFailClosed,
+    requireProjectMembership: projectMembershipRequired,
   },
   localAuthFilePath,
   localAuthRequired,
@@ -186,6 +188,7 @@ console.log(`Access signing: ${accessSigningSecret ? 'enabled' : 'disabled'}`);
 console.log(`Access replay protection: ${accessReplayProtection ? 'enabled' : 'disabled'}`);
 console.log(`Access audit fail-closed: ${accessAuditFailClosed ? 'enabled' : 'disabled'}`);
 console.log(`Local user authentication: ${localAuthRequired ? `required (${httpServer.api.localAuth?.filePath || 'memory'})` : 'optional; set AGENT_LOCAL_AUTH_REQUIRED=true to require it'}`);
+console.log(`Project membership enforcement: ${projectMembershipRequired ? 'enabled' : 'optional; set AGENT_PROJECT_MEMBERSHIP_REQUIRED=true to require per-project grants'}`);
 console.log(`Secret vault: ${secretVaultStatus.ready ? `ready (${secretVaultStatus.provider}/${secretVaultStatus.encryptedRecordCount} record(s))` : 'disabled or not configured'}`);
 console.log(`Model provider: ${llmProvider.enabled ? `enabled (${llmProvider.provider}/${llmProvider.model})` : `disabled (${llmProvider.status().configured ? 'configured but not enabled or blocked' : 'missing key or disabled'})`}`);
 console.log(`Search provider: ${searchProvider.enabled ? `enabled (${searchProvider.provider})` : `disabled (${searchProvider.status().configured ? 'configured but not enabled' : 'missing endpoint/key or disabled'})`}`);
