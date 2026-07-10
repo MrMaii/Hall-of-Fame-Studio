@@ -8,7 +8,7 @@ import {
   validateWorkModeDependencyGraph,
 } from '../src/agents/workModes.js';
 import { createAgentProjectApi } from '../src/agents/agentProjectApi.js';
-import { createAgentProjectService } from '../src/agents/agentProjectService.js';
+import { createAgentProjectService, reviewAgentSubmission, submitAgentArtifact } from '../src/agents/agentProjectService.js';
 
 test('defines five professional work modes with distinct artifacts, acceptance checks, and escalation checks', () => {
   assert.equal(Object.keys(SUPER_AGENT_WORK_MODES).length, 5);
@@ -165,6 +165,34 @@ test('rejects a project initiation whose submitted role dependencies are cyclic'
   assert.ok(response.body.workModeTeam.blockers.includes('dependency-cycle'));
 });
 
+test('does not let caller-supplied task ownership bypass a work-mode contract', () => {
+  const api = createAgentProjectApi({ service: createAgentProjectService() });
+  const response = api.handle({
+    method: 'POST',
+    path: '/projects/initiate',
+    body: {
+      projectId: 'governed_custom_task_project',
+      name: 'Governed custom task project',
+      brief: 'Draft a cited literature review.',
+      workMode: 'academic-writing',
+      tasks: [{
+        id: 'caller_outline',
+        artifactType: 'outline',
+        text: 'Use this custom outline title.',
+        assignee: 'caller-selected-agent',
+        reviewerId: 'caller-selected-reviewer',
+        dependsOn: ['untrusted-task'],
+      }],
+    },
+  });
+  assert.equal(response.status, 200);
+  const outline = response.body.project.tasks.find((task) => task.artifactType === 'outline');
+  assert.equal(outline.text, 'Use this custom outline title.');
+  assert.notEqual(outline.assignee, 'caller-selected-agent');
+  assert.notEqual(outline.reviewerId, 'caller-selected-reviewer');
+  assert.deepEqual(outline.dependsOn, []);
+});
+
 test('does not accept a work-mode project until every required artifact and mode-specific review is present', () => {
   const contract = composeWorkModeTeam({ workMode: 'technical-delivery', objective: 'Ship an API safely.' });
   const blocked = evaluateWorkModeAcceptance({ workModeContract: contract, submissions: [] });
@@ -176,4 +204,58 @@ test('does not accept a work-mode project until every required artifact and mode
   assert.equal(blocked.readyForAcceptance, false);
   assert.equal(blocked.missingArtifacts.includes('test-evidence'), true);
   assert.equal(ready.readyForAcceptance, true);
+});
+
+test('enforces work-mode task ownership, independent review, and accepted task prerequisites', () => {
+  const contract = composeWorkModeTeam({ workMode: 'learning', objective: 'Build a study plan.' });
+  const [owner, reviewer] = [
+    { id: 'owner', name: 'Owner', role: 'subject-researcher', isLeader: true },
+    { id: 'reviewer', name: 'Reviewer', role: 'learning-reviewer' },
+  ];
+  const project = {
+    id: 'governed_work_mode_project',
+    workModeContract: contract,
+    team: [owner, reviewer],
+    tasks: [
+      { id: 'learning-plan', artifactType: 'learning-plan', assignee: owner.id, reviewerId: reviewer.id, dependsOn: [], status: 'pending' },
+      { id: 'practice-set', artifactType: 'practice-set', assignee: owner.id, reviewerId: reviewer.id, dependsOn: ['learning-plan'], status: 'pending' },
+    ],
+    agentSubmissions: [],
+    submissionReviews: [],
+    logs: [],
+    messages: [],
+  };
+  assert.throws(() => submitAgentArtifact({
+    project,
+    agentId: reviewer.id,
+    taskId: 'learning-plan',
+    artifactType: 'learning-plan',
+  }), /task-owner-required/);
+  assert.throws(() => submitAgentArtifact({
+    project,
+    agentId: owner.id,
+    taskId: 'practice-set',
+    artifactType: 'practice-set',
+  }), /task-dependency-not-accepted/);
+
+  const submitted = submitAgentArtifact({
+    project,
+    agentId: owner.id,
+    taskId: 'learning-plan',
+    artifactType: 'learning-plan',
+    reviewerAgentId: reviewer.id,
+  });
+  assert.throws(() => reviewAgentSubmission({
+    project: submitted.project,
+    submissionId: submitted.submission.id,
+    reviewerAgentId: owner.id,
+    verdict: 'accepted',
+  }), /task-reviewer-required/);
+  const reviewed = reviewAgentSubmission({
+    project: submitted.project,
+    submissionId: submitted.submission.id,
+    reviewerAgentId: reviewer.id,
+    verdict: 'accepted',
+  });
+  assert.equal(reviewed.submission.reviewStatus, 'accepted');
 });

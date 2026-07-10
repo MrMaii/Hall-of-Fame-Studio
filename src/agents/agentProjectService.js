@@ -4802,16 +4802,50 @@ export function submitAgentArtifact({
   const team = project.team || [];
   const agent = team.find((member) => member.id === agentId || member.name === agentId);
   if (!agent) throw new Error(`Agent not found: ${agentId}`);
-  const leader = team.find((member) => member.isLeader) || team[0] || null;
-  const reviewer = team.find((member) => (
-    reviewerAgentId
-      ? member.id === reviewerAgentId || member.name === reviewerAgentId
-      : (member.id !== agent.id && (/review|evidence|qa|critic|risk/i.test(`${member.role || ''} ${member.title || ''} ${member.skill || ''}`)))
-  )) || team.find((member) => member.id !== agent.id && member.id !== leader?.id) || leader || null;
   const task = taskId
     ? (project.tasks || []).find((item) => String(item.id) === String(taskId))
     : null;
   if (taskId && !task) throw new Error(`Task not found: ${taskId}`);
+  const governedWorkModeTask = Boolean(project.workModeContract?.schemaVersion === 'super-agent-work-mode-team/v1' && task);
+  const taskOwner = governedWorkModeTask
+    ? team.find((member) => member.id === task.assignee || member.name === task.assignee)
+    : null;
+  const taskReviewer = governedWorkModeTask
+    ? team.find((member) => member.id === task.reviewerId || member.name === task.reviewerId)
+    : null;
+  if (governedWorkModeTask && !taskOwner) {
+    throw new Error(`task-owner-missing:${task.id}`);
+  }
+  if (governedWorkModeTask && taskOwner?.id && taskOwner.id !== agent.id) {
+    throw new Error(`task-owner-required:${task.id}`);
+  }
+  if (governedWorkModeTask && !taskReviewer) {
+    throw new Error(`task-reviewer-missing:${task.id}`);
+  }
+  if (governedWorkModeTask && taskReviewer?.id === agent.id) {
+    throw new Error(`task-reviewer-must-be-independent:${task.id}`);
+  }
+  if (governedWorkModeTask && reviewerAgentId) {
+    const requestedReviewer = team.find((member) => member.id === reviewerAgentId || member.name === reviewerAgentId);
+    if (!requestedReviewer || requestedReviewer.id !== taskReviewer?.id) {
+      throw new Error(`task-reviewer-required:${task.id}`);
+    }
+  }
+  const unmetDependencies = governedWorkModeTask
+    ? (task.dependsOn || []).filter((dependencyId) => !(project.agentSubmissions || []).some((submission) => (
+      String(submission.taskId || '') === String(dependencyId)
+      && submission.reviewStatus === 'accepted'
+    )))
+    : [];
+  if (unmetDependencies.length) {
+    throw new Error(`task-dependency-not-accepted:${unmetDependencies.join(',')}`);
+  }
+  const leader = team.find((member) => member.isLeader) || team[0] || null;
+  const reviewer = team.find((member) => (
+    reviewerAgentId || taskReviewer?.id
+      ? member.id === (reviewerAgentId || taskReviewer?.id) || member.name === (reviewerAgentId || taskReviewer?.id)
+      : (member.id !== agent.id && (/review|evidence|qa|critic|risk/i.test(`${member.role || ''} ${member.title || ''} ${member.skill || ''}`)))
+  )) || team.find((member) => member.id !== agent.id && member.id !== leader?.id) || leader || null;
   const explicitReview = respondsToReviewId
     ? (project.submissionReviews || []).find((item) => String(item.id) === String(respondsToReviewId))
     : null;
@@ -5566,14 +5600,33 @@ export function reviewAgentSubmission({
   const submission = (project.agentSubmissions || []).find((item) => String(item.id) === String(submissionId));
   if (!submission) throw new Error(`Submission not found: ${submissionId}`);
   const submitter = team.find((member) => member.id === submission.agentId || member.name === submission.agentName) || null;
+  const task = submission.taskId
+    ? (project.tasks || []).find((item) => String(item.id) === String(submission.taskId))
+    : null;
+  const governedWorkModeTask = Boolean(project.workModeContract?.schemaVersion === 'super-agent-work-mode-team/v1' && task);
+  const taskReviewer = governedWorkModeTask
+    ? team.find((member) => member.id === task.reviewerId || member.name === task.reviewerId)
+    : null;
+  if (governedWorkModeTask && !taskReviewer) {
+    throw new Error(`task-reviewer-missing:${task.id}`);
+  }
+  if (governedWorkModeTask && reviewerAgentId) {
+    const requestedReviewer = team.find((member) => member.id === reviewerAgentId || member.name === reviewerAgentId);
+    if (!requestedReviewer || requestedReviewer.id !== taskReviewer?.id) {
+      throw new Error(`task-reviewer-required:${task.id}`);
+    }
+  }
   const reviewer = team.find((member) => (
-    reviewerAgentId
-      ? member.id === reviewerAgentId || member.name === reviewerAgentId
+    reviewerAgentId || taskReviewer?.id
+      ? member.id === (reviewerAgentId || taskReviewer?.id) || member.name === (reviewerAgentId || taskReviewer?.id)
       : member.id === submission.requestedReviewAgentId || member.name === submission.requestedReviewAgentName
   )) || team.find((member) => member.id !== submitter?.id && /review|evidence|qa|critic|risk/i.test(`${member.role || ''} ${member.title || ''} ${member.skill || ''}`))
     || team.find((member) => member.id !== submitter?.id)
     || submitter;
   if (!reviewer) throw new Error('Reviewer not found.');
+  if (governedWorkModeTask && reviewer.id === submitter?.id) {
+    throw new Error(`task-reviewer-must-be-independent:${task.id}`);
+  }
   const normalizedVerdict = normalizeSubmissionReviewStatus(verdict);
   const timestamp = Date.parse(now) || Date.now();
   const reviewId = `submission_review_${project.id || 'project'}_${submission.id}_${reviewer.id}_${timestamp}`;

@@ -49,6 +49,22 @@ function workModeInitiationInput(body = {}) {
   const lead = composition.roles.find((role) => role.id.includes('lead')) || composition.roles[0];
   const reviewer = composition.roles.find((role) => role.id.includes('reviewer')) || composition.roles.at(-1);
   const projectId = body.projectId || `project_${Date.now()}`;
+  const requestedTasksByArtifact = new Map((Array.isArray(body.tasks) ? body.tasks : [])
+    .filter((task) => task?.artifactType)
+    .map((task) => [String(task.artifactType), task]));
+  const governedTasks = composition.taskNodes.map((task) => {
+    const requested = requestedTasksByArtifact.get(task.artifactType) || {};
+    return {
+      id: `${projectId}_${task.id}`,
+      text: String(requested.text || '').trim() || `Deliver ${task.artifactType} for ${body.name || composition.workMode}.`,
+      assignee: task.ownerPersonaSlug,
+      reviewerId: task.reviewerPersonaSlug,
+      dependsOn: task.dependsOn.map((dependencyId) => `${projectId}_${dependencyId}`),
+      status: 'pending',
+      artifactType: task.artifactType,
+      acceptanceChecks: task.acceptanceChecks,
+    };
+  });
   return {
     error: null,
     input: {
@@ -57,16 +73,7 @@ function workModeInitiationInput(body = {}) {
       team: body.team?.length ? body.team : generatedTeam,
       selectedLeaderId: body.selectedLeaderId || lead?.personaSlug,
       reviewerId: body.reviewerId || reviewer?.personaSlug,
-      tasks: body.tasks?.length ? body.tasks : composition.taskNodes.map((task) => ({
-        id: `${projectId}_${task.id}`,
-        text: `Deliver ${task.artifactType} for ${body.name || composition.workMode}.`,
-        assignee: task.ownerPersonaSlug,
-        reviewerId: task.reviewerPersonaSlug,
-        dependsOn: task.dependsOn.map((dependencyId) => `${projectId}_${dependencyId}`),
-        status: 'pending',
-        artifactType: task.artifactType,
-        acceptanceChecks: task.acceptanceChecks,
-      })),
+      tasks: governedTasks,
       workModeContract: composition,
     },
   };
