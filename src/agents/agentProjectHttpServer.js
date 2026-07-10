@@ -416,6 +416,77 @@ export function createAgentProjectHttpServer({
     accessControl,
   });
   const resolvedTelemetry = telemetry || createLocalTelemetryPort();
+  const localRuntimeHealth = () => {
+    const localAuth = resolvedApi.localAuth?.status?.() || null;
+    const telemetryStatus = resolvedTelemetry.status({ limit: 1 });
+    const schedulerStatus = scheduler.status();
+    const secretVault = resolvedApi.service?.getSecretVaultStatus?.() || null;
+    const checks = [
+      {
+        id: 'project-store',
+        passed: Boolean(resolvedApi.store?.filePath),
+        detail: resolvedApi.store?.filePath ? 'Local project store is attached.' : 'Local project store is unavailable.',
+      },
+      {
+        id: 'local-auth',
+        passed: !localAuthRequired || Boolean(localAuth?.enabled && !localAuth.bootstrapRequired),
+        detail: !localAuthRequired
+          ? 'Local authentication is optional for this runtime.'
+          : localAuth?.bootstrapRequired
+            ? 'Bootstrap the first local security administrator.'
+            : 'Local authentication is enforced and initialized.',
+      },
+      {
+        id: 'telemetry',
+        passed: telemetryStatus.enabled === true,
+        detail: `${telemetryStatus.summary?.requestCount || 0} local request record(s); ${telemetryStatus.summary?.serverErrorCount || 0} server error(s).`,
+      },
+      {
+        id: 'scheduler',
+        passed: true,
+        detail: schedulerStatus.enabled ? 'Local autonomous scheduler is enabled.' : 'Scheduler is stopped; start it only for supervised autonomous work.',
+      },
+      {
+        id: 'secret-vault',
+        passed: secretVault?.enabled !== false,
+        detail: secretVault?.ready ? 'Local secret vault is ready.' : 'No ready secret vault is required until provider credentials are configured.',
+      },
+    ];
+    const status = checks.some((check) => check.id === 'local-auth' && !check.passed)
+      ? 'setup-required'
+      : (telemetryStatus.summary?.serverErrorCount || 0) > 0
+        ? 'attention-needed'
+        : checks.every((check) => check.passed)
+          ? 'ready'
+          : 'degraded';
+    return {
+      schemaVersion: 'local-runtime-health/v1',
+      status,
+      readyForLocalOperation: status === 'ready',
+      readyForProduction: false,
+      checks,
+      telemetry: {
+        storage: telemetryStatus.storage,
+        summary: telemetryStatus.summary,
+      },
+      scheduler: {
+        enabled: schedulerStatus.enabled,
+        lastCompletedAt: schedulerStatus.lastCompletedAt || null,
+        lastError: schedulerStatus.lastError || null,
+      },
+      localAuth: localAuth ? {
+        enabled: localAuth.enabled,
+        bootstrapRequired: localAuth.bootstrapRequired,
+        userCount: localAuth.userCount,
+      } : null,
+      maintenance: {
+        backupCommand: 'npm run local:backup',
+        restoreDrillCommand: 'npm run local:recovery:drill',
+        observabilityRoute: '/runtime-observability',
+      },
+      productionBlockers: ['centralized observability', 'managed alert routing and on-call ownership', 'managed incident system'],
+    };
+  };
 
   const server = createServer(async (request, response) => {
     const traceId = String(request.headers['x-hofs-request-id'] || '').trim() || `trace_${randomUUID()}`;
@@ -457,6 +528,11 @@ export function createAgentProjectHttpServer({
       if (url.pathname === '/runtime-observability' && request.method === 'GET') {
         if (!requireLocalSchedulerAdmin()) return;
         send(200, { runtimeObservability: resolvedTelemetry.status() });
+        return;
+      }
+      if (url.pathname === '/local-runtime-health' && request.method === 'GET') {
+        if (!requireLocalSchedulerAdmin()) return;
+        send(200, { localRuntimeHealth: localRuntimeHealth() });
         return;
       }
       if (url.pathname === '/workers/autonomous/status' && request.method === 'GET') {
@@ -520,6 +596,7 @@ export function createAgentProjectHttpServer({
     api: resolvedApi,
     scheduler,
     telemetry: resolvedTelemetry,
+    localRuntimeHealth,
     server,
     listen({ port = 0, host = '127.0.0.1' } = {}) {
       return new Promise((resolve, reject) => {

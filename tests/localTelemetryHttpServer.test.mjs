@@ -26,6 +26,11 @@ test('records redacted local HTTP telemetry with a returned trace id', async () 
     assert.ok(body.runtimeObservability.summary.requestCount >= 1);
     assert.equal(JSON.stringify(body).includes('do-not-log-this'), false);
     assert.equal(readFileSync(telemetryPath, 'utf8').includes('do-not-log-this'), false);
+    const health = await fetch(`${listener.url}/local-runtime-health`);
+    assert.equal(health.status, 200);
+    const healthBody = await health.json();
+    assert.equal(healthBody.localRuntimeHealth.schemaVersion, 'local-runtime-health/v1');
+    assert.equal(healthBody.localRuntimeHealth.checks.some((check) => check.id === 'telemetry'), true);
   } finally {
     await runtime.close();
     rmSync(directory, { recursive: true, force: true });
