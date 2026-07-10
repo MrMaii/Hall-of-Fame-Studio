@@ -117,6 +117,7 @@
     "ui:manager-provider-proof": "vite build && node scripts/validate-manager-provider-proof-ui.mjs",
     "ui:settings-agents-server": "vite build && node scripts/validate-settings-agents-server-ui.mjs",
     "ui:settings-agents-server:dev": "node scripts/validate-settings-agents-server-ui.mjs --ui-base-url=http://127.0.0.1:5173",
+    "ui:local-auth": "vite build && node scripts/validate-local-auth-ui.mjs",
     "ui:manager-mission-runner": "vite build && node scripts/validate-manager-mission-runner-ui.mjs",
     "ui:real-user-zero-to-autonomy": "vite build && node scripts/validate-real-user-zero-to-autonomy-agents-server-ui.mjs",
     "ui:real-user-zero-to-autonomy:dev": "node scripts/validate-real-user-zero-to-autonomy-agents-server-ui.mjs --ui-base-url=http://127.0.0.1:5173",

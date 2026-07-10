@@ -22,6 +22,8 @@ The response returns a session token once. Store it in the local client and use 
 curl.exe http://127.0.0.1:8787/projects -H "x-hofs-local-auth-token: <token>"
 ```
 
+The built-in UI exposes the same flow under **Settings → Deployment → Local User Account**. Its token is kept in browser `sessionStorage`, is bound to the configured backend URL, and is cleared on sign-out; it is not written to browser `localStorage`.
+
 Supported routes are `GET /local-auth/status`, `POST /local-auth/bootstrap`, `POST /local-auth/login`, `POST /local-auth/logout`, and administrator-only `GET|POST /local-auth/users`.
 
 Passwords use Node's `scrypt` derivation with a random salt. Session tokens are random and only their SHA-256 hash is written to disk. The store supports restart recovery and logout revocation; it is local self-hosted authentication, not a public-SaaS identity claim.

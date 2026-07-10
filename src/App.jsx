@@ -858,6 +858,7 @@ const STORAGE_KEYS = {
   projects: 'hall_of_fame_studio.projects.v1',
   chatMessages: 'hall_of_fame_studio.chat_messages.v1',
   backendUrl: 'hall_of_fame_studio.agent_backend_url.v1',
+  localAuthSession: 'hall_of_fame_studio.local_auth_session.v1',
   providerRuntimeStatus: 'hall_of_fame_studio.provider_runtime_status.v1',
   devInitiationFallback: 'hall_of_fame_studio.dev_initiation_fallback.v1',
   devLocalRuntimeFallback: 'hall_of_fame_studio.dev_local_runtime_fallback.v1',
@@ -1185,6 +1186,23 @@ const loadBackendBaseUrl = () => {
   return isValidBackendBaseUrl(storedBackendUrl)
     ? normalizeBackendBaseUrl(storedBackendUrl)
     : DEFAULT_AGENT_BACKEND_URL;
+};
+
+const loadLocalAuthSession = () => {
+  if (typeof window === 'undefined') return null;
+  let stored = null;
+  try {
+    stored = JSON.parse(window.sessionStorage.getItem(STORAGE_KEYS.localAuthSession) || 'null');
+  } catch {
+    return null;
+  }
+  if (!stored?.token || !isValidBackendBaseUrl(stored.baseUrl)) return null;
+  return {
+    token: String(stored.token),
+    baseUrl: normalizeBackendBaseUrl(stored.baseUrl),
+    user: stored.user || null,
+    expiresAt: stored.expiresAt || null,
+  };
 };
 
 const hasConfiguredBackendBaseUrl = () => {
@@ -1754,6 +1772,20 @@ export default function EngineWorkspace() {
   const [projectLauncherOpen, setProjectLauncherOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState('deployment');
+  const [localAuthSession, setLocalAuthSession] = useState(loadLocalAuthSession);
+  const [localAuthStatus, setLocalAuthStatus] = useState({
+    loading: false,
+    available: null,
+    bootstrapRequired: null,
+    userCount: 0,
+    error: null,
+  });
+  const [localAuthDraft, setLocalAuthDraft] = useState({
+    username: '',
+    password: '',
+    displayName: '',
+    pending: false,
+  });
   const [healthCheck, setHealthCheck] = useState({
     running: false,
     lastRunAt: null,
@@ -2031,6 +2063,10 @@ export default function EngineWorkspace() {
   const backendHealthTargetLabel = backendUrlConfigured
     ? normalizeBackendBaseUrl(healthCheck.baseUrl || backendStation.baseUrl || DEFAULT_AGENT_BACKEND_URL)
     : 'Not configured';
+  const localAuthSessionForCurrentBackend = localAuthSession
+    && normalizeBackendBaseUrl(localAuthSession.baseUrl) === normalizeBackendBaseUrl(backendStation.baseUrl || DEFAULT_AGENT_BACKEND_URL)
+    ? localAuthSession
+    : null;
   const [agentMessageDrafts, setAgentMessageDrafts] = useState({});
   const [agentWorkDrafts, setAgentWorkDrafts] = useState({});
   const [submissionReviewDrafts, setSubmissionReviewDrafts] = useState({});
@@ -2700,7 +2736,7 @@ export default function EngineWorkspace() {
     }
   };
 
-  const requestAgentBackend = async (path, { method = 'GET', body, timeoutMs = 900, baseUrl = backendStation.baseUrl } = {}) => {
+  const requestAgentBackend = async (path, { method = 'GET', body, timeoutMs = 900, baseUrl = backendStation.baseUrl, authToken = '' } = {}) => {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
     const localizedBody = body && typeof body === 'object'
@@ -2711,9 +2747,19 @@ export default function EngineWorkspace() {
       }
       : body;
     try {
+      const normalizedBaseUrl = normalizeBackendBaseUrl(baseUrl || DEFAULT_AGENT_BACKEND_URL);
+      const headers = localizedBody ? { 'content-type': 'application/json' } : {};
+      const sessionToken = authToken || (
+        localAuthSession?.token && normalizeBackendBaseUrl(localAuthSession.baseUrl) === normalizedBaseUrl
+          ? localAuthSession.token
+          : ''
+      );
+      if (sessionToken) {
+        headers['x-hofs-local-auth-token'] = sessionToken;
+      }
       const response = await fetch(`${baseUrl}${path}`, {
         method,
-        headers: localizedBody ? { 'content-type': 'application/json' } : undefined,
+        headers: Object.keys(headers).length ? headers : undefined,
         body: localizedBody ? JSON.stringify(localizedBody) : undefined,
         cache: 'no-store',
         signal: controller.signal,
@@ -2730,6 +2776,93 @@ export default function EngineWorkspace() {
       clearTimeout(timeout);
     }
   };
+
+  const persistLocalAuthSession = (session = null) => {
+    setLocalAuthSession(session);
+    if (typeof window !== 'undefined') {
+      try {
+        if (session) window.sessionStorage.setItem(STORAGE_KEYS.localAuthSession, JSON.stringify(session));
+        else window.sessionStorage.removeItem(STORAGE_KEYS.localAuthSession);
+      } catch {
+        // The in-memory session remains usable when browser storage is unavailable.
+      }
+    }
+  };
+
+  const syncLocalAuthStatus = async ({ baseUrl = backendStation.baseUrl } = {}) => {
+    const targetBaseUrl = normalizeBackendBaseUrl(baseUrl || DEFAULT_AGENT_BACKEND_URL);
+    setLocalAuthStatus(previous => ({ ...previous, loading: true, error: null }));
+    try {
+      const payload = await requestAgentBackend('/local-auth/status', { baseUrl: targetBaseUrl, timeoutMs: 2500 });
+      const status = payload.localAuth || {};
+      setLocalAuthStatus({
+        loading: false,
+        available: status.enabled === true,
+        bootstrapRequired: status.bootstrapRequired === true,
+        userCount: Number(status.userCount || 0),
+        error: null,
+      });
+      return status;
+    } catch (error) {
+      const unavailable = [404, 405].includes(error?.status);
+      setLocalAuthStatus({
+        loading: false,
+        available: unavailable ? false : null,
+        bootstrapRequired: null,
+        userCount: 0,
+        error: unavailable ? null : providerRuntimeErrorDetail(error),
+      });
+      return null;
+    }
+  };
+
+  const submitLocalAuth = async (action) => {
+    const username = String(localAuthDraft.username || '').trim();
+    const password = String(localAuthDraft.password || '');
+    if (['bootstrap', 'login'].includes(action) && (!username || !password)) {
+      setLocalAuthStatus(previous => ({ ...previous, error: 'Enter a username and password.' }));
+      return;
+    }
+    setLocalAuthDraft(previous => ({ ...previous, pending: true }));
+    setLocalAuthStatus(previous => ({ ...previous, error: null }));
+    try {
+      let authenticatedToken = '';
+      if (action === 'logout') {
+        await requestAgentBackend('/local-auth/logout', { method: 'POST', timeoutMs: 3000 });
+        persistLocalAuthSession(null);
+      } else {
+        const payload = await requestAgentBackend(`/local-auth/${action}`, {
+          method: 'POST',
+          timeoutMs: 10_000,
+          body: {
+            username,
+            password,
+            ...(action === 'bootstrap' ? { displayName: String(localAuthDraft.displayName || '').trim() } : {}),
+          },
+        });
+        const result = payload.localAuth || {};
+        if (!result.token || !result.user) throw new Error('Local authentication did not return a session.');
+        authenticatedToken = result.token;
+        persistLocalAuthSession({
+          token: result.token,
+          baseUrl: normalizeBackendBaseUrl(backendStation.baseUrl || DEFAULT_AGENT_BACKEND_URL),
+          user: result.user,
+          expiresAt: result.session?.expiresAt || null,
+        });
+        setLocalAuthDraft(previous => ({ ...previous, password: '' }));
+      }
+      await syncLocalAuthStatus();
+      if (authenticatedToken) await syncBackendProjectCatalog({ silent: true, authToken: authenticatedToken });
+    } catch (error) {
+      setLocalAuthStatus(previous => ({ ...previous, error: providerRuntimeErrorDetail(error) }));
+    } finally {
+      setLocalAuthDraft(previous => ({ ...previous, pending: false }));
+    }
+  };
+
+  useEffect(() => {
+    syncLocalAuthStatus();
+  }, [backendStation.baseUrl]);
 
   const providerRuntimeErrorDetail = (error) => (
     error?.name === 'AbortError'
@@ -3331,7 +3464,7 @@ export default function EngineWorkspace() {
     return incoming;
   };
 
-  const syncBackendProjectCatalog = async ({ silent = true, baseUrl = null } = {}) => {
+  const syncBackendProjectCatalog = async ({ silent = true, baseUrl = null, authToken = '' } = {}) => {
     if (!baseUrl && !backendUrlConfigured) {
       if (!silent) {
         setBackendStation(prev => ({
@@ -3350,6 +3483,7 @@ export default function EngineWorkspace() {
       const payload = await requestAgentBackend('/projects', {
         baseUrl: targetBaseUrl,
         timeoutMs: silent ? 1200 : 2500,
+        authToken,
       });
       const backendProjects = mergeBackendProjectsIntoState(payload.projects || []);
       setBackendStation(prev => ({
@@ -11995,7 +12129,7 @@ export default function EngineWorkspace() {
                           This screen reflects the configured backend runtime. Deployment mode, provider endpoints, concurrency, retry, and scheduler controls must come from backend env, adapter gateway, or managed infrastructure receipts.
                         </p>
                       </div>
-                      <SmallButton onClick={() => syncSettingsProviderRuntime({ runTests: false })} disabled={providerRuntimeStatus.running || !backendUrlConfigured}>
+                      <SmallButton data-testid="settings-local-auth-sync-runtime" onClick={() => syncSettingsProviderRuntime({ runTests: false })} disabled={providerRuntimeStatus.running || !backendUrlConfigured}>
                         <RefreshCw size={12} className="inline-block mr-2" />Sync runtime
                       </SmallButton>
                     </div>
@@ -12027,6 +12161,57 @@ export default function EngineWorkspace() {
                         <div className="mt-2 break-all font-mono text-xs text-[#1a1a1a]">/workers/autonomous/status</div>
                       </div>
                     </div>
+                  </div>
+
+                  <div data-testid="settings-local-auth" className="border border-[#d1d0c9] bg-[#f5f4f0] p-5">
+                    <div className="flex flex-wrap items-start justify-between gap-4">
+                      <div className="max-w-2xl">
+                        <div className={labelClass}>Local User Account</div>
+                        <h3 className="mt-2 font-serif text-2xl leading-none text-[#1a1a1a]">This workstation keeps its own identity</h3>
+                        <p className="mt-3 font-mono text-[11px] leading-relaxed text-[#5f5a50]">
+                          Accounts, passwords, and sessions stay on this machine. A session is only sent to the saved backend URL and is never shared with another runtime target.
+                        </p>
+                      </div>
+                      <SmallButton onClick={() => syncLocalAuthStatus()} disabled={localAuthStatus.loading || !backendUrlConfigured}>
+                        <RefreshCw size={12} className="inline-block mr-2" />Refresh account state
+                      </SmallButton>
+                    </div>
+
+                    {!backendUrlConfigured ? (
+                      <p data-testid="settings-local-auth-backend-required" className="mt-4 font-mono text-[11px] text-[#8f1e18]">Save the local backend URL before configuring an account.</p>
+                    ) : localAuthStatus.loading ? (
+                      <p data-testid="settings-local-auth-loading" className="mt-4 font-mono text-[11px] text-[#7d786b]">Checking local account state…</p>
+                    ) : localAuthStatus.available === false ? (
+                      <p data-testid="settings-local-auth-not-enabled" className="mt-4 font-mono text-[11px] leading-relaxed text-[#7d786b]">This backend has no local account store enabled. Start it with <code>AGENT_LOCAL_AUTH_REQUIRED=true</code> to require local login.</p>
+                    ) : localAuthSessionForCurrentBackend ? (
+                      <div data-testid="settings-local-auth-signed-in" className="mt-4 flex flex-wrap items-center justify-between gap-3 border border-[#d1d0c9] bg-[#f8f6ee] p-3">
+                        <div>
+                          <div className="font-mono text-[11px] text-[#1a1a1a]">Signed in locally as {localAuthSessionForCurrentBackend.user?.displayName || localAuthSessionForCurrentBackend.user?.username || 'Local user'}</div>
+                          <div className="mt-1 font-mono text-[9px] uppercase tracking-[0.12em] text-[#7d786b]">{localAuthSessionForCurrentBackend.user?.role || 'observer'} · session expires {localAuthSessionForCurrentBackend.expiresAt || 'at the backend policy time'}</div>
+                        </div>
+                        <button type="button" data-testid="settings-local-auth-logout" onClick={() => submitLocalAuth('logout')} disabled={localAuthDraft.pending} className="border border-[#1a1a1a] px-3 py-2 font-mono text-[10px] uppercase tracking-widest hover:bg-[#d1d0c9] disabled:cursor-not-allowed disabled:opacity-50">Sign out</button>
+                      </div>
+                    ) : (
+                      <form data-testid="settings-local-auth-form" className="mt-4 grid gap-3 border border-[#d1d0c9] bg-[#f8f6ee] p-4 md:grid-cols-2" onSubmit={(event) => { event.preventDefault(); submitLocalAuth(localAuthStatus.bootstrapRequired ? 'bootstrap' : 'login'); }}>
+                        <label className="font-mono text-[10px] uppercase tracking-[0.12em] text-[#5f5a50]">Username
+                          <input data-testid="settings-local-auth-username" value={localAuthDraft.username} onChange={(event) => setLocalAuthDraft(previous => ({ ...previous, username: event.target.value }))} autoComplete="username" className="mt-2 block w-full border border-[#d1d0c9] bg-[#f5f4f0] px-3 py-2 font-mono text-[11px] text-[#1a1a1a] outline-none focus:border-[#1a1a1a]" />
+                        </label>
+                        <label className="font-mono text-[10px] uppercase tracking-[0.12em] text-[#5f5a50]">Password
+                          <input data-testid="settings-local-auth-password" type="password" value={localAuthDraft.password} onChange={(event) => setLocalAuthDraft(previous => ({ ...previous, password: event.target.value }))} autoComplete={localAuthStatus.bootstrapRequired ? 'new-password' : 'current-password'} className="mt-2 block w-full border border-[#d1d0c9] bg-[#f5f4f0] px-3 py-2 font-mono text-[11px] text-[#1a1a1a] outline-none focus:border-[#1a1a1a]" />
+                        </label>
+                        {localAuthStatus.bootstrapRequired && (
+                          <label className="font-mono text-[10px] uppercase tracking-[0.12em] text-[#5f5a50]">Display name (optional)
+                            <input data-testid="settings-local-auth-display-name" value={localAuthDraft.displayName} onChange={(event) => setLocalAuthDraft(previous => ({ ...previous, displayName: event.target.value }))} autoComplete="name" className="mt-2 block w-full border border-[#d1d0c9] bg-[#f5f4f0] px-3 py-2 font-mono text-[11px] text-[#1a1a1a] outline-none focus:border-[#1a1a1a]" />
+                          </label>
+                        )}
+                        <div className="flex items-end">
+                          <button type="submit" data-testid={localAuthStatus.bootstrapRequired ? 'settings-local-auth-bootstrap' : 'settings-local-auth-login'} disabled={localAuthDraft.pending} className="w-full border border-[#1a1a1a] bg-[#1a1a1a] px-3 py-2 font-mono text-[10px] uppercase tracking-widest text-[#f5f4f0] hover:bg-[#3b3933] disabled:cursor-not-allowed disabled:opacity-50">
+                            {localAuthDraft.pending ? 'Working…' : localAuthStatus.bootstrapRequired ? 'Create local administrator' : 'Sign in locally'}
+                          </button>
+                        </div>
+                      </form>
+                    )}
+                    {localAuthStatus.error && <p data-testid="settings-local-auth-error" className="mt-3 font-mono text-[11px] text-[#8f1e18]">{localAuthStatus.error}</p>}
                   </div>
 
                   <div data-testid="settings-runtime-readiness-contract" className="border border-[#d1d0c9] bg-[#f5f4f0] p-4">
