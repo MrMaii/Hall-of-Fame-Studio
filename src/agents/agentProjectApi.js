@@ -1,6 +1,7 @@
 import { createAgentProjectService, hydrateAgentProject } from './agentProjectService.js';
 import { createAgentProjectFileStore } from './agentProjectFileStore.js';
 import { buildProductionCapabilityRegistry } from './productionCapabilityRegistry.js';
+import { SUPER_AGENT_WORK_MODES, composeWorkModeTeam } from './workModes.js';
 import {
   authorizeAgentProjectRequest,
   buildAccessControlPolicySnapshot,
@@ -13,6 +14,11 @@ const json = (status, body) => ({ status, body });
 
 function normalizePath(path = '') {
   return String(path || '').split('?')[0].replace(/\/+$/, '') || '/';
+}
+
+function workModeTeamRoute(path = '') {
+  const match = normalizePath(path).match(/^\/work-modes\/([^/]+)\/team$/);
+  return match ? decodeURIComponent(match[1]) : null;
 }
 
 function hashReplayKey(value = '') {
@@ -538,6 +544,7 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
       const kickoffMeetingRoute = parseKickoffMeetingRoute(path);
       const route = parseProjectRoute(path);
       const workerRoute = parseWorkerRoute(path);
+      const requestedWorkMode = workModeTeamRoute(path);
       const denied = request._accessChecked ? null : authorizeRequest({ ...request, method, path, body });
       if (denied) return denied;
 
@@ -704,6 +711,18 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
       if (method === 'GET' && path === '/production-capabilities') {
         return json(200, {
           productionCapabilityRegistry: buildProductionCapabilityRegistry(),
+        });
+      }
+      if (method === 'GET' && path === '/work-modes') {
+        return json(200, { workModes: SUPER_AGENT_WORK_MODES });
+      }
+      if (method === 'POST' && requestedWorkMode) {
+        return json(200, {
+          workModeTeam: composeWorkModeTeam({
+            workMode: requestedWorkMode,
+            objective: body.objective || body.projectBrief || '',
+            availablePersonaSlugs: body.availablePersonaSlugs,
+          }),
         });
       }
       if (method === 'GET' && path === '/settings/health-readiness') {
@@ -1206,7 +1225,8 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
       const body = request.body || {};
       const language = languageFromRequest(request, body);
       const route = parseProjectRoute(path);
-      const workerRoute = parseWorkerRoute(path);
+        const workerRoute = parseWorkerRoute(path);
+        const requestedWorkMode = workModeTeamRoute(path);
       const kickoffMeetingRoute = parseKickoffMeetingRoute(path);
       const denied = request._accessChecked ? null : authorizeRequest({ ...request, method, path, body });
       if (denied) return denied;
@@ -1436,6 +1456,18 @@ export function createAgentProjectApi({ service, accessControl = {} } = {}) {
         if (method === 'GET' && path === '/production-capabilities') {
           return json(200, {
             productionCapabilityRegistry: buildProductionCapabilityRegistry(),
+          });
+        }
+        if (method === 'GET' && path === '/work-modes') {
+          return json(200, { workModes: SUPER_AGENT_WORK_MODES });
+        }
+        if (method === 'POST' && requestedWorkMode) {
+          return json(200, {
+            workModeTeam: composeWorkModeTeam({
+              workMode: requestedWorkMode,
+              objective: body.objective || body.projectBrief || '',
+              availablePersonaSlugs: body.availablePersonaSlugs,
+            }),
           });
         }
         if (method === 'GET' && path === '/settings/health-readiness') {
