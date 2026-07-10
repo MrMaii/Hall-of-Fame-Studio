@@ -24,6 +24,7 @@
     "agents:launch-operations:private-mvp": "node scripts/validate-launch-operations-private-mvp-package.mjs",
     "agents:mission-runner:startup": "node scripts/validate-mission-runner-startup-http.mjs",
     "agents:product-team:core": "node scripts/validate-local-mvp-product-team-proof.mjs",
+    "agents:work-modes:acceptance": "node scripts/validate-work-mode-end-to-end-acceptance.mjs",
     "agents:product-team:core:file-backed": "node scripts/run-product-team-acceptance-stage.mjs core",
     "agents:product-team:research-sample": "node scripts/validate-research-sample-product-team-gate.mjs",
     "agents:product-team:local-mvp": "node scripts/validate-local-mvp-product-team-proof.mjs",

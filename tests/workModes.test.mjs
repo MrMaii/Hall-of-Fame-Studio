@@ -245,6 +245,7 @@ test('enforces work-mode task ownership, independent review, and accepted task p
     artifactType: 'learning-plan',
     reviewerAgentId: reviewer.id,
   });
+  assert.equal(submitted.submission.artifactType, 'learning-plan');
   assert.throws(() => reviewAgentSubmission({
     project: submitted.project,
     submissionId: submitted.submission.id,
@@ -258,4 +259,30 @@ test('enforces work-mode task ownership, independent review, and accepted task p
     verdict: 'accepted',
   });
   assert.equal(reviewed.submission.reviewStatus, 'accepted');
+});
+
+test('records a work-mode escalation resolution through the backend before acceptance can pass', () => {
+  const api = createAgentProjectApi({ service: createAgentProjectService() });
+  const initiated = api.handle({
+    method: 'POST',
+    path: '/projects/initiate',
+    body: {
+      projectId: 'work_mode_escalation_resolution',
+      name: 'Work mode escalation resolution',
+      brief: 'Build a study plan.',
+      workMode: 'learning',
+    },
+  });
+  assert.equal(initiated.status, 200);
+  const resolution = api.handle({
+    method: 'POST',
+    path: '/projects/work_mode_escalation_resolution/work-mode-escalations/academic-integrity/resolve',
+    body: {
+      actorId: initiated.body.project.workModeContract.escalationPlan.find((item) => item.id === 'academic-integrity').ownerPersonaSlug,
+      reason: 'Confirmed learner-owned work and citation boundary.',
+    },
+  });
+  assert.equal(resolution.status, 200);
+  assert.equal(resolution.body.workModeEscalationResolution.escalationId, 'academic-integrity');
+  assert.ok(resolution.body.project.resolvedWorkModeEscalationIds.includes('academic-integrity'));
 });

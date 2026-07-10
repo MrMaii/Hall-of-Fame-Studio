@@ -371,6 +371,20 @@ const AGENT_SUBMISSION_ARTIFACT_TYPES = new Set([
   'decision-proposal',
   'risk-review',
   'implementation-plan',
+  'learning-plan',
+  'practice-set',
+  'mastery-check',
+  'outline',
+  'claim-citation-graph',
+  'revision-lineage',
+  'hypothesis-register',
+  'source-custody-log',
+  'contradiction-matrix',
+  'test-evidence',
+  'rollback-plan',
+  'creative-brief',
+  'critique-log',
+  'rights-provenance-register',
   'progress-brief',
   'revision-note',
   'final-deliverable',
@@ -61064,6 +61078,77 @@ export function createAgentProjectService({
       return {
         project: saveProject(project),
         localRuntime: project.localRuntime,
+      };
+    },
+    resolveWorkModeEscalation({ projectId, escalationId, actorId, reason = '', now = nowIso() } = {}) {
+      const project = store.getProject(projectId);
+      if (!project?.id) throw new Error(`Project not found: ${projectId}`);
+      const escalation = (project.workModeContract?.escalationPlan || [])
+        .find((item) => String(item.id) === String(escalationId));
+      if (!escalation) throw new Error(`Work-mode escalation not found: ${escalationId}`);
+      const actor = (project.team || []).find((member) => member.id === actorId || member.name === actorId);
+      if (!actor) throw new Error(`Work-mode escalation actor not found: ${actorId}`);
+      const allowedActorIds = uniqueStrings([
+        escalation.ownerPersonaSlug,
+        project.selectedLeaderId,
+        project.initiationCharter?.governance?.leaderId,
+      ].filter(Boolean));
+      if (!allowedActorIds.includes(actor.id)) {
+        throw new Error(`work-mode-escalation-owner-required:${escalation.id}`);
+      }
+      const existing = (project.workModeEscalationResolutions || [])
+        .find((item) => String(item.escalationId) === String(escalation.id));
+      if (existing) {
+        return {
+          project,
+          workModeEscalationResolution: existing,
+          idempotent: true,
+        };
+      }
+      const resolution = {
+        schemaVersion: 'work-mode-escalation-resolution/v1',
+        id: `work_mode_escalation_${project.id}_${escalation.id}_${Date.parse(now) || Date.now()}`,
+        projectId: project.id,
+        workMode: project.workModeContract?.workMode || null,
+        escalationId: escalation.id,
+        actorId: actor.id,
+        actorName: actor.name || actor.id,
+        reason: redactSensitiveText(String(reason || '').trim() || `Resolved ${escalation.id} with the required work-mode review.`),
+        resolvedAt: now,
+      };
+      const log = {
+        id: `log_${resolution.id}`,
+        time: now,
+        agent: actor.name || actor.id,
+        agentId: actor.id,
+        eventType: 'work-mode-escalation-resolved',
+        workModeEscalationResolutionId: resolution.id,
+        escalationId: resolution.escalationId,
+        log: `Resolved work-mode escalation ${resolution.escalationId}.`,
+      };
+      const event = createProjectLedgerEvent({
+        id: `evt_${resolution.id}`,
+        type: 'work-mode-escalation-resolved',
+        time: now,
+        actor: actor.name || actor.id,
+        summary: log.log,
+        source: 'work-mode-escalation-resolution',
+        evidenceIds: [resolution.id, log.id],
+        entityIds: { projectId: project.id, escalationId: resolution.escalationId, actorId: actor.id },
+        payload: { workMode: resolution.workMode, reason: resolution.reason },
+      });
+      const savedProject = saveProject(appendProjectEvents({
+        ...project,
+        resolvedWorkModeEscalationIds: uniqueStrings([...(project.resolvedWorkModeEscalationIds || []), escalation.id]),
+        workModeEscalationResolutions: [resolution, ...(project.workModeEscalationResolutions || [])].slice(0, 48),
+        logs: [log, ...(project.logs || [])],
+      }, [event]));
+      return {
+        project: savedProject,
+        workModeEscalationResolution: resolution,
+        log,
+        event,
+        idempotent: false,
       };
     },
     initiateProject(input = {}) {

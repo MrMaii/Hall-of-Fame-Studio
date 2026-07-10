@@ -2436,6 +2436,21 @@ export function createAgentProjectApi({ service, accessControl = {}, localAuth =
             }),
           });
         }
+        if (method === 'POST' && route.action === 'work-mode-escalations' && route.tail[1] === 'resolve') {
+          const escalationId = decodeURIComponent(route.tail[0] || '');
+          const result = service.resolveWorkModeEscalation({
+            projectId: route.projectId,
+            escalationId,
+            ...body,
+          });
+          const resultProjectId = result.project?.id || route.projectId;
+          const includeReadModels = shouldIncludeReadModels(body);
+          return json(200, {
+            ...publicProjectResult(result, resultProjectId, language, { includeReadModels }),
+            workModeEscalationResolution: result.workModeEscalationResolution,
+            ...(includeReadModels ? {} : deferredReadModels(resultProjectId)),
+          });
+        }
         if (route.action === 'agents') {
           if (method === 'GET' && !route.tail.length) {
             return json(200, { agents: service.listAgentStates(route.projectId) });
