@@ -34,6 +34,7 @@ function workModeInitiationInput(body = {}) {
     workMode: body.workMode,
     objective: body.brief || body.objective || body.name || '',
     availablePersonaSlugs: body.availablePersonaSlugs,
+    additionalDependencies: body.additionalDependencies,
   });
   if (!composition.readyForKickoff) return { input: null, error: composition };
   const generatedTeam = composition.roles.map((role) => {
@@ -56,13 +57,15 @@ function workModeInitiationInput(body = {}) {
       team: body.team?.length ? body.team : generatedTeam,
       selectedLeaderId: body.selectedLeaderId || lead?.personaSlug,
       reviewerId: body.reviewerId || reviewer?.personaSlug,
-      tasks: body.tasks?.length ? body.tasks : composition.requiredArtifacts.map((artifactType, index) => ({
-        id: `${projectId}_${artifactType}`,
-        text: `Deliver ${artifactType} for ${body.name || composition.workMode}.`,
-        assignee: composition.roles[index % composition.roles.length]?.personaSlug || lead?.personaSlug,
+      tasks: body.tasks?.length ? body.tasks : composition.taskNodes.map((task) => ({
+        id: `${projectId}_${task.id}`,
+        text: `Deliver ${task.artifactType} for ${body.name || composition.workMode}.`,
+        assignee: task.ownerPersonaSlug,
+        reviewerId: task.reviewerPersonaSlug,
+        dependsOn: task.dependsOn.map((dependencyId) => `${projectId}_${dependencyId}`),
         status: 'pending',
-        artifactType,
-        acceptanceChecks: composition.acceptanceChecks,
+        artifactType: task.artifactType,
+        acceptanceChecks: task.acceptanceChecks,
       })),
       workModeContract: composition,
     },
@@ -899,6 +902,7 @@ export function createAgentProjectApi({ service, accessControl = {}, localAuth =
             workMode: requestedWorkMode,
             objective: body.objective || body.projectBrief || '',
             availablePersonaSlugs: body.availablePersonaSlugs,
+            additionalDependencies: body.additionalDependencies,
           }),
         });
       }
@@ -1655,6 +1659,7 @@ export function createAgentProjectApi({ service, accessControl = {}, localAuth =
               workMode: requestedWorkMode,
               objective: body.objective || body.projectBrief || '',
               availablePersonaSlugs: body.availablePersonaSlugs,
+              additionalDependencies: body.additionalDependencies,
             }),
           });
         }

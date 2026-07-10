@@ -5,6 +5,7 @@ import {
   composeWorkModeTeam,
   evaluateWorkModeAcceptance,
   getSuperAgentWorkMode,
+  validateWorkModeDependencyGraph,
 } from '../src/agents/workModes.js';
 import { createAgentProjectApi } from '../src/agents/agentProjectApi.js';
 import { createAgentProjectService } from '../src/agents/agentProjectService.js';
@@ -57,6 +58,10 @@ test('creates a technical-delivery team with security and rollback controls', ()
   assert.equal(team.requiredArtifacts.includes('rollback-plan'), true);
   assert.equal(team.acceptanceChecks.some((check) => check.id === 'tests-and-review'), true);
   assert.equal(team.escalationChecks.some((check) => check.id === 'security-release'), true);
+  assert.equal(team.dependencyDag.acyclic, true);
+  assert.equal(team.taskNodes.length, team.requiredArtifacts.length);
+  assert.ok(team.taskNodes.every((task) => task.ownerPersonaSlug && task.reviewerPersonaSlug));
+  assert.ok(team.taskNodes.every((task) => task.ownerPersonaSlug !== task.reviewerPersonaSlug));
 });
 
 test('creates a creative-studio team with licensing and provenance controls', () => {
@@ -77,6 +82,32 @@ test('reports coverage gaps instead of inventing a specialist when the allowed p
   assert.equal(team.readyForKickoff, false);
   assert.ok(team.coverageGaps.length > 0);
   assert.equal(getSuperAgentWorkMode('unknown'), null);
+});
+
+test('blocks a team that contains a dependency cycle and identifies the escalation owner', () => {
+  const team = composeWorkModeTeam({
+    workMode: 'learning',
+    objective: 'Build a study plan.',
+    additionalDependencies: [
+      { from: 'learning-lead', to: 'subject-researcher', type: 'custom' },
+      { from: 'subject-researcher', to: 'learning-lead', type: 'custom' },
+    ],
+  });
+  assert.equal(team.readyForKickoff, false);
+  assert.equal(team.dependencyDag.acyclic, false);
+  assert.ok(team.blockers.includes('dependency-cycle'));
+  assert.ok(team.escalationPlan.every((item) => item.ownerRoleId === 'learning-lead'));
+  assert.equal(validateWorkModeDependencyGraph(team.dependencies, team.roles.map((role) => role.id)).acyclic, false);
+});
+
+test('treats a self dependency as a cycle instead of silently dropping it', () => {
+  const team = composeWorkModeTeam({
+    workMode: 'learning',
+    objective: 'Build a study plan.',
+    additionalDependencies: [{ from: 'learning-lead', to: 'learning-lead' }],
+  });
+  assert.equal(team.readyForKickoff, false);
+  assert.deepEqual(team.dependencyDag.cycle, ['learning-lead', 'learning-lead']);
 });
 
 test('exposes work-mode composition through both API dispatch paths', async () => {
@@ -110,6 +141,28 @@ test('persists a work-mode contract and its artifact tasks when a project is ini
   assert.equal(response.body.project.workModeContract.workMode, 'academic-writing');
   assert.equal(response.body.project.workModeContract.readyForKickoff, true);
   assert.equal(response.body.project.tasks.some((task) => task.artifactType === 'claim-citation-graph'), true);
+  assert.ok(response.body.project.tasks.every((task) => Array.isArray(task.dependsOn)));
+  assert.ok(response.body.project.tasks.every((task) => task.reviewerId && task.reviewerId !== task.assignee));
+});
+
+test('rejects a project initiation whose submitted role dependencies are cyclic', () => {
+  const api = createAgentProjectApi({ service: createAgentProjectService() });
+  const response = api.handle({
+    method: 'POST',
+    path: '/projects/initiate',
+    body: {
+      projectId: 'cyclic_work_mode_project',
+      name: 'Cyclic work mode project',
+      brief: 'Build a study plan.',
+      workMode: 'learning',
+      additionalDependencies: [
+        { from: 'learning-lead', to: 'subject-researcher' },
+        { from: 'subject-researcher', to: 'learning-lead' },
+      ],
+    },
+  });
+  assert.equal(response.status, 422);
+  assert.ok(response.body.workModeTeam.blockers.includes('dependency-cycle'));
 });
 
 test('does not accept a work-mode project until every required artifact and mode-specific review is present', () => {
