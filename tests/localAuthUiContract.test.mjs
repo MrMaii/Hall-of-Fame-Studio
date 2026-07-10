@@ -14,4 +14,6 @@ test('the local UI keeps a backend-bound session and exposes local account contr
   assert.match(appSource, /settings-local-auth-users/);
   assert.match(appSource, /settings-local-auth-create-user/);
   assert.match(appSource, /\/local-auth\/users/);
+  assert.match(appSource, /settings-local-project-membership/);
+  assert.match(appSource, /\/membership-policy/);
 });

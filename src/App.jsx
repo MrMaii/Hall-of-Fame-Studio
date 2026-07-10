@@ -1794,6 +1794,13 @@ export default function EngineWorkspace() {
     role: 'manager',
     pending: false,
   });
+  const [localProjectMembership, setLocalProjectMembership] = useState({
+    projectId: null,
+    loading: false,
+    policy: null,
+    error: null,
+    pendingUserId: null,
+  });
   const [healthCheck, setHealthCheck] = useState({
     running: false,
     lastRunAt: null,
@@ -2922,9 +2929,75 @@ export default function EngineWorkspace() {
     }
   };
 
+  const syncLocalProjectMembership = async () => {
+    if (localAuthSessionForCurrentBackend?.user?.role !== 'security-admin' || !activeProject?.id) {
+      setLocalProjectMembership({ projectId: activeProject?.id || null, loading: false, policy: null, error: null, pendingUserId: null });
+      return null;
+    }
+    setLocalProjectMembership(previous => ({ ...previous, projectId: activeProject.id, loading: true, error: null }));
+    try {
+      const payload = await requestAgentBackend(`/projects/${encodeURIComponent(activeProject.id)}/membership-policy`, { timeoutMs: 3000 });
+      setLocalProjectMembership({
+        projectId: activeProject.id,
+        loading: false,
+        policy: payload.projectMembershipPolicy || null,
+        error: null,
+        pendingUserId: null,
+      });
+      return payload.projectMembershipPolicy || null;
+    } catch (error) {
+      setLocalProjectMembership({ projectId: activeProject.id, loading: false, policy: null, error: providerRuntimeErrorDetail(error), pendingUserId: null });
+      return null;
+    }
+  };
+
+  const setLocalProjectUserAccess = async (user, nextRole) => {
+    if (!activeProject?.id || !localProjectMembership.policy || !user?.id) return;
+    const policy = localProjectMembership.policy;
+    const roleFields = {
+      'security-admin': 'securityAdminUserIds',
+      manager: 'managerUserIds',
+      observer: 'observerUserIds',
+    };
+    const nextPolicy = Object.fromEntries(Object.entries(policy)
+      .filter(([key]) => !['checksum', 'updatedAt', 'updatedBy', 'revision'].includes(key))
+      .map(([key, value]) => [key, Array.isArray(value) ? [...value] : value]));
+    Object.values(roleFields).forEach((field) => {
+      nextPolicy[field] = (nextPolicy[field] || []).filter((userId) => userId !== user.id);
+    });
+    if (nextRole && roleFields[nextRole]) {
+      nextPolicy[roleFields[nextRole]] = [...new Set([...(nextPolicy[roleFields[nextRole]] || []), user.id])];
+    }
+    setLocalProjectMembership(previous => ({ ...previous, pendingUserId: user.id, error: null }));
+    try {
+      const payload = await requestAgentBackend(`/projects/${encodeURIComponent(activeProject.id)}/membership-policy`, {
+        method: 'PUT',
+        timeoutMs: 5000,
+        body: {
+          policy: nextPolicy,
+          updatedBy: localAuthSessionForCurrentBackend.user.id,
+          source: 'local-auth-settings-membership',
+        },
+      });
+      setLocalProjectMembership({
+        projectId: activeProject.id,
+        loading: false,
+        policy: payload.projectMembershipPolicy || nextPolicy,
+        error: null,
+        pendingUserId: null,
+      });
+    } catch (error) {
+      setLocalProjectMembership(previous => ({ ...previous, pendingUserId: null, error: providerRuntimeErrorDetail(error) }));
+    }
+  };
+
   useEffect(() => {
     syncLocalAuthUsers();
   }, [localAuthSession?.token, backendStation.baseUrl]);
+
+  useEffect(() => {
+    syncLocalProjectMembership();
+  }, [localAuthSession?.token, backendStation.baseUrl, activeProject?.id]);
 
   const providerRuntimeErrorDetail = (error) => (
     error?.name === 'AbortError'
@@ -12284,6 +12357,45 @@ export default function EngineWorkspace() {
                                 </div>
                               ))}
                               {!localAuthUsers.loading && !localAuthUsers.rows.length && <p className="font-mono text-[10px] text-[#7d786b]">No local users returned yet.</p>}
+                            </div>
+                            <div data-testid="settings-local-project-membership" className="mt-4 border-t border-[#d1d0c9] pt-4">
+                              <div className="flex flex-wrap items-start justify-between gap-3">
+                                <div>
+                                  <div className={labelClass}>Current project access</div>
+                                  <p className="mt-1 font-mono text-[10px] leading-relaxed text-[#5f5a50]">Project access is explicit. Removing a user here removes their active local project grant and records a policy revision.</p>
+                                </div>
+                                <SmallButton onClick={() => syncLocalProjectMembership()} disabled={!activeProject?.id || localProjectMembership.loading}>
+                                  <RefreshCw size={12} className="inline-block mr-2" />Refresh access
+                                </SmallButton>
+                              </div>
+                              {!activeProject?.id ? (
+                                <p data-testid="settings-local-project-membership-no-project" className="mt-3 font-mono text-[10px] text-[#7d786b]">Select a backend project to manage its local members.</p>
+                              ) : localProjectMembership.loading ? (
+                                <p className="mt-3 font-mono text-[10px] text-[#7d786b]">Loading access policy for {activeProject.name || activeProject.id}…</p>
+                              ) : localProjectMembership.error ? (
+                                <p data-testid="settings-local-project-membership-error" className="mt-3 font-mono text-[10px] text-[#8f1e18]">{localProjectMembership.error}</p>
+                              ) : (
+                                <div className="mt-3 grid gap-2">
+                                  <div className="font-mono text-[10px] text-[#1a1a1a]">{activeProject.name || activeProject.id}</div>
+                                  {localAuthUsers.rows.map((user) => {
+                                    const roleField = {
+                                      'security-admin': 'securityAdminUserIds',
+                                      manager: 'managerUserIds',
+                                      observer: 'observerUserIds',
+                                    }[user.role];
+                                    const hasAccess = Boolean(roleField && localProjectMembership.policy?.[roleField]?.includes(user.id));
+                                    return (
+                                      <label key={`membership-${user.id}`} data-testid={`settings-local-project-member-${user.username}`} className="flex flex-wrap items-center justify-between gap-3 border border-[#d1d0c9] bg-[#f5f4f0] px-3 py-2 font-mono text-[10px] text-[#1a1a1a]">
+                                        <span>{user.displayName || user.username} <span className="text-[#7d786b]">@{user.username} · {user.role}</span></span>
+                                        <select value={hasAccess ? user.role : ''} onChange={(event) => setLocalProjectUserAccess(user, event.target.value)} disabled={localProjectMembership.pendingUserId === user.id} className="border border-[#d1d0c9] bg-[#f8f6ee] px-2 py-1 font-mono text-[10px] outline-none focus:border-[#1a1a1a]">
+                                          <option value="">No project access</option>
+                                          <option value={user.role}>Grant {user.role}</option>
+                                        </select>
+                                      </label>
+                                    );
+                                  })}
+                                </div>
+                              )}
                             </div>
                           </div>
                         )}
