@@ -4,6 +4,7 @@ import { createModelProviderFromEnv } from '../src/agents/modelProvider.js';
 import { createSearchProviderFromEnv } from '../src/agents/searchProvider.js';
 import { createSecretVaultFromEnv } from '../src/agents/secretVault.js';
 import { findProviderVaultRecord } from '../src/agents/providerSecretBinding.js';
+import { createLocalTelemetryPort } from '../src/agents/localTelemetryPort.js';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -94,6 +95,12 @@ const accessAuditFailClosed = envFlag('AGENT_ACCESS_AUDIT_FAIL_CLOSED');
 const localAuthRequired = envFlag('AGENT_LOCAL_AUTH_REQUIRED');
 const localAuthFilePath = process.env.AGENT_LOCAL_AUTH_STORE || undefined;
 const projectMembershipRequired = envFlag('AGENT_PROJECT_MEMBERSHIP_REQUIRED');
+const localTelemetryPath = resolve(process.env.AGENT_LOCAL_TELEMETRY_LOG || resolve(workspaceRoot, '.tmp/agent-runtime-observability.jsonl'));
+const localTelemetry = createLocalTelemetryPort({
+  filePath: localTelemetryPath,
+  maxRecords: optionalNumberEnv('AGENT_LOCAL_TELEMETRY_MAX_RECORDS') || 500,
+  maxFileBytes: optionalNumberEnv('AGENT_LOCAL_TELEMETRY_MAX_FILE_BYTES') || 1_000_000,
+});
 const secretVault = createSecretVaultFromEnv(process.env);
 const secretVaultStatus = secretVault.status();
 const findVaultProviderRecord = (kind = '', target = 'api-key') => {
@@ -174,6 +181,7 @@ const httpServer = createAgentProjectHttpServer({
   },
   localAuthFilePath,
   localAuthRequired,
+  telemetry: localTelemetry,
 });
 const runtime = await httpServer.listen({ port, host });
 
@@ -181,6 +189,7 @@ console.log(`Agent project backend listening on ${runtime.url}`);
 console.log(`Store: ${httpServer.api.store.filePath}`);
 console.log(`Security audit log: ${httpServer.api.store.securityAuditLogPath || 'disabled'}`);
 console.log(`Project runtime: ${runtimeRoot}`);
+console.log(`Local runtime telemetry: ${localTelemetryPath}`);
 console.log(`Autonomous scheduler: ${autonomousSchedulerEnabled ? `enabled every ${autonomousSchedulerIntervalMs}ms` : 'disabled'}`);
 console.log(`Autonomous Agent controls: strategy=${autonomousAgentStrategyEnabled ? 'on' : 'off'}, submissions=${autonomousAgentSubmissionsEnabled ? 'on' : 'off'}, reviews=${autonomousAgentReviewsEnabled ? 'on' : 'off'}, review responses=${autonomousAgentReviewResponsesEnabled ? 'on' : 'off'}`);
 console.log(`Access control: ${accessControlMode}`);

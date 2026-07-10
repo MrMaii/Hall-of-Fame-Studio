@@ -12,6 +12,7 @@ const authStore = join(directory, 'auth.json');
 const vaultStore = join(directory, 'vault.json');
 const auditStore = join(directory, 'security-audit.jsonl');
 const runtimeSettingsStore = join(directory, 'runtime-settings.json');
+const telemetryStore = join(directory, 'telemetry.jsonl');
 const backupDirectory = join(directory, 'backups');
 const env = {
   ...process.env,
@@ -20,6 +21,7 @@ const env = {
   AGENT_SECURITY_AUDIT_LOG: auditStore,
   SECRET_VAULT_RECORDS_FILE: vaultStore,
   AGENT_LOCAL_RUNTIME_SETTINGS_FILE: runtimeSettingsStore,
+  AGENT_LOCAL_TELEMETRY_LOG: telemetryStore,
   AGENT_PROJECT_RUNTIME_ROOT: sourceRoot,
   HOFS_LOCAL_RECOVERY_BACKUP_DIR: backupDirectory,
   HOFS_LOCAL_RECOVERY_PASSPHRASE: 'local recovery drill passphrase',
@@ -31,6 +33,7 @@ try {
   writeFileSync(authStore, '{"user":"owner"}', 'utf8');
   writeFileSync(vaultStore, '{"vault":"ciphertext-only"}', 'utf8');
   writeFileSync(runtimeSettingsStore, '{"keyId":"local-user"}', 'utf8');
+  writeFileSync(telemetryStore, '{"event":"runtime-start"}\n', 'utf8');
   writeFileSync(join(sourceRoot, 'artifact', 'proof.txt'), 'proof before loss', 'utf8');
   const backup = spawnSync(process.execPath, ['scripts/create-local-recovery-backup.mjs'], { cwd: root, env, encoding: 'utf8' });
   assert.equal(backup.status, 0, backup.stderr || backup.stdout);

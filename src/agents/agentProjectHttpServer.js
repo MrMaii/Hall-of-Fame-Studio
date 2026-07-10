@@ -1,6 +1,8 @@
 import { createServer } from 'node:http';
+import { randomUUID } from 'node:crypto';
 import { createFileBackedAgentProjectApi } from './agentProjectApi.js';
 import { signAgentProjectAccessHeaders } from './accessControl.js';
+import { createLocalTelemetryPort } from './localTelemetryPort.js';
 
 async function readJsonBody(request) {
   const chunks = [];
@@ -12,12 +14,13 @@ async function readJsonBody(request) {
   return JSON.parse(raw);
 }
 
-function writeJson(response, status, body) {
+function writeJson(response, status, body, extraHeaders = {}) {
   response.writeHead(status, {
     'content-type': 'application/json; charset=utf-8',
     'access-control-allow-origin': '*',
     'access-control-allow-methods': 'GET,POST,PUT,OPTIONS',
     'access-control-allow-headers': 'content-type,x-hofs-access-mode,x-hofs-role,x-hofs-agent-id,x-hofs-user-id,x-hofs-signed-at,x-hofs-request-id,x-hofs-signature,x-hofs-session-token,x-hofs-local-auth-token',
+    ...extraHeaders,
   });
   response.end(JSON.stringify(body));
 }
@@ -384,6 +387,7 @@ export function createAgentProjectHttpServer({
   accessControl = {},
   localAuthFilePath = null,
   localAuthRequired = false,
+  telemetry = null,
 } = {}) {
   const resolvedApi = api || createFileBackedAgentProjectApi({
     filePath,
@@ -411,10 +415,27 @@ export function createAgentProjectHttpServer({
     source: autonomousScheduler.source,
     accessControl,
   });
+  const resolvedTelemetry = telemetry || createLocalTelemetryPort();
 
   const server = createServer(async (request, response) => {
+    const traceId = String(request.headers['x-hofs-request-id'] || '').trim() || `trace_${randomUUID()}`;
+    const startedAt = Date.now();
+    const send = (status, body) => {
+      try {
+        resolvedTelemetry.recordHttpRequest({
+          traceId,
+          method: request.method,
+          path: request.url || '/',
+          statusCode: status,
+          durationMs: Date.now() - startedAt,
+        });
+      } catch {
+        // Local telemetry cannot make an API response fail.
+      }
+      writeJson(response, status, body, { 'x-hofs-trace-id': traceId });
+    };
     if (request.method === 'OPTIONS') {
-      writeJson(response, 204, {});
+      send(204, {});
       return;
     }
 
@@ -427,20 +448,25 @@ export function createAgentProjectHttpServer({
         const token = String(request.headers['x-hofs-local-auth-token'] || '').trim();
         const verification = resolvedApi.localAuth?.verifySession({ token, now: body.now || new Date().toISOString() });
         if (verification?.verified && verification.user?.role === 'security-admin') return true;
-        writeJson(response, 401, {
+        send(401, {
           error: 'local-auth-admin-required',
           message: 'A local security-admin session is required for scheduler controls.',
         });
         return false;
       };
+      if (url.pathname === '/runtime-observability' && request.method === 'GET') {
+        if (!requireLocalSchedulerAdmin()) return;
+        send(200, { runtimeObservability: resolvedTelemetry.status() });
+        return;
+      }
       if (url.pathname === '/workers/autonomous/status' && request.method === 'GET') {
         if (!requireLocalSchedulerAdmin()) return;
-        writeJson(response, 200, { scheduler: scheduler.status() });
+        send(200, { scheduler: scheduler.status() });
         return;
       }
       if (url.pathname === '/workers/autonomous/start' && request.method === 'POST') {
         if (!requireLocalSchedulerAdmin()) return;
-        writeJson(response, 200, {
+        send(200, {
           scheduler: scheduler.start({
             ...body,
             runImmediately: Boolean(body.runImmediately),
@@ -452,13 +478,13 @@ export function createAgentProjectHttpServer({
       }
       if (url.pathname === '/workers/autonomous/stop' && request.method === 'POST') {
         if (!requireLocalSchedulerAdmin()) return;
-        writeJson(response, 200, { scheduler: scheduler.stop() });
+        send(200, { scheduler: scheduler.stop() });
         return;
       }
       if (url.pathname === '/workers/autonomous/tick' && request.method === 'POST') {
         if (!requireLocalSchedulerAdmin()) return;
         const tickResult = await scheduler.tick(body);
-        writeJson(response, 200, tickResult);
+        send(200, tickResult);
         return;
       }
       const result = await (resolvedApi.handleAsync || resolvedApi.handle).call(resolvedApi, {
@@ -467,9 +493,9 @@ export function createAgentProjectHttpServer({
         headers: request.headers,
         body,
       });
-      writeJson(response, result.status, result.body);
+      send(result.status, result.body);
     } catch (error) {
-      writeJson(response, 400, {
+      send(400, {
         error: 'agent-project-http-error',
         message: error.message || String(error),
       });
@@ -493,6 +519,7 @@ export function createAgentProjectHttpServer({
   return {
     api: resolvedApi,
     scheduler,
+    telemetry: resolvedTelemetry,
     server,
     listen({ port = 0, host = '127.0.0.1' } = {}) {
       return new Promise((resolve, reject) => {

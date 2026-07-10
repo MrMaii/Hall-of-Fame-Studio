@@ -11,6 +11,7 @@ export function localRecoverySources(env = process.env) {
     { key: 'local-auth', path: env.AGENT_LOCAL_AUTH_STORE || `${projectStore}.local-auth.json`, kind: 'file' },
     { key: 'secret-vault-records', path: env.SECRET_VAULT_RECORDS_FILE || resolve(workspaceRoot, '.tmp/agent-secret-vault-records.json'), kind: 'file' },
     { key: 'local-runtime-settings', path: env.AGENT_LOCAL_RUNTIME_SETTINGS_FILE || resolve(workspaceRoot, '.tmp/agent-local-user-runtime.json'), kind: 'file' },
+    { key: 'local-runtime-telemetry', path: env.AGENT_LOCAL_TELEMETRY_LOG || resolve(workspaceRoot, '.tmp/agent-runtime-observability.jsonl'), kind: 'file' },
     { key: 'project-runtime', path: env.AGENT_PROJECT_RUNTIME_ROOT || resolve(workspaceRoot, '.tmp/agent-projects'), kind: 'directory' },
   ];
 }
