@@ -7,9 +7,75 @@ import {
 } from '../skills/personSkillSystem.js';
 import { createTranslator, localizeText, normalizeLanguage } from '../i18n/runtime.js';
 import { meetingTurnDelayMs } from './meetingQueueProtocol.js';
+import { evaluateLocalIntervalSchedule } from './localScheduleGovernance.js';
+import { createHash } from 'node:crypto';
 
 export const DIRECTOR_AGENT_ID = 'director';
 export const EVENT_LEDGER_RETAINED_LIMIT = 5000;
+export const EVENT_LEDGER_GENESIS_HASH = '0'.repeat(64);
+
+function eventLedgerChecksum(value) {
+  const stableJson = (input) => {
+    if (Array.isArray(input)) return `[${input.map((item) => stableJson(item)).join(',')}]`;
+    if (input && typeof input === 'object') return `{${Object.keys(input).sort().map((key) => `${JSON.stringify(key)}:${stableJson(input[key])}`).join(',')}}`;
+    return JSON.stringify(input);
+  };
+  return createHash('sha256').update(stableJson(value)).digest('hex');
+}
+
+function eventPayloadForChecksum(event = {}) {
+  const { eventChecksum: _eventChecksum, previousEventHash: _previousEventHash, eventHash: _eventHash, ...base } = event;
+  return base;
+}
+
+function sealEvent(event, previousEventHash) {
+  const base = structuredClone(eventPayloadForChecksum(event));
+  const eventChecksum = eventLedgerChecksum(base);
+  const chainBase = { sequence: base.sequence, eventChecksum, previousEventHash };
+  return { ...base, eventChecksum, previousEventHash, eventHash: eventLedgerChecksum(chainBase) };
+}
+
+export function verifyProjectEventLedger(project = {}) {
+  const events = Array.isArray(project.eventLedger) ? project.eventLedger : [];
+  const findings = [];
+  let previousHash = project.eventLedgerPreviousHash || EVENT_LEDGER_GENESIS_HASH;
+  events.forEach((event, index) => {
+    const expectedSequence = index === 0 ? event.sequence : events[index - 1].sequence + 1;
+    const expectedChecksum = eventLedgerChecksum(eventPayloadForChecksum(event));
+    const expectedHash = eventLedgerChecksum({ sequence: event.sequence, eventChecksum: expectedChecksum, previousEventHash: previousHash });
+    if (!Number.isInteger(event.sequence) || event.sequence !== expectedSequence) findings.push({ code: 'event-sequence-gap', eventId: event.id || null });
+    if (project.id && event.projectId && event.projectId !== project.id) findings.push({ code: 'event-project-mismatch', eventId: event.id || null });
+    if (event.eventChecksum !== expectedChecksum) findings.push({ code: 'event-checksum-mismatch', eventId: event.id || null });
+    if (event.previousEventHash !== previousHash) findings.push({ code: 'event-previous-hash-mismatch', eventId: event.id || null });
+    if (event.eventHash !== expectedHash) findings.push({ code: 'event-hash-mismatch', eventId: event.id || null });
+    previousHash = event.eventHash || previousHash;
+  });
+  const computedRootHash = events.at(-1)?.eventHash || project.eventLedgerPreviousHash || EVENT_LEDGER_GENESIS_HASH;
+  if (project.eventLedgerRootHash && project.eventLedgerRootHash !== computedRootHash) findings.push({ code: 'event-root-hash-mismatch', eventId: null });
+  if (project.eventLedgerFirstSequence && project.eventLedgerFirstSequence !== (events[0]?.sequence || 0)) findings.push({ code: 'event-first-sequence-mismatch', eventId: events[0]?.id || null });
+  if (project.eventLedgerLastSequence && project.eventLedgerLastSequence !== (events.at(-1)?.sequence || 0)) findings.push({ code: 'event-last-sequence-mismatch', eventId: events.at(-1)?.id || null });
+  return {
+    schemaVersion: 'project-event-ledger-integrity/v1',
+    valid: findings.length === 0 && (events.length === 0 || project.eventLedgerChainVersion === 1),
+    findings,
+    retainedCount: events.length,
+    firstSequence: events[0]?.sequence || 0,
+    lastSequence: events.at(-1)?.sequence || 0,
+    previousRetainedHash: project.eventLedgerPreviousHash || EVENT_LEDGER_GENESIS_HASH,
+    rootHash: computedRootHash,
+  };
+}
+
+export function sealLegacyProjectEventLedger(project = {}) {
+  if (project.eventLedgerChainVersion === 1) return project;
+  let previousHash = EVENT_LEDGER_GENESIS_HASH;
+  const events = (project.eventLedger || []).map((event) => {
+    const sealed = sealEvent(event, previousHash);
+    previousHash = sealed.eventHash;
+    return sealed;
+  });
+  return { ...project, eventLedger: events, eventLedgerChainVersion: 1, eventLedgerPreviousHash: EVENT_LEDGER_GENESIS_HASH, eventLedgerRootHash: previousHash };
+}
 
 const ROLE_PATTERNS = [
   { test: /manager|lead|founder|steward|driver|vision|strategy/i, capability: 'orchestration' },
@@ -186,27 +252,39 @@ export function createProjectLedgerEvent({
 }
 
 export function appendProjectEvents(project = {}, events = []) {
-  const existing = project.eventLedger || [];
+  const chainedProject = sealLegacyProjectEventLedger(project);
+  const integrity = verifyProjectEventLedger(chainedProject);
+  if (!integrity.valid) throw new Error(`project-event-ledger-integrity-invalid:${integrity.findings.map((finding) => finding.code).join(',')}`);
+  const existing = chainedProject.eventLedger || [];
   const lastKnownSequence = Math.max(
-    project.eventLedgerLastSequence || 0,
+    chainedProject.eventLedgerLastSequence || 0,
     existing.reduce((max, event) => Math.max(max, event.sequence || 0), 0),
   );
+  let previousHash = existing.at(-1)?.eventHash || chainedProject.eventLedgerPreviousHash || EVENT_LEDGER_GENESIS_HASH;
   const normalizedEvents = events
     .filter(Boolean)
-    .map((event, index) => ({
-      ...event,
-      sequence: event.sequence || lastKnownSequence + index + 1,
-      projectId: event.projectId || project.id || null,
-    }));
-  const nextLedger = [...existing, ...normalizedEvents].slice(-EVENT_LEDGER_RETAINED_LIMIT);
+    .map((event, index) => {
+      const sealed = sealEvent({ ...event, sequence: lastKnownSequence + index + 1, projectId: chainedProject.id || event.projectId || null }, previousHash);
+      previousHash = sealed.eventHash;
+      return sealed;
+    });
+  const combined = [...existing, ...normalizedEvents];
+  const removed = combined.slice(0, Math.max(0, combined.length - EVENT_LEDGER_RETAINED_LIMIT));
+  const nextLedger = combined.slice(-EVENT_LEDGER_RETAINED_LIMIT);
   const lastEvent = nextLedger[nextLedger.length - 1] || null;
-  return {
-    ...project,
+  const updatedProject = {
+    ...chainedProject,
     eventLedger: nextLedger,
+    eventLedgerChainVersion: 1,
+    eventLedgerPreviousHash: removed.at(-1)?.eventHash || chainedProject.eventLedgerPreviousHash || EVENT_LEDGER_GENESIS_HASH,
+    eventLedgerRootHash: lastEvent?.eventHash || chainedProject.eventLedgerPreviousHash || EVENT_LEDGER_GENESIS_HASH,
     eventLedgerFirstSequence: nextLedger[0]?.sequence || 0,
     eventLedgerLastSequence: lastEvent?.sequence || lastKnownSequence,
     eventLedgerEventCount: Math.max(project.eventLedgerEventCount || 0, lastKnownSequence) + normalizedEvents.length,
   };
+  const updatedIntegrity = verifyProjectEventLedger(updatedProject);
+  if (!updatedIntegrity.valid) throw new Error(`project-event-ledger-append-invalid:${updatedIntegrity.findings.map((finding) => finding.code).join(',')}`);
+  return updatedProject;
 }
 
 function ledgerEventsFromLogs(logs = [], source = 'timeline-log') {
@@ -411,24 +489,29 @@ function legacyAutonomousSchedulerLedgerEvents(schedulerRecords = []) {
 }
 
 export function backfillProjectEventLedger(project = {}) {
-  const currentSummary = summarizeProjectEventLedger(project);
-  const retainedProjection = projectEventReplayProjection(project, { includeRecovered: false });
-  if (currentSummary.contiguous && retainedProjection.replayReady) return project;
+  const chainedProject = sealLegacyProjectEventLedger(project);
+  const integrity = verifyProjectEventLedger(chainedProject);
+  if (!integrity.valid) return { ...project, eventLedgerIntegrityStatus: 'invalid' };
+  const currentSummary = summarizeProjectEventLedger(chainedProject);
+  const retainedProjection = projectEventReplayProjection(chainedProject, { includeRecovered: false });
+  if (currentSummary.contiguous && retainedProjection.replayReady) return chainedProject;
 
   const generatedEvents = uniqueLedgerEvents(sortLedgerEvents([
-    ...(project.eventLedger || []),
-    ...legacyKickoffLedgerEvents(project),
-    ...ledgerEventsFromLogs(project.logs || [], 'timeline-log-migration'),
-    ...legacyChangeLedgerEvents(project.changeLedger || []),
-    ...legacyPeerHandoffLedgerEvents(project.peerHandoffs || []),
-    ...legacyAutonomousSchedulerLedgerEvents(project.autonomousSchedulerLedger || []),
+    ...(chainedProject.eventLedger || []),
+    ...legacyKickoffLedgerEvents(chainedProject),
+    ...ledgerEventsFromLogs(chainedProject.logs || [], 'timeline-log-migration'),
+    ...legacyChangeLedgerEvents(chainedProject.changeLedger || []),
+    ...legacyPeerHandoffLedgerEvents(chainedProject.peerHandoffs || []),
+    ...legacyAutonomousSchedulerLedgerEvents(chainedProject.autonomousSchedulerLedger || []),
   ]));
 
   if (!generatedEvents.length) return project;
 
   return appendProjectEvents({
-    ...project,
+    ...chainedProject,
     eventLedger: [],
+    eventLedgerPreviousHash: EVENT_LEDGER_GENESIS_HASH,
+    eventLedgerRootHash: EVENT_LEDGER_GENESIS_HASH,
     eventLedgerFirstSequence: 0,
     eventLedgerLastSequence: 0,
     eventLedgerEventCount: 0,
@@ -441,7 +524,8 @@ export function summarizeProjectEventLedger(project = {}) {
     ...counts,
     [event.type]: (counts[event.type] || 0) + 1,
   }), {});
-  const contiguous = events.every((event, index) => (
+  const integrity = verifyProjectEventLedger(project);
+  const contiguous = integrity.valid && events.every((event, index) => (
     index === 0 || event.sequence === events[index - 1].sequence + 1
   ));
   const latestByType = Object.fromEntries(events.map((event) => [event.type, event]));
@@ -453,6 +537,7 @@ export function summarizeProjectEventLedger(project = {}) {
     firstSequence: project.eventLedgerFirstSequence || events[0]?.sequence || 0,
     lastSequence: project.eventLedgerLastSequence || events[events.length - 1]?.sequence || 0,
     contiguous,
+    integrity,
     typeCounts,
     latestByType,
     replayProjection,
@@ -563,37 +648,26 @@ function safeDateMs(value, fallback = Date.now()) {
 
 export function evaluateAutonomousSchedule({ project = {}, cadence = project.autonomy?.cadence || project.autonomousCadence || 'hourly', now = nowIso() } = {}) {
   const intervalMs = intervalMsForCadence(cadence);
-  const nowMs = safeDateMs(now);
   const lastRunAt = project.lastAutonomousRunAt || null;
   const storedNextRunAt = project.nextAutonomousRunAt || null;
-  const lastRunMs = lastRunAt ? safeDateMs(lastRunAt, nowMs) : null;
-  const nextRunMs = storedNextRunAt
-    ? safeDateMs(storedNextRunAt, nowMs)
-    : lastRunMs
-      ? lastRunMs + intervalMs
-      : nowMs;
-  const dueAt = new Date(nextRunMs).toISOString();
   const enabled = Boolean(project.autonomy?.enabled);
-  const due = enabled && nowMs >= nextRunMs;
-  const reason = !enabled
-    ? 'autonomy-paused'
-    : !lastRunAt && !storedNextRunAt
-      ? 'no-previous-autonomous-cycle'
-      : due
-        ? `${cadence}-cadence-due`
-        : `${cadence}-cadence-waiting`;
+  const schedule = evaluateLocalIntervalSchedule({
+    lane: 'project', now, intervalMs, lastCompletedAt: lastRunAt, storedNextAt: storedNextRunAt,
+    enabled,
+    reasons: {
+      disabled: 'autonomy-paused', first: 'no-previous-autonomous-cycle',
+      due: `${cadence}-cadence-due`, waiting: `${cadence}-cadence-waiting`,
+      clockRegression: 'project-clock-regression-recovery', missed: 'project-missed-cadence-recovery',
+    },
+  });
 
   return {
+    ...schedule,
     cadence,
     enabled,
-    due,
-    reason,
-    dueAt,
-    now,
     lastRunAt,
-    nextRunAt: dueAt,
     intervalMs,
-    lagMs: due ? Math.max(0, nowMs - nextRunMs) : 0,
+    lagMs: schedule.due ? Math.max(0, Date.parse(schedule.now) - Date.parse(schedule.scheduledAt)) : 0,
   };
 }
 

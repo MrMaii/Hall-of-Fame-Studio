@@ -1,7 +1,7 @@
 // Characterization tests: lock in modelProvider behavior (incl. BUG-002/BUG-003 fixes).
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createModelProvider } from '../src/agents/modelProvider.js';
+import { createModelProvider, createModelProviderFromEnv, getModelProviderAdapterManifest } from '../src/agents/modelProvider.js';
 
 const okResponse = (payload) => ({
   ok: true,
@@ -26,6 +26,13 @@ const makeProvider = (payload, options = {}) => {
 };
 
 const messages = [{ role: 'user', content: 'hello' }];
+
+test('uses a local OpenAI-compatible endpoint as the unconfigured provider default', () => {
+  const provider = createModelProviderFromEnv({});
+  assert.equal(provider.status().baseURL, 'http://127.0.0.1:11434/v1');
+  assert.equal(provider.status().model, 'llama3.2');
+  assert.ok(getModelProviderAdapterManifest().adapters.every((adapter) => adapter.defaultBaseUrl.includes('127.0.0.1')));
+});
 
 test('extracts plain string content (openai shape)', async () => {
   const { provider } = makeProvider({ choices: [{ message: { content: 'hi there' }, finish_reason: 'stop' }] });
@@ -119,6 +126,39 @@ test('status() redacts base URL and reports api key source', () => {
   assert.equal(status.hasApiKey, true);
   assert.equal(status.apiKeySource, 'direct-config');
   assert.ok(!JSON.stringify(status).includes('test-key'));
+});
+
+test('local-only provider rejects a public model endpoint before making a network request', async () => {
+  let calls = 0;
+  const provider = createModelProvider({
+    apiKey: 'test-key',
+    enabled: true,
+    localOnly: true,
+    baseURL: 'https://api.openai.com/v1',
+    fetchImpl: async () => {
+      calls += 1;
+      return okResponse({ choices: [{ message: { content: 'must not be returned' } }] });
+    },
+  });
+
+  const result = await provider.createChatCompletion({ messages });
+  assert.equal(result.ok, false);
+  assert.equal(result.skipped, true);
+  assert.equal(result.reason, 'remote-base-url-blocked');
+  assert.equal(calls, 0);
+  assert.equal(provider.status().endpointPolicy.status, 'blocked-remote-endpoint');
+});
+
+test('local-only provider permits a loopback model endpoint', async () => {
+  const { provider, calls } = makeProvider(
+    { choices: [{ message: { content: 'local response' } }] },
+    { config: { localOnly: true, baseURL: 'http://127.0.0.1:11434/v1' } },
+  );
+
+  const result = await provider.createChatCompletion({ messages });
+  assert.equal(result.ok, true);
+  assert.match(calls[0].url, /^http:\/\/127\.0\.0\.1:11434\/v1/);
+  assert.equal(provider.status().endpointPolicy.status, 'local-endpoint');
 });
 
 test('applies the explicitly configured transport retry budget to direct model calls', async () => {

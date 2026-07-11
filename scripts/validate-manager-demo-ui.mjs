@@ -165,8 +165,26 @@ async function sendMeetingPrefill(page) {
   }, null, { timeout: 5000 });
 }
 
+async function launchLocalBrowser() {
+  let lastError = null;
+  const explicitPath = process.env.HOFS_PLAYWRIGHT_CHROMIUM || process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || '';
+  const options = [
+    { headless: true },
+    ...(explicitPath ? [{ headless: true, executablePath: explicitPath }] : []),
+    { channel: 'msedge', headless: true },
+  ];
+  for (const launchOptions of options) {
+    try {
+      return await chromium.launch(launchOptions);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError;
+}
+
 const { server, url } = await ensureServer();
-const browser = await chromium.launch({ headless: true });
+const browser = await launchLocalBrowser();
 const consoleErrors = [];
 const pageErrors = [];
 

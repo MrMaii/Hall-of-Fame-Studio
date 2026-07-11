@@ -1,4 +1,5 @@
 ﻿import { useState, useEffect, useRef } from 'react';
+import { lazy, Suspense } from 'react';
 import { 
   Settings, Grid, LayoutPanelLeft, Box,
   MessageSquare, Plus, Network, Cpu, Clock, 
@@ -18,6 +19,8 @@ import {
   getPersonSkill,
 } from './skills/personSkillSystem.js';
 import { localizeText, useLanguage } from './i18n/index.jsx';
+import { isLocalNetworkEndpoint } from './agents/localNetworkPolicy.js';
+import { createProviderRuntimeCoordinator } from './agents/providerRuntimeCoordinator.js';
 import {
   advanceAutonomousProjectCycle,
   appendProjectEvents,
@@ -57,17 +60,15 @@ import {
   meetingTurnDelayMs,
 } from './agents/meetingQueueProtocol.js';
 
+const AgentMarketScene = lazy(() => import('./scenes/AgentMarketScene.jsx'));
+const AgentDossierScene = lazy(() => import('./scenes/AgentDossierScene.jsx'));
+
 const DEFAULT_AGENT_BACKEND_URL = import.meta.env?.VITE_AGENT_BACKEND_URL || 'http://127.0.0.1:8787';
 const normalizeBackendBaseUrl = (value = DEFAULT_AGENT_BACKEND_URL) => (
   String(value || DEFAULT_AGENT_BACKEND_URL).trim().replace(/\/+$/, '')
 );
 const isValidBackendBaseUrl = (value) => {
-  try {
-    const url = new URL(String(value || '').trim());
-    return url.protocol === 'http:' || url.protocol === 'https:';
-  } catch {
-    return false;
-  }
+  return isLocalNetworkEndpoint(value);
 };
 const firstBackendRoute = (...values) => values
   .map(value => (typeof value === 'string' ? value.trim() : ''))
@@ -171,8 +172,6 @@ function generateBarcode(seed = '') {
 
 // --- Global CSS & Typography ---
 const globalStyles = `
-  @import url('https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;0,600;1,400&family=Space+Mono:ital,wght@0,400;0,700;1,400&display=swap');
-
   :root {
     --bg-color: #f5f4f0;
     --text-main: #1a1a1a;
@@ -187,8 +186,8 @@ const globalStyles = `
     overflow: hidden;
   }
 
-  .font-serif { font-family: 'EB Garamond', serif; }
-  .font-mono { font-family: 'Space Mono', monospace; }
+  .font-serif { font-family: Georgia, 'Times New Roman', serif; }
+  .font-mono { font-family: 'Cascadia Mono', Consolas, monospace; }
 
   ::-webkit-scrollbar { width: 5px; height: 5px; }
   ::-webkit-scrollbar-track { background: transparent; }
@@ -988,6 +987,13 @@ const hasBackendManagedProjectMarker = (project = {}) => (
   )
 );
 
+const isBackendManagedBrowserCacheProject = (project = {}) => (
+  Boolean(project?.id)
+  && !isManagerDemoProject(project)
+  && !isDevelopmentFallbackProject(project)
+  && hasBackendManagedProjectMarker(project)
+);
+
 const isManagerDemoMessage = (message = {}) => (
   (message.projectId || DEFAULT_CHAT_PROJECT_ID) === MANAGER_DEMO_PROJECT_ID
   || LEGACY_SEED_PROJECT_IDS.has(message.projectId)
@@ -1219,11 +1225,11 @@ const hasConfiguredBackendBaseUrl = () => {
       const storedBackendUrl = window.localStorage.getItem(STORAGE_KEYS.backendUrl);
       if (storedBackendUrl !== null) return isValidBackendBaseUrl(JSON.parse(storedBackendUrl));
     } catch {
-      return isValidBackendBaseUrl(DEFAULT_AGENT_BACKEND_URL);
+      return false;
     }
-    return isValidBackendBaseUrl(DEFAULT_AGENT_BACKEND_URL);
+    return false;
   }
-  return isValidBackendBaseUrl(import.meta.env?.VITE_AGENT_BACKEND_URL || DEFAULT_AGENT_BACKEND_URL);
+  return isValidBackendBaseUrl(import.meta.env?.VITE_AGENT_BACKEND_URL || '');
 };
 
 const defaultProviderRuntimeStatus = () => ({
@@ -1354,14 +1360,14 @@ const readStoredProjectArray = () => {
 
 const cachedBrowserProjectIds = () => new Set(
   readStoredProjectArray()
-    .filter(project => !isManagerDemoProject(project))
+    .filter(project => !isBackendManagedBrowserCacheProject(project))
     .map(project => project.id)
     .filter(Boolean)
 );
 
 const loadInitialProjects = () => {
   const storedProjects = readStoredProjectArray()
-    .filter(project => !isManagerDemoProject(project));
+    .filter(project => !isBackendManagedBrowserCacheProject(project));
   return storedProjects.map(hydrateProject);
 };
 
@@ -1714,12 +1720,6 @@ function pantheonAvatarSrc(agentId = '') {
   return pantheonAvatarMeta(agentId).src || '';
 }
 
-function commonsFilePage(file = '') {
-  return file
-    ? `https://commons.wikimedia.org/wiki/File:${encodeURIComponent(file).replace(/%2F/g, '/')}`
-    : 'https://commons.wikimedia.org/';
-}
-
 function PantheonAvatar({ agent }) {
   const [broken, setBroken] = useState(false);
   const avatar = pantheonAvatarMeta(agent.id);
@@ -1754,15 +1754,12 @@ function PantheonAvatar({ agent }) {
         referrerPolicy="no-referrer"
         onError={() => setBroken(true)}
       />
-      <a
-        href={commonsFilePage(avatar.file)}
-        target="_blank"
-        rel="noreferrer"
+      <span
         title={`${avatar.credit} - ${avatar.license}`}
-        className="absolute bottom-0 left-0 right-0 bg-black/85 text-white font-mono text-[7px] leading-3 text-center tracking-widest hover:bg-red-700"
+        className="absolute bottom-0 left-0 right-0 bg-black/85 text-white font-mono text-[7px] leading-3 text-center tracking-widest"
       >
         {avatar.license}
-      </a>
+      </span>
     </div>
   );
 }
@@ -1786,6 +1783,7 @@ export default function EngineWorkspace() {
     bootstrapRequired: null,
     userCount: 0,
     error: null,
+    retryAt: null,
   });
   const [localAuthDraft, setLocalAuthDraft] = useState({
     username: '',
@@ -1800,6 +1798,13 @@ export default function EngineWorkspace() {
     displayName: '',
     role: 'manager',
     pending: false,
+  });
+  const [localAuthPasswordDraft, setLocalAuthPasswordDraft] = useState({
+    currentPassword: '',
+    newPassword: '',
+    confirmPassword: '',
+    pending: false,
+    error: null,
   });
   const [localProjectMembership, setLocalProjectMembership] = useState({
     projectId: null,
@@ -2117,6 +2122,11 @@ export default function EngineWorkspace() {
   const managerAutoDiagnosticSyncRef = useRef({});
   const managerAutoTranscriptSyncRef = useRef({});
   const settingsAutoProviderSyncRef = useRef({});
+  const providerRuntimeCoordinator = useRef(null);
+  const providerRuntimePresentationGenerationRef = useRef(0);
+  if (!providerRuntimeCoordinator.current) {
+    providerRuntimeCoordinator.current = createProviderRuntimeCoordinator();
+  }
   const settingsAutoIntegrationSyncRef = useRef({});
   const settingsAutoWorkspaceSyncRef = useRef({});
   const dashboardStartupSyncRef = useRef({});
@@ -2267,6 +2277,8 @@ export default function EngineWorkspace() {
   const canPersistProjectToBrowserCache = (project = {}) => (
     Boolean(project?.id)
     && !isManagerDemoProject(project)
+    && !hasBackendManagedProjectMarker(project)
+    && !isBackendManagedRealProject(project)
   );
   const isUnscopedProofLikeChatMessage = (message = {}) => {
     if ((message.projectId || DEFAULT_CHAT_PROJECT_ID) !== DEFAULT_CHAT_PROJECT_ID) return false;
@@ -2814,7 +2826,7 @@ export default function EngineWorkspace() {
 
   const syncLocalAuthStatus = async ({ baseUrl = backendStation.baseUrl } = {}) => {
     const targetBaseUrl = normalizeBackendBaseUrl(baseUrl || DEFAULT_AGENT_BACKEND_URL);
-    setLocalAuthStatus(previous => ({ ...previous, loading: true, error: null }));
+    setLocalAuthStatus(previous => ({ ...previous, loading: true, error: null, retryAt: null }));
     try {
       const payload = await requestAgentBackend('/local-auth/status', { baseUrl: targetBaseUrl, timeoutMs: 2500 });
       const status = payload.localAuth || {};
@@ -2824,6 +2836,7 @@ export default function EngineWorkspace() {
         bootstrapRequired: status.bootstrapRequired === true,
         userCount: Number(status.userCount || 0),
         error: null,
+        retryAt: null,
       });
       return status;
     } catch (error) {
@@ -2834,6 +2847,7 @@ export default function EngineWorkspace() {
         bootstrapRequired: null,
         userCount: 0,
         error: unavailable ? null : providerRuntimeErrorDetail(error),
+        retryAt: null,
       });
       return null;
     }
@@ -2847,7 +2861,7 @@ export default function EngineWorkspace() {
       return;
     }
     setLocalAuthDraft(previous => ({ ...previous, pending: true }));
-    setLocalAuthStatus(previous => ({ ...previous, error: null }));
+    setLocalAuthStatus(previous => ({ ...previous, error: null, retryAt: null }));
     try {
       let authenticatedToken = '';
       if (action === 'logout') {
@@ -2880,7 +2894,12 @@ export default function EngineWorkspace() {
         if (action !== 'logout') await syncLocalAuthUsers({ authToken: authenticatedToken });
       }
     } catch (error) {
-      setLocalAuthStatus(previous => ({ ...previous, error: providerRuntimeErrorDetail(error) }));
+      const errorCode = error?.payload?.error || providerRuntimeErrorDetail(error);
+      setLocalAuthStatus(previous => ({
+        ...previous,
+        error: errorCode,
+        retryAt: errorCode === 'local-auth-login-locked' ? error?.payload?.retryAt || null : null,
+      }));
     } finally {
       setLocalAuthDraft(previous => ({ ...previous, pending: false }));
     }
@@ -2934,6 +2953,66 @@ export default function EngineWorkspace() {
     } catch (error) {
       setLocalAuthUserDraft(previous => ({ ...previous, pending: false }));
       setLocalAuthUsers(previous => ({ ...previous, error: providerRuntimeErrorDetail(error) }));
+    }
+  };
+
+  const changeLocalAuthPassword = async (event) => {
+    event.preventDefault();
+    const currentPassword = String(localAuthPasswordDraft.currentPassword || '');
+    const newPassword = String(localAuthPasswordDraft.newPassword || '');
+    if (!currentPassword || !newPassword) {
+      setLocalAuthPasswordDraft(previous => ({ ...previous, error: 'Enter your current password and a new password.' }));
+      return;
+    }
+    if (newPassword !== String(localAuthPasswordDraft.confirmPassword || '')) {
+      setLocalAuthPasswordDraft(previous => ({ ...previous, error: 'New password confirmation does not match.' }));
+      return;
+    }
+    setLocalAuthPasswordDraft(previous => ({ ...previous, pending: true, error: null }));
+    try {
+      const payload = await requestAgentBackend('/local-auth/password', {
+        method: 'POST',
+        timeoutMs: 10_000,
+        body: { currentPassword, newPassword },
+      });
+      const result = payload.localAuth || {};
+      if (!result.token || !result.user) throw new Error('Local password rotation did not return a replacement session.');
+      const baseUrl = normalizeBackendBaseUrl(backendStation.baseUrl || DEFAULT_AGENT_BACKEND_URL);
+      persistLocalAuthSession({
+        token: result.token,
+        baseUrl,
+        user: result.user,
+        expiresAt: result.session?.expiresAt || null,
+      });
+      setLocalAuthPasswordDraft({ currentPassword: '', newPassword: '', confirmPassword: '', pending: false, error: null });
+      await syncLocalAuthStatus({ baseUrl });
+      await syncBackendProjectCatalog({ silent: true, authToken: result.token });
+      await syncLocalAuthUsers({ authToken: result.token });
+    } catch (error) {
+      setLocalAuthPasswordDraft(previous => ({ ...previous, error: error?.payload?.error || providerRuntimeErrorDetail(error) }));
+    } finally {
+      setLocalAuthPasswordDraft(previous => ({ ...previous, pending: false }));
+    }
+  };
+
+  const disableLocalAuthUser = async (user) => {
+    if (!user?.id || user.disabledAt) return;
+    setLocalAuthUsers(previous => ({ ...previous, error: null, pendingUserId: user.id }));
+    try {
+      await requestAgentBackend(`/local-auth/users/${encodeURIComponent(user.id)}/disable`, {
+        method: 'POST',
+        timeoutMs: 5000,
+      });
+      if (user.id === localAuthSessionForCurrentBackend?.user?.id) {
+        persistLocalAuthSession(null);
+      }
+      await syncLocalAuthStatus();
+      await syncLocalAuthUsers();
+      await syncLocalProjectMembership();
+    } catch (error) {
+      setLocalAuthUsers(previous => ({ ...previous, error: providerRuntimeErrorDetail(error) }));
+    } finally {
+      setLocalAuthUsers(previous => ({ ...previous, pendingUserId: null }));
     }
   };
 
@@ -3015,8 +3094,8 @@ export default function EngineWorkspace() {
 
   const committedBackendBaseUrl = () => normalizeBackendBaseUrl(backendStation.baseUrl || DEFAULT_AGENT_BACKEND_URL);
 
-  const syncSettingsProviderRuntime = async ({ runTests = false, baseUrlOverride = null } = {}) => {
-    if (providerRuntimeStatus.running) return;
+  const syncSettingsProviderRuntime = async ({ runTests = false, baseUrlOverride = null, reason = 'manual' } = {}) => {
+    const baseUrl = normalizeBackendBaseUrl(baseUrlOverride || backendStation.baseUrl || DEFAULT_AGENT_BACKEND_URL);
     if (!baseUrlOverride && !backendUrlConfigured) {
       setProviderRuntimeStatus(prev => ({
         ...prev,
@@ -3025,9 +3104,12 @@ export default function EngineWorkspace() {
       }));
       return null;
     }
-    const baseUrl = normalizeBackendBaseUrl(baseUrlOverride || backendStation.baseUrl || DEFAULT_AGENT_BACKEND_URL);
     const settingsProjectRawId = activeProject?.id || null;
     const settingsProjectId = settingsProjectRawId ? encodeURIComponent(settingsProjectRawId) : '';
+    const scope = `${baseUrl}:${settingsProjectRawId || 'global'}`;
+    const presentationGeneration = providerRuntimePresentationGenerationRef.current + 1;
+    providerRuntimePresentationGenerationRef.current = presentationGeneration;
+    providerRuntimeCoordinator.current.invalidate(scope);
     const providerVaultBindingsRoute = settingsProjectId ? `/projects/${settingsProjectId}/provider-vault-bindings` : '/provider-vault-bindings';
     const settingsProviderReadinessRoute = settingsProjectId ? `/projects/${settingsProjectId}/settings-provider-readiness` : '/settings/provider-readiness';
     const settingsRuntimeReadinessRoute = settingsProjectId ? `/projects/${settingsProjectId}/settings-runtime-readiness` : '/settings/runtime-readiness';
@@ -3084,7 +3166,10 @@ export default function EngineWorkspace() {
       }
     };
 
-    try {
+    const result = await providerRuntimeCoordinator.current.request({
+      scope,
+      operation: async () => {
+        try {
       const [modelProvider, searchProvider, secretVaultStatus, secretVaultRecords, providerVaultBindings, settingsProviderReadiness, settingsRuntimeReadiness, localMvpStartupReadiness] = await Promise.all([
         readStatus('/llm/status', 'modelProvider', 7000),
         readStatus('/search/status', 'searchProvider', 7000),
@@ -3116,29 +3201,27 @@ export default function EngineWorkspace() {
       const syncedLocalMvpStartupReadiness = localMvpStartupReadiness?.schemaVersion === 'local-mvp-startup-readiness/v1'
         ? localMvpStartupReadiness
         : null;
-
-      setProviderRuntimeStatus(prev => ({
-        running: false,
-        lastRunAt: now,
-        baseUrl,
-        projectId: settingsProjectRawId,
-        modelProvider,
-        searchProvider,
-        secretVaultStatus,
-        secretVaultRecords,
-        providerVaultBindings,
-        settingsProviderReadiness,
-        settingsRuntimeReadiness,
-        settingsIntegrationReadiness: matchesSettingsRuntimeScope(prev) ? prev.settingsIntegrationReadiness : null,
-        localMvpStartupReadiness: syncedLocalMvpStartupReadiness
-          || (normalizeBackendBaseUrl(prev.baseUrl || DEFAULT_AGENT_BACKEND_URL) === baseUrl
-            ? prev.localMvpStartupReadiness
-            : null),
-        modelTest,
-        searchTest,
-        error: modelProvider.error || searchProvider.error || null,
-      }));
-    } catch (error) {
+        return {
+          modelProvider,
+          searchProvider,
+          secretVaultStatus,
+          secretVaultRecords,
+          providerVaultBindings,
+          settingsProviderReadiness,
+          settingsRuntimeReadiness,
+          localMvpStartupReadiness: syncedLocalMvpStartupReadiness,
+          modelTest,
+          searchTest,
+          error: modelProvider.error || searchProvider.error || null,
+        };
+        } catch (error) {
+          return { error: providerRuntimeErrorDetail(error) };
+        }
+      },
+    });
+    if (result.stale || presentationGeneration !== providerRuntimePresentationGenerationRef.current) return null;
+    const runtime = result.value;
+    if (runtime.error && !runtime.modelProvider) {
       setProviderRuntimeStatus(prev => ({
         ...prev,
         running: false,
@@ -3157,9 +3240,32 @@ export default function EngineWorkspace() {
           : null,
         modelTest: null,
         searchTest: null,
-        error: providerRuntimeErrorDetail(error),
+        error: runtime.error,
       }));
+      return null;
     }
+    setProviderRuntimeStatus(prev => ({
+      running: false,
+      lastRunAt: now,
+      baseUrl,
+      projectId: settingsProjectRawId,
+      modelProvider: runtime.modelProvider,
+      searchProvider: runtime.searchProvider,
+      secretVaultStatus: runtime.secretVaultStatus,
+      secretVaultRecords: runtime.secretVaultRecords,
+      providerVaultBindings: runtime.providerVaultBindings,
+      settingsProviderReadiness: runtime.settingsProviderReadiness,
+      settingsRuntimeReadiness: runtime.settingsRuntimeReadiness,
+      settingsIntegrationReadiness: matchesSettingsRuntimeScope(prev) ? prev.settingsIntegrationReadiness : null,
+      localMvpStartupReadiness: runtime.localMvpStartupReadiness
+        || (normalizeBackendBaseUrl(prev.baseUrl || DEFAULT_AGENT_BACKEND_URL) === baseUrl
+          ? prev.localMvpStartupReadiness
+          : null),
+      modelTest: runtime.modelTest,
+      searchTest: runtime.searchTest,
+      error: runtime.error,
+    }));
+    return { ...runtime, reason };
   };
 
   const syncSettingsIntegrationReadiness = async () => {
@@ -3389,7 +3495,7 @@ export default function EngineWorkspace() {
           secretVaultRecords: payload.secretVaultRecords || prev.secretVaultRecords,
           error: null,
         }));
-        setTimeout(() => syncSettingsProviderRuntime({ runTests: false, baseUrlOverride: baseUrl }), 0);
+        await syncSettingsProviderRuntime({ runTests: false, baseUrlOverride: baseUrl, reason: 'vault-seal' });
         return payload;
       }
       if (kind === 'search' || kind === 'searchEndpoint') {
@@ -3460,7 +3566,7 @@ export default function EngineWorkspace() {
           secretVaultRecords: payload.secretVaultRecords || prev.secretVaultRecords,
           error: null,
         }));
-        setTimeout(() => syncSettingsProviderRuntime({ runTests: false, baseUrlOverride: baseUrl }), 0);
+        await syncSettingsProviderRuntime({ runTests: false, baseUrlOverride: baseUrl, reason: 'vault-seal' });
         return payload;
       }
 
@@ -3493,7 +3599,7 @@ export default function EngineWorkspace() {
         secretVaultRecords: payload.secretVaultRecords || prev.secretVaultRecords,
         error: null,
       }));
-      setTimeout(() => syncSettingsProviderRuntime({ runTests: false, baseUrlOverride: baseUrl }), 0);
+      await syncSettingsProviderRuntime({ runTests: false, baseUrlOverride: baseUrl, reason: 'vault-seal' });
       return payload;
     } catch (error) {
       setProviderSecretDrafts(prev => ({
@@ -3573,6 +3679,7 @@ export default function EngineWorkspace() {
     && backendUrlConfigured
     && Boolean((backendStation.baseUrl || '').trim())
     && !isDevelopmentFallbackProject(project)
+    && (!isManagerDemoProject(project) || backendStation.connectionStatus === 'online')
   );
 
   const canUseDevelopmentSnapshotSeed = (project = activeProject) => (
@@ -6195,6 +6302,15 @@ export default function EngineWorkspace() {
       }));
       return;
     }
+    if (!isLocalNetworkEndpoint(nextUrl)) {
+      setBackendStation(prev => ({
+        ...prev,
+        loading: false,
+        lastAction: 'Backend URL blocked by local-only policy',
+        error: 'Backend URL must use a local or private-network host, for example http://127.0.0.1:8787.',
+      }));
+      return;
+    }
     writeStoredJson(STORAGE_KEYS.backendUrl, nextUrl);
     setBackendUrlConfigured(true);
     setProviderRuntimeStatus(prev => ({
@@ -6317,7 +6433,7 @@ export default function EngineWorkspace() {
       error: null,
     }));
     setTimeout(() => refreshBackendSchedulerStatus(nextUrl), 0);
-    setTimeout(() => syncSettingsProviderRuntime({ runTests: false, baseUrlOverride: nextUrl }), 0);
+    void syncSettingsProviderRuntime({ runTests: false, baseUrlOverride: nextUrl, reason: 'target-change' });
   };
 
   const runBackendSchedulerAction = async (action) => {
@@ -12326,7 +12442,12 @@ export default function EngineWorkspace() {
                     </div>
 
                     {!backendUrlConfigured ? (
-                      <p data-testid="settings-local-auth-backend-required" className="mt-4 font-mono text-[11px] text-[#8f1e18]">Save the local backend URL before configuring an account.</p>
+                      <div data-testid="settings-local-auth-backend-required" className="mt-4 flex flex-wrap items-center justify-between gap-3 border border-[#d9b56c] bg-[#fbf7df] px-3 py-3 font-mono text-[11px] text-[#75631d]">
+                        <span>Save the local backend URL before configuring an account.</span>
+                        <button type="button" data-testid="settings-local-auth-open-deployment" onClick={() => setSettingsTab('deployment')} className="border border-[#75631d] px-3 py-2 font-mono text-[9px] uppercase tracking-widest hover:bg-[#eadfbd]">
+                          Configure backend
+                        </button>
+                      </div>
                     ) : localAuthStatus.loading ? (
                       <p data-testid="settings-local-auth-loading" className="mt-4 font-mono text-[11px] text-[#7d786b]">Checking local account state…</p>
                     ) : localAuthStatus.available === false ? (
@@ -12340,6 +12461,13 @@ export default function EngineWorkspace() {
                           </div>
                           <button type="button" data-testid="settings-local-auth-logout" onClick={() => submitLocalAuth('logout')} disabled={localAuthDraft.pending} className="border border-[#1a1a1a] px-3 py-2 font-mono text-[10px] uppercase tracking-widest hover:bg-[#d1d0c9] disabled:cursor-not-allowed disabled:opacity-50">Sign out</button>
                         </div>
+                        <form data-testid="settings-local-auth-password-form" className="mt-4 grid gap-2 border border-[#d1d0c9] bg-[#f8f6ee] p-4 md:grid-cols-4" onSubmit={changeLocalAuthPassword}>
+                          <input data-testid="settings-local-auth-current-password" type="password" value={localAuthPasswordDraft.currentPassword} onChange={(event) => setLocalAuthPasswordDraft(previous => ({ ...previous, currentPassword: event.target.value }))} autoComplete="current-password" placeholder="current password" className="min-w-0 border border-[#d1d0c9] bg-[#f5f4f0] px-3 py-2 font-mono text-[11px] text-[#1a1a1a] outline-none focus:border-[#1a1a1a]" />
+                          <input data-testid="settings-local-auth-new-password" type="password" value={localAuthPasswordDraft.newPassword} onChange={(event) => setLocalAuthPasswordDraft(previous => ({ ...previous, newPassword: event.target.value }))} autoComplete="new-password" placeholder="new password" className="min-w-0 border border-[#d1d0c9] bg-[#f5f4f0] px-3 py-2 font-mono text-[11px] text-[#1a1a1a] outline-none focus:border-[#1a1a1a]" />
+                          <input data-testid="settings-local-auth-confirm-password" type="password" value={localAuthPasswordDraft.confirmPassword} onChange={(event) => setLocalAuthPasswordDraft(previous => ({ ...previous, confirmPassword: event.target.value }))} autoComplete="new-password" placeholder="confirm new password" className="min-w-0 border border-[#d1d0c9] bg-[#f5f4f0] px-3 py-2 font-mono text-[11px] text-[#1a1a1a] outline-none focus:border-[#1a1a1a]" />
+                          <button type="submit" data-testid="settings-local-auth-change-password" disabled={localAuthPasswordDraft.pending} className="border border-[#1a1a1a] bg-[#1a1a1a] px-3 py-2 font-mono text-[10px] uppercase tracking-widest text-[#f5f4f0] hover:bg-[#3b3933] disabled:cursor-not-allowed disabled:opacity-50">{localAuthPasswordDraft.pending ? 'Updating…' : 'Change password'}</button>
+                          {localAuthPasswordDraft.error && <p data-testid="settings-local-auth-password-error" className="font-mono text-[11px] text-[#8f1e18] md:col-span-4">{localAuthPasswordDraft.error}</p>}
+                        </form>
                         {localAuthSessionForCurrentBackend.user?.role === 'security-admin' && (
                           <div data-testid="settings-local-auth-users" className="mt-4 border border-[#d1d0c9] bg-[#f8f6ee] p-4">
                             <div className="flex flex-wrap items-start justify-between gap-3">
@@ -12366,7 +12494,10 @@ export default function EngineWorkspace() {
                               {localAuthUsers.rows.map((user) => (
                                 <div key={user.id} data-testid={`settings-local-auth-user-${user.username}`} className="flex flex-wrap items-center justify-between gap-2 border border-[#d1d0c9] bg-[#f5f4f0] px-3 py-2 font-mono text-[10px] text-[#1a1a1a]">
                                   <span>{user.displayName || user.username} <span className="text-[#7d786b]">@{user.username}</span></span>
-                                  <span className="uppercase tracking-[0.12em] text-[#5f5a50]">{user.role}</span>
+                                  <div className="flex items-center gap-3">
+                                    <span className="uppercase tracking-[0.12em] text-[#5f5a50]">{user.disabledAt ? 'disabled' : user.role}</span>
+                                    {!user.disabledAt && <button type="button" data-testid={`settings-local-auth-disable-${user.username}`} onClick={() => disableLocalAuthUser(user)} disabled={localAuthUsers.pendingUserId === user.id} className="border border-[#8f1e18] px-2 py-1 font-mono text-[9px] uppercase tracking-widest text-[#8f1e18] hover:bg-[#f5dfdc] disabled:cursor-not-allowed disabled:opacity-50">{localAuthUsers.pendingUserId === user.id ? 'Disabling…' : 'Disable'}</button>}
+                                  </div>
                                 </div>
                               ))}
                               {!localAuthUsers.loading && !localAuthUsers.rows.length && <p className="font-mono text-[10px] text-[#7d786b]">No local users returned yet.</p>}
@@ -12433,7 +12564,11 @@ export default function EngineWorkspace() {
                         </div>
                       </form>
                     )}
-                    {localAuthStatus.error && <p data-testid="settings-local-auth-error" className="mt-3 font-mono text-[11px] text-[#8f1e18]">{localAuthStatus.error}</p>}
+                    {localAuthStatus.error === 'local-auth-login-locked' ? (
+                      <p data-testid="settings-local-auth-login-locked" className="mt-3 font-mono text-[11px] text-[#8f1e18]">This local account is temporarily locked. Retry after {localAuthStatus.retryAt || 'the backend retry time'}.</p>
+                    ) : localAuthStatus.error ? (
+                      <p data-testid="settings-local-auth-error" className="mt-3 font-mono text-[11px] text-[#8f1e18]">{localAuthStatus.error}</p>
+                    ) : null}
                   </div>
 
                   <div data-testid="settings-runtime-readiness-contract" className="border border-[#d1d0c9] bg-[#f5f4f0] p-4">
@@ -12714,14 +12849,14 @@ export default function EngineWorkspace() {
                   </div>
 
                   <div className="grid gap-5 lg:grid-cols-2">
-                    <SettingField label="Model Base URL" hint="OpenAI-compatible providers such as StepFun need their own API base URL.">
+                    <SettingField label="Model Base URL" hint="Local OpenAI-compatible runtimes such as Ollama use their own API base URL.">
                       <input
                         className={`${fieldClass} ${!settingsProviderSecretInputReady ? 'cursor-not-allowed opacity-50' : ''}`}
                         data-testid="settings-provider-model-base-url-input"
                         type="text"
                         autoComplete="off"
                         value={providerSecretDrafts.modelBaseUrl}
-                        placeholder={providerRuntimeStatus.modelProvider?.baseURL || (settingsProviderSecretInputReady ? 'https://api.stepfun.ai/v1' : 'Save backend URL before entry')}
+                        placeholder={providerRuntimeStatus.modelProvider?.baseURL || (settingsProviderSecretInputReady ? 'http://127.0.0.1:11434/v1' : 'Save backend URL before entry')}
                         disabled={!settingsProviderSecretInputReady}
                         onChange={(event) => setProviderSecretDrafts(prev => ({ ...prev, modelBaseUrl: event.target.value, lastReceipt: null, error: null }))}
                       />
@@ -12733,7 +12868,7 @@ export default function EngineWorkspace() {
                         type="text"
                         autoComplete="off"
                         value={providerSecretDrafts.modelName}
-                        placeholder={providerRuntimeStatus.modelProvider?.model || (settingsProviderSecretInputReady ? 'step-3.7-flash' : 'Save backend URL before entry')}
+                        placeholder={providerRuntimeStatus.modelProvider?.model || (settingsProviderSecretInputReady ? 'llama3.2' : 'Save backend URL before entry')}
                         disabled={!settingsProviderSecretInputReady}
                         onChange={(event) => setProviderSecretDrafts(prev => ({ ...prev, modelName: event.target.value, lastReceipt: null, error: null }))}
                       />
@@ -13769,201 +13904,44 @@ export default function EngineWorkspace() {
     const isInitiationMarket = marketMode === 'initiation';
     const signedMarketIds = isInitiationMarket ? initiationInviteIds : recruitedIds;
     const signedInitiationNames = initiationTalentMembers.map(member => member.name).join(' / ');
-
-    const filteredAgents = LEGENDARY_AGENTS.filter(agent => {
-      const q = marketSearch.toLowerCase();
-      const matchesSearch = agent.name.toLowerCase().includes(q) ||
-        agent.role.toLowerCase().includes(q) ||
-        agent.desc.toLowerCase().includes(q) ||
-        (agent.primaryIdentity && agent.primaryIdentity.toLowerCase().includes(q));
-      const matchesCategory = marketCategory === 'All' || agent.category === marketCategory;
-      return matchesSearch && matchesCategory;
+    const rows = LEGENDARY_AGENTS.filter(agent => {
+      const query = marketSearch.toLowerCase();
+      const matchesSearch = agent.name.toLowerCase().includes(query)
+        || agent.role.toLowerCase().includes(query)
+        || agent.desc.toLowerCase().includes(query)
+        || (agent.primaryIdentity && agent.primaryIdentity.toLowerCase().includes(query));
+      return matchesSearch && (marketCategory === 'All' || agent.category === marketCategory);
+    }).map((agent) => {
+      const profile = getDossierProfile(agent, activeLanguage);
+      return {
+        agent,
+        isRecruited: signedMarketIds.includes(agent.id),
+        deploymentWindow: getAgentDeploymentWindow(agent, profile, activeLanguage),
+        skillActive: Boolean(getPersonSkill(agent.id)),
+      };
     });
-
     return (
-      <div className="flex-1 overflow-y-auto fade-in bg-[#f5f4f0] flex flex-col relative">
-        {isDecrypting && (
-          <div className="absolute inset-0 bg-[#f5f4f0] z-50 flex flex-col items-center justify-center font-mono text-xs uppercase tracking-widest text-black">
-            <Fingerprint size={48} className="mb-4 animate-pulse" />
-            <span>Decrypting Pantheon Archives...</span>
-            <span className="text-gray-400 mt-2">Clearance Level: Director</span>
-          </div>
-        )}
-
-        <div className="sticky top-0 z-40 bg-[#f5f4f0] border-b border-[#d1d0c9] px-12 py-8 pt-12 shadow-[0_10px_30px_rgba(245,244,240,0.9)]">
-          {isInitiationMarket && (
-            <div data-testid="initiation-talent-market" className="mb-6 border border-[#1a1a1a] bg-[#1a1a1a] px-4 py-3 text-white">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div className="min-w-0">
-                  <div className="font-mono text-[9px] uppercase tracking-widest text-[#d8c99f]">Initiation Talent Market</div>
-                  <div data-testid="initiation-signed-team" className="font-serif text-xl leading-tight truncate">
-                    Signed team: {signedInitiationNames || 'None yet'}
-                  </div>
-                </div>
-                <div className="flex shrink-0 items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setInitiationStep('invite');
-                      setActiveRoute('project_initiation');
-                    }}
-                    className="border border-[#7b6542] px-3 py-2 font-mono text-[9px] uppercase tracking-widest text-[#efe2bd] hover:border-[#efe2bd]"
-                  >
-                    Back
-                  </button>
-                  <button
-                    type="button"
-                    data-testid="initiation-next-lobby"
-                    onClick={continueInitiationFromMarket}
-                    disabled={initiationTalentMembers.length === 0}
-                    className="bg-[#8f1e18] px-4 py-2 font-mono text-[9px] uppercase tracking-widest text-white disabled:bg-[#3a2a1c] disabled:text-[#7d6a49]"
-                  >
-                    Next: Meeting Prep
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
-          <div className="flex justify-between items-end mb-8">
-            <div>
-              <h1 className="font-serif text-6xl tracking-tight mb-2 decrypt-text">The Pantheon.</h1>
-              <div className="flex items-center gap-3 font-mono text-[10px] text-gray-500 uppercase tracking-widest mt-3">
-                <span className="bg-[#1a1a1a] text-white px-2 py-0.5">TOP SECRET</span>
-                <span>Global Talent Archives</span>
-              </div>
-            </div>
-            <div className="flex items-center border-b-2 border-[#d1d0c9] w-80 pb-2 focus-within:border-black transition-colors">
-              <Search size={18} className="text-gray-400 mr-3" />
-              <input
-                type="text"
-                value={marketSearch}
-                onChange={(e) => setMarketSearch(e.target.value)}
-                placeholder="Query archives..."
-                className="bg-transparent border-none outline-none font-mono text-sm w-full placeholder-gray-400 uppercase tracking-wider"
-              />
-            </div>
-          </div>
-
-          <div className="flex items-center gap-6 overflow-x-auto pb-2 -mb-2">
-            <SlidersHorizontal size={18} className="text-gray-400 shrink-0" />
-            <div className="flex gap-2">
-              {categories.map(cat => (
-                <button
-                  key={cat}
-                  onClick={() => setMarketCategory(cat)}
-                  className={`font-mono text-[10px] uppercase tracking-widest px-3 py-1.5 transition-all whitespace-nowrap border
-                    ${marketCategory === cat ? 'bg-black text-white border-black' : 'bg-transparent text-gray-500 border-[#d1d0c9] hover:border-black hover:text-black'}
-                  `}
-                >
-                  {cat}
-                </button>
-              ))}
-            </div>
-            <span className="ml-auto font-mono text-[10px] text-gray-400 uppercase tracking-widest shrink-0 border-l border-[#d1d0c9] pl-6">
-              {filteredAgents.length} Records Found
-            </span>
-          </div>
-        </div>
-
-        <div className="p-12 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-8">
-          {filteredAgents.map(agent => {
-            const isRecruited = signedMarketIds.includes(agent.id);
-            const cardProfile = getDossierProfile(agent, activeLanguage);
-            const deploymentWindow = getAgentDeploymentWindow(agent, cardProfile, activeLanguage);
-            const marketCardText = { bestWindow: 'Best Window' };
-            return (
-              <div
-                key={agent.id}
-                role="button"
-                tabIndex={0}
-                onClick={() => openMarketDossier(agent.id)}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter' || event.key === ' ') openMarketDossier(agent.id);
-                }}
-                className="dossier-card group flex flex-col cursor-pointer focus:outline-none focus:ring-2 focus:ring-black focus:ring-offset-4 focus:ring-offset-[#f5f4f0]"
-              >
-                <div className="px-5 py-3 border-b border-[#d1d0c9] bg-[#ebe9e0] flex justify-between items-center">
-                  <div className="flex items-center gap-3">
-                    <div className="w-1.5 h-1.5 bg-black rounded-full opacity-30"></div>
-                    <span className="font-mono text-[9px] uppercase tracking-widest text-gray-600">ID:{agent.id}</span>
-                  </div>
-                  <div className="h-4 flex items-center opacity-40">
-                    {generateBarcode(agent.id)}
-                  </div>
-                </div>
-
-                <div className="p-6 border-b border-[#ebe9e0] flex gap-4 items-start relative">
-                  <PantheonAvatar agent={agent} />
-                  <div className="flex flex-col pt-1 min-w-0">
-                    <h3 className="font-serif text-2xl font-bold leading-tight tracking-tight mb-1.5 break-words">
-                      {renderKnownName(agent.knownName)}
-                    </h3>
-                    <div className="mb-2 border-l-[3px] border-red-600/35 pl-2.5">
-                      <span className="font-mono text-[8px] uppercase tracking-widest text-gray-400 block mb-0.5">Primary identity</span>
-                      <p className="font-serif text-[13px] text-gray-800 leading-snug line-clamp-2">
-                        {agent.primaryIdentity}
-                      </p>
-                    </div>
-                    <span className="font-mono text-[9px] uppercase tracking-widest text-gray-500 bg-gray-100 px-1.5 py-0.5 self-start border border-gray-200">{agent.role}</span>
-                  </div>
-                  {isRecruited && (
-                    <div className="absolute top-4 right-4 stamp-active pointer-events-none z-20 flex items-center justify-center">
-                      <div className="border-4 border-[#1a1a1a] text-[#1a1a1a] font-mono text-sm font-bold uppercase tracking-widest px-2 py-1 transform rotate-[-15deg] mix-blend-multiply opacity-90">
-                        CONTRACTED
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                <div className="p-6 flex-1 bg-[#fdfdfc] border-b border-[#ebe9e0] relative">
-                  <div className="flex items-center gap-2 mb-4">
-                    <span className="inline-block px-2 py-0.5 bg-[#1a1a1a] text-white font-mono text-[8px] uppercase tracking-widest">
-                      CLASS: {agent.category}
-                    </span>
-                    {getPersonSkill(agent.id) && (
-                      <span className="inline-block px-2 py-0.5 bg-[#8f1e18] text-white font-mono text-[8px] uppercase tracking-widest">
-                        SKILL ACTIVE
-                      </span>
-                    )}
-                  </div>
-                  <p className="font-serif text-gray-800 text-[15px] leading-relaxed relative z-10">
-                    {agent.desc}
-                  </p>
-                </div>
-
-                <div className="p-4 flex items-center justify-between border-t border-[#1a1a1a] bg-white">
-                  <div className="min-w-0 border-l-2 border-[#8f1e18] pl-3 pr-3">
-                    <div className="font-mono text-[8px] uppercase tracking-widest text-gray-400">{marketCardText.bestWindow}</div>
-                    <div className="max-w-[11rem] truncate font-serif text-sm leading-tight text-gray-800">
-                      {localizeText(deploymentWindow.shortLabel, activeLanguage)}
-                    </div>
-                  </div>
-                  <button
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      openMarketDossier(agent.id);
-                    }}
-                    className={`flex items-center gap-2 font-mono text-[10px] uppercase tracking-widest px-4 py-2 transition-colors
-                      ${isRecruited ? 'bg-transparent text-gray-500 border border-gray-200' : 'bg-black text-white hover:bg-gray-800'}
-                    `}
-                  >
-                    {isRecruited ? <CheckCircle2 size={12} /> : <FileSignature size={12} />}
-                    {isRecruited ? 'Review File' : 'Open File'}
-                  </button>
-                </div>
-              </div>
-            );
-          })}
-
-          {filteredAgents.length === 0 && (
-            <div className="col-span-full py-32 flex flex-col items-center justify-center text-gray-400">
-              <Search size={48} className="mb-6 opacity-20" />
-              <p className="font-serif text-3xl mb-2 text-gray-800">No classified records found.</p>
-              <p className="font-mono text-xs uppercase tracking-widest">Adjust clearance filters or query parameters.</p>
-            </div>
-          )}
-        </div>
-      </div>
+      <Suspense fallback={<div data-testid="local-scene-loading" role="status" className="flex-1 grid place-items-center font-mono text-xs uppercase tracking-widest text-[#5f5a50]">Loading local workspace...</div>}>
+        <AgentMarketScene
+          isDecrypting={isDecrypting}
+          isInitiationMarket={isInitiationMarket}
+          signedInitiationNames={signedInitiationNames}
+          initiationTalentMemberCount={initiationTalentMembers.length}
+          marketSearch={marketSearch}
+          onMarketSearch={setMarketSearch}
+          categories={categories}
+          marketCategory={marketCategory}
+          onMarketCategory={setMarketCategory}
+          rows={rows}
+          onOpenDossier={openMarketDossier}
+          onBackToInvite={() => { setInitiationStep('invite'); setActiveRoute('project_initiation'); }}
+          onContinueInitiation={continueInitiationFromMarket}
+          AvatarComponent={PantheonAvatar}
+          renderKnownName={renderKnownName}
+          generateBarcode={generateBarcode}
+          activeLanguage={activeLanguage}
+        />
+      </Suspense>
     );
   };
 
@@ -13971,20 +13949,9 @@ export default function EngineWorkspace() {
     const agent = selectedMarketAgent || LEGENDARY_AGENTS[0];
     const isInitiationMarket = marketMode === 'initiation';
     const isRecruited = isInitiationMarket ? initiationInviteIds.includes(agent.id) : recruitedIds.includes(agent.id);
-    const isStamping = signingAgentId === agent.id;
     const profile = getDossierProfile(agent, activeLanguage);
     const deploymentWindow = getAgentDeploymentWindow(agent, profile, activeLanguage);
-    const dossierText = (value) => localizeText(value, activeLanguage);
-    const windowText = {
-      title: 'Deployment Window',
-      useWhen: 'Use When',
-      strongestAxis: 'Strongest Axis',
-      firstOutput: 'First Output',
-      starterBrief: 'Starter Brief',
-    };
     const skill = profile.skill || null;
-    const avatar = pantheonAvatarMeta(agent.id);
-    const imageSrc = pantheonAvatarSrc(agent.id);
     const evidenceStrips = [
       { label: 'Primary Identity', value: agent.primaryIdentity },
       { label: 'Operational Class', value: agent.category },
@@ -13996,257 +13963,30 @@ export default function EngineWorkspace() {
         ...(profile.skillLoaded ? [{ label: 'Skill File', value: profile.skillPath }] : []),
       ] : []),
     ];
-
     return (
-      <div className="archive-stage relative h-screen overflow-hidden text-[#251b13]">
-        <div className="archive-table absolute inset-x-0 bottom-0 h-[78vh] origin-bottom skew-y-[-2deg] scale-110" />
-        <div className="archive-vignette absolute inset-0 pointer-events-none z-40" />
-
-        <button
-          onClick={closeMarketDossier}
-          className="absolute top-7 left-7 z-50 bg-[#e8ddbf] text-[#221812] border border-[#5c4933] shadow-[6px_6px_0_rgba(0,0,0,0.24)] px-4 py-3 font-mono text-[10px] uppercase tracking-widest flex items-center gap-3 hover:-translate-y-0.5 hover:bg-[#f3e8c8] transition-transform"
-        >
-          <ArrowLeft size={15} />
-          {dossierText('Refile Archive')}
-        </button>
-
-        <div className="absolute top-7 right-7 z-50 flex items-center gap-3 text-[#e8ddbf] font-mono text-[10px] uppercase tracking-widest">
-          <span className="border border-[#8d7a58] px-3 py-2 bg-black/20">{dossierText('Skills')}: {PERSON_SKILL_COUNT} / {dossierText('Docs')}: {PERSON_SKILL_DOC_COUNT}</span>
-          <span className="border border-[#8d7a58] px-3 py-2 bg-black/20">{dossierText('Clearance')}: {dossierText('Director')}</span>
-          <span className="border border-red-900/70 text-red-200 px-3 py-2 bg-red-950/25">{dossierText('Live Dossier')}</span>
-        </div>
-
-        <div className="absolute left-[5vw] top-[17vh] w-52 h-72 bg-[#d9caa4] border border-[#7c6847] shadow-2xl desk-prop hidden lg:block" style={{ '--from-rot': '-18deg', '--to-rot': '-11deg' }}>
-          <div className="h-10 bg-[#4c1110] text-[#eadfbd] font-mono text-[9px] tracking-widest uppercase flex items-center px-4">{dossierText('Recovered Memo')}</div>
-          <div className="p-5 space-y-3">
-            <div className="h-2 bg-[#6b5a3d]/50 w-3/4" />
-            <div className="h-2 bg-[#6b5a3d]/35 w-full" />
-            <div className="h-2 bg-[#6b5a3d]/35 w-5/6" />
-            <div className="mt-8 border-2 border-[#7f211c] text-[#7f211c] font-mono text-xs inline-block px-3 py-1 rotate-[-8deg]">{dossierText('VETTED')}</div>
-          </div>
-        </div>
-
-        <div className="relative z-30 h-full min-h-0 flex items-center justify-center px-5 py-20">
-          <div className={`archive-dossier dossier-scroll-field relative w-full max-w-6xl max-h-[calc(100vh-120px)] overflow-y-auto lg:h-[min(760px,calc(100vh-120px))] lg:min-h-0 lg:overflow-hidden border border-[#765f3e] grid grid-cols-12 ${isStamping ? 'dossier-impact' : ''}`}>
-            <div className="absolute -top-4 left-10 right-24 h-12 bg-[#c8b688] border border-[#755f3f] -rotate-1 shadow-lg" />
-            <div className="absolute top-8 right-10 border-[5px] border-[#8f1e18] text-[#8f1e18] font-mono text-2xl font-bold uppercase tracking-[0.22em] px-5 py-2 rotate-[10deg] opacity-80 mix-blend-multiply pointer-events-none">
-              {dossierText(isRecruited ? 'Contracted' : 'Pending')}
-            </div>
-            {isStamping && (
-              <>
-                <div className="absolute inset-0 z-50 pointer-events-none contract-stamp-theater" />
-                <div className="absolute left-1/2 top-[57%] z-[70] pointer-events-none stamp-device">
-                  <div className="stamp-handle w-20 h-40 rounded-t-[38px] rounded-b-xl border border-[#8d6d48] mx-auto relative">
-                    <div className="absolute left-1/2 top-4 -translate-x-1/2 w-9 h-16 rounded-full border border-[#a98e62] bg-black/20" />
-                    <div className="absolute left-1/2 bottom-4 -translate-x-1/2 w-12 h-4 rounded-full bg-[#8d6d48]/70" />
-                  </div>
-                  <div className="stamp-head w-56 h-24 rounded-md border-2 border-[#3f0f0e] -mt-2 flex items-center justify-center">
-                    <div className="border-4 border-[#e8ddbf] text-[#e8ddbf] font-mono text-xl font-black uppercase tracking-[0.26em] px-5 py-2 rotate-[-4deg]">
-                      {dossierText('APPROVED')}
-                    </div>
-                  </div>
-                </div>
-                <div className="absolute left-[76%] top-[16%] z-[75] pointer-events-none fresh-contract-seal border-[7px] border-[#8f1e18] text-[#8f1e18] font-mono text-3xl font-black uppercase tracking-[0.22em] px-7 py-3 mix-blend-multiply">
-                  {dossierText('Contracted')}
-                </div>
-                <div className="absolute left-[76%] top-[16%] z-[65] pointer-events-none seal-shockwave w-44 h-44 rounded-full border-2 border-[#8f1e18]" />
-                <div className="absolute left-[62%] top-[22%] z-[65] pointer-events-none paper-dust flex gap-2">
-                  {[...Array(10)].map((_, index) => (
-                    <span
-                      key={index}
-                      className="block w-1.5 h-1.5 bg-[#e8ddbf]/75 rounded-full"
-                      style={{ transform: `translate(${(index - 5) * 9}px, ${(index % 3) * 7}px)` }}
-                    />
-                  ))}
-                </div>
-              </>
-            )}
-
-            <section className="dossier-scroll-field col-span-12 lg:col-span-4 min-h-0 border-r border-[#b8a57d] p-8 bg-[#d9c797]/45 relative overflow-y-auto">
-              <div className="absolute inset-0 opacity-[0.08]" style={{ backgroundImage: 'repeating-linear-gradient(135deg, #2b2118 0, #2b2118 1px, transparent 1px, transparent 10px)' }} />
-              <div className="relative z-10">
-                <div className="font-mono text-[10px] uppercase tracking-[0.28em] text-[#6b241e] mb-4 ink-reveal">{dossierText('Personnel Visual Record')}</div>
-                <div className="bg-[#241b14] p-3 rotate-[-1.6deg] shadow-2xl mb-7">
-                  <div className="aspect-[4/5] bg-[#eee1bd] overflow-hidden border border-[#675139]">
-                    {imageSrc ? (
-                      <img src={imageSrc} alt={agent.name} className="archive-photo w-full h-full object-cover object-top" />
-                    ) : (
-                      <div className="w-full h-full flex items-center justify-center text-[#241b14] font-serif text-7xl">
-                        {avatar?.mark || agentCardInitial(agent)}
-                      </div>
-                    )}
-                  </div>
-                  <div className="pt-3 flex justify-between items-center text-[#e8ddbf] font-mono text-[8px] uppercase tracking-widest">
-                    <span>{dossierText(agent.id)}</span>
-                    <span>{dossierText(avatar?.license || 'Symbolic')}</span>
-                  </div>
-                </div>
-
-                <h1 className="font-serif text-5xl leading-none tracking-tight text-[#201610] mb-3 ink-reveal">
-                  {agent.name}
-                </h1>
-                <div className="font-mono text-[10px] uppercase tracking-widest text-[#6d5a3d] mb-6 ink-reveal">
-                  {dossierText(profile.codename)}
-                </div>
-
-                <div className="space-y-3">
-                  {evidenceStrips.map((item, index) => (
-                    <div key={item.label} className="border-l-4 border-[#8f1e18] bg-[#f5ebcc]/65 p-3 shadow-sm ink-reveal" style={{ animationDelay: `${0.1 + index * 0.08}s` }}>
-                      <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18] mb-1">{dossierText(item.label)}</div>
-                      <div className="font-serif text-base leading-snug">{dossierText(item.value)}</div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-              <div className="dossier-scroll-cue" aria-hidden="true" />
-            </section>
-
-            <section className="dossier-scroll-field col-span-12 lg:col-span-5 min-h-0 p-8 border-r border-[#b8a57d] relative overflow-y-auto">
-              <div className="flex items-center justify-between mb-6">
-                <div>
-                  <div className="font-mono text-[10px] uppercase tracking-[0.26em] text-[#6b241e]">{dossierText('Five-Axis Capability Map')}</div>
-                  <div className="font-serif text-3xl text-[#201610]">{dossierText('Operational Shape')}</div>
-                </div>
-                <Crosshair size={26} className="text-[#8f1e18]" />
-              </div>
-
-              <div className="grid md:grid-cols-[280px_1fr] gap-6 items-center">
-                <RadarChart points={profile.scores} language={activeLanguage} />
-                <div className="space-y-3">
-                  {profile.scores.map((item, index) => (
-                    <div key={item.label} className="ink-reveal" style={{ animationDelay: `${0.12 + index * 0.06}s` }}>
-                      <div className="flex justify-between font-mono text-[9px] uppercase tracking-widest mb-1">
-                        <span>{dossierText(item.label)}</span>
-                        <span>{item.value}</span>
-                      </div>
-                      <div className="h-2 bg-[#c8b688] border border-[#a28c63] overflow-hidden">
-                        <div className="h-full bg-[#8f1e18]" style={{ width: `${item.value}%` }} />
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              <div className="grid md:grid-cols-2 gap-5 mt-8">
-                <div className="bg-[#f6ebca]/70 border border-[#b8a57d] p-5 shadow-sm">
-                  <div className="flex items-center gap-2 font-mono text-[9px] uppercase tracking-widest text-[#8f1e18] mb-3">
-                    <Shield size={14} /> {dossierText('Strength')}
-                  </div>
-                  <p className="font-serif text-lg leading-relaxed text-[#2a1e15]">{dossierText(profile.strength)}</p>
-                </div>
-                <div className="bg-[#f6ebca]/70 border border-[#b8a57d] p-5 shadow-sm">
-                  <div className="flex items-center gap-2 font-mono text-[9px] uppercase tracking-widest text-[#8f1e18] mb-3">
-                    <Briefcase size={14} /> {dossierText('Usage Advice')}
-                  </div>
-                  <p className="font-serif text-lg leading-relaxed text-[#2a1e15]">{dossierText(profile.advice)}</p>
-                </div>
-              </div>
-
-              {(profile.realWorldEdge || profile.signatureSkills?.length) && (
-                <div className="mt-5 bg-[#f6ebca]/70 border border-[#b8a57d] p-5 shadow-sm">
-                  <div className="flex items-center gap-2 font-mono text-[9px] uppercase tracking-widest text-[#8f1e18] mb-3">
-                    <PackageCheck size={14} /> {dossierText('Composable Skill Layer')}
-                  </div>
-                  {profile.realWorldEdge && (
-                    <p className="font-serif text-lg leading-relaxed text-[#2a1e15] mb-4">{dossierText(profile.realWorldEdge)}</p>
-                  )}
-                  {profile.signatureSkills?.length > 0 && (
-                    <div className="flex flex-wrap gap-2">
-                      {profile.signatureSkills.map((item) => (
-                        <span key={item} className="border border-[#a28c63] bg-[#eadfbd] px-3 py-1 font-mono text-[9px] uppercase tracking-widest text-[#5c251f]">
-                          {dossierText(item)}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
-
-              <div className="mt-6 bg-[#211812] text-[#eadfbd] border border-[#5c4933] p-5 shadow-lg">
-                <div className="flex items-center gap-2 font-mono text-[9px] uppercase tracking-widest text-red-200 mb-3">
-                  <BookOpen size={14} /> {dossierText('Summary')}
-                </div>
-                <p className="font-serif text-xl leading-relaxed">{dossierText(profile.summary)}</p>
-                {profile.motto && (
-                  <p className="mt-4 border-l-4 border-[#8f1e18] pl-4 font-serif text-lg leading-relaxed text-[#f3dfad]">
-                    {dossierText(profile.motto)}
-                  </p>
-                )}
-              </div>
-              <div className="dossier-scroll-cue" aria-hidden="true" />
-            </section>
-
-            <aside className="dossier-scroll-field col-span-12 lg:col-span-3 min-h-0 p-8 bg-[#251b13] text-[#eadfbd] relative overflow-y-auto">
-              <div className="absolute inset-0 opacity-[0.08]" style={{ backgroundImage: 'linear-gradient(#eadfbd 1px, transparent 1px), linear-gradient(90deg, #eadfbd 1px, transparent 1px)', backgroundSize: '22px 22px' }} />
-              <div className="relative z-10 flex flex-col h-full">
-                <div className="font-mono text-[10px] uppercase tracking-[0.28em] text-red-200 mb-4">{dossierText('Director Decision')}</div>
-                <div className="border border-[#7b6542] p-5 mb-6 bg-black/18">
-                  <div className="font-mono text-[9px] uppercase tracking-widest text-[#bcae86] mb-2">{dossierText(windowText.title)}</div>
-                  <div className="font-serif text-2xl leading-tight mb-4">{dossierText(deploymentWindow.title)}</div>
-                  <div className="font-mono text-[8px] uppercase tracking-widest text-red-200 mb-2">{dossierText(windowText.useWhen)}</div>
-                  <p className="font-serif text-sm leading-relaxed text-[#efe2bd]">{dossierText(deploymentWindow.summary)}</p>
-                  <div className="mt-5 grid grid-cols-2 gap-3">
-                    <div className="border border-[#59472e] p-3 bg-black/15">
-                      <div className="font-mono text-[8px] uppercase tracking-widest text-[#8d7a58] mb-1">{dossierText(windowText.strongestAxis)}</div>
-                      <div className="font-serif text-sm leading-tight">{dossierText(deploymentWindow.strongestAxis)}</div>
-                    </div>
-                    <div className="border border-[#59472e] p-3 bg-black/15">
-                      <div className="font-mono text-[8px] uppercase tracking-widest text-[#8d7a58] mb-1">{dossierText(windowText.firstOutput)}</div>
-                      <div className="font-serif text-sm leading-tight">{dossierText(deploymentWindow.shortLabel)}</div>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="space-y-4 font-mono text-[10px] uppercase tracking-widest text-[#cdbf98] mb-5">
-                  <div className="flex justify-between border-b border-[#59472e] pb-2"><span>{dossierText('Archive Chain')}</span><span>{dossierText('Clean')}</span></div>
-                  <div className="flex justify-between border-b border-[#59472e] pb-2"><span>{dossierText('Identity Use')}</span><span>{dossierText('Style Agent')}</span></div>
-                  <div className="flex justify-between border-b border-[#59472e] pb-2"><span>{dossierText('Status')}</span><span>{dossierText(isRecruited ? 'Secured' : 'Awaiting')}</span></div>
-                </div>
-
-                <div className="mb-5 border border-[#59472e] bg-black/12 p-4">
-                  <div className="font-mono text-[9px] uppercase tracking-widest text-red-200 mb-3">{dossierText(windowText.starterBrief)}</div>
-                  <div className="space-y-2">
-                    {deploymentWindow.starterSteps.map((step, index) => (
-                      <div key={`${step}-${index}`} className="flex gap-3 text-[#d8c99f]">
-                        <span className="mt-0.5 font-mono text-[9px] text-[#8d7a58]">{String(index + 1).padStart(2, '0')}</span>
-                        <span className="font-serif text-sm leading-snug">{dossierText(step)}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-                <div className="dossier-scroll-cue dossier-scroll-cue-dark" aria-hidden="true" />
-
-                <div className="sticky bottom-0 -mx-1 space-y-3 bg-[#251b13]/95 pt-3 pb-1 backdrop-blur-sm">
-                  <button
-                    onClick={() => startContractStamp(agent.id)}
-                    disabled={isStamping}
-                    className={`w-full flex items-center justify-center gap-3 px-5 py-4 font-mono text-[10px] uppercase tracking-widest border transition-all
-                      ${isStamping ? 'border-[#8f1e18] text-red-100 bg-[#8f1e18] cursor-wait' : isRecruited ? 'border-[#e8ddbf] bg-[#e8ddbf] text-[#251b13] hover:-translate-y-0.5 hover:shadow-[7px_7px_0_rgba(143,30,24,0.55)]' : 'border-[#e8ddbf] bg-[#e8ddbf] text-[#251b13] hover:-translate-y-0.5 hover:shadow-[7px_7px_0_rgba(143,30,24,0.55)]'}
-                    `}
-                  >
-                    {isRecruited ? <CheckCircle2 size={15} /> : <FileSignature size={15} />}
-                    {dossierText(isStamping
-                      ? 'Stamping Contract'
-                      : isInitiationMarket
-                        ? (isRecruited ? 'Signed for Kickoff' : 'Sign for Kickoff')
-                        : (isRecruited ? 'Assign to Project' : 'Authorize Contract'))}
-                  </button>
-                  <button
-                    onClick={closeMarketDossier}
-                    className="w-full flex items-center justify-center gap-3 px-5 py-4 font-mono text-[10px] uppercase tracking-widest border border-[#7b6542] text-[#e8ddbf] hover:bg-[#34271b] transition-colors"
-                  >
-                    <ArrowLeft size={15} />
-                    {dossierText('Return to Market')}
-                  </button>
-                </div>
-              </div>
-            </aside>
-          </div>
-        </div>
-      </div>
+      <Suspense fallback={<div data-testid="local-scene-loading" role="status" className="flex-1 grid place-items-center font-mono text-xs uppercase tracking-widest text-[#5f5a50]">Loading local workspace...</div>}>
+        <AgentDossierScene
+          agent={agent}
+          isInitiationMarket={isInitiationMarket}
+          isRecruited={isRecruited}
+          isStamping={signingAgentId === agent.id}
+          profile={{ ...profile, language: activeLanguage }}
+          deploymentWindow={deploymentWindow}
+          skill={skill}
+          avatar={pantheonAvatarMeta(agent.id)}
+          imageSrc={pantheonAvatarSrc(agent.id)}
+          evidenceStrips={evidenceStrips}
+          dossierText={(value) => localizeText(value, activeLanguage)}
+          personSkillCount={PERSON_SKILL_COUNT}
+          personSkillDocCount={PERSON_SKILL_DOC_COUNT}
+          RadarChartComponent={RadarChart}
+          agentCardInitial={agentCardInitial}
+          onClose={closeMarketDossier}
+          onStartContract={startContractStamp}
+        />
+      </Suspense>
     );
   };
-
   const renderProjectInitiationView = () => {
     const selectedMember = INITIATION_MEMBERS.find(member => member.id === selectedInitiationMemberId) || INITIATION_MEMBERS[1];
     const phaseCopy = {
@@ -22762,6 +22502,64 @@ export default function EngineWorkspace() {
         return null;
       }
     };
+    const cancelAutonomousRunControlSession = async () => {
+      if (!activeProject || !backendCommandAvailable) return null;
+      const sessionId = backendAutonomousRunControlSessionReceipt?.id
+        || backendAutonomousRunControlSessionsReadModel?.activeSession?.id
+        || backendAutonomousRunControlSessionsReadModel?.latestSession?.id
+        || 'active';
+      const now = new Date().toISOString();
+      const runApiPath = `/projects/${encodeURIComponent(activeProject.id)}/autonomous-run-control/sessions/${encodeURIComponent(sessionId)}/cancel`;
+      setBackendStation(prev => ({ ...prev, loading: true }));
+      try {
+        await ensureBackendProjectSeed();
+        const payload = await requestAgentBackend(runApiPath, {
+          method: 'POST',
+          body: {
+            now,
+            actor: 'Manager',
+            reason: 'manager-cancelled-autopilot-session-ui',
+            includeReadModels: false,
+          },
+          timeoutMs: 10000,
+        });
+        if (payload.project) applyBackendProjectSnapshot(payload);
+        const appliedManagerPayload = applyBackendManagerDashboardPayload(payload);
+        setBackendStation(prev => ({
+          ...prev,
+          connectionStatus: 'online',
+          loading: false,
+          autonomousRunControl: payload.autonomousRunControl || prev.autonomousRunControl,
+          autonomousRunControlSessions: payload.autonomousRunControlSessions || prev.autonomousRunControlSessions,
+          autonomousRunControlSession: payload.autonomousRunControlSession || prev.autonomousRunControlSession,
+          lastAutonomousRunControlSyncAt: payload.autonomousRunControl ? new Date().toISOString() : prev.lastAutonomousRunControlSyncAt,
+          autonomousRunControlSyncCount: payload.autonomousRunControl ? (prev.autonomousRunControlSyncCount || 0) + 1 : prev.autonomousRunControlSyncCount,
+          lastAction: `Autopilot session cancelled: ${payload.autonomousRunControlSession?.status || 'cancelled'}`,
+          lastProjectSyncAt: new Date().toISOString(),
+          projectSyncCount: payload.project ? (prev.projectSyncCount || 0) + 1 : prev.projectSyncCount,
+          error: null,
+        }));
+        const projectId = payload.project?.id || activeProject.id;
+        if (!appliedManagerPayload) await syncBackendManagerDashboard({ silent: true, projectId });
+        await refreshAutonomousRunControlReadModels({
+          payload,
+          projectId,
+          agentIds: payload.autonomousRunControlSession?.agentIds || [],
+        });
+        setTimeout(() => syncBackendAutonomousRunControl({ silent: true, projectId }), 0);
+        setTimeout(() => syncBackendTimelineAndEvents({ silent: true, projectId }), 0);
+        return payload;
+      } catch (error) {
+        setBackendStation(prev => ({
+          ...prev,
+          connectionStatus: backendFailureConnectionStatusFor(activeProject, prev.connectionStatus),
+          loading: false,
+          lastAction: 'Autopilot session cancellation failed',
+          error: error.name === 'AbortError' ? 'Autopilot session cancellation timed out.' : error.message || String(error),
+        }));
+        return null;
+      }
+    };
     const runLaunchOperationsNextStep = async (step) => {
       if (!activeProject || !backendCommandAvailable || !step?.id) return null;
       const now = new Date().toISOString();
@@ -30269,6 +30067,15 @@ export default function EngineWorkspace() {
                                 className="inline-flex items-center justify-center gap-1 border border-[#7b6542] bg-[#efe2bd] px-2 py-1 font-mono text-[7px] uppercase tracking-widest text-[#251b13] hover:border-[#251b13] disabled:opacity-40 disabled:cursor-not-allowed"
                               >
                                 <StopCircle size={9} /> Pause
+                              </button>
+                              <button
+                                type="button"
+                                data-testid="backend-autonomous-run-control-session-cancel"
+                                onClick={() => cancelAutonomousRunControlSession()}
+                                disabled={!backendCommandAvailable || backendStation.loading || !backendAutonomousRunControlSessionAvailable}
+                                className="inline-flex items-center justify-center gap-1 border border-[#8f1e18] bg-[#f8d8d3] px-2 py-1 font-mono text-[7px] uppercase tracking-widest text-[#6f1612] hover:border-[#4c0f0c] disabled:opacity-40 disabled:cursor-not-allowed"
+                              >
+                                <StopCircle size={9} /> Cancel
                               </button>
                             </div>
                           </div>

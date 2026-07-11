@@ -45,6 +45,10 @@ const optionalNumberEnv = (name) => {
   const value = Number(process.env[name] || '');
   return Number.isFinite(value) && value > 0 ? value : undefined;
 };
+const optionalNonNegativeNumberEnv = (name) => {
+  const value = Number(process.env[name] || '');
+  return Number.isFinite(value) && value >= 0 ? value : undefined;
+};
 
 const filePath = process.env.AGENT_PROJECT_STORE || new URL('../.tmp/agent-project-store.json', import.meta.url);
 const securityAuditLogPath = process.env.AGENT_SECURITY_AUDIT_LOG || undefined;
@@ -77,6 +81,7 @@ function loadLocalUserRuntimeSettings() {
   return nextSettings;
 }
 const localUserRuntimeSettings = loadLocalUserRuntimeSettings();
+if (!process.env.AGENT_LOCAL_ONLY) process.env.AGENT_LOCAL_ONLY = 'true';
 if (!process.env.SECRET_VAULT_ENABLED) process.env.SECRET_VAULT_ENABLED = String(localUserRuntimeSettings.secretVaultEnabled);
 if (!process.env.SECRET_VAULT_KEY) process.env.SECRET_VAULT_KEY = localUserRuntimeSettings.secretVaultKey;
 if (!process.env.SECRET_VAULT_KEY_ID) process.env.SECRET_VAULT_KEY_ID = localUserRuntimeSettings.secretVaultKeyId;
@@ -100,6 +105,17 @@ const localTelemetry = createLocalTelemetryPort({
   filePath: localTelemetryPath,
   maxRecords: optionalNumberEnv('AGENT_LOCAL_TELEMETRY_MAX_RECORDS') || 500,
   maxFileBytes: optionalNumberEnv('AGENT_LOCAL_TELEMETRY_MAX_FILE_BYTES') || 1_000_000,
+  maxErrorIssues: optionalNumberEnv('AGENT_LOCAL_ERROR_MAX_ISSUES') || 100,
+  sloPolicy: {
+    windowSize: optionalNumberEnv('AGENT_LOCAL_SLO_WINDOW_SIZE'),
+    snapshotEveryRequests: optionalNumberEnv('AGENT_LOCAL_SLO_SNAPSHOT_EVERY_REQUESTS'),
+    minSamples: optionalNumberEnv('AGENT_LOCAL_SLO_MIN_SAMPLES'),
+    warningP95DurationMs: optionalNumberEnv('AGENT_LOCAL_SLO_WARNING_P95_MS'),
+    criticalP95DurationMs: optionalNumberEnv('AGENT_LOCAL_SLO_CRITICAL_P95_MS'),
+    maxServerErrorRate: optionalNonNegativeNumberEnv('AGENT_LOCAL_SLO_MAX_SERVER_ERROR_RATE'),
+    consecutiveBreachWindows: optionalNumberEnv('AGENT_LOCAL_SLO_CONSECUTIVE_BREACH_WINDOWS'),
+    maxSnapshots: optionalNumberEnv('AGENT_LOCAL_SLO_MAX_SNAPSHOTS'),
+  },
 });
 const secretVault = createSecretVaultFromEnv(process.env);
 const secretVaultStatus = secretVault.status();
@@ -158,6 +174,7 @@ const httpServer = createAgentProjectHttpServer({
     enabled: autonomousSchedulerEnabled,
     intervalMs: autonomousSchedulerIntervalMs,
     runImmediately: autonomousSchedulerEnabled,
+    resumeAutopilotSessions: autonomousSchedulerEnabled,
     includeReadModels: false,
     useAgentAutonomousStrategy: autonomousAgentStrategyEnabled,
     submitAgentWorkArtifacts: autonomousAgentSubmissionsEnabled,
@@ -202,9 +219,13 @@ console.log(`Secret vault: ${secretVaultStatus.ready ? `ready (${secretVaultStat
 console.log(`Model provider: ${llmProvider.enabled ? `enabled (${llmProvider.provider}/${llmProvider.model})` : `disabled (${llmProvider.status().configured ? 'configured but not enabled or blocked' : 'missing key or disabled'})`}`);
 console.log(`Search provider: ${searchProvider.enabled ? `enabled (${searchProvider.provider})` : `disabled (${searchProvider.status().configured ? 'configured but not enabled' : 'missing endpoint/key or disabled'})`}`);
 
-const shutdown = async () => {
-  await httpServer.close();
-  process.exit(0);
+let shutdownPromise = null;
+const shutdown = () => {
+  if (shutdownPromise) return shutdownPromise;
+  shutdownPromise = httpServer.close().then((result) => {
+    process.exit(result.complete ? 0 : 1);
+  }).catch(() => process.exit(1));
+  return shutdownPromise;
 };
 
 process.on('SIGINT', shutdown);

@@ -66,6 +66,8 @@ function startBackend() {
       SECRET_VAULT_KEY: 'agent-project-server-secret-vault-validation-key',
       SECRET_VAULT_KEY_ID: 'agent-project-server-validate-v1',
       SECRET_VAULT_RECORDS_FILE: secretVaultRecordsFile,
+      MODEL_BASE_URL: 'http://127.0.0.1:11434/v1',
+      MODEL_NAME: 'local-fixture-model',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -118,7 +120,8 @@ try {
   assert(response.body.modelProvider?.hasApiKey === true, 'Model provider status must report a runtime key after model.apiKey seal.');
   assert(response.body.modelProvider?.apiKeySource === 'local-secret-vault', 'Model provider status must report local-secret-vault after model.apiKey seal.');
   assert(response.body.modelProvider?.runtimeEnabled === true, 'Model provider runtime must enable after an intentional model.apiKey vault seal.');
-  assert(response.body.modelProvider?.enabled === true, 'Model provider must be callable after model.apiKey vault seal when no policy block is configured.');
+  assert(response.body.modelProvider?.enabled === true, 'Model provider must be callable after model.apiKey vault seal when a local endpoint is configured.');
+  assert(response.body.modelProvider?.endpointPolicy?.status === 'local-endpoint', 'agents:server must classify the configured model endpoint as local-only.');
 
   response = await fetchJson(`${backendUrl}/secret-vault/records`);
   const serializedRecords = JSON.stringify(response.body);
@@ -138,7 +141,7 @@ try {
   assert(response.body.modelProvider?.hasApiKey === true, 'Restarted model provider must rehydrate model.apiKey from the Secret Vault records file.');
   assert(response.body.modelProvider?.apiKeySource === 'local-secret-vault', 'Restarted model provider must keep local-secret-vault as the key source.');
   assert(response.body.modelProvider?.runtimeEnabled === true, 'Restarted model provider runtime must remain enabled after Secret Vault rehydration.');
-  assert(response.body.modelProvider?.enabled === true, 'Restarted model provider must remain callable after Secret Vault rehydration.');
+  assert(response.body.modelProvider?.enabled === true, 'Restarted model provider must remain callable after Secret Vault rehydration with a local endpoint.');
 
   console.log('Agent project server Secret Vault validation passed.');
 } finally {

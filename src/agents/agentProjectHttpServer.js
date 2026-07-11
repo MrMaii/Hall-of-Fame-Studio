@@ -1,8 +1,49 @@
 import { createServer } from 'node:http';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { createFileBackedAgentProjectApi } from './agentProjectApi.js';
 import { signAgentProjectAccessHeaders } from './accessControl.js';
 import { createLocalTelemetryPort } from './localTelemetryPort.js';
+
+function shutdownChecksum(value) {
+  return createHash('sha256').update(JSON.stringify(value)).digest('hex');
+}
+
+function normalizeInboundTraceId(value = '') {
+  const normalized = String(value || '').trim();
+  if (normalized.length < 3 || normalized.length > 160 || !/^[A-Za-z0-9][A-Za-z0-9._:-]+$/.test(normalized)) return null;
+  return normalized;
+}
+
+function createRequestSpanId() {
+  return `span_${randomUUID().replace(/-/g, '')}`;
+}
+
+function shutdownReceiptPath(storePath) {
+  return storePath ? `${storePath}.shutdown.json` : null;
+}
+
+function readShutdownReceipt(storePath) {
+  const path = shutdownReceiptPath(storePath);
+  if (!path || !existsSync(path)) return null;
+  let receipt;
+  try { receipt = JSON.parse(readFileSync(path, 'utf8')); } catch { throw new Error('local-shutdown-receipt-invalid'); }
+  const { checksum, ...base } = receipt;
+  if (receipt.schemaVersion !== 'local-runtime-shutdown-receipt/v1' || checksum !== shutdownChecksum(base)) throw new Error('local-shutdown-receipt-invalid');
+  return receipt;
+}
+
+function writeShutdownReceipt(storePath, base) {
+  const path = shutdownReceiptPath(storePath);
+  const receipt = { ...base, checksum: shutdownChecksum(base) };
+  if (!path) return receipt;
+  mkdirSync(dirname(path), { recursive: true });
+  const tempPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
+  writeFileSync(tempPath, JSON.stringify(receipt, null, 2), 'utf8');
+  renameSync(tempPath, path);
+  return receipt;
+}
 
 async function readJsonBody(request) {
   const chunks = [];
@@ -19,7 +60,7 @@ function writeJson(response, status, body, extraHeaders = {}) {
     'content-type': 'application/json; charset=utf-8',
     'access-control-allow-origin': '*',
     'access-control-allow-methods': 'GET,POST,PUT,OPTIONS',
-    'access-control-allow-headers': 'content-type,x-hofs-access-mode,x-hofs-role,x-hofs-agent-id,x-hofs-user-id,x-hofs-signed-at,x-hofs-request-id,x-hofs-signature,x-hofs-session-token,x-hofs-local-auth-token',
+    'access-control-allow-headers': 'content-type,x-hofs-access-mode,x-hofs-role,x-hofs-agent-id,x-hofs-user-id,x-hofs-signed-at,x-hofs-request-id,x-hofs-trace-id,x-hofs-parent-span-id,x-hofs-signature,x-hofs-session-token,x-hofs-local-auth-token',
     ...extraHeaders,
   });
   response.end(JSON.stringify(body));
@@ -54,7 +95,7 @@ function summarizeSchedulerAgentControls(input = {}) {
 function summarizeSchedulerAutopilotControls(input = {}) {
   const forceProjectIds = Array.isArray(input.forceProjectIds) ? input.forceProjectIds : [];
   const forceAutopilotProjectIds = Array.isArray(input.forceAutopilotProjectIds) ? input.forceAutopilotProjectIds : [];
-  const enabled = Boolean(input.tickAutopilotSessions || input.runAutopilotSessions || input.autopilotSessions);
+  const enabled = Boolean(input.tickAutopilotSessions || input.runAutopilotSessions || input.autopilotSessions || input.resumeAutopilotSessions);
   return {
     schemaVersion: 'scheduler-autopilot-controls/v1',
     enabled,
@@ -70,7 +111,7 @@ function summarizeSchedulerAutopilotControls(input = {}) {
   };
 }
 
-function createAutonomousSchedulerController({
+export function createAutonomousSchedulerController({
   api,
   intervalMs = 60_000,
   now = () => new Date().toISOString(),
@@ -80,6 +121,7 @@ function createAutonomousSchedulerController({
 } = {}) {
   let timer = null;
   let running = false;
+  let acceptingTicks = true;
   const state = {
     enabled: false,
     intervalMs,
@@ -115,6 +157,24 @@ function createAutonomousSchedulerController({
   const status = () => ({
     ...state,
     running,
+    acceptingTicks,
+  });
+
+  const waitForIdle = ({ timeoutMs = 5000, pollIntervalMs = 10 } = {}) => new Promise((resolve) => {
+    const deadline = Date.now() + Math.max(0, Number(timeoutMs) || 0);
+    const pollMs = Math.max(1, Number(pollIntervalMs) || 1);
+    const check = () => {
+      if (!running) {
+        resolve({ drained: true, reason: 'scheduler-idle' });
+        return;
+      }
+      if (Date.now() >= deadline) {
+        resolve({ drained: false, reason: 'scheduler-drain-timeout' });
+        return;
+      }
+      setTimeout(check, pollMs);
+    };
+    check();
   });
 
   const runtimeHeaders = ({ method = 'POST', path = '/' } = {}) => {
@@ -139,6 +199,9 @@ function createAutonomousSchedulerController({
   };
 
   const tick = async (input = {}) => {
+    if (!acceptingTicks) {
+      return { skipped: true, reason: 'scheduler-quiescing', status: status() };
+    }
     if (running) {
       return {
         skipped: true,
@@ -203,7 +266,7 @@ function createAutonomousSchedulerController({
       if (agentResult.status >= 400) {
         throw new Error(agentResult.body?.message || agentResult.body?.error || `Agent worker returned ${agentResult.status}.`);
       }
-      const shouldTickAutopilotSessions = Boolean(input.tickAutopilotSessions || input.runAutopilotSessions || input.autopilotSessions);
+      const shouldTickAutopilotSessions = Boolean(input.tickAutopilotSessions || input.runAutopilotSessions || input.autopilotSessions || input.resumeAutopilotSessions);
       const autopilotResult = shouldTickAutopilotSessions
         ? await (api.handleAsync || api.handle).call(api, {
             method: 'POST',
@@ -285,6 +348,7 @@ function createAutonomousSchedulerController({
   };
 
   const start = (input = {}) => {
+    acceptingTicks = true;
     const { runImmediately = false, projectId = null, includeReadModels } = input;
     const { runImmediately: _runImmediately, projectId: _projectId, ...tickInput } = input;
     const runImmediateStartupTick = () => tick({
@@ -310,8 +374,8 @@ function createAutonomousSchedulerController({
       reviewResponseArtifactType: input.reviewResponseArtifactType,
       reviewResponseReviewerAgentId: input.reviewResponseReviewerAgentId,
       useAgentAutonomousStrategy: Boolean(input.useAgentAutonomousStrategy || input.agentAutonomousStrategy || input.useAutonomousStrategy),
-      tickAutopilotSessions: Boolean(input.tickAutopilotSessions || input.runAutopilotSessions || input.autopilotSessions),
-      forceAutopilotRun: Boolean(input.tickAutopilotSessions || input.runAutopilotSessions || input.autopilotSessions) && Boolean(projectId),
+      tickAutopilotSessions: Boolean(input.tickAutopilotSessions || input.runAutopilotSessions || input.autopilotSessions || input.resumeAutopilotSessions),
+      forceAutopilotRun: Boolean(input.tickAutopilotSessions || input.runAutopilotSessions || input.autopilotSessions || input.resumeAutopilotSessions) && Boolean(projectId),
       forceAutopilotProjectIds: projectId ? [projectId] : [],
       autopilotLoopCount: input.autopilotLoopCount || input.loopCount,
       autopilotIntervalMs: input.autopilotIntervalMs,
@@ -359,12 +423,18 @@ function createAutonomousSchedulerController({
     state.scheduledAutopilotControlSummary = null;
     return status();
   };
+  const quiesce = () => {
+    acceptingTicks = false;
+    return stop();
+  };
 
   return {
     start,
     stop,
+    quiesce,
     tick,
     status,
+    waitForIdle,
   };
 }
 
@@ -416,6 +486,19 @@ export function createAgentProjectHttpServer({
     accessControl,
   });
   const resolvedTelemetry = telemetry || createLocalTelemetryPort();
+  const storePath = resolvedApi.store?.filePath || null;
+  let lifecycle = 'accepting';
+  let shutdownPromise = null;
+  let lastShutdownReceipt = readShutdownReceipt(storePath);
+  const activeRequests = new Map();
+  const runtimeLifecycleStatus = () => ({
+    schemaVersion: 'local-runtime-lifecycle/v1',
+    state: lifecycle,
+    acceptingNewWork: lifecycle === 'accepting',
+    activeRequestCount: activeRequests.size,
+    activeRequestHashes: [...activeRequests.values()].map((row) => row.traceHash).sort(),
+    lastShutdownReceipt,
+  });
   const localRuntimeHealth = () => {
     const localAuth = resolvedApi.localAuth?.status?.() || null;
     const telemetryStatus = resolvedTelemetry.status({ limit: 1 });
@@ -442,6 +525,18 @@ export function createAgentProjectHttpServer({
         detail: `${telemetryStatus.summary?.requestCount || 0} local request record(s); ${telemetryStatus.summary?.serverErrorCount || 0} server error(s).`,
       },
       {
+        id: 'latency-slo',
+        passed: telemetryStatus.slo?.alert?.active !== true,
+        detail: telemetryStatus.slo?.alert?.recommendation || 'Collect more local requests before evaluating the SLO.',
+      },
+      {
+        id: 'runtime-errors',
+        passed: (telemetryStatus.errors?.summary?.activeCount || 0) === 0,
+        detail: (telemetryStatus.errors?.summary?.activeCount || 0) > 0
+          ? `${telemetryStatus.errors.summary.activeCount} active runtime error issue(s); inspect /runtime-errors and follow the linked runbook.`
+          : 'No active unhandled runtime error issue.',
+      },
+      {
         id: 'scheduler',
         passed: true,
         detail: schedulerStatus.enabled ? 'Local autonomous scheduler is enabled.' : 'Scheduler is stopped; start it only for supervised autonomous work.',
@@ -454,7 +549,9 @@ export function createAgentProjectHttpServer({
     ];
     const status = checks.some((check) => check.id === 'local-auth' && !check.passed)
       ? 'setup-required'
-      : (telemetryStatus.summary?.serverErrorCount || 0) > 0
+      : telemetryStatus.slo?.alert?.active === true
+          || (telemetryStatus.errors?.summary?.activeCount || 0) > 0
+          || (telemetryStatus.summary?.serverErrorCount || 0) > 0
         ? 'attention-needed'
         : checks.every((check) => check.passed)
           ? 'ready'
@@ -474,6 +571,7 @@ export function createAgentProjectHttpServer({
         lastCompletedAt: schedulerStatus.lastCompletedAt || null,
         lastError: schedulerStatus.lastError || null,
       },
+      lifecycle: runtimeLifecycleStatus(),
       localAuth: localAuth ? {
         enabled: localAuth.enabled,
         bootstrapRequired: localAuth.bootstrapRequired,
@@ -483,18 +581,33 @@ export function createAgentProjectHttpServer({
         backupCommand: 'npm run local:backup',
         restoreDrillCommand: 'npm run local:recovery:drill',
         observabilityRoute: '/runtime-observability',
+        runtimeErrorsRoute: '/runtime-errors',
       },
       productionBlockers: ['centralized observability', 'managed alert routing and on-call ownership', 'managed incident system'],
     };
   };
 
   const server = createServer(async (request, response) => {
-    const traceId = String(request.headers['x-hofs-request-id'] || '').trim() || `trace_${randomUUID()}`;
+    const traceId = normalizeInboundTraceId(request.headers['x-hofs-trace-id'])
+      || normalizeInboundTraceId(request.headers['x-hofs-request-id'])
+      || `trace_${randomUUID()}`;
+    const requestSpanId = createRequestSpanId();
+    const parentSpanId = /^span_[a-f0-9]{32}$/.test(String(request.headers['x-hofs-parent-span-id'] || ''))
+      ? String(request.headers['x-hofs-parent-span-id'])
+      : null;
     const startedAt = Date.now();
+    let requestFinalized = false;
+    const finalizeRequest = () => {
+      if (requestFinalized) return;
+      requestFinalized = true;
+      activeRequests.delete(requestSpanId);
+    };
     const send = (status, body) => {
       try {
         resolvedTelemetry.recordHttpRequest({
           traceId,
+          spanId: requestSpanId,
+          parentSpanId,
           method: request.method,
           path: request.url || '/',
           statusCode: status,
@@ -503,8 +616,21 @@ export function createAgentProjectHttpServer({
       } catch {
         // Local telemetry cannot make an API response fail.
       }
-      writeJson(response, status, body, { 'x-hofs-trace-id': traceId });
+      writeJson(response, status, body, { 'x-hofs-trace-id': traceId, 'x-hofs-span-id': requestSpanId });
     };
+    const requestPath = String(request.url || '/').split('?')[0];
+    const lifecycleReadAllowed = request.method === 'GET' && ['/local-runtime-health', '/local-runtime-lifecycle'].includes(requestPath);
+    if (lifecycle !== 'accepting' && !lifecycleReadAllowed) {
+      send(503, { error: 'local-runtime-quiescing', lifecycle: runtimeLifecycleStatus() });
+      return;
+    }
+    activeRequests.set(requestSpanId, {
+      traceHash: shutdownChecksum(traceId),
+      spanHash: shutdownChecksum(requestSpanId),
+      startedAt: new Date(startedAt).toISOString(),
+    });
+    response.once('finish', finalizeRequest);
+    response.once('close', finalizeRequest);
     if (request.method === 'OPTIONS') {
       send(204, {});
       return;
@@ -530,9 +656,35 @@ export function createAgentProjectHttpServer({
         send(200, { runtimeObservability: resolvedTelemetry.status() });
         return;
       }
+      if (url.pathname === '/runtime-errors' && request.method === 'GET') {
+        if (!requireLocalSchedulerAdmin()) return;
+        send(200, { runtimeErrors: resolvedTelemetry.status().errors });
+        return;
+      }
+      const runtimeErrorAction = url.pathname.match(/^\/runtime-errors\/([a-f0-9]{64})\/(acknowledge|resolve)$/);
+      if (runtimeErrorAction && request.method === 'POST') {
+        if (!requireLocalSchedulerAdmin()) return;
+        const runtimeError = resolvedTelemetry.updateRuntimeErrorIssue({
+          fingerprint: runtimeErrorAction[1],
+          action: runtimeErrorAction[2],
+          actorId: body.actorId || body.updatedBy || '',
+          note: body.note || '',
+        });
+        if (!runtimeError) {
+          send(404, { error: 'runtime-error-not-found' });
+          return;
+        }
+        send(200, { runtimeError, runtimeErrors: resolvedTelemetry.status().errors });
+        return;
+      }
       if (url.pathname === '/local-runtime-health' && request.method === 'GET') {
         if (!requireLocalSchedulerAdmin()) return;
         send(200, { localRuntimeHealth: localRuntimeHealth() });
+        return;
+      }
+      if (url.pathname === '/local-runtime-lifecycle' && request.method === 'GET') {
+        if (!requireLocalSchedulerAdmin()) return;
+        send(200, { lifecycle: runtimeLifecycleStatus() });
         return;
       }
       if (url.pathname === '/workers/autonomous/status' && request.method === 'GET') {
@@ -568,12 +720,31 @@ export function createAgentProjectHttpServer({
         path: url.pathname,
         headers: request.headers,
         body,
+        traceId,
+        requestSpanId,
+        parentSpanId,
+        traceStartedAt: new Date(startedAt).toISOString(),
       });
       send(result.status, result.body);
     } catch (error) {
+      let runtimeError = null;
+      try {
+        runtimeError = resolvedTelemetry.recordRuntimeError({
+          traceId,
+          method: request.method,
+          path: request.url || '/',
+          category: 'unhandled-http-error',
+          errorCode: error?.code || error?.name || 'UNHANDLED_RUNTIME_ERROR',
+          severity: 'critical',
+        });
+      } catch {
+        // Error reporting must never replace the original response path.
+      }
       send(400, {
         error: 'agent-project-http-error',
-        message: error.message || String(error),
+        errorCode: runtimeError?.errorCode || 'UNHANDLED_RUNTIME_ERROR',
+        message: 'The local runtime could not complete this request. Use the trace id and /runtime-errors for recovery guidance.',
+        traceId,
       });
     }
   });
@@ -583,6 +754,25 @@ export function createAgentProjectHttpServer({
   server.on('connection', (socket) => {
     sockets.add(socket);
     socket.on('close', () => sockets.delete(socket));
+  });
+  const waitForActiveRequests = ({ deadlineMs, pollIntervalMs = 5 } = {}) => new Promise((resolve) => {
+    const check = () => {
+      if (activeRequests.size === 0) {
+        resolve({ drained: true, reason: 'http-idle', activeRequestCount: 0, activeRequestHashes: [] });
+        return;
+      }
+      if (Date.now() >= deadlineMs) {
+        resolve({
+          drained: false,
+          reason: 'http-drain-timeout',
+          activeRequestCount: activeRequests.size,
+          activeRequestHashes: [...activeRequests.values()].map((row) => row.traceHash).sort(),
+        });
+        return;
+      }
+      setTimeout(check, Math.max(1, Number(pollIntervalMs) || 1));
+    };
+    check();
   });
 
   if (autonomousScheduler.enabled || autonomousScheduler.autoStart) {
@@ -597,6 +787,7 @@ export function createAgentProjectHttpServer({
     scheduler,
     telemetry: resolvedTelemetry,
     localRuntimeHealth,
+    runtimeLifecycleStatus,
     server,
     listen({ port = 0, host = '127.0.0.1' } = {}) {
       return new Promise((resolve, reject) => {
@@ -613,30 +804,78 @@ export function createAgentProjectHttpServer({
         });
       });
     },
-    close() {
-      scheduler.stop();
-      return new Promise((resolve, reject) => {
+    async close({ schedulerDrainTimeoutMs = 5000, drainTimeoutMs = schedulerDrainTimeoutMs, forceCloseTimeoutMs = null } = {}) {
+      if (shutdownPromise) return shutdownPromise;
+      shutdownPromise = (async () => {
+        const shutdownStartedAt = new Date().toISOString();
+        lifecycle = 'quiescing';
+        scheduler.quiesce();
+        const timeoutMs = Math.max(1, Number(drainTimeoutMs) || 5000);
+        const deadlineMs = Date.now() + timeoutMs;
+        const socketsAtStart = sockets.size;
+        const closeServer = () => new Promise((resolve, reject) => {
         let settled = false;
         let closeIdleTimer = null;
         let forceCloseTimer = null;
+        let forcedConnectionCount = 0;
         const settle = (error = null) => {
           if (settled) return;
           settled = true;
           if (closeIdleTimer) clearTimeout(closeIdleTimer);
           if (forceCloseTimer) clearTimeout(forceCloseTimer);
-          if (error) reject(error);
-          else resolve();
+          if (error && error.code !== 'ERR_SERVER_NOT_RUNNING') reject(error);
+          else resolve({ forcedConnectionCount });
         };
         closeIdleTimer = setTimeout(() => {
           if (typeof server.closeIdleConnections === 'function') server.closeIdleConnections();
         }, 50);
+        const forceAfterMs = Math.max(1, Number(forceCloseTimeoutMs) || timeoutMs);
         forceCloseTimer = setTimeout(() => {
+          forcedConnectionCount = sockets.size;
           if (typeof server.closeAllConnections === 'function') server.closeAllConnections();
           sockets.forEach((socket) => socket.destroy());
           settle();
-        }, 2500);
+        }, forceAfterMs);
         server.close((error) => settle(error));
       });
+        const closePromise = closeServer();
+        const [schedulerDrain, httpDrain, closeResult] = await Promise.all([
+          scheduler.waitForIdle({ timeoutMs: Math.max(1, deadlineMs - Date.now()) }),
+          waitForActiveRequests({ deadlineMs }),
+          closePromise,
+        ]);
+        const effectiveHttpDrain = closeResult.forcedConnectionCount > 0 && httpDrain.drained
+          ? { ...httpDrain, drained: false, reason: 'http-force-closed' }
+          : httpDrain;
+        const projects = resolvedApi.store?.listProjects?.() || [];
+        const durableRows = projects.flatMap((project) => project.localDurableTaskQueue || []);
+        const complete = Boolean(schedulerDrain.drained && effectiveHttpDrain.drained && closeResult.forcedConnectionCount === 0);
+        lifecycle = 'closed';
+        const receiptBase = {
+          schemaVersion: 'local-runtime-shutdown-receipt/v1',
+          id: `shutdown_${shutdownChecksum(shutdownStartedAt).slice(0, 24)}`,
+          status: complete ? 'drained' : 'incomplete',
+          complete,
+          shutdownStartedAt,
+          shutdownCompletedAt: new Date().toISOString(),
+          drainTimeoutMs: timeoutMs,
+          schedulerDrain,
+          httpDrain: effectiveHttpDrain,
+          socketsAtStart,
+          forcedConnectionCount: closeResult.forcedConnectionCount || 0,
+          durableRecovery: {
+            leasedCount: durableRows.filter((row) => row.status === 'leased').length,
+            cancellationRequestedCount: durableRows.filter((row) => row.status === 'cancellation-requested').length,
+            retryWaitCount: durableRows.filter((row) => row.status === 'retry-wait').length,
+            ambiguousProviderCount: projects.flatMap((project) => project.localIdempotentExecutionLedger || []).filter((row) => ['dispatched', 'ambiguous'].includes(row.status)).length,
+          },
+          storesRequestContent: false,
+          localOnly: true,
+        };
+        lastShutdownReceipt = writeShutdownReceipt(storePath, receiptBase);
+        return { schedulerDrain, httpDrain: effectiveHttpDrain, shutdownReceipt: lastShutdownReceipt, complete };
+      })();
+      return shutdownPromise;
     },
   };
 }

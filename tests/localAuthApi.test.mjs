@@ -50,6 +50,55 @@ test('local auth API protects local user administration and authenticates projec
       headers: { 'x-hofs-local-auth-token': managerLogin.body.localAuth.token },
     }).status, 403);
 
+    const rejectedRotation = api.handle({
+      method: 'POST',
+      path: '/local-auth/password',
+      headers: { 'x-hofs-local-auth-token': managerLogin.body.localAuth.token },
+      body: { currentPassword: 'wrong current password', newPassword: 'replacement manager password' },
+    });
+    assert.equal(rejectedRotation.status, 403);
+    const rotated = api.handle({
+      method: 'POST',
+      path: '/local-auth/password',
+      headers: { 'x-hofs-local-auth-token': managerLogin.body.localAuth.token },
+      body: {
+        userId: bootstrap.body.localAuth.user.id,
+        currentPassword: 'another correct horse battery staple',
+        newPassword: 'replacement manager password',
+      },
+    });
+    assert.equal(rotated.status, 200);
+    assert.ok(rotated.body.localAuth.token);
+    assert.equal(api.handle({
+      method: 'POST',
+      path: '/local-auth/login',
+      body: { username: 'owner', password: 'correct horse battery staple' },
+    }).status, 200);
+    assert.equal(api.handle({
+      method: 'POST',
+      path: '/local-auth/logout',
+      headers: { 'x-hofs-local-auth-token': managerLogin.body.localAuth.token },
+    }).status, 401);
+    assert.equal(api.handle({
+      method: 'POST',
+      path: '/local-auth/logout',
+      headers: { 'x-hofs-local-auth-token': rotated.body.localAuth.token },
+    }).status, 200);
+
+    const disabled = api.handle({
+      method: 'POST',
+      path: `/local-auth/users/${managerLogin.body.localAuth.user.id}/disable`,
+      headers,
+      body: { now: '2026-07-10T01:00:00.000Z' },
+    });
+    assert.equal(disabled.status, 200);
+    assert.equal(disabled.body.localAuth.user.disabledAt, '2026-07-10T01:00:00.000Z');
+    assert.equal(api.handle({
+      method: 'GET',
+      path: '/projects',
+      headers: { 'x-hofs-local-auth-token': managerLogin.body.localAuth.token },
+    }).status, 401);
+
     const authenticatedProjects = api.handle({ method: 'GET', path: '/projects', headers });
     assert.equal(authenticatedProjects.status, 200);
     const logout = api.handle({ method: 'POST', path: '/local-auth/logout', headers });

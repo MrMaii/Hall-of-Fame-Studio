@@ -50,6 +50,8 @@ try {
   assert(readiness?.schemaVersion === 'error-reporting-readiness/v1', 'Error reporting readiness must expose its schema version.');
   assert(readiness.readyForProduction === false, 'Error reporting readiness must not claim production observability.');
   assert(readiness.backendRoutes?.errorReportingReadiness === `/projects/${projectId}/error-reporting-readiness`, 'Readiness must expose its own backend route.');
+  assert(readiness.backendRoutes?.runtimeErrors === '/runtime-errors', 'Readiness must link the real local runtime error registry route.');
+  assert(readiness.gates?.some((gate) => gate.id === 'runtime-error-registry-route-linked' && gate.passed === true), 'Readiness must prove the runtime error registry route is linked.');
   assert(readiness.backendRoutes?.operationsReadiness === `/projects/${projectId}/operations-readiness`, 'Readiness must link back to Operations Readiness.');
   assert(readiness.rows?.some((row) => row.id === 'local-log-streams' && row.route?.endsWith('/operations-readiness')), 'Readiness must expose local log stream routing.');
   assert(readiness.rows?.some((row) => row.id === 'local-alert-rules' && row.route?.endsWith('/operations-readiness')), 'Readiness must expose local alert rule routing.');

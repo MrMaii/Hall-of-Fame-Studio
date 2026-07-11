@@ -41,6 +41,14 @@ export function createAgentProjectMemoryStore({
       projectMap.set(hydrated.id, hydrated);
       return hydrated;
     },
+    deleteProject(projectId) {
+      const project = requireProject(projectId);
+      projectMap.delete(projectId);
+      chatMessages = chatMessages.filter((message) => message.projectId !== projectId);
+      auditRecords = auditRecords.filter((record) => record.projectId !== projectId);
+      replayRecords = replayRecords.filter((record) => record.projectId !== projectId);
+      return project;
+    },
     listKickoffMeetings() {
       return [...kickoffMeetingMap.values()];
     },

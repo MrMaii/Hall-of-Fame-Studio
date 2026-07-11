@@ -1,6 +1,8 @@
 import { redactSensitiveText, redactUrl } from './secretRedaction.js';
 import { parseBoolean, safeJsonParse as parseJson } from './sharedUtils.js';
 import { createProviderTransportPolicy, createRequestAbortSignal } from './providerTransportReliability.js';
+import { evaluateLocalNetworkEndpoint } from './localNetworkPolicy.js';
+import { createHash } from 'node:crypto';
 
 const DEFAULT_SEARCH_PROVIDER = 'none';
 const DEFAULT_TIMEOUT_MS = 20_000;
@@ -16,6 +18,22 @@ function normalizeProvider(value = DEFAULT_SEARCH_PROVIDER) {
   if (['deterministic', 'local', 'fixture'].includes(normalized)) return 'deterministic';
   if (['http', 'http-json', 'custom'].includes(normalized)) return 'http-json';
   return 'none';
+}
+
+function validIdempotencyKey(value) {
+  return value === undefined || value === null || value === '' || /^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$/.test(String(value));
+}
+
+function idempotencyMetadata(key, outcome, extra = {}) {
+  return key ? {
+    schemaVersion: 'provider-idempotency-transport/v1',
+    keyHash: createHash('sha256').update(String(key)).digest('hex'),
+    propagated: true,
+    endpointHonoringAttested: false,
+    outcome,
+    safeToRetryAutomatically: outcome === 'completed' || outcome === 'definitive-failure',
+    ...extra,
+  } : null;
 }
 
 function normalizeConfidence(value = 'medium') {
@@ -90,6 +108,7 @@ export function createSearchProvider({
   transportCircuitCooldownMs = 5 * 60 * 1000,
   requestTemplate = null,
   fetchImpl = globalThis.fetch,
+  localOnly = false,
 } = {}) {
   let currentProvider = normalizeProvider(provider);
   let currentEndpoint = cleanBaseUrl(endpoint);
@@ -100,7 +119,10 @@ export function createSearchProvider({
   let runtimeEnabledSource = runtimeEnabled ? 'startup-config' : 'disabled';
   const isConfigured = () => currentProvider === 'deterministic'
     || Boolean(currentEndpoint && (currentApiKey || currentProvider === 'http-json'));
-  const providerEnabled = () => Boolean(runtimeEnabled && isConfigured() && (currentProvider === 'deterministic' || typeof fetchImpl === 'function'));
+  const endpointPolicy = () => currentProvider === 'deterministic' || !localOnly
+    ? { allowed: true, status: currentProvider === 'deterministic' ? 'network-not-required' : 'remote-endpoints-allowed', reason: 'No remote request is required or remote endpoints are allowed.' }
+    : evaluateLocalNetworkEndpoint(currentEndpoint);
+  const providerEnabled = () => Boolean(runtimeEnabled && isConfigured() && endpointPolicy().allowed && (currentProvider === 'deterministic' || typeof fetchImpl === 'function'));
   const transport = createProviderTransportPolicy({
     maxConcurrency,
     maxRetries: transportMaxRetries,
@@ -116,6 +138,11 @@ export function createSearchProvider({
     runtimeEnabled,
     enabledSource: runtimeEnabledSource,
     configured: isConfigured(),
+    endpointPolicy: {
+      mode: localOnly ? 'local-only' : 'allow-remote',
+      status: endpointPolicy().status,
+      reason: endpointPolicy().reason,
+    },
     endpoint: redactUrl(currentEndpoint),
     hasEndpoint: Boolean(currentEndpoint),
     endpointSource: currentEndpoint ? currentEndpointSource : 'missing',
@@ -136,6 +163,11 @@ export function createSearchProvider({
     activeRequests: transport.status().activeRequests,
     queuedRequests: transport.status().queuedRequests,
     transportReliability: transport.status(),
+    idempotencyTransport: {
+      header: 'idempotency-key',
+      traceHeader: 'x-hofs-trace-id',
+      endpointAttestationRequired: true,
+    },
   });
 
   async function performSearch({
@@ -145,13 +177,19 @@ export function createSearchProvider({
     maxResults: inputMaxResults,
     signal,
     extraBody = {},
+    idempotencyKey,
+    traceId,
   } = {}) {
+    if (!validIdempotencyKey(idempotencyKey)) {
+      return { ok: false, skipped: true, reason: 'invalid-idempotency-key', provider: currentProvider };
+    }
     const resultLimit = Math.max(1, Number(inputMaxResults || maxResults) || DEFAULT_MAX_RESULTS);
     if (!providerEnabled()) {
+      const policy = endpointPolicy();
       return {
         ok: false,
         skipped: true,
-        reason: isConfigured() ? 'search-provider-disabled' : 'search-provider-not-configured',
+        reason: !policy.allowed ? 'remote-endpoint-blocked' : isConfigured() ? 'search-provider-disabled' : 'search-provider-not-configured',
         provider: currentProvider,
         status: status(),
       };
@@ -171,6 +209,7 @@ export function createSearchProvider({
         ],
         confidence: sources.some((source) => source.confidence === 'high') ? 'high' : 'medium',
         status: status(),
+        idempotency: idempotencyMetadata(idempotencyKey, 'completed', { propagated: false }),
       };
     }
 
@@ -184,6 +223,8 @@ export function createSearchProvider({
       const headers = {
         'content-type': 'application/json',
         ...(currentApiKey ? { authorization: `Bearer ${currentApiKey}` } : {}),
+        ...(idempotencyKey ? { 'idempotency-key': String(idempotencyKey) } : {}),
+        ...(traceId ? { 'x-hofs-trace-id': String(traceId) } : {}),
         ...(template.headers || {}),
       };
       const body = {
@@ -211,6 +252,7 @@ export function createSearchProvider({
           statusCode: response.status,
           error: redactSensitiveText(data?.error?.message || data?.message || raw.slice(0, 400)),
           status: status(),
+          idempotency: idempotencyMetadata(idempotencyKey, 'definitive-failure'),
         };
       }
       const sources = extractHttpSources(data, now).slice(0, resultLimit);
@@ -227,6 +269,7 @@ export function createSearchProvider({
         confidence: normalizeConfidence(data.confidence || (sources.length ? 'medium' : 'unknown')),
         responseId: data.id || data.responseId || null,
         status: status(),
+        idempotency: idempotencyMetadata(idempotencyKey, 'completed', { providerResponseId: data.id || data.responseId || null }),
       };
     } catch (error) {
       return {
@@ -238,6 +281,7 @@ export function createSearchProvider({
             ? 'search request aborted'
             : redactSensitiveText(error.message || String(error)),
         status: status(),
+        idempotency: idempotencyMetadata(idempotencyKey, 'ambiguous', { safeToRetryAutomatically: false }),
       };
     } finally {
       requestAbort.dispose();
@@ -308,6 +352,7 @@ export function createSearchProviderFromEnv(env = globalThis.process?.env || {},
     transportCircuitFailureWindowMs: options.transportCircuitFailureWindowMs ?? Number(env.SEARCH_TRANSPORT_CIRCUIT_FAILURE_WINDOW_MS || 15 * 60 * 1000),
     transportCircuitCooldownMs: options.transportCircuitCooldownMs ?? Number(env.SEARCH_TRANSPORT_CIRCUIT_COOLDOWN_MS || 5 * 60 * 1000),
     requestTemplate: parseJson(env.SEARCH_REQUEST_TEMPLATE || '{}', {}) || {},
+    localOnly: options.localOnly ?? parseBoolean(env.SEARCH_LOCAL_ONLY || env.AGENT_LOCAL_ONLY, false),
   });
 }
 

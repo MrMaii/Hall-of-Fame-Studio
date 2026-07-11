@@ -163,6 +163,40 @@ const p0Commands = [
   'agents:project-settings:privacy',
   'agents:project-settings:provider-budget',
   'agents:project-settings:tool-grants',
+  'agents:local-tool-grants',
+  'agents:prompt-boundary',
+  'agents:action-approvals',
+  'agents:quality-evaluation',
+  'agents:model-degradation',
+  'agents:team-formation',
+  'agents:delegation-governance',
+  'agents:shared-memory',
+  'agents:review-handoff',
+  'agents:autonomy-governor',
+  'agents:learning-program',
+  'agents:teaching-safety',
+  'agents:academic-writing-pipeline',
+  'agents:citation-integrity',
+  'agents:investigation-case',
+  'agents:investigation-safety',
+  'agents:technical-delivery',
+  'agents:engineering-security',
+  'agents:creative-studio',
+  'agents:rights-provenance',
+  'agents:fine-grained-authorization',
+  'agents:store-migration-safety',
+  'agents:local-artifact-storage',
+  'agents:local-audit-integrity',
+  'agents:local-privacy-lifecycle',
+  'agents:local-durable-task-queue',
+  'agents:local-idempotent-execution',
+  'agents:local-timeout-cancellation',
+  'agents:local-scheduling-governance',
+  'agents:local-dead-letter-governance',
+  'agents:local-rate-concurrency-governance',
+  'agents:local-graceful-shutdown',
+  'agents:local-event-recovery',
+  'agents:local-causal-request-tracing',
   'agents:project-settings:integrations',
   'agents:project-settings:workspace',
   'agents:product-team:smoke',
@@ -416,6 +450,18 @@ const requiredEntryFiles = [
   'scripts/validate-project-settings-privacy-policy.mjs',
   'scripts/validate-project-settings-provider-budget-policy.mjs',
   'scripts/validate-project-settings-tool-grant-policy.mjs',
+  'scripts/validate-local-tool-grant-governance.mjs',
+  'scripts/validate-local-prompt-boundary.mjs',
+  'scripts/validate-local-action-approvals.mjs',
+  'scripts/validate-local-quality-evaluation.mjs',
+  'scripts/validate-local-model-degradation.mjs',
+  'scripts/validate-local-team-formation.mjs',
+  'scripts/validate-local-delegation-governance.mjs',
+  'scripts/validate-local-project-shared-memory.mjs',
+  'scripts/validate-local-review-handoff.mjs',
+  'scripts/validate-local-autonomy-governor.mjs',
+  'scripts/validate-local-learning-program.mjs',
+  'scripts/validate-local-teaching-safety.mjs',
   'scripts/validate-project-settings-integration-capabilities.mjs',
   'scripts/validate-project-settings-workspace-capabilities.mjs',
   'scripts/validate-product-team-core-smoke.mjs',
@@ -519,6 +565,230 @@ assert(
     && requiredSettingsContractImports.every((marker) => settingsContractsSource.includes(marker))
     && settingsContractsSource.includes('Settings backend contract aggregate validation passed.'),
   'Settings contracts must expose one low-write aggregate gate for health, runtime, provider, integration, and project policy proof.',
+);
+
+assert(
+  scripts['agents:action-approvals'] === 'node scripts/validate-local-action-approvals.mjs'
+    && read('scripts/validate-local-action-approvals.mjs').includes('Local unified action approval validation passed.')
+    && launchGateDoc.includes('P0 unified local approval and irreversible execution contract'),
+  'Local release metadata must retain the unified approval and irreversible execution gate.',
+);
+
+assert(
+  scripts['agents:quality-evaluation'] === 'node scripts/validate-local-quality-evaluation.mjs'
+    && read('scripts/validate-local-quality-evaluation.mjs').includes('Local versioned quality evaluation validation passed.')
+    && launchGateDoc.includes('P0 versioned five-mode quality regression contract'),
+  'Local release metadata must retain the versioned five-mode quality regression gate.',
+);
+
+assert(
+  scripts['agents:model-degradation'] === 'node scripts/validate-local-model-degradation.mjs'
+    && read('scripts/validate-local-model-degradation.mjs').includes('Local model degradation provenance validation passed.')
+    && launchGateDoc.includes('P0 model generation degradation and provenance contract'),
+  'Local release metadata must retain truthful model degradation provenance.',
+);
+
+assert(
+  scripts['agents:team-formation'] === 'node scripts/validate-local-team-formation.mjs'
+    && read('scripts/validate-local-team-formation.mjs').includes('Local team formation explainability validation passed.')
+    && launchGateDoc.includes('P0 team formation explainability and gap governance contract'),
+  'Local release metadata must retain team formation explainability.',
+);
+
+assert(
+  scripts['agents:delegation-governance'] === 'node scripts/validate-local-delegation-governance.mjs'
+    && read('scripts/validate-local-delegation-governance.mjs').includes('Local delegation governance validation passed.')
+    && launchGateDoc.includes('P0 delegation DAG overdue blocking reassignment and notification contract'),
+  'Local release metadata must retain delegation DAG and notification governance.',
+);
+
+assert(
+  scripts['agents:shared-memory'] === 'node scripts/validate-local-project-shared-memory.mjs'
+    && read('scripts/validate-local-project-shared-memory.mjs').includes('Local project shared memory validation passed.')
+    && launchGateDoc.includes('P0 project shared memory citation version confidence expiry and access-scope contract'),
+  'Local release metadata must retain governed project shared memory.',
+);
+
+assert(
+  scripts['agents:review-handoff'] === 'node scripts/validate-local-review-handoff.mjs'
+    && read('scripts/validate-local-review-handoff.mjs').includes('Local review handoff governance validation passed.')
+    && launchGateDoc.includes('P0 review handoff acknowledgement lease fence stale-submission and acceptance contract'),
+  'Local release metadata must retain review handoff and lease governance.',
+);
+
+assert(
+  scripts['agents:autonomy-governor'] === 'node scripts/validate-local-autonomy-governor.mjs'
+    && read('scripts/validate-local-autonomy-governor.mjs').includes('Local autonomy governor validation passed.')
+    && launchGateDoc.includes('P0 project autonomy governor version pause resume terminal-stop cost step and tool contract'),
+  'Local release metadata must retain project autonomy governance.',
+);
+
+assert(
+  scripts['agents:learning-program'] === 'node scripts/validate-local-learning-program.mjs'
+    && read('scripts/validate-local-learning-program.mjs').includes('Local adaptive learning program validation passed.')
+    && launchGateDoc.includes('P0 local learning syllabus diagnostic pace practice mastery and spaced-review contract'),
+  'Local release metadata must retain the adaptive learning program.',
+);
+
+assert(
+  scripts['agents:teaching-safety'] === 'node scripts/validate-local-teaching-safety.mjs'
+    && read('scripts/validate-local-teaching-safety.mjs').includes('Local teaching safety validation passed.')
+    && launchGateDoc.includes('P0 local teaching age integrity privacy evidence uncertainty and wellbeing contract'),
+  'Local release metadata must retain teaching safety governance.',
+);
+
+assert(
+  scripts['agents:academic-writing-pipeline'] === 'node scripts/validate-local-academic-writing-pipeline.mjs'
+    && read('scripts/validate-local-academic-writing-pipeline.mjs').includes('Local academic writing pipeline validation passed.')
+    && launchGateDoc.includes('P0 local academic question outline claims draft review revision and finalization contract'),
+  'Local release metadata must retain the academic writing pipeline.',
+);
+
+assert(
+  scripts['agents:citation-integrity'] === 'node scripts/validate-local-citation-integrity.mjs'
+    && read('scripts/validate-local-citation-integrity.mjs').includes('Local citation integrity validation passed.')
+    && launchGateDoc.includes('P0 local claim source support contradiction freshness status and citation integrity contract'),
+  'Local release metadata must retain citation integrity governance.',
+);
+
+assert(
+  scripts['agents:investigation-case'] === 'node scripts/validate-local-investigation-case.mjs'
+    && read('scripts/validate-local-investigation-case.mjs').includes('Local investigation case workflow validation passed.')
+    && launchGateDoc.includes('P0 local investigation hypotheses reliability custody contradictions confidence review and closure contract'),
+  'Local release metadata must retain the investigation case workflow.',
+);
+
+assert(
+  scripts['agents:investigation-safety'] === 'node scripts/validate-local-investigation-safety.mjs'
+    && read('scripts/validate-local-investigation-safety.mjs').includes('Local investigation safety validation passed.')
+    && launchGateDoc.includes('P0 local investigation authority privacy minimization sufficiency human review and one-time authorization contract'),
+  'Local release metadata must retain mandatory investigation safety.',
+);
+
+assert(
+  scripts['agents:technical-delivery'] === 'node scripts/validate-local-technical-delivery.mjs'
+    && read('scripts/validate-local-technical-delivery.mjs').includes('Local technical delivery workflow validation passed.')
+    && launchGateDoc.includes('P0 local requirements implementation tests security review rollback rehearsal and release evidence contract'),
+  'Local release metadata must retain the technical delivery workflow.',
+);
+
+assert(
+  scripts['agents:engineering-security'] === 'node scripts/validate-local-engineering-security.mjs'
+    && read('scripts/validate-local-engineering-security.mjs').includes('Local engineering security validation passed.')
+    && launchGateDoc.includes('P0 local dependency secret permission static analysis remediation exception and release attestation contract'),
+  'Local release metadata must retain mandatory engineering security governance.',
+);
+
+assert(
+  scripts['agents:creative-studio'] === 'node scripts/validate-local-creative-studio.mjs'
+    && read('scripts/validate-local-creative-studio.mjs').includes('Local creative studio workflow validation passed.')
+    && launchGateDoc.includes('P0 local creative brief iteration critique export quality and acknowledged handoff contract'),
+  'Local release metadata must retain the creative studio workflow.',
+);
+
+assert(
+  scripts['agents:rights-provenance'] === 'node scripts/validate-local-rights-provenance.mjs'
+    && read('scripts/validate-local-rights-provenance.mjs').includes('Local rights and provenance validation passed.')
+    && launchGateDoc.includes('P0 local asset rights license attribution generation provenance derivative lineage and exact export audit contract'),
+  'Local release metadata must retain mandatory rights and provenance governance.',
+);
+
+assert(
+  scripts['agents:fine-grained-authorization'] === 'node scripts/validate-local-fine-grained-authorization.mjs'
+    && read('scripts/validate-local-fine-grained-authorization.mjs').includes('Local fine-grained authorization validation passed.')
+    && launchGateDoc.includes('P0 local fine-grained authorization mutation audit transaction recovery contract'),
+  'Local release metadata must retain fine-grained authorization and recoverable auth audit transactions.',
+);
+
+assert(
+  scripts['agents:store-migration-safety'] === 'node scripts/validate-local-store-migration-safety.mjs'
+    && read('scripts/validate-local-store-migration-safety.mjs').includes('Local store migration safety validation passed.')
+    && launchGateDoc.includes('P0 local store migration archive journal crash recovery validation and explicit rollback contract'),
+  'Local release metadata must retain crash-recoverable reversible local store migrations.',
+);
+
+assert(
+  scripts['agents:local-artifact-storage'] === 'node scripts/validate-local-artifact-storage.mjs'
+    && read('scripts/validate-local-artifact-storage.mjs').includes('Local artifact storage validation passed.')
+    && launchGateDoc.includes('P0 local canonical artifact inventory retention legal hold and workspace drift contract'),
+  'Local release metadata must retain governed canonical artifact storage.',
+);
+
+assert(
+  scripts['agents:local-audit-integrity'] === 'node scripts/validate-local-audit-integrity.mjs'
+    && read('scripts/validate-local-audit-integrity.mjs').includes('Local audit integrity and recovery validation passed.')
+    && launchGateDoc.includes('P0 local audit checkpoint archive quarantine recovery and recovery-receipt contract'),
+  'Local release metadata must retain checkpointed recoverable audit integrity.',
+);
+
+assert(
+  scripts['agents:local-privacy-lifecycle'] === 'node scripts/validate-local-privacy-lifecycle.mjs'
+    && read('scripts/validate-local-privacy-lifecycle.mjs').includes('Local privacy lifecycle validation passed.')
+    && launchGateDoc.includes('P0 local privacy lifecycle automatic scan exact dual approval journal recovery and residual-boundary contract'),
+  'Local release metadata must retain automatic and explicitly approved privacy lifecycle enforcement.',
+);
+
+assert(
+  scripts['agents:local-durable-task-queue'] === 'node scripts/validate-local-durable-task-queue.mjs'
+    && read('scripts/validate-local-durable-task-queue.mjs').includes('Local durable task queue validation passed.')
+    && launchGateDoc.includes('P0 local durable three-lane enqueue lease receipt acknowledgement and restart-recovery contract'),
+  'Local release metadata must retain the durable three-lane task queue.',
+);
+
+assert(
+  scripts['agents:local-idempotent-execution'] === 'node scripts/validate-local-idempotent-execution.mjs'
+    && read('scripts/validate-local-idempotent-execution.mjs').includes('Local idempotent execution validation passed.')
+    && launchGateDoc.includes('P0 local exactly-once commit stable Provider key ambiguity blocking and reconciliation contract'),
+  'Local release metadata must retain exact local commit and explicit Provider ambiguity governance.',
+);
+
+assert(
+  scripts['agents:local-timeout-cancellation'] === 'node scripts/validate-local-timeout-cancellation.mjs'
+    && read('scripts/validate-local-timeout-cancellation.mjs').includes('Local timeout and cancellation validation passed.')
+    && launchGateDoc.includes('P0 local durable timeout active cancellation fence Provider ambiguity and workspace child termination contract'),
+  'Local release metadata must retain durable active cancellation and bounded workspace termination.',
+);
+
+assert(
+  scripts['agents:local-scheduling-governance'] === 'node scripts/validate-local-scheduling-governance.mjs'
+    && read('scripts/validate-local-scheduling-governance.mjs').includes('Local scheduling governance validation passed.')
+    && launchGateDoc.includes('P0 local UTC interval schedule stable slot clock rollback missed-run coalescing and durable dispatch contract'),
+  'Local release metadata must retain deterministic UTC interval scheduling governance.',
+);
+
+assert(
+  scripts['agents:local-dead-letter-governance'] === 'node scripts/validate-local-dead-letter-governance.mjs'
+    && read('scripts/validate-local-dead-letter-governance.mjs').includes('Local dead-letter governance validation passed.')
+    && launchGateDoc.includes('P0 local durable dead-letter immutable source exact replay lease receipt recovery and disposition contract'),
+  'Local release metadata must retain durable dead-letter replay and disposition governance.',
+);
+
+assert(
+  scripts['agents:local-rate-concurrency-governance'] === 'node scripts/validate-local-rate-concurrency-governance.mjs'
+    && read('scripts/validate-local-rate-concurrency-governance.mjs').includes('Local rate and concurrency governance validation passed.')
+    && launchGateDoc.includes('P0 local process-safe Provider project actor model tool quota and concurrency admission contract'),
+  'Local release metadata must retain process-safe Provider rate and concurrency admission.',
+);
+
+assert(
+  scripts['agents:local-graceful-shutdown'] === 'node scripts/validate-local-graceful-shutdown.mjs'
+    && read('scripts/validate-local-graceful-shutdown.mjs').includes('Local graceful shutdown validation passed.')
+    && launchGateDoc.includes('P0 local quiesce HTTP scheduler drain forced-timeout durable-recovery and shutdown-receipt contract'),
+  'Local release metadata must retain whole-runtime graceful shutdown evidence.',
+);
+
+assert(
+  scripts['agents:local-event-recovery'] === 'node scripts/validate-local-event-recovery.mjs'
+    && read('scripts/validate-local-event-recovery.mjs').includes('Local event recovery validation passed.')
+    && launchGateDoc.includes('P0 local event SHA-256 chain verified checkpoint quarantine valid-tail recovery and restart-idempotent receipt contract'),
+  'Local release metadata must retain verified project event recovery evidence.',
+);
+
+assert(
+  scripts['agents:local-causal-request-tracing'] === 'node scripts/validate-local-causal-request-tracing.mjs'
+    && read('scripts/validate-local-causal-request-tracing.mjs').includes('Local causal request tracing validation passed.')
+    && launchGateDoc.includes('P0 local safe HTTP trace context unique request span causal graph topology async links and hash-chain receipt contract'),
+  'Local release metadata must retain content-minimized causal request tracing.',
 );
 
 assert(
@@ -1316,7 +1586,7 @@ assert(
     && (appSource.match(/disabled=\{providerRuntimeStatus\.running \|\| !backendUrlConfigured\}/g) || []).length >= 6
     && (appSource.match(/disabled=\{healthCheck\.running \|\| !backendUrlConfigured\}/g) || []).length >= 3
     && appSource.includes("&& backendUrlConfigured\n    && Boolean((backendStation.baseUrl || '').trim())")
-    && appSource.includes('const syncBackendProjectCatalog = async ({ silent = true, baseUrl = null } = {}) => {')
+    && appSource.includes("const syncBackendProjectCatalog = async ({ silent = true, baseUrl = null, authToken = '' } = {}) => {")
     && appSource.includes('if (!baseUrl && !backendUrlConfigured) {')
     && appSource.includes('Save the backend API URL in Settings Deployment before syncing backend projects.')
     && appSource.includes('if (!baseUrlOverride && !backendUrlConfigured) {')
@@ -1341,8 +1611,10 @@ assert(
     && appSource.includes('aria-label="Settings backend API URL"')
     && appSource.includes('onClick={saveBackendBaseUrl}')
     && appSource.includes('baseUrlOverride = null')
-    && appSource.includes('syncSettingsProviderRuntime({ runTests: false, baseUrlOverride: baseUrl })')
-    && appSource.includes('syncSettingsProviderRuntime({ runTests: false, baseUrlOverride: nextUrl })')
+    && appSource.includes("syncSettingsProviderRuntime({ runTests: false, baseUrlOverride: baseUrl, reason: 'vault-seal' })")
+    && appSource.includes("void syncSettingsProviderRuntime({ runTests: false, baseUrlOverride: nextUrl, reason: 'target-change' })")
+    && appSource.includes('providerRuntimeCoordinator.current.invalidate(scope);')
+    && appSource.includes('result.stale || presentationGeneration !== providerRuntimePresentationGenerationRef.current')
     && mockRegister.includes('Settings provider and Health sync now fail closed for runtime status')
     && mockRegister.includes('clearing the same stale runtime status on save and immediately syncing the saved target')
     && technicalSource.includes('Settings runtime status also fails closed across backend targets')
@@ -2255,14 +2527,15 @@ assert(
     && appSource.includes('backend-channel-create-open-deployment')
     && appSource.includes("onClick={() => { setSettingsTab('deployment'); setSettingsOpen(true); }}")
     && appSource.includes('if (shouldAttemptBackendProjectWrite(activeProject))')
-    && appSource.includes('syncBackendProjectTranscripts({ silent: true, projectId: activeProject.id, channelId: channel.id });')
+    && appSource.includes("actionLabel: 'Backend transcript channel proof refreshed'")
     && appSource.includes('const backendChannelTranscriptRequired = Boolean(activeProject)')
     && appSource.includes('const backendChannelTranscriptUsable = Boolean(backendChannelTranscript) && (')
-    && appSource.includes('? backendVisibleMessages')
+    && appSource.includes('const pendingLocalVisibleMessages = localVisibleMessages.filter(message => message.pendingBackendWrite);')
+    && appSource.includes('? mergeProjectMessages(pendingLocalVisibleMessages, backendVisibleMessages)')
     && appSource.includes(': mergeProjectMessages(localVisibleMessages, backendVisibleMessages)')
     && appSource.includes('project-chat-transcript-backend-required')
     && appSource.includes('This real backend project requires the channel transcript route before local messages can be shown as collaboration proof.')
-    && appSource.includes(': (backendChannelTranscriptRequired ? [] : localVisibleMessages);')
+    && appSource.includes(': (backendChannelTranscriptRequired ? pendingLocalVisibleMessages : localVisibleMessages);')
     && appSource.includes('const backendManagerDashboard = dashboardBackendManagerDashboard || null;')
     && appSource.includes('const backendCollaborationProofReadModel = backendManagerDashboard')
     && appSource.includes("const chatBackendManagerDashboard = String(backendStation.managerDashboard?.projectId || '').toLowerCase() === String(activeProject.id || '').toLowerCase()")
@@ -3167,14 +3440,11 @@ assert(
     && appSource.includes('&& !hasBackendManagedProjectMarker(project)')
     && appSource.includes('const projectMarkedBackendManaged = hasBackendManagedProjectMarker(project);')
     && appSource.includes("backendStation.connectionStatus === 'online' || projectSyncedFromBackend || projectMarkedBackendManaged")
-    && appSource.includes('const cachedBackendManagedProjectIds = () => new Set')
     && appSource.includes('const cachedBrowserProjectIds = () => new Set')
     && appSource.includes('const loadInitialProjects = () =>')
     && appSource.includes('.filter(project => !isBackendManagedBrowserCacheProject(project))')
     && appSource.includes('const loadInitialChatMessages = () =>')
-    && appSource.includes('const backendManagedCachedIds = cachedBackendManagedProjectIds();')
     && appSource.includes('const browserProjectIds = cachedBrowserProjectIds();')
-    && appSource.includes('.filter(message => !backendManagedCachedIds.has(message.projectId || DEFAULT_CHAT_PROJECT_ID))')
     && appSource.includes('const isBackendManagedRealProject = (project = {})')
     && appSource.includes('projectHasBackendSyncEvidence(project)')
     && appSource.includes('const projectMatchedLastProjectSync = Boolean(projectId && backendStation.lastProjectSyncProjectId)')

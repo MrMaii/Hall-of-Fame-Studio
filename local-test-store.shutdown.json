@@ -1,0 +1,30 @@
+{
+  "schemaVersion": "local-runtime-shutdown-receipt/v1",
+  "id": "shutdown_cc7fae25ce74df28e84255cc",
+  "status": "drained",
+  "complete": true,
+  "shutdownStartedAt": "2026-07-11T08:37:15.402Z",
+  "shutdownCompletedAt": "2026-07-11T08:37:15.402Z",
+  "drainTimeoutMs": 5000,
+  "schedulerDrain": {
+    "drained": true,
+    "reason": "scheduler-idle"
+  },
+  "httpDrain": {
+    "drained": true,
+    "reason": "http-idle",
+    "activeRequestCount": 0,
+    "activeRequestHashes": []
+  },
+  "socketsAtStart": 1,
+  "forcedConnectionCount": 0,
+  "durableRecovery": {
+    "leasedCount": 0,
+    "cancellationRequestedCount": 0,
+    "retryWaitCount": 0,
+    "ambiguousProviderCount": 0
+  },
+  "storesRequestContent": false,
+  "localOnly": true,
+  "checksum": "3daa7b4a399b81bc7f35f75565c56cd8735fddb91e8ed3d4855f2215e0934aab"
+}

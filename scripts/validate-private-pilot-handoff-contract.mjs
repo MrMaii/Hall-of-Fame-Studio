@@ -93,6 +93,7 @@ const searchProvider = createSearchProvider({
 });
 const modelProvider = createModelProvider({
   provider: 'openai-compatible',
+  model: 'gpt-4o-mini',
   enabled: true,
   apiKey: rotatedModelApiKey,
   apiKeySource: 'local-secret-vault',

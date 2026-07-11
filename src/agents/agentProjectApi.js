@@ -7,10 +7,12 @@ import { PERSON_SKILLS } from '../skills/personSkillSystem.js';
 import {
   authorizeAgentProjectRequest,
   buildAccessControlPolicySnapshot,
+  classifyAccessRequest,
   evaluateProjectMembershipAccess,
   publicAccessDecision,
 } from './accessControl.js';
 import { normalizeLanguage } from '../i18n/runtime.js';
+import { buildLocalTeamFormationBrief, publicLocalTeamFormationBrief } from './localTeamFormationBrief.js';
 
 const json = (status, body) => ({ status, body });
 
@@ -24,12 +26,22 @@ function workModeTeamRoute(path = '') {
 }
 
 function localAuthRoute(path = '') {
-  const match = normalizePath(path).match(/^\/local-auth(?:\/(status|bootstrap|login|logout|users))?$/);
+  const match = normalizePath(path).match(/^\/local-auth(?:\/(status|bootstrap|login|logout|password|users))?$/);
   return match ? (match[1] || '') : null;
 }
 
-function workModeInitiationInput(body = {}) {
-  if (!body.workMode) return { input: body, error: null };
+function localAuthUserDisableRoute(path = '') {
+  const match = normalizePath(path).match(/^\/local-auth\/users\/([^/]+)\/disable$/);
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
+function workModeInitiationInput(body = {}, { hasExistingKickoffMeeting = false } = {}) {
+  // A Director may have already assembled and recorded a kickoff team. That
+  // durable meeting is the authority for its approval; replacing its members
+  // with a generated mode roster would break the meeting-to-project evidence
+  // chain and silently discard an explicit team choice.
+  const existingKickoffMeetingId = body.kickoffMeetingId || body.existingKickoffMeetingId;
+  if (!body.workMode || (body.reuseExistingKickoffMeeting && existingKickoffMeetingId && hasExistingKickoffMeeting)) return { input: body, error: null };
   const composition = composeWorkModeTeam({
     workMode: body.workMode,
     objective: body.brief || body.objective || body.name || '',
@@ -322,9 +334,15 @@ export function createAgentProjectApi({ service, accessControl = {}, localAuth =
     ).trim();
     const projectRoute = parseProjectRoute(request.path || request.url || '/');
     if (!token || !projectRoute?.projectId || typeof service.verifyIdentitySession !== 'function') return null;
+    const targetRoute = classifyAccessRequest({
+      method: request.method || 'GET',
+      path: request.path || request.url || '/',
+      body: request.body || {},
+    });
     const verification = service.verifyIdentitySession({
       projectId: projectRoute.projectId,
       token,
+      audience: targetRoute.routeKey,
       now: request.body?.now || new Date().toISOString(),
     });
     if (!verification.verified) {
@@ -418,8 +436,18 @@ export function createAgentProjectApi({ service, accessControl = {}, localAuth =
 
   const authorizeRequest = (request = {}) => {
     if (isPublicLocalAuthRoute(request)) return null;
+    const privateLocalAuthControl = Boolean(
+      localAuth
+      && (localAuthRoute(request.path || request.url || '/') !== null || localAuthUserDisableRoute(request.path || request.url || '/')),
+    );
     const localAuthRequest = resolveLocalAuthRequest(request);
     if (localAuthRequest?.response) return localAuthRequest.response;
+    if (privateLocalAuthControl && !localAuthRequest?.verified) {
+      return json(401, {
+        error: 'local-auth-required',
+        message: 'Local authentication is required for this request.',
+      });
+    }
     const sessionRequest = localAuthRequest?.verified ? null : resolveIdentitySessionRequest(request);
     if (sessionRequest?.response) return sessionRequest.response;
     if (requireLocalAuth && !localAuthRequest?.verified && !sessionRequest?.verified) {
@@ -461,6 +489,10 @@ export function createAgentProjectApi({ service, accessControl = {}, localAuth =
           sessionId: sessionRequest.verification.identitySession?.id || null,
           status: sessionRequest.verification.identitySession?.status || 'active',
           expiresAt: sessionRequest.verification.identitySession?.expiresAt || null,
+          identityType: sessionRequest.verification.identitySession?.identityType || 'user',
+          serviceId: sessionRequest.verification.identitySession?.serviceId || null,
+          audiences: sessionRequest.verification.identitySession?.audiences || [],
+          verifiedAudience: sessionRequest.verification.audience || null,
         },
       };
     } else {
@@ -474,23 +506,29 @@ export function createAgentProjectApi({ service, accessControl = {}, localAuth =
       }), { required: true });
     }
     const publicDecision = publicAccessDecision(decision);
-    if (decision.enforced && decision.route?.projectId) {
+    const mandatoryMutationAudit = ['POST', 'PUT', 'PATCH', 'DELETE']
+      .includes(String(effectiveRequest.method || 'GET').toUpperCase());
+    if ((decision.enforced && decision.route?.projectId) || mandatoryMutationAudit) {
       if (typeof service.recordAccessDecision !== 'function') {
-        if (failClosedOnAuditError) {
+        if (failClosedOnAuditError || mandatoryMutationAudit) {
           return auditWriteFailure(publicDecision, { reason: 'access-audit-sink-missing' });
         }
       } else {
         try {
-          service.recordAccessDecision({
-            projectId: decision.route.projectId,
+          const auditRecord = service.recordAccessDecision({
+            projectId: decision.route.projectId || null,
             decision: publicDecision,
             method: request.method || 'GET',
             path: request.path || request.url || '/',
             statusCode: decision.allowed ? 200 : 403,
             outcome: decision.allowed ? 'access-allowed-before-dispatch' : 'access-denied-before-dispatch',
+            traceId: request.traceId || readHeader(request.headers, 'x-hofs-request-id') || null,
           });
+          if (mandatoryMutationAudit && !auditRecord) {
+            return auditWriteFailure(publicDecision, { reason: 'access-audit-write-not-confirmed' });
+          }
         } catch (error) {
-          if (failClosedOnAuditError) {
+          if (failClosedOnAuditError || mandatoryMutationAudit) {
             return auditWriteFailure(publicDecision, { reason: 'access-audit-write-failed', error });
           }
           // Access audit is best-effort by default for local demos; production-style runs can fail closed.
@@ -541,6 +579,17 @@ export function createAgentProjectApi({ service, accessControl = {}, localAuth =
       autonomousCycleConsistencyRoute: projectId ? `/projects/${projectId}/autonomous-cycle-consistency` : null,
       runtimeAutonomyStatusRoute: projectId ? `/projects/${projectId}/runtime-autonomy-status` : null,
       autonomousRunControlRoute: projectId ? `/projects/${projectId}/autonomous-run-control` : null,
+      learningProgramRoute: projectId ? `/projects/${projectId}/learning-program` : null,
+      teachingSafetyRoute: projectId ? `/projects/${projectId}/teaching-safety` : null,
+      academicWritingPipelineRoute: projectId ? `/projects/${projectId}/academic-writing-pipeline` : null,
+      citationIntegrityRoute: projectId ? `/projects/${projectId}/citation-integrity` : null,
+      investigationCaseRoute: projectId ? `/projects/${projectId}/investigation-case` : null,
+      investigationSafetyRoute: projectId ? `/projects/${projectId}/investigation-safety` : null,
+      technicalDeliveryWorkflowRoute: projectId ? `/projects/${projectId}/technical-delivery-workflow` : null,
+      engineeringSecurityRoute: projectId ? `/projects/${projectId}/engineering-security` : null,
+      creativeStudioWorkflowRoute: projectId ? `/projects/${projectId}/creative-studio-workflow` : null,
+      rightsProvenanceRoute: projectId ? `/projects/${projectId}/rights-provenance` : null,
+      localArtifactStorageRoute: projectId ? `/projects/${projectId}/local-artifact-storage` : null,
       agentAutonomousActionQueueRoute: projectId ? `/projects/${projectId}/agent-autonomous-action-queue` : null,
       governanceProtocolRoute: projectId ? `/projects/${projectId}/governance-protocol` : null,
       agentStateSummaryRoute: projectId ? `/projects/${projectId}/agent-state-summary` : null,
@@ -641,6 +690,7 @@ export function createAgentProjectApi({ service, accessControl = {}, localAuth =
       autonomousRunControlSessionsRoute: projectId ? `/projects/${projectId}/autonomous-run-control/sessions` : null,
       autonomousRunControlSessionTickRoute: projectId ? `/projects/${projectId}/autonomous-run-control/sessions/${activeSessionId}/tick` : null,
       autonomousRunControlSessionPauseRoute: projectId ? `/projects/${projectId}/autonomous-run-control/sessions/${activeSessionId}/pause` : null,
+      autonomousRunControlSessionCancelRoute: projectId ? `/projects/${projectId}/autonomous-run-control/sessions/${activeSessionId}/cancel` : null,
       autonomousRunControlLoopRunRoute: projectId ? `/projects/${projectId}/autonomous-run-control/run-loop` : null,
       agentAutonomousActionQueueRoute: projectId ? `/projects/${projectId}/agent-autonomous-action-queue` : null,
       productTeamOperatingLoopRoute: projectId ? `/projects/${projectId}/product-team-operating-loop` : null,
@@ -666,21 +716,73 @@ export function createAgentProjectApi({ service, accessControl = {}, localAuth =
           managerReadyPackage: projectId ? service.getManagerReadyPackage(projectId, { language }) : null,
         }),
   });
+  const flushLocalAuthAuditTransactions = ({ recovered = false, traceId = null } = {}) => {
+    if (!localAuth || typeof localAuth.pendingAuditTransactions !== 'function') return { ok: true, flushed: 0 };
+    if (typeof service.recordLocalAuthMutationResult !== 'function') return { ok: false, reason: 'local-auth-security-audit-unavailable' };
+    let flushed = 0;
+    try {
+      for (const transaction of localAuth.pendingAuditTransactions()) {
+        const auditRecord = service.recordLocalAuthMutationResult({
+          transactionId: transaction.id,
+          operation: transaction.operation,
+          outcome: transaction.outcome,
+          subjectHash: transaction.subjectHash,
+          actorUserId: transaction.actorUserId,
+          targetUserId: transaction.targetUserId,
+          sessionId: transaction.sessionId,
+          recovered,
+          traceId,
+          now: transaction.createdAt,
+        });
+        if (!auditRecord?.id || !auditRecord?.streamChecksum) return { ok: false, reason: 'local-auth-security-audit-write-not-confirmed' };
+        localAuth.acknowledgeAuditTransaction({
+          transactionId: transaction.id,
+          auditRecordId: auditRecord.id,
+          auditRecordChecksum: auditRecord.streamChecksum,
+          now: transaction.createdAt,
+        });
+        flushed += 1;
+      }
+      return { ok: true, flushed };
+    } catch (error) {
+      return { ok: false, reason: 'local-auth-security-audit-write-failed', error };
+    }
+  };
+  flushLocalAuthAuditTransactions({ recovered: true });
   const handleLocalAuthRoute = ({ method, path, body = {}, request = {} } = {}) => {
     const action = localAuthRoute(path);
-    if (!action || !localAuth) return null;
+    const disabledUserId = localAuthUserDisableRoute(path);
+    if ((!action && !disabledUserId) || !localAuth) return null;
     if (method === 'GET' && action === 'status') {
       return json(200, { localAuth: localAuth.status() });
     }
     if (method === 'POST' && action === 'bootstrap') {
+      if (typeof service.recordLocalAuthMutationResult !== 'function') {
+        return json(503, { error: 'local-auth-security-audit-unavailable' });
+      }
       const result = localAuth.bootstrap(body);
+      const audit = flushLocalAuthAuditTransactions({ traceId: request.traceId || readHeader(request.headers, 'x-hofs-request-id') || null });
+      if (!audit.ok) return json(503, { error: audit.reason });
       return json(201, { localAuth: result });
     }
     if (method === 'POST' && action === 'login') {
+      if (typeof service.recordLocalAuthMutationResult !== 'function') {
+        return json(503, { error: 'local-auth-security-audit-unavailable' });
+      }
       const result = localAuth.login(body);
+      const outcome = result.verified
+        ? 'login-success'
+        : result.reason === 'local-auth-login-locked'
+          ? 'login-locked'
+          : 'login-failed';
+      const audit = flushLocalAuthAuditTransactions({ traceId: request.traceId || readHeader(request.headers, 'x-hofs-request-id') || null });
+      if (!audit.ok) return json(503, { error: audit.reason });
       return result.verified
         ? json(200, { localAuth: result })
-        : json(401, { error: result.reason || 'local-auth-invalid-credentials' });
+        : json(result.reason === 'local-auth-login-locked' ? 429 : 401, {
+            error: result.reason || 'local-auth-invalid-credentials',
+            ...(result.retryAt ? { retryAt: result.retryAt } : {}),
+          });
     }
     const localRequest = resolveLocalAuthRequest({ ...request, method, path, body });
     if (!localRequest?.verified) return localRequest?.response || json(401, {
@@ -688,14 +790,49 @@ export function createAgentProjectApi({ service, accessControl = {}, localAuth =
       message: 'Local authentication is required for this request.',
     });
     if (method === 'POST' && action === 'logout') {
-      return json(200, { localAuth: localAuth.logout({ token: localAuthTokenFromRequest({ ...request, body }), now: body.now }) });
+      const result = localAuth.logout({ token: localAuthTokenFromRequest({ ...request, body }), now: body.now });
+      const audit = flushLocalAuthAuditTransactions({ traceId: request.traceId || null });
+      return audit.ok ? json(200, { localAuth: result }) : json(503, { error: audit.reason });
+    }
+    if (action === 'password') {
+      if (method !== 'POST') return json(405, { error: 'method-not-allowed', method, path });
+      try {
+        const result = localAuth.changePassword({
+            userId: localRequest.verification.user.id,
+            currentPassword: body.currentPassword,
+            newPassword: body.newPassword,
+            now: body.now,
+          });
+        const audit = flushLocalAuthAuditTransactions({ traceId: request.traceId || null });
+        return audit.ok ? json(200, { localAuth: result }) : json(503, { error: audit.reason });
+      } catch (error) {
+        if (error.message === 'Current local password is not valid.') {
+          return json(403, { error: 'local-auth-current-password-invalid' });
+        }
+        return json(400, { error: 'local-auth-password-change-invalid', message: error.message || String(error) });
+      }
+    }
+    if (disabledUserId) {
+      if (localRequest.verification.user?.role !== 'security-admin') {
+        return json(403, { error: 'local-auth-admin-required' });
+      }
+      if (method === 'POST') {
+        const result = localAuth.disableUser({ userId: disabledUserId, actorUserId: localRequest.verification.user.id, now: body.now });
+        const audit = flushLocalAuthAuditTransactions({ traceId: request.traceId || null });
+        return audit.ok ? json(200, { localAuth: result }) : json(503, { error: audit.reason });
+      }
+      return json(405, { error: 'method-not-allowed', method, path });
     }
     if (action === 'users') {
       if (localRequest.verification.user?.role !== 'security-admin') {
         return json(403, { error: 'local-auth-admin-required' });
       }
       if (method === 'GET') return json(200, { localAuth: { users: localAuth.listUsers() } });
-      if (method === 'POST') return json(201, { localAuth: localAuth.createUser(body) });
+      if (method === 'POST') {
+        const result = localAuth.createUser({ ...body, actorUserId: localRequest.verification.user.id });
+        const audit = flushLocalAuthAuditTransactions({ traceId: request.traceId || null });
+        return audit.ok ? json(201, { localAuth: result }) : json(503, { error: audit.reason });
+      }
     }
     return json(405, { error: 'method-not-allowed', method, path });
   };
@@ -906,13 +1043,15 @@ export function createAgentProjectApi({ service, accessControl = {}, localAuth =
         return json(200, { workModes: SUPER_AGENT_WORK_MODES });
       }
       if (method === 'POST' && requestedWorkMode) {
+        const workModeTeam = composeWorkModeTeam({
+          workMode: requestedWorkMode,
+          objective: body.objective || body.projectBrief || '',
+          availablePersonaSlugs: body.availablePersonaSlugs,
+          additionalDependencies: body.additionalDependencies,
+        });
         return json(200, {
-          workModeTeam: composeWorkModeTeam({
-            workMode: requestedWorkMode,
-            objective: body.objective || body.projectBrief || '',
-            availablePersonaSlugs: body.availablePersonaSlugs,
-            additionalDependencies: body.additionalDependencies,
-          }),
+          workModeTeam,
+          teamFormationBrief: publicLocalTeamFormationBrief(buildLocalTeamFormationBrief({ workModeTeam })),
         });
       }
       if (method === 'GET' && path === '/settings/health-readiness') {
@@ -999,7 +1138,12 @@ export function createAgentProjectApi({ service, accessControl = {}, localAuth =
         && route.tail[1] === 'artifact-drafts'
       ) {
         const agentId = decodeURIComponent(route.tail[0]);
-        const result = await service.generateAgentArtifactDraft({ projectId: route.projectId, agentId, ...body });
+        const result = await service.generateAgentArtifactDraft({
+          projectId: route.projectId,
+          agentId,
+          ...body,
+          traceId: request.traceId || body.traceId || null,
+        });
         const resultProjectId = result.project?.id || route.projectId;
         const includeReadModels = shouldIncludeReadModels(body);
         return json(200, {
@@ -1028,7 +1172,12 @@ export function createAgentProjectApi({ service, accessControl = {}, localAuth =
         && body.useProvider
       ) {
         const agentId = decodeURIComponent(route.tail[0]);
-        const result = await service.recordAgentEvidenceSearchWithProvider({ projectId: route.projectId, agentId, ...body });
+        const result = await service.recordAgentEvidenceSearchWithProvider({
+          projectId: route.projectId,
+          agentId,
+          ...body,
+          traceId: request.traceId || body.traceId || null,
+        });
         const resultProjectId = result.project?.id || route.projectId;
         const includeReadModels = shouldIncludeReadModels(body);
         return json(200, {
@@ -1061,7 +1210,13 @@ export function createAgentProjectApi({ service, accessControl = {}, localAuth =
           return json(400, { error: 'agent-work-cycle-provider-evidence-not-configured' });
         }
         const agentId = decodeURIComponent(route.tail[0]);
-        const result = await service.runAgentWorkCycleWithProviderEvidence({ projectId: route.projectId, agentId, ...body });
+        const result = await service.runAgentWorkCycleWithProviderEvidence({
+          projectId: route.projectId,
+          agentId,
+          ...body,
+          traceId: request.traceId || body.traceId || null,
+          requestSpanId: request.requestSpanId || null,
+        });
         const resultProjectId = result.project?.id || route.projectId;
         const includeReadModels = shouldIncludeReadModels(body);
         return json(200, {
@@ -1424,6 +1579,27 @@ export function createAgentProjectApi({ service, accessControl = {}, localAuth =
       try {
         const localAuthResponse = handleLocalAuthRoute({ method, path, body, request });
         if (localAuthResponse) return localAuthResponse;
+        if (method === 'GET' && path === '/security-access-audit') {
+          return json(200, { runtimeSecurityAccessAudit: service.getRuntimeSecurityAccessAudit() });
+        }
+        if (method === 'GET' && path === '/security-audit-stream') {
+          return json(200, { runtimeSecurityAuditStream: service.getRuntimeSecurityAuditStream() });
+        }
+        if (method === 'GET' && path === '/security-audit-integrity') {
+          return json(200, { localAuditIntegrity: service.getLocalAuditIntegrity({ now: body.now }) });
+        }
+        if (method === 'POST' && path === '/security-audit-checkpoints') {
+          const result = service.createLocalSecurityAuditCheckpoint(body);
+          return json(201, result);
+        }
+        if (method === 'POST' && path === '/security-audit-recovery') {
+          const localRequest = resolveLocalAuthRequest(request);
+          const actorId = localRequest?.verified
+            ? localRequest.verification.user.id
+            : readHeader(request.headers, 'x-hofs-user-id') || 'local-security-admin';
+          const result = service.recoverLocalSecurityAudit({ ...body, actorId, traceId: request.traceId || null });
+          return json(200, result);
+        }
         if (method === 'GET' && path === '/projects') {
           return json(200, { projects: service.listProjects() });
         }
@@ -1445,7 +1621,16 @@ export function createAgentProjectApi({ service, accessControl = {}, localAuth =
           });
         }
         if (method === 'POST' && path === '/product-team-missions') {
-          const workModeInitiation = workModeInitiationInput(body);
+          const existingKickoffMeetingId = body.kickoffMeetingId || body.existingKickoffMeetingId;
+          let hasExistingKickoffMeeting = false;
+          if (existingKickoffMeetingId && typeof service.getKickoffMeeting === 'function') {
+            try {
+              hasExistingKickoffMeeting = Boolean(service.getKickoffMeeting(existingKickoffMeetingId)?.id);
+            } catch {
+              hasExistingKickoffMeeting = false;
+            }
+          }
+          const workModeInitiation = workModeInitiationInput(body, { hasExistingKickoffMeeting });
           if (workModeInitiation.error) {
             return json(422, {
               error: 'work-mode-team-coverage-incomplete',
@@ -1682,13 +1867,15 @@ export function createAgentProjectApi({ service, accessControl = {}, localAuth =
           return json(200, { workModes: SUPER_AGENT_WORK_MODES });
         }
         if (method === 'POST' && requestedWorkMode) {
+          const workModeTeam = composeWorkModeTeam({
+            workMode: requestedWorkMode,
+            objective: body.objective || body.projectBrief || '',
+            availablePersonaSlugs: body.availablePersonaSlugs,
+            additionalDependencies: body.additionalDependencies,
+          });
           return json(200, {
-            workModeTeam: composeWorkModeTeam({
-              workMode: requestedWorkMode,
-              objective: body.objective || body.projectBrief || '',
-              availablePersonaSlugs: body.availablePersonaSlugs,
-              additionalDependencies: body.additionalDependencies,
-            }),
+            workModeTeam,
+            teamFormationBrief: publicLocalTeamFormationBrief(buildLocalTeamFormationBrief({ workModeTeam })),
           });
         }
         if (method === 'GET' && path === '/settings/health-readiness') {
@@ -1810,6 +1997,7 @@ export function createAgentProjectApi({ service, accessControl = {}, localAuth =
                 dueAt: item.dueAt,
                 nextRunAt: item.nextRunAt,
                 messageCount: item.result.messages.length,
+                durableTask: item.durableTask || null,
                 project: item.result.project,
                 ...(includeReadModels
                   ? {
@@ -1850,6 +2038,7 @@ export function createAgentProjectApi({ service, accessControl = {}, localAuth =
                 managementPriority: item.managementPriority || 0,
                 managementReasons: item.managementReasons || [],
                 messageCount: item.result.messages.length,
+                durableTask: item.durableTask || null,
                 project: item.result.project,
                 agent: item.result.agent,
                 task: item.result.task,
@@ -1912,6 +2101,7 @@ export function createAgentProjectApi({ service, accessControl = {}, localAuth =
                 runReceiptIds: item.runReceiptIds,
                 actionLanes: item.actionLanes,
                 targetStageId: item.targetStageId,
+                durableTask: item.durableTask || null,
                 messageCount: item.result.messages?.length || 0,
                 project: item.result.project,
                 autonomousRunControlSession: item.result.autonomousRunControlSession,
@@ -2167,6 +2357,225 @@ export function createAgentProjectApi({ service, accessControl = {}, localAuth =
         if (method === 'GET' && route.action === 'events') {
           return json(200, service.getEventLedger(route.projectId));
         }
+        if (route.action === 'event-recovery') {
+          if (method === 'GET' && !route.tail.length) {
+            return json(200, { eventRecovery: service.getLocalEventRecovery(route.projectId, { now: body.now }) });
+          }
+          if (method === 'POST' && route.tail[0] === 'checkpoints') {
+            const localRequest = resolveLocalAuthRequest(request);
+            const actorId = localRequest?.verified
+              ? localRequest.verification.user.id
+              : readHeader(request.headers, 'x-hofs-user-id') || 'local-security-admin';
+            const result = service.createLocalEventCheckpoint({ ...body, projectId: route.projectId, actorId });
+            return json(result.eventCheckpoint?.idempotent ? 200 : 201, result);
+          }
+          if (method === 'POST' && route.tail[0] === 'restore') {
+            const localRequest = resolveLocalAuthRequest(request);
+            const actorId = localRequest?.verified
+              ? localRequest.verification.user.id
+              : readHeader(request.headers, 'x-hofs-user-id') || 'local-security-admin';
+            const result = service.recoverLocalEventLedger({ ...body, projectId: route.projectId, actorId });
+            return json(200, result);
+          }
+        }
+        if (method === 'GET' && route.action === 'quality-evaluation-suite') {
+          return json(200, { qualityEvaluationSuite: service.getQualityEvaluationSuite() });
+        }
+        if (method === 'GET' && route.action === 'team-formation-readiness') {
+          return json(200, {
+            teamFormationReadiness: service.getTeamFormationReadiness(route.projectId, { now: body.now }),
+          });
+        }
+        if (route.action === 'delegation-governance') {
+          if (method === 'GET' && !route.tail.length) {
+            return json(200, {
+              delegationGovernance: service.getDelegationGovernance(route.projectId, { now: body.now }),
+            });
+          }
+          if (method === 'POST' && route.tail[0] === 'scan') {
+            const result = service.scanDelegationGovernance({
+              ...body,
+              projectId: route.projectId,
+            });
+            return json(result.idempotent ? 200 : 201, {
+              notificationBatch: result.notificationBatch,
+              delegationGovernance: result.delegationGovernance,
+              idempotent: result.idempotent,
+              log: result.log,
+            });
+          }
+          return json(405, { error: 'method-not-allowed', method, path });
+        }
+        if (method === 'GET' && route.action === 'model-degradation-readiness') {
+          return json(200, {
+            modelDegradationReadiness: service.getModelDegradationReadiness(route.projectId, { now: body.now }),
+          });
+        }
+        if (route.action === 'quality-evaluation-runs') {
+          if (method === 'GET' && !route.tail.length) {
+            return json(200, {
+              qualityEvaluationGovernance: service.getQualityEvaluationGovernance(route.projectId, { now: body.now }),
+            });
+          }
+          if (method === 'POST' && !route.tail.length) {
+            const result = service.recordQualityEvaluationRun({
+              ...body,
+              projectId: route.projectId,
+              actorId: readHeader(request.headers, 'x-hofs-user-id') || body.actorId || body.userId,
+            });
+            return json(result.idempotent ? 200 : 201, {
+              qualityEvaluationRun: result.qualityEvaluationRun,
+              qualityEvaluationGovernance: result.qualityEvaluationGovernance,
+              idempotent: result.idempotent,
+              log: result.log,
+            });
+          }
+          if (method === 'POST' && route.tail[0] && route.tail[1] === 'baseline') {
+            const result = service.setQualityEvaluationBaseline({
+              projectId: route.projectId,
+              runId: decodeURIComponent(route.tail[0]),
+              actorId: readHeader(request.headers, 'x-hofs-user-id') || body.actorId || body.userId,
+              now: body.now,
+            });
+            return json(200, {
+              qualityEvaluationBaseline: result.qualityEvaluationBaseline,
+              qualityEvaluationGovernance: result.qualityEvaluationGovernance,
+              idempotent: result.idempotent,
+              log: result.log,
+            });
+          }
+          return json(405, { error: 'method-not-allowed', method, path });
+        }
+        if (route.action === 'action-approvals') {
+          if (method === 'GET' && !route.tail.length) {
+            return json(200, {
+              actionApprovalGovernance: service.getActionApprovalGovernance(route.projectId, { now: body.now }),
+            });
+          }
+          if (method === 'POST' && !route.tail.length) {
+            const result = service.requestActionApproval({
+              ...body,
+              projectId: route.projectId,
+              requestedBy: readHeader(request.headers, 'x-hofs-user-id')
+                || body.actorUserId
+                || body.requestedBy,
+            });
+            return json(result.idempotent ? 200 : 201, {
+              actionApproval: result.actionApproval,
+              actionApprovalGovernance: result.actionApprovalGovernance,
+              idempotent: result.idempotent,
+              log: result.log,
+            });
+          }
+          if (method === 'POST' && route.tail[0] && route.tail[1] === 'decisions') {
+            const result = service.recordActionApprovalDecision({
+              ...body,
+              projectId: route.projectId,
+              approvalId: decodeURIComponent(route.tail[0]),
+              approverRole: readHeader(request.headers, 'x-hofs-role') || body.approverRole,
+              approverId: readHeader(request.headers, 'x-hofs-user-id')
+                || body.actorUserId
+                || body.approverId,
+            });
+            return json(200, {
+              actionApproval: result.actionApproval,
+              actionApprovalGovernance: result.actionApprovalGovernance,
+              idempotent: result.idempotent,
+              log: result.log,
+            });
+          }
+          return json(405, { error: 'method-not-allowed', method, path });
+        }
+        if (route.action === 'privacy' && route.tail[0] === 'lifecycle') {
+          const localRequest = resolveLocalAuthRequest(request);
+          const actor = localRequest?.verified
+            ? localRequest.verification.user.id
+            : readHeader(request.headers, 'x-hofs-user-id') || 'local-privacy-operator';
+          if (method === 'GET' && route.tail.length === 1) {
+            return json(200, { privacyLifecycle: service.getProjectPrivacyLifecycle(route.projectId, { now: body.now }) });
+          }
+          if (method === 'POST' && route.tail[1] === 'scan') {
+            const result = service.scanProjectPrivacyLifecycle(route.projectId, { actor, now: body.now });
+            return json(201, {
+              privacyLifecyclePlan: result.privacyLifecyclePlan,
+              log: result.log,
+            });
+          }
+          if (method === 'POST' && route.tail[1] === 'executions') {
+            const result = service.executeProjectPrivacyLifecycle({
+              ...body,
+              projectId: route.projectId,
+              actor,
+            });
+            return json(result.idempotent ? 200 : 201, {
+              privacyLifecycleReceipt: result.privacyLifecycleReceipt,
+              idempotent: result.idempotent,
+              log: result.log || null,
+            });
+          }
+          return json(405, { error: 'method-not-allowed', method, path });
+        }
+        if (method === 'POST' && route.action === 'privacy' && route.tail[0] === 'deletion-requests' && route.tail.length === 1) {
+          const result = service.requestProjectPrivacyDeletion({
+            projectId: route.projectId,
+            ...body,
+          });
+          const resultProjectId = result.project?.id || route.projectId;
+          return json(200, {
+            ...publicProjectResult(result, resultProjectId, language, { includeReadModels: false }),
+            privacyDeletionRequest: result.privacyDeletionRequest,
+            confirmationToken: result.confirmationToken,
+            log: result.log,
+            ...deferredReadModels(resultProjectId, '', {
+              privacyDeletionRequestRoute: `/projects/${resultProjectId}/privacy/deletion-requests/${encodeURIComponent(result.privacyDeletionRequest.id)}`,
+            }),
+          });
+        }
+        if (method === 'POST' && route.action === 'privacy' && route.tail[0] === 'deletion-requests' && route.tail[2] === 'confirm') {
+          const result = service.confirmProjectPrivacyDeletion({
+            projectId: route.projectId,
+            requestId: decodeURIComponent(route.tail[1] || ''),
+            ...body,
+          });
+          const resultProjectId = result.project?.id || route.projectId;
+          return json(200, {
+            ...publicProjectResult(result, resultProjectId, language, { includeReadModels: false }),
+            privacyDeletionRequest: result.privacyDeletionRequest,
+            log: result.log,
+            ...deferredReadModels(resultProjectId, '', {
+              privacyDeletionRequestRoute: `/projects/${resultProjectId}/privacy/deletion-requests/${encodeURIComponent(result.privacyDeletionRequest.id)}`,
+            }),
+          });
+        }
+        if (method === 'POST' && route.action === 'privacy' && route.tail[0] === 'deletion-requests' && route.tail[2] === 'execute') {
+          const result = service.executeProjectPrivacyDeletion({
+            projectId: route.projectId,
+            requestId: decodeURIComponent(route.tail[1] || ''),
+            ...body,
+          });
+          return json(200, {
+            route: result.route,
+            removedProjectId: result.removedProjectId,
+            privacyDeletionReceipt: result.privacyDeletionReceipt,
+          });
+        }
+        if (method === 'POST' && route.action === 'privacy' && route.tail[0] === 'export') {
+          const result = service.exportProjectPrivacyData({
+            projectId: route.projectId,
+            ...body,
+          });
+          const resultProjectId = result.project?.id || route.projectId;
+          const includeReadModels = shouldIncludeReadModels(body);
+          return json(200, {
+            ...publicProjectResult(result, resultProjectId, language, { includeReadModels }),
+            privacyExport: result.privacyExport,
+            log: result.log,
+            ...(includeReadModels ? {} : deferredReadModels(resultProjectId, '', {
+              privacyExportRoute: `/projects/${resultProjectId}/privacy/export`,
+              projectSettingsRoute: `/projects/${resultProjectId}/project-settings`,
+            })),
+          });
+        }
         if (route.action === 'project-settings') {
           if (method === 'GET') {
             return json(200, { projectSettings: service.getProjectSettings(route.projectId) });
@@ -2204,6 +2613,11 @@ export function createAgentProjectApi({ service, accessControl = {}, localAuth =
           }
           return json(405, { error: 'method-not-allowed', method, path });
         }
+        if (method === 'GET' && route.action === 'traces' && route.tail[0]) {
+          return json(200, {
+            projectTrace: service.getProjectTrace(route.projectId, decodeURIComponent(route.tail[0])),
+          });
+        }
         if (method === 'GET' && route.action === 'submissions') {
           if (!route.tail.length) {
             return json(200, { submissions: service.listSubmissions(route.projectId) });
@@ -2213,7 +2627,13 @@ export function createAgentProjectApi({ service, accessControl = {}, localAuth =
         }
         if (method === 'POST' && route.action === 'submissions' && route.tail[1] === 'reviews') {
           const submissionId = decodeURIComponent(route.tail[0] || '');
-          const result = service.reviewAgentSubmission({ projectId: route.projectId, submissionId, ...body });
+          const result = service.reviewAgentSubmission({
+            projectId: route.projectId,
+            submissionId,
+            ...body,
+            traceId: request.traceId || body.traceId || null,
+            requestSpanId: request.requestSpanId || null,
+          });
           const resultProjectId = result.project?.id || route.projectId;
           const includeReadModels = shouldIncludeReadModels(body);
           return json(200, {
@@ -2243,11 +2663,197 @@ export function createAgentProjectApi({ service, accessControl = {}, localAuth =
         if (method === 'GET' && route.action === 'evidence-index-readiness') {
           return json(200, { evidenceIndexReadiness: service.getEvidenceIndexReadiness(route.projectId, { language }) });
         }
+        if (method === 'GET' && route.action === 'prompt-boundary-readiness') {
+          return json(200, {
+            promptBoundaryReadiness: service.getPromptBoundaryReadiness(route.projectId, { now: body.now }),
+          });
+        }
+        if (route.action === 'review-handoffs') {
+          const actorRole = readHeader(request.headers, 'x-hofs-role') || body.actorRole || 'manager';
+          const actorId = readHeader(request.headers, 'x-hofs-user-id') || body.actorId || body.userId || 'local-manager';
+          const actorAgentId = readHeader(request.headers, 'x-hofs-agent-id') || body.actorAgentId || body.agentId || null;
+          if (method === 'GET' && !route.tail.length) {
+            return json(200, { reviewHandoffGovernance: service.getReviewHandoffGovernance(route.projectId, { now: body.now }) });
+          }
+          if (method === 'POST' && !route.tail.length) {
+            const result = service.createReviewHandoff({ ...body, projectId: route.projectId, actorRole, actorId, actorAgentId });
+            return json(result.idempotent ? 200 : 201, {
+              handoff: result.handoff,
+              reviewHandoffGovernance: result.reviewHandoffGovernance,
+              idempotent: result.idempotent,
+              log: result.log,
+            });
+          }
+          if (method === 'POST' && route.tail[0] === 'scan') {
+            const result = service.scanReviewHandoffs({ ...body, projectId: route.projectId });
+            return json(result.idempotent ? 200 : 201, {
+              escalationBatch: result.escalationBatch,
+              reviewHandoffGovernance: result.reviewHandoffGovernance,
+              idempotent: result.idempotent,
+              log: result.log,
+            });
+          }
+          const handoffId = decodeURIComponent(route.tail[0] || '');
+          if (method === 'POST' && handoffId && route.tail[1] === 'acknowledge') {
+            const result = service.acknowledgeReviewHandoff({ ...body, projectId: route.projectId, handoffId, actorAgentId });
+            return json(result.idempotent ? 200 : 201, {
+              acknowledgement: result.acknowledgement,
+              reviewHandoffGovernance: result.reviewHandoffGovernance,
+              idempotent: result.idempotent,
+              log: result.log,
+            });
+          }
+          if (method === 'POST' && handoffId && route.tail[1] === 'claim') {
+            const result = service.claimReviewHandoff({ ...body, projectId: route.projectId, handoffId, actorAgentId });
+            return json(result.idempotent ? 200 : 201, {
+              claim: result.claim,
+              reviewHandoffGovernance: result.reviewHandoffGovernance,
+              idempotent: result.idempotent,
+              log: result.log,
+            });
+          }
+          if (method === 'POST' && handoffId && route.tail[1] === 'complete') {
+            const result = service.completeReviewHandoff({ ...body, projectId: route.projectId, handoffId, actorAgentId });
+            return json(result.idempotent ? 200 : 201, {
+              completion: result.completion,
+              review: result.review,
+              submission: result.submission,
+              reviewHandoffGovernance: result.reviewHandoffGovernance,
+              idempotent: result.idempotent,
+              log: result.log,
+            });
+          }
+          return json(405, { error: 'method-not-allowed', method, path });
+        }
+        if (route.action === 'shared-memories') {
+          const actorRole = readHeader(request.headers, 'x-hofs-role') || body.actorRole || 'manager';
+          const actorId = readHeader(request.headers, 'x-hofs-user-id') || body.actorId || body.userId || 'local-manager';
+          const agentId = readHeader(request.headers, 'x-hofs-agent-id') || body.agentId || null;
+          if (method === 'GET' && !route.tail.length) {
+            return json(200, {
+              sharedMemory: service.getProjectSharedMemories(route.projectId, {
+                actorRole,
+                actorId,
+                agentId,
+                now: body.now,
+                includeHistory: body.includeHistory === true || body.includeHistory === 'true',
+                includeContents: body.includeContents !== false && body.includeContents !== 'false',
+              }),
+            });
+          }
+          if (method === 'GET' && route.tail[0] && route.tail.length === 1) {
+            return json(200, service.getProjectSharedMemory(
+              route.projectId,
+              decodeURIComponent(route.tail[0]),
+              { actorRole, actorId, agentId, now: body.now, includeContents: body.includeContents !== false && body.includeContents !== 'false' },
+            ));
+          }
+          if (method === 'POST' && !route.tail.length) {
+            const result = service.createProjectSharedMemory({ ...body, projectId: route.projectId, actorId });
+            return json(result.idempotent ? 200 : 201, {
+              memory: result.memory,
+              sharedMemory: result.sharedMemory,
+              idempotent: result.idempotent,
+              log: result.log,
+            });
+          }
+          if (method === 'POST' && route.tail[0] && route.tail[1] === 'revisions') {
+            const result = service.reviseProjectSharedMemory({
+              ...body,
+              projectId: route.projectId,
+              memoryId: decodeURIComponent(route.tail[0]),
+              actorId,
+            });
+            return json(result.idempotent ? 200 : 201, {
+              memory: result.memory,
+              sharedMemory: result.sharedMemory,
+              idempotent: result.idempotent,
+              log: result.log,
+            });
+          }
+          if (method === 'POST' && route.tail[0] && route.tail[1] === 'revoke') {
+            const result = service.revokeProjectSharedMemory({
+              ...body,
+              projectId: route.projectId,
+              memoryId: decodeURIComponent(route.tail[0]),
+              actorId,
+            });
+            return json(result.idempotent ? 200 : 201, {
+              memory: result.memory,
+              revocation: result.revocation,
+              sharedMemory: result.sharedMemory,
+              idempotent: result.idempotent,
+              log: result.log,
+            });
+          }
+          return json(405, { error: 'method-not-allowed', method, path });
+        }
         if (method === 'GET' && route.action === 'memory-readiness') {
-          return json(200, { projectMemoryReadiness: service.getProjectMemoryReadiness(route.projectId, { language }) });
+          return json(200, { projectMemoryReadiness: service.getProjectMemoryReadiness(route.projectId, { language, now: body.now }) });
         }
         if (method === 'GET' && route.action === 'budget-alert-readiness') {
           return json(200, { budgetAlertReadiness: service.getBudgetAlertReadiness(route.projectId, { language }) });
+        }
+        if (route.action === 'provider-budget-approvals') {
+          if (method === 'GET' && !route.tail.length) {
+            return json(200, {
+              providerBudgetApprovals: service.getProviderBudgetApprovals(route.projectId, { now: body.now }),
+            });
+          }
+          if (method === 'POST' && route.tail[0] && route.tail[1] === 'revoke') {
+            const result = service.revokeProviderBudgetApproval({
+              projectId: route.projectId,
+              approvalId: decodeURIComponent(route.tail[0]),
+              revokedBy: body.revokedBy || body.actorUserId || body.userId || '',
+              reason: body.reason || '',
+              now: body.now,
+            });
+            return json(200, {
+              providerBudgetApproval: result.providerBudgetApproval,
+              providerBudgetApprovals: result.providerBudgetApprovals,
+              log: result.log,
+            });
+          }
+          if (method === 'POST' && !route.tail.length) {
+            const result = service.createProviderBudgetApproval({ ...body, projectId: route.projectId });
+            return json(201, {
+              providerBudgetApproval: result.providerBudgetApproval,
+              providerBudgetApprovals: result.providerBudgetApprovals,
+              log: result.log,
+            });
+          }
+          return json(405, { error: 'method-not-allowed', method, path });
+        }
+        if (route.action === 'tool-grant-leases') {
+          if (method === 'GET' && !route.tail.length) {
+            return json(200, {
+              toolGrantGovernance: service.getToolGrantLeases(route.projectId, { now: body.now }),
+            });
+          }
+          if (method === 'POST' && route.tail[0] && route.tail[1] === 'revoke') {
+            const result = service.revokeToolGrantLease({
+              projectId: route.projectId,
+              leaseId: decodeURIComponent(route.tail[0]),
+              revokedBy: body.revokedBy || body.actorUserId || body.userId || '',
+              reason: body.reason || '',
+              now: body.now,
+            });
+            return json(200, {
+              toolGrantLease: result.toolGrantLease,
+              toolGrantGovernance: result.toolGrantGovernance,
+              log: result.log,
+              idempotent: result.idempotent,
+            });
+          }
+          if (method === 'POST' && !route.tail.length) {
+            const result = service.createToolGrantLease({ ...body, projectId: route.projectId });
+            return json(201, {
+              toolGrantLease: result.toolGrantLease,
+              toolGrantGovernance: result.toolGrantGovernance,
+              log: result.log,
+            });
+          }
+          return json(405, { error: 'method-not-allowed', method, path });
         }
         if (method === 'GET' && route.action === 'error-reporting-readiness') {
           return json(200, { errorReportingReadiness: service.getErrorReportingReadiness(route.projectId, { language }) });
@@ -2259,7 +2865,7 @@ export function createAgentProjectApi({ service, accessControl = {}, localAuth =
           return json(200, { artifactQualityAudit: service.getArtifactQualityAudit(route.projectId, { language }) });
         }
         if (method === 'GET' && route.action === 'submission-review-workflow') {
-          return json(200, { submissionReviewWorkflow: service.getSubmissionReviewWorkflow(route.projectId, { language }) });
+          return json(200, { submissionReviewWorkflow: service.getSubmissionReviewWorkflow(route.projectId, { language, now: body.now }) });
         }
         if (method === 'GET' && route.action === 'product-team-delivery-trace') {
           return json(200, { productTeamDeliveryTrace: service.getProductTeamDeliveryTrace(route.projectId, { language }) });
@@ -2437,6 +3043,21 @@ export function createAgentProjectApi({ service, accessControl = {}, localAuth =
           }
           return json(404, { error: 'workspace-route-not-found', path });
         }
+        if (method === 'POST' && route.action === 'tasks' && route.tail[0] && route.tail[1] === 'delegation') {
+          const result = service.changeTaskDelegation({
+            ...body,
+            projectId: route.projectId,
+            taskId: decodeURIComponent(route.tail[0]),
+            actorId: readHeader(request.headers, 'x-hofs-user-id') || body.actorId || body.userId || 'local-manager',
+          });
+          return json(result.idempotent ? 200 : 201, {
+            delegationChange: result.delegationChange,
+            notification: result.notification,
+            delegationGovernance: result.delegationGovernance,
+            idempotent: result.idempotent,
+            log: result.log,
+          });
+        }
         if (method === 'GET' && route.action === 'tasks') {
           if (!route.tail.length) {
             return json(200, { tasks: service.listTasks(route.projectId) });
@@ -2515,7 +3136,13 @@ export function createAgentProjectApi({ service, accessControl = {}, localAuth =
             });
           }
           if (method === 'POST' && route.tail[1] === 'submissions') {
-            const result = service.submitAgentArtifact({ projectId: route.projectId, agentId, ...body });
+            const result = service.submitAgentArtifact({
+              projectId: route.projectId,
+              agentId,
+          ...body,
+          traceId: request.traceId || body.traceId || null,
+          requestSpanId: request.requestSpanId || null,
+            });
             const resultProjectId = result.project?.id || route.projectId;
             const includeReadModels = shouldIncludeReadModels(body);
             return json(200, {
@@ -2537,7 +3164,13 @@ export function createAgentProjectApi({ service, accessControl = {}, localAuth =
             return json(400, { error: 'agent-artifact-draft-requires-async-handler' });
           }
           if (method === 'POST' && route.tail[1] === 'evidence-searches') {
-            const result = service.recordAgentEvidenceSearch({ projectId: route.projectId, agentId, ...body });
+            const result = service.recordAgentEvidenceSearch({
+              projectId: route.projectId,
+              agentId,
+              ...body,
+              traceId: request.traceId || body.traceId || null,
+              requestSpanId: request.requestSpanId || null,
+            });
             const resultProjectId = result.project?.id || route.projectId;
             const includeReadModels = shouldIncludeReadModels(body);
             return json(200, {
@@ -2559,7 +3192,13 @@ export function createAgentProjectApi({ service, accessControl = {}, localAuth =
             if (body.useProviderEvidenceSearch) {
               return json(400, { error: 'agent-work-cycle-provider-evidence-requires-async-handler' });
             }
-            const result = service.runAgentWorkCycle({ projectId: route.projectId, agentId, ...body });
+            const result = service.runAgentWorkCycle({
+              projectId: route.projectId,
+              agentId,
+              ...body,
+              traceId: request.traceId || body.traceId || null,
+              requestSpanId: request.requestSpanId || null,
+            });
             const resultProjectId = result.project?.id || route.projectId;
             const includeReadModels = shouldIncludeReadModels(body);
             return json(200, {
@@ -2889,6 +3528,36 @@ export function createAgentProjectApi({ service, accessControl = {}, localAuth =
           if (method === 'GET') {
             return json(200, { identitySessions: service.getIdentitySessions(route.projectId) });
           }
+          if (method === 'POST' && route.tail[0] && route.tail[1] === 'rotate') {
+            const includeReadModels = shouldIncludeReadModels(body);
+            const result = service.rotateIdentitySession({
+              projectId: route.projectId,
+              sessionId: decodeURIComponent(route.tail[0]),
+              rotatedBy: body.rotatedBy || body.actorUserId || body.userId || '',
+              ttlMs: body.ttlMs,
+              expiresAt: body.expiresAt,
+              audiences: body.audiences,
+              now: body.now,
+            });
+            const resultProjectId = result.project?.id || route.projectId;
+            return json(200, {
+              ...publicProjectResult(result, resultProjectId, language, { includeReadModels }),
+              identitySession: result.identitySession,
+              rotatedIdentitySession: result.rotatedIdentitySession,
+              identitySessions: result.identitySessions,
+              token: result.token,
+              tokenContract: result.tokenContract,
+              log: result.log,
+              ...(includeReadModels
+                ? {
+                    securityBoundary: service.getSecurityBoundary(resultProjectId, { language }),
+                    managerReadyPackage: service.getManagerReadyPackage(resultProjectId, { language }),
+                  }
+                : securityBoundaryReadModels(resultProjectId, {
+                    identitySessionsRoute: `/projects/${resultProjectId}/identity-sessions`,
+                  })),
+            });
+          }
           if (method === 'POST' && route.tail[0] && route.tail[1] === 'revoke') {
             const includeReadModels = shouldIncludeReadModels(body);
             const result = service.revokeIdentitySession({
@@ -2978,6 +3647,24 @@ export function createAgentProjectApi({ service, accessControl = {}, localAuth =
         }
         if (method === 'GET' && route.action === 'persistence-migration-dry-run') {
           return json(200, { persistenceMigrationDryRun: service.getPersistenceMigrationDryRun(route.projectId, { language }) });
+        }
+        if (route.action === 'dead-letters') {
+          const localRequest = resolveLocalAuthRequest(request);
+          const actorId = localRequest?.verified
+            ? localRequest.verification.user.id
+            : readHeader(request.headers, 'x-hofs-user-id') || 'local-dead-letter-operator';
+          if (method === 'GET' && route.tail.length === 0) {
+            return json(200, { deadLetters: service.getProjectDeadLetters(route.projectId, { ...body, language }) });
+          }
+          if (method === 'POST' && route.tail[1] === 'replay') {
+            const result = service.replayProjectDeadLetter({ ...body, projectId: route.projectId, deadLetterId: route.tail[0], actorId });
+            return json(200, { ...publicProjectResult(result, route.projectId, language, { includeReadModels: false }), deadLetterDisposition: result.deadLetterDisposition, deadLetterReplay: result.deadLetterReplay, deadLetters: result.deadLetters, idempotent: result.idempotent });
+          }
+          if (method === 'POST' && route.tail[1] === 'close') {
+            const result = service.closeProjectDeadLetter({ ...body, projectId: route.projectId, deadLetterId: route.tail[0], actorId });
+            return json(200, { ...publicProjectResult(result, route.projectId, language, { includeReadModels: false }), deadLetterDisposition: result.deadLetterDisposition, deadLetters: result.deadLetters, idempotent: result.idempotent });
+          }
+          return json(405, { error: 'method-not-allowed', method, path });
         }
         if (method === 'GET' && route.action === 'persistence-adapter-plan') {
           return json(200, { persistenceAdapterPlan: service.getPersistenceAdapterPlan(route.projectId, { language }) });
@@ -3305,6 +3992,282 @@ export function createAgentProjectApi({ service, accessControl = {}, localAuth =
         if (method === 'GET' && route.action === 'manager-action-queue') {
           return json(200, service.getManagerActionQueue(route.projectId, { language }));
         }
+        if (method === 'GET' && route.action === 'autonomy-governor') {
+          return json(200, { autonomyGovernor: service.getLocalAutonomyGovernor(route.projectId, { language, now: body.now }) });
+        }
+        if (method === 'GET' && route.action === 'learning-program') {
+          return json(200, { learningProgram: service.getLocalLearningProgram(route.projectId, { language, now: body.now }) });
+        }
+        if (method === 'GET' && route.action === 'teaching-safety') {
+          return json(200, { teachingSafety: service.getLocalTeachingSafety(route.projectId, { language, now: body.now }) });
+        }
+        if (method === 'GET' && route.action === 'academic-writing-pipeline') {
+          return json(200, { academicWritingPipeline: service.getLocalAcademicWritingPipeline(route.projectId, { language, now: body.now }) });
+        }
+        if (method === 'GET' && route.action === 'citation-integrity') {
+          return json(200, { citationIntegrity: service.getLocalCitationIntegrity(route.projectId, { language, now: body.now }) });
+        }
+        if (method === 'POST' && route.action === 'citation-integrity' && route.tail[0] === 'assessments') {
+          const result = service.recordLocalCitationAssessment({ projectId: route.projectId, ...body });
+          return json(result.idempotent ? 200 : 201, result);
+        }
+        if (method === 'POST' && route.action === 'citation-integrity' && route.tail[0] === 'audits') {
+          const result = service.createLocalCitationIntegrityAudit({ projectId: route.projectId, ...body });
+          return json(result.idempotent ? 200 : 201, result);
+        }
+        if (method === 'GET' && route.action === 'investigation-case') {
+          return json(200, { investigationCaseWorkflow: service.getLocalInvestigationCaseWorkflow(route.projectId, { language, now: body.now }) });
+        }
+        if (method === 'POST' && route.action === 'investigation-case' && route.tail[0] === 'cases') {
+          const result = service.createLocalInvestigationCase({ projectId: route.projectId, ...body });
+          return json(result.idempotent ? 200 : 201, result);
+        }
+        if (method === 'POST' && route.action === 'investigation-case' && route.tail[0] === 'evidence' && !route.tail[1]) {
+          const result = service.recordLocalInvestigationEvidence({ projectId: route.projectId, ...body });
+          return json(result.idempotent ? 200 : 201, result);
+        }
+        if (method === 'POST' && route.action === 'investigation-case' && route.tail[0] === 'evidence' && route.tail[2] === 'custody-events') {
+          const result = service.recordLocalInvestigationCustodyEvent({ projectId: route.projectId, evidenceId: decodeURIComponent(route.tail[1]), ...body });
+          return json(result.idempotent ? 200 : 201, result);
+        }
+        if (method === 'POST' && route.action === 'investigation-case' && route.tail[0] === 'contradictions' && route.tail[2] === 'resolutions') {
+          const result = service.resolveLocalInvestigationContradiction({ projectId: route.projectId, contradictionId: decodeURIComponent(route.tail[1]), ...body });
+          return json(result.idempotent ? 200 : 201, result);
+        }
+        if (method === 'POST' && route.action === 'investigation-case' && route.tail[0] === 'conclusions') {
+          const result = service.createLocalInvestigationConclusion({ projectId: route.projectId, ...body });
+          return json(result.idempotent ? 200 : 201, result);
+        }
+        if (method === 'POST' && route.action === 'investigation-case' && route.tail[0] === 'closures') {
+          const result = service.closeLocalInvestigationCase({ projectId: route.projectId, ...body });
+          return json(result.idempotent ? 200 : 201, result);
+        }
+        if (method === 'GET' && route.action === 'investigation-safety') {
+          return json(200, { investigationSafety: service.getLocalInvestigationSafety(route.projectId, { language, now: body.now }) });
+        }
+        if (method === 'POST' && route.action === 'investigation-safety' && route.tail[0] === 'policies') {
+          const result = service.createLocalInvestigationSafetyPolicy({ projectId: route.projectId, ...body });
+          return json(result.idempotent ? 200 : 201, result);
+        }
+        if (method === 'POST' && route.action === 'investigation-safety' && route.tail[0] === 'evaluate') {
+          const result = service.evaluateLocalInvestigationSafety({ projectId: route.projectId, ...body });
+          return json(result.idempotent ? 200 : 201, result);
+        }
+        if (method === 'POST' && route.action === 'investigation-safety' && route.tail[0] === 'decisions' && route.tail[2] === 'resolve') {
+          const result = service.resolveLocalInvestigationSafetyDecision({ projectId: route.projectId, decisionId: decodeURIComponent(route.tail[1]), ...body });
+          return json(result.idempotent ? 200 : 201, result);
+        }
+        if (method === 'GET' && route.action === 'technical-delivery-workflow') {
+          return json(200, { technicalDeliveryWorkflow: service.getLocalTechnicalDeliveryWorkflow(route.projectId, { language, now: body.now }) });
+        }
+        if (method === 'POST' && route.action === 'technical-delivery-workflow' && route.tail[0] === 'plans') {
+          const result = service.createLocalTechnicalDeliveryPlan({ projectId: route.projectId, ...body });
+          return json(result.idempotent ? 200 : 201, result);
+        }
+        if (method === 'POST' && route.action === 'technical-delivery-workflow' && route.tail[0] === 'verifications') {
+          const result = service.createLocalTechnicalDeliveryVerification({ projectId: route.projectId, ...body });
+          return json(result.idempotent ? 200 : 201, result);
+        }
+        if (method === 'POST' && route.action === 'technical-delivery-workflow' && route.tail[0] === 'reviews') {
+          const result = service.createLocalTechnicalDeliveryReview({ projectId: route.projectId, ...body });
+          return json(result.idempotent ? 200 : 201, result);
+        }
+        if (method === 'POST' && route.action === 'technical-delivery-workflow' && route.tail[0] === 'releases') {
+          const result = service.createLocalTechnicalDeliveryRelease({ projectId: route.projectId, ...body });
+          return json(result.idempotent ? 200 : 201, result);
+        }
+        if (method === 'GET' && route.action === 'engineering-security') {
+          return json(200, { engineeringSecurity: service.getLocalEngineeringSecurity(route.projectId, { language, now: body.now }) });
+        }
+        if (method === 'POST' && route.action === 'engineering-security' && route.tail[0] === 'scans') {
+          const result = service.createLocalEngineeringSecurityScan({ projectId: route.projectId, ...body });
+          return json(result.idempotent ? 200 : 201, result);
+        }
+        if (method === 'POST' && route.action === 'engineering-security' && route.tail[0] === 'remediations') {
+          const result = service.createLocalEngineeringSecurityRemediation({ projectId: route.projectId, ...body });
+          return json(result.idempotent ? 200 : 201, result);
+        }
+        if (method === 'POST' && route.action === 'engineering-security' && route.tail[0] === 'exception-requests' && !route.tail[1]) {
+          const result = service.createLocalEngineeringSecurityExceptionRequest({ projectId: route.projectId, ...body });
+          return json(result.idempotent ? 200 : 201, result);
+        }
+        if (method === 'POST' && route.action === 'engineering-security' && route.tail[0] === 'exception-requests' && route.tail[2] === 'approvals') {
+          const result = service.createLocalEngineeringSecurityExceptionApproval({ projectId: route.projectId, requestId: decodeURIComponent(route.tail[1]), ...body });
+          return json(result.idempotent ? 200 : 201, result);
+        }
+        if (method === 'POST' && route.action === 'engineering-security' && route.tail[0] === 'attestations') {
+          const result = service.createLocalEngineeringSecurityAttestation({ projectId: route.projectId, ...body });
+          return json(result.idempotent ? 200 : 201, result);
+        }
+        if (method === 'GET' && route.action === 'creative-studio-workflow') {
+          return json(200, { creativeStudioWorkflow: service.getLocalCreativeStudioWorkflow(route.projectId, { language, now: body.now }) });
+        }
+        if (method === 'POST' && route.action === 'creative-studio-workflow' && route.tail[0] === 'briefs') {
+          const result = service.createLocalCreativeBrief({ projectId: route.projectId, ...body });
+          return json(result.idempotent ? 200 : 201, result);
+        }
+        if (method === 'POST' && route.action === 'creative-studio-workflow' && route.tail[0] === 'iterations') {
+          const result = service.createLocalCreativeIteration({ projectId: route.projectId, ...body });
+          return json(result.idempotent ? 200 : 201, result);
+        }
+        if (method === 'POST' && route.action === 'creative-studio-workflow' && route.tail[0] === 'critiques') {
+          const result = service.createLocalCreativeCritique({ projectId: route.projectId, ...body });
+          return json(result.idempotent ? 200 : 201, result);
+        }
+        if (method === 'POST' && route.action === 'creative-studio-workflow' && route.tail[0] === 'exports') {
+          const result = service.createLocalCreativeExport({ projectId: route.projectId, ...body });
+          return json(result.idempotent ? 200 : 201, result);
+        }
+        if (method === 'POST' && route.action === 'creative-studio-workflow' && route.tail[0] === 'handoffs' && !route.tail[1]) {
+          const result = service.createLocalCreativeHandoff({ projectId: route.projectId, ...body });
+          return json(result.idempotent ? 200 : 201, result);
+        }
+        if (method === 'POST' && route.action === 'creative-studio-workflow' && route.tail[0] === 'handoffs' && route.tail[2] === 'acknowledgements') {
+          const result = service.acknowledgeLocalCreativeHandoff({ projectId: route.projectId, handoffId: decodeURIComponent(route.tail[1]), ...body });
+          return json(result.idempotent ? 200 : 201, result);
+        }
+        if (method === 'GET' && route.action === 'rights-provenance') {
+          return json(200, { rightsProvenance: service.getLocalRightsProvenance(route.projectId, { language, now: body.now }) });
+        }
+        if (method === 'POST' && route.action === 'rights-provenance' && route.tail[0] === 'asset-declarations') {
+          const result = service.createLocalRightsAssetDeclaration({ projectId: route.projectId, ...body });
+          return json(result.idempotent ? 200 : 201, result);
+        }
+        if (method === 'POST' && route.action === 'rights-provenance' && route.tail[0] === 'generation-provenance') {
+          const result = service.createLocalRightsGenerationProvenance({ projectId: route.projectId, ...body });
+          return json(result.idempotent ? 200 : 201, result);
+        }
+        if (method === 'POST' && route.action === 'rights-provenance' && route.tail[0] === 'derivative-lineage') {
+          const result = service.createLocalRightsDerivativeLineage({ projectId: route.projectId, ...body });
+          return json(result.idempotent ? 200 : 201, result);
+        }
+        if (method === 'POST' && route.action === 'rights-provenance' && route.tail[0] === 'audits') {
+          const result = service.createLocalRightsExportAudit({ projectId: route.projectId, ...body });
+          return json(result.idempotent ? 200 : 201, result);
+        }
+        if (method === 'GET' && route.action === 'local-artifact-storage') {
+          return json(200, { localArtifactStorage: service.getLocalArtifactStorage(route.projectId, { now: body.now }) });
+        }
+        if (method === 'POST' && route.action === 'local-artifact-storage' && route.tail[0] === 'legal-holds' && !route.tail[1]) {
+          const localRequest = resolveLocalAuthRequest(request);
+          const actorId = localRequest?.verified
+            ? localRequest.verification.user.id
+            : readHeader(request.headers, 'x-hofs-user-id') || 'local-manager';
+          const result = service.placeLocalArtifactLegalHold({ projectId: route.projectId, ...body, actorId });
+          return json(201, result);
+        }
+        if (route.action === 'durable-task-queue') {
+          const localRequest = resolveLocalAuthRequest(request);
+          const actorId = localRequest?.verified
+            ? localRequest.verification.user.id
+            : readHeader(request.headers, 'x-hofs-user-id') || 'local-queue-operator';
+          if (method === 'GET' && !route.tail.length) {
+            return json(200, { durableTaskQueue: service.getDurableTaskQueue(route.projectId, { now: body.now }) });
+          }
+          if (method === 'POST' && route.tail[0] === 'scan') {
+            return json(201, service.scanDurableTaskQueue({ ...body, projectId: route.projectId, actorId }));
+          }
+          if (method === 'POST' && route.tail[0] === 'jobs' && route.tail[2] === 'cancel') {
+            const result = service.cancelDurableTaskQueueJob({
+              ...body,
+              projectId: route.projectId,
+              jobId: decodeURIComponent(route.tail[1]),
+              actorId,
+            });
+            return json(result.idempotent ? 200 : 201, result);
+          }
+          return json(405, { error: 'method-not-allowed', method, path });
+        }
+        if (route.action === 'idempotent-executions') {
+          const localRequest = resolveLocalAuthRequest(request);
+          const actorId = localRequest?.verified
+            ? localRequest.verification.user.id
+            : readHeader(request.headers, 'x-hofs-user-id') || 'local-idempotency-operator';
+          if (method === 'GET' && !route.tail.length) {
+            return json(200, { idempotentExecutionGovernance: service.getIdempotentExecutionGovernance(route.projectId, { now: body.now }) });
+          }
+          if (method === 'POST' && route.tail[0] && route.tail[1] === 'reconcile') {
+            const result = service.reconcileIdempotentExecution({
+              ...body,
+              projectId: route.projectId,
+              operationId: decodeURIComponent(route.tail[0]),
+              actorId,
+            });
+            return json(201, result);
+          }
+          return json(405, { error: 'method-not-allowed', method, path });
+        }
+        if (method === 'GET' && route.action === 'rate-limit-governance') {
+          return json(200, { rateLimitGovernance: service.getLocalRateLimitGovernance(route.projectId, { now: body.now }) });
+        }
+        if (method === 'POST' && route.action === 'local-artifact-storage' && route.tail[0] === 'legal-holds' && route.tail[2] === 'release') {
+          const localRequest = resolveLocalAuthRequest(request);
+          const actorId = localRequest?.verified
+            ? localRequest.verification.user.id
+            : readHeader(request.headers, 'x-hofs-user-id') || 'local-manager';
+          const result = service.releaseLocalArtifactLegalHold({ projectId: route.projectId, holdId: decodeURIComponent(route.tail[1]), ...body, actorId });
+          return json(201, result);
+        }
+        if (method === 'POST' && route.action === 'academic-writing-pipeline' && route.tail[0] === 'blueprints' && !route.tail[1]) {
+          const result = service.createLocalAcademicWritingBlueprint({ projectId: route.projectId, ...body });
+          return json(result.idempotent ? 200 : 201, result);
+        }
+        if (method === 'POST' && route.action === 'academic-writing-pipeline' && route.tail[0] === 'blueprints' && route.tail[2] === 'revisions') {
+          const result = service.reviseLocalAcademicWritingBlueprint({ projectId: route.projectId, blueprintId: decodeURIComponent(route.tail[1]), ...body });
+          return json(result.idempotent ? 200 : 201, result);
+        }
+        if (method === 'POST' && route.action === 'academic-writing-pipeline' && route.tail[0] === 'drafts' && !route.tail[1]) {
+          const result = service.recordLocalAcademicDraft({ projectId: route.projectId, ...body });
+          return json(result.idempotent ? 200 : 201, result);
+        }
+        if (method === 'POST' && route.action === 'academic-writing-pipeline' && route.tail[0] === 'drafts' && route.tail[2] === 'revisions') {
+          const result = service.recordLocalAcademicRevision({ projectId: route.projectId, draftId: decodeURIComponent(route.tail[1]), ...body });
+          return json(result.idempotent ? 200 : 201, result);
+        }
+        if (method === 'POST' && route.action === 'academic-writing-pipeline' && route.tail[0] === 'finalize') {
+          const result = service.finalizeLocalAcademicWriting({ projectId: route.projectId, ...body });
+          return json(result.idempotent ? 200 : 201, result);
+        }
+        if (method === 'POST' && route.action === 'teaching-safety' && route.tail[0] === 'policies' && !route.tail[1]) {
+          const result = service.createLocalTeachingSafetyPolicy({ projectId: route.projectId, ...body });
+          return json(result.idempotent ? 200 : 201, result);
+        }
+        if (method === 'POST' && route.action === 'teaching-safety' && route.tail[0] === 'policies' && route.tail[2] === 'revisions') {
+          const result = service.reviseLocalTeachingSafetyPolicy({ projectId: route.projectId, policyId: decodeURIComponent(route.tail[1]), ...body });
+          return json(result.idempotent ? 200 : 201, result);
+        }
+        if (method === 'POST' && route.action === 'teaching-safety' && route.tail[0] === 'evaluate') {
+          const result = service.evaluateLocalTeachingSafety({ projectId: route.projectId, ...body });
+          return json(result.idempotent ? 200 : 201, result);
+        }
+        if (method === 'POST' && route.action === 'teaching-safety' && route.tail[0] === 'decisions' && route.tail[2] === 'resolve') {
+          const result = service.resolveLocalTeachingSafetyDecision({ projectId: route.projectId, decisionId: decodeURIComponent(route.tail[1]), ...body });
+          return json(result.idempotent ? 200 : 201, result);
+        }
+        if (method === 'POST' && route.action === 'learning-program' && route.tail[0] === 'plans' && !route.tail[1]) {
+          const result = service.createLocalLearningPlan({ projectId: route.projectId, ...body });
+          return json(result.idempotent ? 200 : 201, result);
+        }
+        if (method === 'POST' && route.action === 'learning-program' && route.tail[0] === 'plans' && route.tail[2] === 'revisions') {
+          const result = service.reviseLocalLearningPlan({ projectId: route.projectId, planId: decodeURIComponent(route.tail[1]), ...body });
+          return json(result.idempotent ? 200 : 201, result);
+        }
+        if (method === 'POST' && route.action === 'learning-program' && route.tail[0] === 'attempts') {
+          const result = service.recordLocalLearningAttempt({ projectId: route.projectId, ...body });
+          return json(result.idempotent ? 200 : 201, result);
+        }
+        if (method === 'POST' && route.action === 'autonomy-governor' && route.tail[0] === 'policies' && !route.tail[1]) {
+          const result = service.createLocalAutonomyPolicy({ projectId: route.projectId, ...body });
+          return json(result.idempotent ? 200 : 201, result);
+        }
+        if (method === 'POST' && route.action === 'autonomy-governor' && route.tail[0] === 'policies' && route.tail[2] === 'revisions') {
+          const result = service.reviseLocalAutonomyPolicy({ projectId: route.projectId, policyId: decodeURIComponent(route.tail[1]), ...body });
+          return json(result.idempotent ? 200 : 201, result);
+        }
+        if (method === 'POST' && route.action === 'autonomy-governor' && route.tail[0] === 'commands') {
+          const result = service.commandLocalAutonomy({ projectId: route.projectId, ...body });
+          return json(result.idempotent ? 200 : 201, result);
+        }
         if (method === 'GET' && route.action === 'autonomous-run-control' && route.tail[0] === 'sessions') {
           return json(200, { autonomousRunControlSessions: service.getAutonomousRunControlSessions(route.projectId, { language }) });
         }
@@ -3362,6 +4325,26 @@ export function createAgentProjectApi({ service, accessControl = {}, localAuth =
         }
         if (method === 'POST' && route.action === 'autonomous-run-control' && route.tail[0] === 'sessions' && route.tail[2] === 'pause') {
           const result = service.pauseAutonomousRunControlSession({
+            projectId: route.projectId,
+            sessionId: decodeURIComponent(route.tail[1] || 'active'),
+            ...body,
+          });
+          const resultProjectId = result.project?.id || route.projectId;
+          const includeReadModels = shouldIncludeReadModels(body);
+          return json(200, {
+            ...publicProjectResult(result, resultProjectId, language, { includeReadModels }),
+            autonomousRunControlSession: result.autonomousRunControlSession,
+            autonomousRunControlSessions: result.autonomousRunControlSessions,
+            autonomousRunControl: result.autonomousRunControl,
+            ...(includeReadModels ? {} : autonomousRunControlReadModels(
+              resultProjectId,
+              result.autonomousRunControlSession?.agentIds?.[0],
+              result.autonomousRunControlSession?.id || decodeURIComponent(route.tail[1] || 'active'),
+            )),
+          });
+        }
+        if (method === 'POST' && route.action === 'autonomous-run-control' && route.tail[0] === 'sessions' && route.tail[2] === 'cancel') {
+          const result = service.cancelAutonomousRunControlSession({
             projectId: route.projectId,
             sessionId: decodeURIComponent(route.tail[1] || 'active'),
             ...body,

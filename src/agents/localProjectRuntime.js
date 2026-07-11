@@ -1,4 +1,5 @@
 import {
+  appendFileSync,
   existsSync,
   mkdirSync,
   readdirSync,
@@ -7,12 +8,68 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { dirname, relative, resolve, sep } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import process from 'node:process';
+import { replaceFileWithRetry } from './atomicFileReplace.js';
 
 const DEFAULT_MAX_READ_BYTES = 512 * 1024;
 const DEFAULT_MAX_LIST_ENTRIES = 500;
+const ARTIFACT_LEDGER_GENESIS_HASH = '0'.repeat(64);
+
+function canonicalize(value) {
+  if (Array.isArray(value)) return value.map(canonicalize);
+  if (!value || typeof value !== 'object') return value;
+  return Object.keys(value).sort().reduce((result, key) => {
+    if (value[key] !== undefined) result[key] = canonicalize(value[key]);
+    return result;
+  }, {});
+}
+
+function sha256Json(value) {
+  return createHash('sha256').update(JSON.stringify(canonicalize(value))).digest('hex');
+}
+
+function artifactEventHash(event = {}) {
+  const { eventHash: _eventHash, ...base } = event;
+  return createHash('sha256').update(JSON.stringify(base)).digest('hex');
+}
+
+function readArtifactStorageLedger(filePath) {
+  if (!existsSync(filePath)) return [];
+  const raw = readFileSync(filePath, 'utf8');
+  if (!raw.trim()) return [];
+  const rows = raw.split(/\r?\n/).filter((line) => line.trim()).map((line) => {
+    try {
+      return JSON.parse(line);
+    } catch {
+      throw new Error('artifact-storage-ledger-malformed');
+    }
+  });
+  let previousEventHash = ARTIFACT_LEDGER_GENESIS_HASH;
+  rows.forEach((row, index) => {
+    if (row.schemaVersion !== 'local-artifact-storage-event/v1' || row.sequence !== index + 1
+      || row.previousEventHash !== previousEventHash || row.eventHash !== artifactEventHash(row)) {
+      throw new Error('artifact-storage-ledger-integrity-invalid');
+    }
+    previousEventHash = row.eventHash;
+  });
+  return rows;
+}
+
+function appendArtifactStorageEvent(filePath, input = {}) {
+  const rows = readArtifactStorageLedger(filePath);
+  const base = {
+    schemaVersion: 'local-artifact-storage-event/v1',
+    ...input,
+    sequence: rows.length + 1,
+    previousEventHash: rows.at(-1)?.eventHash || ARTIFACT_LEDGER_GENESIS_HASH,
+  };
+  const event = { ...base, eventHash: artifactEventHash(base) };
+  appendFileSync(filePath, `${JSON.stringify(event)}\n`, 'utf8');
+  return event;
+}
 
 function safeProjectId(projectId = 'project') {
   return String(projectId || 'project')
@@ -69,16 +126,38 @@ function writeJson(filePath, value) {
   writeFileSync(filePath, JSON.stringify(value, null, 2), 'utf8');
 }
 
+function writeJsonAtomic(filePath, value) {
+  mkdirSync(dirname(filePath), { recursive: true });
+  const tempPath = `${filePath}.${process.pid}.tmp`;
+  writeFileSync(tempPath, JSON.stringify(value, null, 2), 'utf8');
+  replaceFileWithRetry(tempPath, filePath);
+}
+
+function readChecksummedJson(filePath, errorCode) {
+  if (!existsSync(filePath)) return null;
+  let value;
+  try {
+    value = JSON.parse(readFileSync(filePath, 'utf8'));
+  } catch {
+    throw new Error(errorCode);
+  }
+  const { checksum, ...base } = value || {};
+  if (!checksum || checksum !== sha256Json(base)) throw new Error(errorCode);
+  return value;
+}
+
 export function createLocalProjectRuntime({
   rootPath,
   enableCommandExecution = false,
   allowedCommands = [],
   maxReadBytes = DEFAULT_MAX_READ_BYTES,
+  artifactRetentionDays = 365,
 } = {}) {
   if (!rootPath) throw new Error('createLocalProjectRuntime requires rootPath.');
   const resolvedRoot = resolve(rootPath);
   mkdirSync(resolvedRoot, { recursive: true });
   const commandAllowlist = new Set((allowedCommands || []).map((item) => String(item).toLowerCase()).filter(Boolean));
+  const normalizedArtifactRetentionDays = Math.max(1, Math.min(3650, Number(artifactRetentionDays) || 365));
 
   const projectRoot = (projectId) => safeJoin(resolvedRoot, safeProjectId(projectId));
   const projectPaths = (projectId) => {
@@ -216,6 +295,13 @@ export function createLocalProjectRuntime({
         progress: project.progress || 0,
         team: project.team || [],
         tasks: project.tasks || [],
+        sharedMemory: {
+          entryCount: project.localProjectMemoryEntries?.length || 0,
+          revocationCount: project.localProjectMemoryRevocations?.length || 0,
+          latestEntryChecksum: project.localProjectMemoryEntries?.[0]?.checksum || null,
+          latestRevocationChecksum: project.localProjectMemoryRevocations?.[0]?.checksum || null,
+          storesRawContent: false,
+        },
         updatedAt: new Date().toISOString(),
       });
       writeJson(safeJoin(localRuntime.rootPath, 'manifest.json'), {
@@ -231,15 +317,33 @@ export function createLocalProjectRuntime({
       const paths = ensureProjectDirs(projectId);
       const relativePath = artifact.relativePath || artifact.path || `${artifact.id || Date.now()}.md`;
       const absolutePath = safeJoin(paths.artifacts, relativePath);
+      const content = String(artifact.content || '');
+      const contentSha256 = createHash('sha256').update(content, 'utf8').digest('hex');
+      const projectRetentionDays = Math.max(1, Math.min(3650, Math.round(Number(
+        context.project?.projectSettings?.privacyPolicy?.retentionDays ?? normalizedArtifactRetentionDays,
+      ) || normalizedArtifactRetentionDays)));
+      const storageLedgerPath = safeJoin(paths.artifacts, '.artifact-storage.jsonl');
+      readArtifactStorageLedger(storageLedgerPath);
+      const immutableRelativePath = `.versions/${contentSha256.slice(0, 2)}/${contentSha256}`;
+      const immutableAbsolutePath = safeJoin(paths.artifacts, immutableRelativePath);
+      mkdirSync(dirname(immutableAbsolutePath), { recursive: true });
+      if (existsSync(immutableAbsolutePath)) {
+        const existingChecksum = createHash('sha256').update(readFileSync(immutableAbsolutePath)).digest('hex');
+        if (existingChecksum !== contentSha256) throw new Error('artifact-canonical-integrity-invalid');
+      } else {
+        const immutableTempPath = `${immutableAbsolutePath}.tmp`;
+        writeFileSync(immutableTempPath, content, 'utf8');
+        replaceFileWithRetry(immutableTempPath, immutableAbsolutePath);
+      }
       mkdirSync(dirname(absolutePath), { recursive: true });
-      writeFileSync(absolutePath, artifact.content || '', 'utf8');
+      writeFileSync(absolutePath, content, 'utf8');
       const workspacePath = context.project?.localRuntime?.workspacePath;
       let workspaceFile = null;
       if (workspacePath && existsSync(workspacePath) && statSync(workspacePath).isDirectory()) {
         const workspaceRelativePath = artifact.workspaceRelativePath || `agent-artifacts/${relativePath}`;
         const workspaceAbsolutePath = safeJoin(workspacePath, workspaceRelativePath);
         mkdirSync(dirname(workspaceAbsolutePath), { recursive: true });
-        writeFileSync(workspaceAbsolutePath, artifact.content || '', 'utf8');
+        writeFileSync(workspaceAbsolutePath, content, 'utf8');
         workspaceFile = {
           absolutePath: workspaceAbsolutePath,
           path: workspaceAbsolutePath,
@@ -247,16 +351,359 @@ export function createLocalProjectRuntime({
           url: `file://${workspaceAbsolutePath.replace(/\\/g, '/')}`,
         };
       }
+      const createdAt = new Date(Date.parse(context.now) || Date.now()).toISOString();
+      const storageEvent = appendArtifactStorageEvent(storageLedgerPath, {
+        id: `artifact_event_${createHash('sha256').update(`${projectId}:${artifact.id || relativePath}:${contentSha256}:${createdAt}`).digest('hex').slice(0, 24)}`,
+        eventType: 'artifact-stored',
+        projectId,
+        artifactId: String(artifact.id || relativePath),
+        contentSha256,
+        contentAddress: `sha256:${contentSha256}`,
+        byteLength: Buffer.byteLength(content, 'utf8'),
+        immutableRelativePath,
+        projectionRelativePath: relative(paths.artifacts, absolutePath).replace(/\\/g, '/'),
+        workspaceRelativePath: workspaceFile?.relativePath || null,
+        retentionClass: `project-artifact-${projectRetentionDays}d`,
+        retainUntil: new Date(Date.parse(createdAt) + projectRetentionDays * 86_400_000).toISOString(),
+        actorId: context.agent?.id || context.agentId || null,
+        createdAt,
+        storesRawContent: false,
+      });
       return {
         absolutePath,
         path: absolutePath,
         relativePath: relative(paths.artifacts, absolutePath).replace(/\\/g, '/'),
         url: `file://${absolutePath.replace(/\\/g, '/')}`,
+        contentSha256,
+        contentAddress: `sha256:${contentSha256}`,
+        immutableAbsolutePath,
+        immutableRelativePath,
+        immutableUrl: `file://${immutableAbsolutePath.replace(/\\/g, '/')}`,
         workspaceFile,
         workspaceAbsolutePath: workspaceFile?.absolutePath || null,
         workspaceRelativePath: workspaceFile?.relativePath || null,
         workspaceUrl: workspaceFile?.url || null,
+        storageEvent,
+        storageLedgerPath,
       };
+    },
+    auditArtifactStore(project = {}, { now = new Date().toISOString() } = {}) {
+      if (!project?.id) throw new Error('artifact-storage-project-required');
+      const paths = ensureProjectDirs(project.id);
+      const storageLedgerPath = safeJoin(paths.artifacts, '.artifact-storage.jsonl');
+      let events = [];
+      const integrityFindings = [];
+      try {
+        events = readArtifactStorageLedger(storageLedgerPath);
+      } catch (error) {
+        integrityFindings.push({ code: 'ledger-integrity-invalid', targetId: storageLedgerPath, reason: error.message || String(error) });
+      }
+      const storedEvents = events.filter((row) => row.eventType === 'artifact-stored');
+      const retentionDeletionEvents = events.filter((row) => row.eventType === 'artifact-retention-deleted');
+      const latestDeletionByContent = new Map();
+      retentionDeletionEvents.forEach((event) => latestDeletionByContent.set(event.contentSha256, event));
+      const contentGroups = new Map();
+      storedEvents.forEach((event) => {
+        if (!contentGroups.has(event.contentSha256)) contentGroups.set(event.contentSha256, []);
+        contentGroups.get(event.contentSha256).push(event);
+      });
+      const holdMap = new Map();
+      events.forEach((event) => {
+        if (event.eventType === 'legal-hold-placed') holdMap.set(event.holdId, { ...event, released: false });
+        if (event.eventType === 'legal-hold-released') {
+          const hold = holdMap.get(event.releaseOfHoldId);
+          if (!hold || hold.released) integrityFindings.push({ code: 'legal-hold-lineage-invalid', targetId: event.id });
+          else hold.released = true;
+        }
+      });
+      const activeHolds = [...holdMap.values()].filter((row) => !row.released);
+      const projectionFindings = [];
+      const latestProjectionEvents = new Map();
+      const latestWorkspaceEvents = new Map();
+      storedEvents.forEach((event) => {
+        if (event.projectionRelativePath) latestProjectionEvents.set(event.projectionRelativePath, event);
+        if (event.workspaceRelativePath) latestWorkspaceEvents.set(event.workspaceRelativePath, event);
+      });
+      const checkProjection = (event, absolutePath, kind) => {
+        if (!existsSync(absolutePath)) {
+          projectionFindings.push({ code: `${kind}-projection-missing`, targetId: event.id, path: kind === 'workspace' ? event.workspaceRelativePath : event.projectionRelativePath });
+          return;
+        }
+        const actual = createHash('sha256').update(readFileSync(absolutePath)).digest('hex');
+        if (actual !== event.contentSha256) projectionFindings.push({ code: `${kind}-projection-drift`, targetId: event.id, path: kind === 'workspace' ? event.workspaceRelativePath : event.projectionRelativePath });
+      };
+      latestProjectionEvents.forEach((event) => {
+        const deletion = latestDeletionByContent.get(event.contentSha256);
+        if (!deletion || deletion.sequence < event.sequence) checkProjection(event, safeJoin(paths.artifacts, event.projectionRelativePath), 'artifact');
+      });
+      const workspacePath = project.localRuntime?.workspacePath;
+      if (workspacePath && existsSync(workspacePath)) latestWorkspaceEvents.forEach((event) => checkProjection(event, safeJoin(workspacePath, event.workspaceRelativePath), 'workspace'));
+      const nowMs = Date.parse(now) || Date.now();
+      const canonicalEntries = [...contentGroups.entries()].map(([contentSha256, references]) => {
+        const immutableRelativePath = references[0].immutableRelativePath;
+        const immutableAbsolutePath = safeJoin(paths.artifacts, immutableRelativePath);
+        let canonicalStatus = 'ready';
+        const latestStoredSequence = Math.max(...references.map((row) => row.sequence || 0));
+        const deletionEvent = latestDeletionByContent.get(contentSha256);
+        const retentionDeleted = Boolean(deletionEvent && deletionEvent.sequence > latestStoredSequence);
+        if (retentionDeleted && !existsSync(immutableAbsolutePath)) {
+          canonicalStatus = 'retention-deleted';
+        } else if (!existsSync(immutableAbsolutePath)) {
+          canonicalStatus = 'missing';
+          integrityFindings.push({ code: 'canonical-missing', targetId: contentSha256 });
+        } else {
+          const actual = createHash('sha256').update(readFileSync(immutableAbsolutePath)).digest('hex');
+          if (actual !== contentSha256) {
+            canonicalStatus = 'checksum-mismatch';
+            integrityFindings.push({ code: 'canonical-checksum-mismatch', targetId: contentSha256 });
+          }
+        }
+        const retainUntil = references.map((row) => row.retainUntil).sort().at(-1) || null;
+        const held = activeHolds.some((row) => row.contentSha256 === contentSha256);
+        const expired = Boolean(retainUntil && Date.parse(retainUntil) <= nowMs);
+        return {
+          contentSha256,
+          contentAddress: `sha256:${contentSha256}`,
+          immutableRelativePath,
+          canonicalStatus,
+          referenceCount: references.length,
+          retainUntil,
+          expired,
+          legalHoldActive: held,
+          deletionEligible: canonicalStatus === 'ready' && expired && !held,
+          retentionDeletionOperationId: retentionDeleted ? deletionEvent.operationId : null,
+        };
+      }).sort((left, right) => left.contentSha256.localeCompare(right.contentSha256));
+      integrityFindings.sort((a, b) => `${a.code}:${a.targetId}`.localeCompare(`${b.code}:${b.targetId}`));
+      projectionFindings.sort((a, b) => `${a.code}:${a.path}`.localeCompare(`${b.code}:${b.path}`));
+      const integrityValid = integrityFindings.length === 0;
+      const inventoryBase = {
+        schemaVersion: 'local-artifact-storage-inventory/v1',
+        projectId: project.id,
+        generatedAt: new Date(nowMs).toISOString(),
+        localOnly: true,
+        status: !integrityValid ? 'degraded-integrity-invalid' : projectionFindings.length ? 'ready-with-projection-drift' : 'ready',
+        integrity: { valid: integrityValid, ledgerValid: !integrityFindings.some((row) => row.code === 'ledger-integrity-invalid') },
+        integrityFindings,
+        projectionFindings,
+        canonicalEntries,
+        activeLegalHolds: activeHolds.map((row) => ({ holdId: row.holdId, contentSha256: row.contentSha256, actorId: row.actorId, reasonHash: row.reasonHash, createdAt: row.createdAt })),
+        storageLedgerPath,
+        summary: {
+          eventCount: events.length,
+          artifactReferenceCount: storedEvents.length,
+          canonicalContentCount: canonicalEntries.length,
+          expiredContentCount: canonicalEntries.filter((row) => row.expired).length,
+          deletionEligibleContentCount: canonicalEntries.filter((row) => row.deletionEligible).length,
+          activeLegalHoldCount: activeHolds.length,
+          retentionDeletedContentCount: canonicalEntries.filter((row) => row.canonicalStatus === 'retention-deleted').length,
+          projectionFindingCount: projectionFindings.length,
+        },
+        deletionExecuted: false,
+      };
+      return {
+        ...inventoryBase,
+        checksum: sha256Json({
+          schemaVersion: inventoryBase.schemaVersion,
+          projectId: inventoryBase.projectId,
+          status: inventoryBase.status,
+          integrity: inventoryBase.integrity,
+          integrityFindings: inventoryBase.integrityFindings,
+          projectionFindings: inventoryBase.projectionFindings,
+          canonicalEntries: inventoryBase.canonicalEntries,
+          activeLegalHolds: inventoryBase.activeLegalHolds,
+          summary: inventoryBase.summary,
+        }),
+      };
+    },
+    getArtifactRetentionExecution(project = {}, operationId = '') {
+      if (!project?.id) throw new Error('artifact-retention-project-required');
+      const normalizedOperationId = safeProjectId(operationId);
+      if (!operationId || normalizedOperationId !== operationId) throw new Error('artifact-retention-operation-id-invalid');
+      const journalPath = safeJoin(resolvedRoot, `.privacy-lifecycle-journals/${safeProjectId(project.id)}/${normalizedOperationId}.json`);
+      const journal = readChecksummedJson(journalPath, 'artifact-retention-journal-integrity-invalid');
+      return journal?.status === 'committed' ? journal.receipt : null;
+    },
+    executeArtifactRetention(project = {}, {
+      operationId,
+      plan,
+      actionApprovalId,
+      actionApprovalChecksum,
+      actionApprovalDecisionChecksums = [],
+      actionApprovalExecutionClaim,
+      actorId,
+      now = new Date().toISOString(),
+    } = {}) {
+      if (!project?.id) throw new Error('artifact-retention-project-required');
+      const normalizedOperationId = safeProjectId(operationId);
+      if (!operationId || normalizedOperationId !== operationId) throw new Error('artifact-retention-operation-id-invalid');
+      const journalPath = safeJoin(resolvedRoot, `.privacy-lifecycle-journals/${safeProjectId(project.id)}/${normalizedOperationId}.json`);
+      const tombstonePath = safeJoin(resolvedRoot, `.privacy-lifecycle-tombstones/${safeProjectId(project.id)}/${normalizedOperationId}.json`);
+      const existing = readChecksummedJson(journalPath, 'artifact-retention-journal-integrity-invalid');
+      if (existing?.planChecksum && existing.planChecksum !== plan?.planChecksum) throw new Error('artifact-retention-operation-conflict');
+      if (existing?.status === 'committed') return { ...existing.receipt, idempotent: true };
+      const nowMs = Date.parse(now) || Date.now();
+      if (!plan?.planChecksum || (Date.parse(plan.planExpiresAt || '') || 0) <= nowMs) throw new Error('privacy-lifecycle-plan-expired');
+      const targetHashes = [...new Set(plan.deletionManifest?.contentSha256 || [])].sort();
+      if (!targetHashes.length) throw new Error('privacy-lifecycle-no-eligible-content');
+      if (!existing) {
+        const inventory = this.auditArtifactStore(project, { now });
+        if (!inventory.integrity.valid) throw new Error('artifact-storage-integrity-invalid');
+        if (inventory.checksum !== plan.inventoryChecksum) throw new Error('privacy-lifecycle-inventory-stale');
+        const eligibleHashes = inventory.canonicalEntries.filter((row) => row.deletionEligible).map((row) => row.contentSha256).sort();
+        if (JSON.stringify(eligibleHashes) !== JSON.stringify(targetHashes)) throw new Error('privacy-lifecycle-manifest-stale');
+        const preparedBase = {
+          schemaVersion: 'local-artifact-retention-execution-journal/v1',
+          operationId: normalizedOperationId,
+          projectId: project.id,
+          status: 'prepared',
+          preparedAt: new Date(nowMs).toISOString(),
+          planChecksum: plan.planChecksum,
+          inventoryChecksum: plan.inventoryChecksum,
+          targetContentSha256: targetHashes,
+          actionApprovalId,
+          actionApprovalChecksum,
+          actionApprovalDecisionChecksums,
+          actionApprovalExecutionClaimChecksum: actionApprovalExecutionClaim?.checksum || null,
+          actorId: String(actorId || ''),
+        };
+        writeJsonAtomic(journalPath, { ...preparedBase, checksum: sha256Json(preparedBase) });
+      }
+      const paths = ensureProjectDirs(project.id);
+      const storageLedgerPath = safeJoin(paths.artifacts, '.artifact-storage.jsonl');
+      let events = readArtifactStorageLedger(storageLedgerPath);
+      const deletedHashes = [];
+      const internalProjectionPaths = [];
+      for (const contentSha256 of targetHashes) {
+        const stored = events.filter((row) => row.eventType === 'artifact-stored' && row.contentSha256 === contentSha256);
+        if (!stored.length) throw new Error('privacy-lifecycle-manifest-stale');
+        const immutableAbsolutePath = safeJoin(paths.artifacts, stored[0].immutableRelativePath);
+        if (existsSync(immutableAbsolutePath)) {
+          const actual = createHash('sha256').update(readFileSync(immutableAbsolutePath)).digest('hex');
+          if (actual !== contentSha256) throw new Error('artifact-storage-integrity-invalid');
+          rmSync(immutableAbsolutePath);
+        }
+        const latestByProjection = new Map();
+        events.filter((row) => row.eventType === 'artifact-stored' && row.projectionRelativePath)
+          .forEach((row) => latestByProjection.set(row.projectionRelativePath, row));
+        latestByProjection.forEach((row, projectionRelativePath) => {
+          if (row.contentSha256 !== contentSha256) return;
+          const projectionPath = safeJoin(paths.artifacts, projectionRelativePath);
+          if (!existsSync(projectionPath)) return;
+          const actual = createHash('sha256').update(readFileSync(projectionPath)).digest('hex');
+          if (actual !== contentSha256) throw new Error('artifact-projection-drift');
+          rmSync(projectionPath);
+          internalProjectionPaths.push(projectionRelativePath);
+        });
+        const priorDeletion = events.find((row) => row.eventType === 'artifact-retention-deleted'
+          && row.operationId === normalizedOperationId && row.contentSha256 === contentSha256);
+        if (!priorDeletion) {
+          appendArtifactStorageEvent(storageLedgerPath, {
+            id: `artifact_retention_${sha256Json(`${project.id}:${normalizedOperationId}:${contentSha256}`).slice(0, 24)}`,
+            eventType: 'artifact-retention-deleted',
+            projectId: project.id,
+            operationId: normalizedOperationId,
+            contentSha256,
+            planChecksum: plan.planChecksum,
+            actionApprovalId,
+            actorId: String(actorId || ''),
+            createdAt: new Date(nowMs).toISOString(),
+            storesRawContent: false,
+          });
+          events = readArtifactStorageLedger(storageLedgerPath);
+        }
+        deletedHashes.push(contentSha256);
+      }
+      const verified = this.auditArtifactStore(project, { now });
+      if (!verified.integrity.valid || targetHashes.some((hash) => (
+        verified.canonicalEntries.find((row) => row.contentSha256 === hash)?.canonicalStatus !== 'retention-deleted'
+      ))) throw new Error('artifact-retention-post-verification-failed');
+      const receiptBase = {
+        schemaVersion: 'local-artifact-retention-execution-receipt/v1',
+        operationId: normalizedOperationId,
+        projectId: project.id,
+        status: 'committed',
+        planChecksum: plan.planChecksum,
+        inventoryChecksum: plan.inventoryChecksum,
+        postInventoryChecksum: verified.checksum,
+        deletedContentSha256: deletedHashes,
+        deletedCanonicalContentCount: deletedHashes.length,
+        deletedInternalProjectionCount: internalProjectionPaths.length,
+        actionApprovalId,
+        actionApprovalChecksum,
+        actionApprovalDecisionChecksums,
+        actionApprovalExecutionClaimChecksum: actionApprovalExecutionClaim?.checksum || null,
+        executedBy: String(actorId || ''),
+        executedAt: new Date(nowMs).toISOString(),
+        tombstonePath,
+        residualDataBoundaries: {
+          externalWorkspacePreserved: true,
+          userBackupsPreserved: true,
+          recoveryArchivesPreserved: true,
+          auditAndCheckpointsPreserved: true,
+        },
+        localOnly: true,
+        readyForProduction: false,
+        deletionVerified: true,
+      };
+      const receipt = { ...receiptBase, checksum: sha256Json(receiptBase) };
+      writeJsonAtomic(tombstonePath, receipt);
+      const committedBase = {
+        schemaVersion: 'local-artifact-retention-execution-journal/v1',
+        operationId: normalizedOperationId,
+        projectId: project.id,
+        status: 'committed',
+        preparedAt: existing?.preparedAt || new Date(nowMs).toISOString(),
+        committedAt: new Date(nowMs).toISOString(),
+        planChecksum: plan.planChecksum,
+        receipt,
+      };
+      writeJsonAtomic(journalPath, { ...committedBase, checksum: sha256Json(committedBase) });
+      return { ...receipt, idempotent: false };
+    },
+    placeArtifactLegalHold(project = {}, { contentSha256, reason, actorId, now = new Date().toISOString() } = {}) {
+      const inventory = this.auditArtifactStore(project, { now });
+      if (!inventory.integrity.valid) throw new Error('artifact-storage-integrity-invalid');
+      const normalizedChecksum = String(contentSha256 || '').toLowerCase();
+      if (!/^[a-f0-9]{64}$/.test(normalizedChecksum) || !inventory.canonicalEntries.some((row) => row.contentSha256 === normalizedChecksum)) throw new Error('artifact-legal-hold-content-not-found');
+      const normalizedActorId = String(actorId || '').trim();
+      if (!normalizedActorId) throw new Error('artifact-legal-hold-actor-required');
+      const normalizedReason = String(reason || '').trim();
+      if (!normalizedReason || normalizedReason.length > 4_000) throw new Error('artifact-legal-hold-reason-invalid');
+      if (inventory.activeLegalHolds.some((row) => row.contentSha256 === normalizedChecksum)) throw new Error('artifact-legal-hold-already-active');
+      const createdAt = new Date(Date.parse(now) || Date.now()).toISOString();
+      const holdId = `artifact_hold_${createHash('sha256').update(`${project.id}:${normalizedChecksum}:${createdAt}`).digest('hex').slice(0, 24)}`;
+      return appendArtifactStorageEvent(inventory.storageLedgerPath, {
+        id: `artifact_event_${holdId}`,
+        eventType: 'legal-hold-placed',
+        projectId: project.id,
+        holdId,
+        contentSha256: normalizedChecksum,
+        reasonHash: createHash('sha256').update(normalizedReason).digest('hex'),
+        reasonLength: normalizedReason.length,
+        actorId: normalizedActorId,
+        createdAt,
+        storesRawContent: false,
+      });
+    },
+    releaseArtifactLegalHold(project = {}, { holdId, actorId, now = new Date().toISOString() } = {}) {
+      const inventory = this.auditArtifactStore(project, { now });
+      if (!inventory.integrity.valid) throw new Error('artifact-storage-integrity-invalid');
+      const hold = inventory.activeLegalHolds.find((row) => row.holdId === holdId);
+      if (!hold) throw new Error('artifact-legal-hold-not-active');
+      const normalizedActorId = String(actorId || '').trim();
+      if (!normalizedActorId) throw new Error('artifact-legal-hold-actor-required');
+      const createdAt = new Date(Date.parse(now) || Date.now()).toISOString();
+      return appendArtifactStorageEvent(inventory.storageLedgerPath, {
+        id: `artifact_event_release_${createHash('sha256').update(`${project.id}:${holdId}:${createdAt}`).digest('hex').slice(0, 24)}`,
+        eventType: 'legal-hold-released',
+        projectId: project.id,
+        releaseOfHoldId: holdId,
+        contentSha256: hold.contentSha256,
+        actorId: normalizedActorId,
+        createdAt,
+        storesRawContent: false,
+      });
     },
     bindWorkspace(project = {}, workspacePath, { createIfMissing = false, now = new Date().toISOString() } = {}) {
       if (!project?.id) throw new Error('Cannot bind workspace without a project id.');
@@ -368,6 +815,121 @@ export function createLocalProjectRuntime({
         error: result.error?.message || null,
       };
     },
+    executeWorkspaceCommandAsync(project = {}, input = {}) {
+      if (!enableCommandExecution) return Promise.reject(new Error('Workspace command execution is disabled.'));
+      const workspacePath = this.requireWorkspace(project);
+      const command = String(input.command || '').trim();
+      if (!command) return Promise.reject(new Error('command is required.'));
+      const commandName = command.split(/[\\/]/).pop().toLowerCase();
+      if (commandAllowlist.size && !commandAllowlist.has(commandName)) {
+        return Promise.reject(new Error(`Workspace command is not allowed: ${commandName}`));
+      }
+      const executable = commandName === 'node' ? process.execPath : command;
+      let cwd;
+      try {
+        cwd = input.cwd ? safeJoin(workspacePath, input.cwd) : workspacePath;
+      } catch (error) {
+        return Promise.reject(error);
+      }
+      const args = Array.isArray(input.args) ? input.args.map(String) : [];
+      const timeoutMs = Math.max(1, Math.min(24 * 60 * 60 * 1000, Number(input.timeoutMs) || 30_000));
+      const maxBuffer = Math.max(1, Math.min(64 * 1024 * 1024, Number(input.maxBuffer) || 1024 * 1024));
+      const operationId = String(input.operationId || `workspace_command_${Date.now()}`).trim();
+      const signal = input.signal || null;
+      if (signal?.aborted) {
+        const completedAt = new Date().toISOString();
+        const receiptBase = {
+          schemaVersion: 'local-workspace-command-execution/v1', operationId, projectId: project.id,
+          status: 'cancelled', commandHash: sha256Json({ commandName, args }), timeoutMs, maxBuffer,
+          exitCode: null, exitSignal: null, timeoutTriggered: false, cancelledByCaller: true,
+          outputLimitExceeded: false, stdoutBytes: 0, stderrBytes: 0, errorHash: null,
+          treeTermination: 'not-started', completedAt, storesRawOutput: false,
+        };
+        return Promise.resolve({
+          projectId: project.id, workspacePath, cwd, command, executable, args,
+          status: 'cancelled', exitCode: null, signal: null, stdout: '', stderr: '', error: null,
+          receipt: { ...receiptBase, checksum: sha256Json(receiptBase) },
+        });
+      }
+      return new Promise((resolveResult) => {
+        const child = spawn(executable, args, {
+          cwd,
+          shell: Boolean(input.shell),
+          windowsHide: true,
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+        let stdout = Buffer.alloc(0);
+        let stderr = Buffer.alloc(0);
+        let terminalReason = null;
+        let spawnError = null;
+        let settled = false;
+        const appendBounded = (current, chunk) => {
+          const next = Buffer.concat([current, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)]);
+          if (next.length <= maxBuffer) return next;
+          terminalReason = terminalReason || 'output-limit-exceeded';
+          child.kill();
+          return next.subarray(0, maxBuffer);
+        };
+        child.stdout?.on('data', (chunk) => { stdout = appendBounded(stdout, chunk); });
+        child.stderr?.on('data', (chunk) => { stderr = appendBounded(stderr, chunk); });
+        const timeout = setTimeout(() => {
+          terminalReason = terminalReason || 'timed-out';
+          child.kill();
+        }, timeoutMs);
+        const abort = () => {
+          terminalReason = terminalReason || 'cancelled';
+          child.kill();
+        };
+        signal?.addEventListener('abort', abort, { once: true });
+        child.on('error', (error) => {
+          spawnError = error;
+          terminalReason = terminalReason || 'failed';
+        });
+        child.on('close', (exitCode, exitSignal) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timeout);
+          signal?.removeEventListener('abort', abort);
+          const status = terminalReason || (exitCode === 0 ? 'succeeded' : 'failed');
+          const completedAt = new Date().toISOString();
+          const receiptBase = {
+            schemaVersion: 'local-workspace-command-execution/v1',
+            operationId,
+            projectId: project.id,
+            status,
+            commandHash: sha256Json({ commandName, args }),
+            timeoutMs,
+            maxBuffer,
+            exitCode,
+            exitSignal: exitSignal || null,
+            timeoutTriggered: status === 'timed-out',
+            cancelledByCaller: status === 'cancelled',
+            outputLimitExceeded: status === 'output-limit-exceeded',
+            stdoutBytes: stdout.length,
+            stderrBytes: stderr.length,
+            errorHash: spawnError ? sha256Json(spawnError.message || String(spawnError)) : null,
+            treeTermination: terminalReason ? (process.platform === 'win32' ? 'direct-child-terminated-descendants-not-attested' : 'direct-child-signal') : 'not-required',
+            completedAt,
+            storesRawOutput: false,
+          };
+          resolveResult({
+            projectId: project.id,
+            workspacePath,
+            cwd,
+            command,
+            executable,
+            args,
+            status,
+            exitCode,
+            signal: exitSignal || null,
+            stdout: stdout.toString('utf8'),
+            stderr: stderr.toString('utf8'),
+            error: spawnError?.message || null,
+            receipt: { ...receiptBase, checksum: sha256Json(receiptBase) },
+          });
+        });
+      });
+    },
     archiveProject(project = {}, { reason = 'manual-archive', now = new Date().toISOString() } = {}) {
       if (!project?.id) throw new Error('Cannot archive project without a project id.');
       const paths = ensureProjectDirs(project.id);
@@ -388,6 +950,32 @@ export function createLocalProjectRuntime({
           archivedAt: now,
           latestArchivePath: archivePath,
         },
+      };
+    },
+    writePrivacyExport(project = {}, { exportId, payload } = {}) {
+      if (!project?.id) throw new Error('Cannot export privacy data without a project id.');
+      if (!exportId) throw new Error('Cannot export privacy data without an export id.');
+      const paths = ensureProjectDirs(project.id);
+      const exportPath = safeJoin(paths.archives, `privacy-exports/${safeProjectId(exportId)}.json`);
+      writeJson(exportPath, payload);
+      return {
+        exportPath,
+        file: fileRecord(paths.root, exportPath),
+        bytes: statSync(exportPath).size,
+      };
+    },
+    purgeProject(project = {}, { deletionId, tombstone } = {}) {
+      if (!project?.id) throw new Error('Cannot purge privacy data without a project id.');
+      if (!deletionId) throw new Error('Cannot purge privacy data without a deletion id.');
+      const projectPath = projectRoot(project.id);
+      const tombstonePath = safeJoin(resolvedRoot, `deletion-receipts/${safeProjectId(deletionId)}.json`);
+      writeJson(tombstonePath, tombstone);
+      if (existsSync(projectPath)) rmSync(projectPath, { recursive: true, force: true });
+      return {
+        projectPath,
+        projectRootRemoved: !existsSync(projectPath),
+        tombstonePath,
+        externalWorkspaceRetained: Boolean(project.localRuntime?.workspacePath),
       };
     },
   };

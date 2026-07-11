@@ -5,12 +5,18 @@ import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 import { createAgentProjectHttpServer } from '../src/agents/agentProjectHttpServer.js';
+import { createModelProvider } from '../src/agents/modelProvider.js';
+import { createSearchProvider } from '../src/agents/searchProvider.js';
+import { createSecretVaultFromEnv } from '../src/agents/secretVault.js';
+import { createLocalProjectRuntime } from '../src/agents/localProjectRuntime.js';
 
 const ROOT_DIR = fileURLToPath(new URL('..', import.meta.url));
 const DIST_DIR = join(ROOT_DIR, 'dist');
 const STATIC_PORTS = [4181, 4182, 4183, 4184, 4185];
 const VIEWPORT = { width: 1440, height: 1100 };
 const BACKEND_STORE = new URL(`../.tmp/agent-manager-backend-ui-store-${process.pid}.json`, import.meta.url);
+const SECRET_VAULT_RECORDS_FILE = new URL(`../.tmp/agent-manager-backend-ui-vault-records-${process.pid}.json`, import.meta.url);
+const PROJECT_RUNTIME_ROOT = join(ROOT_DIR, '.tmp', `agent-manager-backend-ui-projects-${process.pid}`);
 const PRESERVE_BACKEND_UI_TMP = process.env.HOFS_MANAGER_BACKEND_UI_PRESERVE_TMP === '1';
 const CAPTURE_SUCCESS_SCREENSHOT = process.env.HOFS_MANAGER_BACKEND_UI_SCREENSHOT === '1';
 const BACKEND_STORAGE_KEY = 'hall_of_fame_studio.agent_backend_url.v1';
@@ -54,6 +60,8 @@ function cleanupManagerBackendUiTmp() {
   const backendStorePath = fileURLToPath(BACKEND_STORE);
   rmSync(backendStorePath, { force: true });
   rmSync(`${backendStorePath}.security-audit.jsonl`, { force: true });
+  rmSync(fileURLToPath(SECRET_VAULT_RECORDS_FILE), { force: true });
+  rmSync(PROJECT_RUNTIME_ROOT, { force: true, recursive: true });
 }
 
 cleanupManagerBackendUiTmp();
@@ -398,9 +406,109 @@ async function launchBrowserWithRetry(attempts = 3) {
   }
 }
 
+const secretVault = createSecretVaultFromEnv({
+  SECRET_VAULT_ENABLED: 'true',
+  SECRET_VAULT_KEY: 'manager-backend-ui-local-vault-key',
+  SECRET_VAULT_KEY_ID: 'manager-backend-ui',
+  SECRET_VAULT_RECORDS_FILE: fileURLToPath(SECRET_VAULT_RECORDS_FILE),
+});
+const secretVaultStatus = secretVault.status();
+const llmProvider = createModelProvider({
+  provider: 'openai-compatible',
+  apiKey: 'manager-backend-ui-model-key',
+  apiKeySource: 'local-secret-vault',
+  secretVaultStatus,
+  baseURL: 'https://model.local.test/v1',
+  model: 'manager-backend-ui-model',
+  enabled: true,
+  fetchImpl: async () => new Response(JSON.stringify({
+    id: 'manager-backend-ui-model-response',
+    model: 'manager-backend-ui-model',
+    choices: [{
+      message: {
+        role: 'assistant',
+        content: JSON.stringify({
+          roleTurns: [
+            {
+              agentId: 'turing',
+              type: 'role-question',
+              text: 'For Roundtable Initiation System, may I own backend proof and the local runtime gate?',
+              hears: ['curie', 'confucius', 'musk'],
+            },
+            {
+              agentId: 'curie',
+              type: 'role-volunteer',
+              text: 'For Roundtable Initiation System, I will review evidence before approval.',
+              hears: ['turing', 'confucius', 'musk'],
+            },
+          ],
+          agentTurns: [
+            {
+              agentId: 'turing',
+              type: 'next-action',
+              text: 'For Roundtable Initiation System, I will turn the Director clarification into backend proof work.',
+              score: 9,
+            },
+            {
+              agentId: 'curie',
+              type: 'role-volunteer',
+              text: 'For Roundtable Initiation System, I will review the clarified evidence before approval.',
+              score: 8,
+            },
+          ],
+          leaderCampaigns: [
+            {
+              agentId: 'turing',
+              claim: 'For Roundtable Initiation System, I will lead the backend proof plan and report its local evidence.',
+              hears: ['curie', 'confucius', 'musk'],
+              score: 9,
+            },
+            {
+              agentId: 'curie',
+              claim: 'For Roundtable Initiation System, I will lead the evidence review and escalation plan.',
+              hears: ['turing', 'confucius', 'musk'],
+              score: 8,
+            },
+          ],
+          recommendedLeaderId: 'turing',
+          reviewerId: 'curie',
+          nextActions: [
+            {
+              ownerId: 'turing',
+              text: 'Create the Roundtable Initiation System backend proof plan.',
+            },
+            {
+              ownerId: 'curie',
+              text: 'Review Roundtable Initiation System evidence before approval.',
+            },
+          ],
+          decisionSummary: 'Roundtable Initiation System can proceed after local backend proof and evidence review.',
+          risks: ['Roundtable Initiation System must keep every proof local and durable.'],
+        }),
+      },
+    }],
+    usage: { prompt_tokens: 12, completion_tokens: 12, total_tokens: 24 },
+  }), {
+    status: 200,
+    headers: { 'content-type': 'application/json' },
+  }),
+});
+const searchProvider = createSearchProvider({
+  provider: 'deterministic',
+  apiKey: 'manager-backend-ui-search-key',
+  apiKeySource: 'local-secret-vault',
+  secretVaultStatus,
+  enabled: true,
+});
+const projectRuntime = createLocalProjectRuntime({ rootPath: PROJECT_RUNTIME_ROOT });
+
 const backendServer = createAgentProjectHttpServer({
   filePath: BACKEND_STORE,
   replaceWithSeed: true,
+  secretVault,
+  llmProvider,
+  searchProvider,
+  projectRuntime,
 });
 const backendRuntime = await backendServer.listen();
 const staticRuntime = await startStaticServer();
@@ -1723,43 +1831,37 @@ try {
   await assertPageContains(page, 'ACTIVE PROJECTS', 'Workspace dashboard must be reachable before starting a real initiation.');
   await page.getByTestId('start-initiation-button').click();
   await assertPageContains(page, 'Project Initiation Flow', 'Manager must be able to open the real initiation flow.');
-  await page.getByTestId('initiation-next-invite').click();
+  await page.getByTestId('initiation-next-workspace').click();
+  await page.getByTestId('initiation-workspace-base-path').fill(PROJECT_RUNTIME_ROOT);
+  await page.getByTestId('initiation-workspace-prepare').click();
+  await (await waitForEnabledTestId(page, 'initiation-workspace-next-invite')).click();
+  await page.getByTestId('initiation-talent-market').waitFor({ state: 'visible', timeout: 5000 });
+  for (const agentId of ['musk', 'turing', 'curie', 'confucius']) {
+    await page.getByTestId(`market-open-${agentId}`).click();
+    await page.getByTestId(`initiation-contract-${agentId}`).click();
+    await page.getByTestId('initiation-talent-market').waitFor({ state: 'visible', timeout: 5000 });
+  }
   await page.getByTestId('initiation-next-lobby').click();
   await page.getByTestId('initiation-start-meeting').click();
   await assertPageContains(page, 'INITIATION ROUNDTABLE', 'Initiation flow must reach the kickoff meeting step.');
   await page.getByTestId('initiation-meeting-session-proof').waitFor({ state: 'visible', timeout: 5000 });
   await assertPageContains(page, 'Backend Meeting Session', 'Initiation meeting must create a durable backend meeting session before approval.');
-  await page.getByTestId('initiation-meeting-director-clarification').waitFor({ state: 'visible', timeout: 5000 });
-  await page.getByTestId('initiation-meeting-role-question-list').waitFor({ state: 'visible', timeout: 5000 });
-  await assertPageContains(page, 'WAITING', 'Initiation meeting must show unresolved Agent role questions before manager clarification.');
-  await page.getByTestId('initiation-meeting-clarification-input').fill('Manager clarified during kickoff: Turing owns backend proof and Curie reviews evidence before approval.');
-  await page.getByTestId('initiation-meeting-save-clarification').click();
-  await assertPageContains(page, '1 DIRECTOR CLARIFICATION', 'Initiation meeting must let the manager answer Agent role questions before approval.');
-  await assertPageContains(page, 'ROLE QUESTIONS ANSWERED', 'Initiation meeting must show answered role-question counts after clarification.');
-  await page.getByTestId('initiation-meeting-leader-slate').waitFor({ state: 'visible', timeout: 5000 });
-  await page.getByTestId('initiation-meeting-leader-candidate-turing').click();
-  await assertPageContains(page, 'MANAGER CONFIRMED IN MEETING', 'Manager must be able to confirm the Leader during the campaign stage.');
-  await page.getByTestId('initiation-meeting-leader-resolution').waitFor({ state: 'visible', timeout: 5000 });
-  await assertPageContains(page, 'LEADER RESOLUTION:', 'Initiation meeting must expose persisted Leader election resolution state.');
-  await page.getByTestId('initiation-meeting-next-actions').waitFor({ state: 'visible', timeout: 5000 });
-  await page.getByTestId('initiation-meeting-next-action-0').fill('Manager decided in-meeting execution packet');
-  await page.getByTestId('initiation-meeting-save-next-actions').click();
-  await page.getByTestId('initiation-meeting-next-action-resolution').waitFor({ state: 'visible', timeout: 5000 });
-  await assertPageContains(page, 'NEXT ACTION RESOLUTION:', 'Initiation meeting must expose persisted next-action resolution state.');
-  await assertPageContains(page, 'MANAGER-CONFIRMED', 'Manager must be able to confirm next actions during the meeting.');
-  await page.getByTestId('initiation-meeting-confirmed-team').waitFor({ state: 'visible', timeout: 5000 });
-  await assertPageContains(page, '4 confirmed Agents', 'Initiation meeting must show the confirmed team count before manager edits.');
-  await page.getByTestId('initiation-meeting-confirmed-team-confucius').click();
-  await assertPageContains(page, 'Removed after meeting', 'Manager must be able to remove an invited Agent from the confirmed project team during the meeting.');
-  await page.getByTestId('initiation-finish-meeting').click();
+  await page.getByTestId('project-meeting-input').fill('Manager clarified during kickoff: Turing owns backend proof and Curie reviews evidence before approval.');
+  await page.getByTestId('project-meeting-send').click();
+  await assertPageContains(page, 'Turing owns backend proof', 'Initiation meeting must persist the manager clarification through the backend session.');
+  await page.getByRole('button', { name: 'End Meeting', exact: true }).click();
   await assertPageContains(page, 'Director Decisions', 'Initiation result must expose Director decision controls before approval.');
   await page.getByTestId('initiation-result-session-proof').waitFor({ state: 'visible', timeout: 5000 });
   await assertPageContains(page, 'Meeting Session Evidence', 'Initiation result must expose saved meeting-session evidence before approval.');
   await assertPageContains(page, 'Confirmed Team', 'Initiation result must expose confirmed team roster.');
   await assertPageContains(page, 'Confirmed Leader Marker', 'Initiation result must expose confirmed Leader marker.');
   await assertPageContains(page, 'First Execution Plan', 'Initiation result must expose the first execution plan.');
-  await assertPageContains(page, '3 confirmed Agents', 'Initiation result must preserve the team decision made during the meeting.');
-  assert(await page.getByTestId('initiation-next-action-0').inputValue() === 'Manager decided in-meeting execution packet', 'Result page must preserve next actions decided during the meeting.');
+  await assertPageContains(page, '4 confirmed Agents', 'Initiation result must expose the invited team before manager edits.');
+  await page.getByTestId('confirmed-team-confucius').click();
+  await assertPageContains(page, 'Removed after meeting', 'Manager must be able to remove an invited Agent before approval.');
+  await assertPageContains(page, '3 confirmed Agents', 'Initiation result must preserve the manager-edited team.');
+  await page.getByTestId('initiation-next-action-0').fill('Manager decided in-meeting execution packet');
+  await page.getByTestId('leader-candidate-turing').click();
   await assertPageContains(page, 'Director selected', 'Manager must be able to override the recommended Leader before approval.');
   await page.getByTestId('initiation-approve-create').click();
   await page.waitForFunction(() => document.body.innerText.includes('Roundtable Initiation System') && document.body.innerText.includes('PROJECT DASHBOARD'), null, { timeout: 30000 });
@@ -1768,7 +1870,7 @@ try {
   await page.getByTestId('kickoff-dashboard-generation-source').scrollIntoViewIfNeeded({ timeout: 10000 });
   await page.getByTestId('kickoff-dashboard-generation-source').waitFor({ state: 'visible', timeout: 5000 });
   await assertPageContains(page, 'Kickoff Generation Source', 'Approved real project dashboard must expose kickoff generation provenance after approval.');
-  await assertPageContains(page, 'validation fallback', 'Approved real project dashboard must label deterministic kickoff generation instead of presenting it as provider-backed production output.');
+  await assertPageContains(page, 'model rehearsal', 'Approved real project dashboard must label the local model rehearsal instead of presenting it as provider-backed production output.');
   await assertPageContains(page, 'blocked', 'Approved real project dashboard must keep kickoff production claims blocked until provider controls exist.');
   await page.getByTestId('backend-save-project').waitFor({ state: 'attached', timeout: 5000 });
   assert(await page.getByTestId('backend-save-project').isDisabled(), 'Approved real backend projects must keep browser snapshot Seed Sample/Dev disabled; state changes must use backend receipt routes.');
@@ -1811,8 +1913,8 @@ try {
   await withSuppressedBackendFlowGraph(page, { backendUrl: backendRuntime.url, projectId: initiatedProjectId }, async () => {
     await page.getByRole('button', { name: /Open Flow Graph/i }).click();
     await page.getByTestId('manager-flow-graph').waitFor({ state: 'visible', timeout: 10000 });
-    await page.getByRole('button', { name: /Sync Graph/i }).click();
     await page.getByTestId('manager-flow-backend-required').waitFor({ state: 'visible', timeout: 10000 });
+    await page.getByTestId('manager-flow-backend-required-sync').click();
     const flowSourceLabel = (await page.getByTestId('manager-flow-source-label').textContent()) || '';
     assert(/backend model missing/i.test(flowSourceLabel), 'Real backend project Flow Graph must label missing backend read models instead of falling back to frontend nodes.');
     const fallbackNodeCount = await page.locator('[data-testid^="manager-flow-node-"]').count();

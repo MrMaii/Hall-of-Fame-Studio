@@ -123,7 +123,21 @@ function createMockModelServer() {
     for await (const chunk of request) chunks.push(chunk);
     const requestBody = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
     const wantsJson = requestBody.response_format?.type === 'json_object';
-    const content = wantsJson
+    const isKickoffOpening = (requestBody.messages || []).some((message) => /open a project kickoff meeting/i.test(message.content || ''));
+    const isKickoffContinuation = (requestBody.messages || []).some((message) => /continue a live project kickoff meeting/i.test(message.content || ''));
+    const content = isKickoffOpening
+      ? [
+          'turing | role-question | For this project, should I own the backend proof and delivery architecture?',
+          'curie | role-volunteer | I will review evidence quality and unresolved risks for this project.',
+          'musk | role-volunteer | I will drive the first implementation milestone for this project.',
+        ].join('\n')
+      : isKickoffContinuation
+        ? [
+            'turing | leader-campaign | I can lead this project by owning backend proof, delivery sequencing, and accountable technical decisions.',
+            'curie | task-decomposition | I will review evidence quality and risks before each manager decision.',
+            'musk | next-action | I will start the first implementation milestone after the Manager confirms the plan.',
+          ].join('\n')
+      : wantsJson
       ? JSON.stringify({
           title: 'Generic product-team validation product brief',
           summary: 'A manager-readable product brief connecting kickoff, provider evidence, brainstorm alternatives, review handoff, and final delivery as a generic product-team workflow.',
@@ -579,9 +593,8 @@ try {
   await fillControlledInput(page, 'settings-provider-search-endpoint-input', `${mockSearchRuntime.url}/search`);
   const sealSearchButton = await waitForButtonEnabled(page, 'settings-provider-seal-search-key', 'Real user must be able to seal a tested search configuration before project startup.');
   await sealSearchButton.click();
-  await page.waitForFunction(() => document.body.innerText.includes('search.apiKey'), null, { timeout: 10000 });
+  await page.waitForFunction(() => document.querySelector('[data-testid="settings-provider-seal-receipt"]')?.textContent?.includes('search configuration'), null, { timeout: 10000 });
   await waitForSettingsProviderIdle(page);
-  await page.waitForFunction(() => document.body.innerText.includes('search.endpoint'), null, { timeout: 10000 });
 
   const modelStatus = await fetchJson(`${backendUrl}/llm/status`);
   assert(modelStatus.body.modelProvider?.apiKeySource === 'local-secret-vault' && modelStatus.body.modelProvider?.enabled === true, 'Real-user model provider must be vault-backed and enabled after Settings key seal.');
@@ -597,6 +610,8 @@ try {
   assert(searchRequests.length >= 1 && searchRequests.at(-1).authorization === `Bearer ${searchPlaintext}`, 'Real-user search test must reach the configured search endpoint with the sealed key.');
   const records = await fetchJson(`${backendUrl}/secret-vault/records`);
   const serializedRecords = JSON.stringify(records.body);
+  const vaultRecordNames = (records.body.secretVaultRecords?.records || []).map((record) => record.name);
+  assert(['model.apiKey', 'model.baseURL', 'model.name', 'search.apiKey', 'search.endpoint'].every((name) => vaultRecordNames.includes(name)), 'Real-user backend must list every sealed provider record without exposing its plaintext.');
   assert(!serializedRecords.includes(modelPlaintext) && !serializedRecords.includes(searchPlaintext), 'Real-user backend must not expose plaintext provider keys after Settings seal.');
   assert(!serializedRecords.includes(mockSearchRuntime.url), 'Real-user backend must not expose plaintext search endpoint through vault record metadata.');
 
@@ -639,25 +654,28 @@ try {
     '/local-mvp-startup-readiness',
     'first project run: ready',
   ], 'Project Initiation must preserve backend startup readiness before starting kickoff.');
-  await page.getByTestId('initiation-next-invite').click();
+  await page.getByTestId('initiation-next-workspace').click();
+  await page.getByTestId('initiation-workspace-prepare').click();
+  await page.waitForFunction(() => /workspace prepared/i.test(document.querySelector('[data-testid="initiation-workspace-status"]')?.textContent || ''), null, { timeout: 15000 });
+  await page.getByTestId('initiation-workspace-next-invite').click();
+  await page.getByTestId('initiation-talent-market').waitFor({ state: 'visible', timeout: 5000 });
+  for (const agentId of ['musk', 'turing', 'curie', 'confucius']) {
+    await page.getByTestId(`market-open-${agentId}`).click();
+    await page.getByTestId(`initiation-contract-${agentId}`).click();
+    await page.getByTestId('initiation-talent-market').waitFor({ state: 'visible', timeout: 5000 });
+  }
   await page.getByTestId('initiation-next-lobby').click();
   await page.getByTestId('initiation-start-meeting').click();
   await assertPageContains(page, 'INITIATION ROUNDTABLE', 'Initiation must reach the kickoff meeting.');
   await page.getByTestId('initiation-meeting-session-proof').waitFor({ state: 'visible', timeout: 8000 });
-  await page.getByTestId('initiation-meeting-leader-candidate-claim-turing').waitFor({ state: 'visible', timeout: 8000 });
-  const turingLeaderClaimText = await page.getByTestId('initiation-meeting-leader-candidate-claim-turing').innerText();
-  assert(turingLeaderClaimText.trim().length >= 30, 'Kickoff meeting must show the Agent self-marketing claim before Leader confirmation.');
-  await page.getByTestId('initiation-meeting-director-clarification').waitFor({ state: 'visible', timeout: 8000 });
-  await page.getByTestId('initiation-meeting-clarification-input').fill('Manager clarified from zero setup: Turing owns backend proof, Curie reviews evidence, and the team must produce a generic product-team deliverable.');
-  await page.getByTestId('initiation-meeting-save-clarification').click();
-  await assertPageContains(page, 'ROLE QUESTIONS ANSWERED', 'Kickoff meeting must persist Manager clarification.');
-  await page.getByTestId('initiation-meeting-leader-candidate-turing').click();
-  await assertPageContains(page, 'MANAGER CONFIRMED IN MEETING', 'Kickoff meeting must persist the selected Leader.');
-  await page.getByTestId('initiation-meeting-next-action-0').fill('Run the first generic product-team autonomy handoff and submit visible Agent output.');
-  await page.getByTestId('initiation-meeting-save-next-actions').click();
-  await assertPageContains(page, 'NEXT ACTION RESOLUTION:', 'Kickoff meeting must persist next actions before approval.');
-  await page.getByTestId('initiation-finish-meeting').click();
+  const clarification = 'Manager clarified from zero setup: Turing owns backend proof, Curie reviews evidence, and the team must produce a generic product-team deliverable.';
+  await page.getByTestId('project-meeting-input').fill(clarification);
+  await page.getByTestId('project-meeting-send').click();
+  await assertPageContains(page, clarification, 'Kickoff meeting must persist the Director clarification through the visible meeting transcript.');
+  await page.getByRole('button', { name: 'End Meeting' }).click();
   await assertPageContains(page, 'Director Decisions', 'Initiation result must expose Director decisions before approval.');
+  await page.getByTestId('leader-candidate-turing').click();
+  await page.getByTestId('initiation-next-action-0').fill('Run the first generic product-team autonomy handoff and submit visible Agent output.');
   await page.getByTestId('initiation-approve-create').click();
   await page.getByTestId('backend-worker-station').waitFor({ state: 'visible', timeout: 30000 });
 
@@ -765,8 +783,8 @@ try {
   await assertPanelTextIncludes(page, 'settings-workspace-bind-contract', [
     `/projects/${projectId}/workspace/bind`,
     `/projects/${projectId}/local-runtime`,
-    'not bound',
-  ], 'Real-user Settings Workspace must expose the backend workspace bind contract after project creation.');
+    'backend-bound',
+  ], 'Real-user Settings Workspace must expose the backend-bound local workspace contract after project creation.');
   await fillControlledInput(page, 'settings-workspace-bind-path-input', boundWorkspaceRoot);
   await page.getByTestId('settings-workspace-bind-create-if-missing').check();
   const workspaceBindButton = await waitForButtonEnabled(
@@ -1221,7 +1239,10 @@ try {
   assert(zeroToAutonomyReport.status === 200 && zeroToAutonomyReport.body.zeroToAutonomyReport?.schemaVersion === 'project-zero-to-autonomy-report/v1', 'Real-user chain must expose the project zero-to-autonomy report read model.');
   const zeroToAutonomyReportModel = zeroToAutonomyReport.body.zeroToAutonomyReport;
   const zeroToAutonomySerialized = JSON.stringify(zeroToAutonomyReportModel);
-  assert(zeroToAutonomyReportModel.readyForLocalMvpTrial === true, 'Project zero-to-autonomy report must mark the real-user local MVP trial ready.');
+  assert(
+    zeroToAutonomyReportModel.readyForLocalMvpTrial === true,
+    `Project zero-to-autonomy report must mark the real-user local MVP trial ready. Missing: ${JSON.stringify(zeroToAutonomyReportModel.missingRows || [])}`,
+  );
   assert(zeroToAutonomyReportModel.readyForPrivatePilotDelivery === true, 'Project zero-to-autonomy report must mark private-pilot delivery ready.');
   assert(zeroToAutonomyReportModel.readyForPublicProduction === false, 'Project zero-to-autonomy report must not overclaim public production readiness.');
   assert(zeroToAutonomyReportModel.backendRoutes?.zeroToAutonomyReport === `/projects/${projectId}/zero-to-autonomy-report`, 'Project zero-to-autonomy report must expose its backend route.');

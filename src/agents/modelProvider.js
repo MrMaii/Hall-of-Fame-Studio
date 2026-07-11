@@ -1,12 +1,15 @@
 import { redactSensitiveText, redactUrl } from './secretRedaction.js';
 import { parseBoolean, safeJsonParse } from './sharedUtils.js';
 import { createProviderTransportPolicy, createRequestAbortSignal } from './providerTransportReliability.js';
+import { evaluateLocalNetworkEndpoint } from './localNetworkPolicy.js';
+import { createHash } from 'node:crypto';
 
 const DEFAULT_PROVIDER = 'openai-compatible';
-const DEFAULT_OPENAI_COMPATIBLE_BASE_URL = 'https://api.openai.com/v1';
-const DEFAULT_ANTHROPIC_BASE_URL = 'https://api.anthropic.com/v1';
-const DEFAULT_GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta';
-const DEFAULT_MODEL = 'gpt-4o-mini';
+const DEFAULT_LOCAL_OPENAI_COMPATIBLE_BASE_URL = 'http://127.0.0.1:11434/v1';
+const DEFAULT_OPENAI_COMPATIBLE_BASE_URL = DEFAULT_LOCAL_OPENAI_COMPATIBLE_BASE_URL;
+const DEFAULT_ANTHROPIC_BASE_URL = DEFAULT_LOCAL_OPENAI_COMPATIBLE_BASE_URL;
+const DEFAULT_GEMINI_BASE_URL = DEFAULT_LOCAL_OPENAI_COMPATIBLE_BASE_URL;
+const DEFAULT_MODEL = 'llama3.2';
 const DEFAULT_TIMEOUT_MS = 45_000;
 const DEFAULT_MAX_TOKENS = 700;
 const DEFAULT_MAX_CONCURRENCY = 2;
@@ -92,6 +95,29 @@ function normalizeProvider(provider = DEFAULT_PROVIDER) {
   if (['google', 'gemini'].includes(value)) return 'gemini';
   if (value === 'openai') return 'openai';
   return 'openai-compatible';
+}
+
+function validIdempotencyKey(value) {
+  return value === undefined || value === null || value === '' || /^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$/.test(String(value));
+}
+
+function idempotencyHeaders(overrides = {}) {
+  return {
+    ...(overrides.idempotencyKey ? { 'idempotency-key': String(overrides.idempotencyKey) } : {}),
+    ...(overrides.traceId ? { 'x-hofs-trace-id': String(overrides.traceId) } : {}),
+  };
+}
+
+function idempotencyMetadata(key, outcome, extra = {}) {
+  return key ? {
+    schemaVersion: 'provider-idempotency-transport/v1',
+    keyHash: createHash('sha256').update(String(key)).digest('hex'),
+    propagated: true,
+    endpointHonoringAttested: false,
+    outcome,
+    safeToRetryAutomatically: outcome === 'completed' || outcome === 'definitive-failure',
+    ...extra,
+  } : null;
 }
 
 function defaultBaseUrlFor(provider) {
@@ -301,6 +327,7 @@ function requestSpec({ provider, baseURL, apiKey, model, messages, temperature, 
         'x-api-key': apiKey,
         'anthropic-version': overrides.anthropicVersion || '2023-06-01',
         'content-type': 'application/json',
+        ...idempotencyHeaders(overrides),
       },
       body: anthropicBody({ model, messages, temperature, maxTokens, extraBody, overrides }),
     };
@@ -309,7 +336,7 @@ function requestSpec({ provider, baseURL, apiKey, model, messages, temperature, 
     const resolvedModel = encodeURIComponent(overrides.model || model);
     return {
       url: `${baseURL}/models/${resolvedModel}:generateContent?key=${encodeURIComponent(apiKey)}`,
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...idempotencyHeaders(overrides) },
       body: geminiBody({ messages, temperature, maxTokens, extraBody, overrides }),
     };
   }
@@ -318,6 +345,7 @@ function requestSpec({ provider, baseURL, apiKey, model, messages, temperature, 
     headers: {
       authorization: `Bearer ${apiKey}`,
       'content-type': 'application/json',
+      ...idempotencyHeaders(overrides),
     },
     body: openAiCompatibleBody({ model, messages, temperature, maxTokens, json, jsonResponseFormat, extraBody, overrides }),
   };
@@ -344,6 +372,7 @@ export function createModelProvider({
   blockedModels = [],
   extraBody = {},
   fetchImpl = globalThis.fetch,
+  localOnly = false,
 } = {}) {
   const resolvedProvider = normalizeProvider(provider);
   const adapterConfig = adapterConfigFor(resolvedProvider);
@@ -355,7 +384,10 @@ export function createModelProvider({
   let runtimeEnabledSource = runtimeEnabled ? 'startup-config' : 'disabled';
   const configured = () => Boolean(currentApiKey);
   const blockedByPolicy = () => blockedModels.some((pattern) => modelMatches(currentModel, pattern));
-  const providerEnabled = () => Boolean(runtimeEnabled && configured() && !blockedByPolicy() && typeof fetchImpl === 'function');
+  const endpointPolicy = () => localOnly
+    ? evaluateLocalNetworkEndpoint(currentBaseURL)
+    : { allowed: true, status: 'remote-endpoints-allowed', reason: 'Remote endpoint policy is not restricted.' };
+  const providerEnabled = () => Boolean(runtimeEnabled && configured() && endpointPolicy().allowed && !blockedByPolicy() && typeof fetchImpl === 'function');
   const transport = createProviderTransportPolicy({
     maxConcurrency,
     maxRetries: transportMaxRetries,
@@ -366,11 +398,15 @@ export function createModelProvider({
   });
 
   async function performChatCompletion({ messages, json = false, signal, ...overrides } = {}) {
+    if (!validIdempotencyKey(overrides.idempotencyKey)) {
+      return { ok: false, skipped: true, reason: 'invalid-idempotency-key', provider: resolvedProvider, model: currentModel };
+    }
     if (!providerEnabled()) {
+      const policy = endpointPolicy();
       return {
         ok: false,
         skipped: true,
-        reason: blockedByPolicy() ? 'model-blocked' : configured() ? 'provider-disabled' : 'missing-api-key',
+        reason: !policy.allowed ? 'remote-base-url-blocked' : blockedByPolicy() ? 'model-blocked' : configured() ? 'provider-disabled' : 'missing-api-key',
         provider: resolvedProvider,
         model: currentModel,
       };
@@ -409,6 +445,7 @@ export function createModelProvider({
           error: redactSensitiveText(data?.error?.message || data?.message || raw.slice(0, 400)),
           provider: resolvedProvider,
           model: currentModel,
+          idempotency: idempotencyMetadata(overrides.idempotencyKey, 'definitive-failure'),
         };
       }
       const content = extractContent(resolvedProvider, data);
@@ -426,6 +463,8 @@ export function createModelProvider({
             maxTokens: Number(overrides.emptyLengthRetryMaxTokens || 32),
             temperature: 0,
             __emptyLengthRetry: true,
+            idempotencyKey: overrides.idempotencyKey,
+            traceId: overrides.traceId,
           });
         }
         return {
@@ -437,6 +476,7 @@ export function createModelProvider({
           finishReason,
           usage: extractUsage(resolvedProvider, data),
           id: data?.id || data?.responseId || null,
+          idempotency: idempotencyMetadata(overrides.idempotencyKey, 'definitive-failure'),
         };
       }
       return {
@@ -448,6 +488,7 @@ export function createModelProvider({
         usage: extractUsage(resolvedProvider, data),
         finishReason,
         id: data?.id || data?.responseId || null,
+        idempotency: idempotencyMetadata(overrides.idempotencyKey, 'completed', { providerResponseId: data?.id || data?.responseId || null }),
       };
     } catch (error) {
       return {
@@ -459,6 +500,7 @@ export function createModelProvider({
             : redactSensitiveText(error.message || String(error)),
         provider: resolvedProvider,
         model: currentModel,
+        idempotency: idempotencyMetadata(overrides.idempotencyKey, 'ambiguous', { safeToRetryAutomatically: false }),
       };
     } finally {
       requestAbort.dispose();
@@ -510,6 +552,11 @@ export function createModelProvider({
         enabledSource: runtimeEnabledSource,
         configured: configured(),
         blockedByPolicy: blockedByPolicy(),
+        endpointPolicy: {
+          mode: localOnly ? 'local-only' : 'allow-remote',
+          status: endpointPolicy().status,
+          reason: endpointPolicy().reason,
+        },
         model: currentModel,
         baseURL: redactUrl(currentBaseURL),
         hasApiKey: Boolean(currentApiKey),
@@ -534,6 +581,11 @@ export function createModelProvider({
           apiStyle: adapterConfig.apiStyle,
           operations: [...adapterConfig.operations],
           defaultBaseUrl: redactUrl(adapterConfig.defaultBaseUrl),
+          idempotencyTransport: {
+            header: 'idempotency-key',
+            traceHeader: 'x-hofs-trace-id',
+            endpointAttestationRequired: true,
+          },
         },
       };
     },
@@ -602,6 +654,7 @@ export function createModelProviderFromEnv(env = globalThis.process?.env || {}, 
     jsonResponseFormat: parseBoolean(env.MODEL_JSON_RESPONSE_FORMAT, false),
     blockedModels: parseList(env.MODEL_BLOCKED_MODELS || env.AGENT_LLM_BLOCKED_MODELS || ''),
     extraBody: safeJsonParse(env.MODEL_EXTRA_BODY || '{}') || {},
+    localOnly: options.localOnly ?? parseBoolean(env.MODEL_LOCAL_ONLY || env.AGENT_LOCAL_ONLY, false),
   });
 }
 

@@ -550,4 +550,6 @@ This captures fresh screenshots from the live app and rebuilds demo GIFs in `doc
 
 ## License
 
+For project-level unattended execution, `npm run agents:autonomy-governor` verifies a fully local policy plane with version/checksum concurrency, all-session pause/resume, terminal stop, duration/step/cost/tool limits, restart recovery, and unified `force`-resistant enforcement. No hosted policy service or cloud account is involved.
+
 License TBD. This repository is a product prototype; confirm licensing before redistribution.

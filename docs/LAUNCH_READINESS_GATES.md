@@ -39,6 +39,40 @@ npm run agents:search-provider:vault-endpoint
 npm run agents:project-settings:privacy
 npm run agents:project-settings:provider-budget
 npm run agents:project-settings:tool-grants
+npm run agents:local-tool-grants
+npm run agents:prompt-boundary
+npm run agents:action-approvals
+npm run agents:quality-evaluation
+npm run agents:model-degradation
+npm run agents:team-formation
+npm run agents:delegation-governance
+npm run agents:shared-memory
+npm run agents:review-handoff
+npm run agents:autonomy-governor
+npm run agents:learning-program
+npm run agents:teaching-safety
+npm run agents:academic-writing-pipeline
+npm run agents:citation-integrity
+npm run agents:investigation-case
+npm run agents:investigation-safety
+npm run agents:technical-delivery
+npm run agents:engineering-security
+npm run agents:creative-studio
+npm run agents:rights-provenance
+npm run agents:fine-grained-authorization
+npm run agents:store-migration-safety
+npm run agents:local-artifact-storage
+npm run agents:local-audit-integrity
+npm run agents:local-privacy-lifecycle
+npm run agents:local-durable-task-queue
+npm run agents:local-idempotent-execution
+npm run agents:local-timeout-cancellation
+npm run agents:local-scheduling-governance
+npm run agents:local-dead-letter-governance
+npm run agents:local-rate-concurrency-governance
+npm run agents:local-graceful-shutdown
+npm run agents:local-event-recovery
+npm run agents:local-causal-request-tracing
 npm run agents:project-settings:integrations
 npm run agents:project-settings:workspace
 npm run agents:product-team:smoke
@@ -226,6 +260,38 @@ P2 adapter gateway rehearsals clean their gateway/project temp stores by default
 `npm run agents:project-settings:provider-budget` is the focused Settings budget gate. It writes `project-provider-budget-policy/v1` through `project-settings/v1`, verifies project settings audit/timeline/event/file-store proof, then reads Provider Readiness and Provider Controlled Run to prove the daily budget and hourly request limit are consumed by the backend provider policy surfaces. It is local MVP budget enforcement evidence only; production cost alerting, provider incident controls, and managed usage audit remain P2 blockers.
 
 `npm run agents:project-settings:tool-grants` is the focused Settings tool-grant gate. It writes `project-tool-grant-policy/v1` through `project-settings/v1`, verifies project settings audit/timeline/event/file-store proof, then reads Provider Readiness and Provider Controlled Run to prove a removed `search:evidence` grant is denied as `agent-tool-grant-missing`. It is local MVP Agent tool authorization evidence only; production still requires managed runtime identity, task-scoped grants, and centralized provider audit.
+
+`npm run agents:local-tool-grants` is the focused temporary authorization gate. It removes baseline `search:evidence`, proves denial before transport, creates one Agent/operation/task-scoped `local-tool-grant-lease/v1`, consumes exactly one Provider attempt, verifies exhaustion and restart persistence, and validates the redacted previous-checksum `local-tool-invocation-receipt/v1` chain. It proves bounded single-machine authorization without claiming hardware-backed immutability or cross-host IAM.
+
+`npm run agents:prompt-boundary` is the focused untrusted-data isolation gate. It records safe and injected evidence, proves critical injection is blocked by Evidence Source Safety, captures a real local model request, verifies safe evidence is citation-addressed under `UNTRUSTED_DATA`, verifies malicious instructions and fake secrets are physically absent, and checks the content-free `local-prompt-boundary-receipt/v1` through API, Manager Ready Package, file persistence, and restart.
+
+`npm run agents:action-approvals` is the focused high-cost and irreversible action gate. It proves the backend derives critical deletion policy rather than accepting caller downgrades, requires distinct Manager and security-admin decisions, rejects unapproved execution, recovers the approved record with valid checksums after file-store restart, claims the exact deletion request before purge, and preserves request/decision/execution-claim proof in the residual-boundary tombstone. This is a single-machine local approval control; it does not claim remote identity federation, hardware-backed non-repudiation, or a cloud approval inbox.
+
+`npm run agents:quality-evaluation` is the focused versioned work-quality regression gate. The backend-owned `local-quality-evaluation-suite/v1` derives one deterministic contract scenario from each of the learning, academic-writing, investigation, technical-delivery, and creative-studio modes. It records candidate/model/prompt/policy version ids, compares criterion-level results with a Manager-approved passing baseline, blocks any pass-to-fail regression even when aggregate scores look healthy, verifies content-free SHA-256 receipts after file-store restart, and keeps `readyForProduction=false`. It evaluates observable team/artifact/review/escalation/evidence contracts; semantic correctness, subjective quality, calibrated human preference, and real-provider output judging remain separate release work.
+
+`npm run agents:model-degradation` is the focused model-output truthfulness gate. It forces every artifact draft into exactly one backend-derived mode: successful `model-provider-output`, failed requested-model `requested-model-fallback`, or deliberate `explicit-local-template`. Requested fallbacks expose only closed reason codes, receive a degraded quality ceiling, and cannot accept or complete themselves even if the caller supplies those states. Content-free `local-model-generation-provenance/v1` receipts retain only ids, quality/release metadata, Provider/model identifiers and SHA-256 proof; Provider error bodies, prompts, outputs, project content and credentials are excluded. The gate proves failed transport, forced independent review, file-store restart, successful local-model transition, and `readyForProduction=false`.
+
+`npm run agents:team-formation` is the focused roster-explainability gate. It covers all five work modes, proving each required role names its capability lane, chosen persona, score, selection rationale, owned/reviewed artifacts and escalation responsibility. The content-minimized `local-team-formation-brief/v1` stores only objective checksum/length and closed need-signal ids, fails closed for insufficient persona supply, and requires full coverage, reviewer independence, an acyclic dependency graph and score >=75 before `delegationReady=true`. Project readback at `GET /projects/:id/team-formation-readiness` keeps the checksum stable after restart without creating another persona source of truth.
+
+`npm run agents:delegation-governance` is the focused operational-delegation gate. It proves a visualization-ready task DAG, simultaneous overdue and dependency-blocked states, accountable owner/reviewer/due-date changes, local project-feed notifications, state-fingerprint deduplication, observer read-only access, file-store restart recovery, checksum tamper detection, and exclusion of task text from governance receipts. The local routes are `GET /projects/:id/delegation-governance`, `POST /projects/:id/tasks/:taskId/delegation`, and `POST /projects/:id/delegation-governance/scan`; no cloud notification service is required.
+
+`npm run agents:shared-memory` is the focused project-knowledge governance gate. It persists cited local memory as immutable `local-project-memory-entry/v1` versions, requires SHA-256-bound project sources, confidence and basis, explicit bounded expiry, and project/team/management/Agent access scope. Revision uses optimistic previous-checksum concurrency; revocation is a separate immutable receipt; identity-filtered reads bypass shared caches. The gate proves Manager and Agent visibility differences, idempotency conflicts, stale revision rejection, expiry, revocation, restart, tamper degradation, and additive `project-memory-readiness/v1` evidence through `GET|POST /projects/:id/shared-memories` without claiming hosted vector or managed production memory.
+
+`npm run agents:review-handoff` is the focused independent-review concurrency gate. It converts every work mode's acceptance-check ids into explicit handoff criteria, binds the handoff to a content-free submission SHA-256 fingerprint, requires a different team Reviewer to acknowledge and claim a bounded lease, increments a fence after lease expiry, rejects stale fences and changed submissions, and accepts only when all required criteria carry proof ids. Completion invokes the real `reviewAgentSubmission` path and binds the resulting review hash; overdue scans create one local escalation receipt. `submission-review-workflow/v1` reports governed versus legacy review rounds without pretending compatibility reviews had lease protection.
+
+`npm run agents:autonomy-governor` is the focused pure-local autonomy control gate. It creates an append-only versioned policy for each project, binds pause/resume/stop commands to the expected policy version and checksum, fences every active project session, and makes stop terminal. The common execution assertion covers unified run-control actions and loops, session start/tick, direct Agent autonomy, and Provider-evidence Agent autonomy; `force=true` cannot bypass it. The five work modes must jointly reject projected wall-clock, step, cost, tool-count, and tool-allowlist violations, while file-backed restart proves the paused/stopped state and SHA-256 receipts remain authoritative.
+
+`npm run agents:learning-program` is the focused student-learning execution gate. A learning project converts a prerequisite syllabus and diagnostic evidence into a bounded local schedule that respects weekly minutes, session length, study days, blackout dates, target date, and target mastery. Practice receipts retain scores, duration, hints, evidence ids and checksums but reject raw learner answers. Mastery requires three recent hint-free passing attempts plus mastered prerequisites; the read model then unlocks the next weak topic or schedules a spaced review when evidence ages. Pace revisions use optimistic plan version/checksum concurrency and preserve compatible prior evidence across file-store restart. Academic-integrity and learner-wellbeing remain explicit capability-42 gates rather than being silently claimed complete here.
+
+`npm run agents:teaching-safety` is the focused local tutoring authorization gate. It derives closed risk signals from transient request text and persists only its SHA-256, length, trusted activity type, evidence ids, reason codes, response authorization, and checksum. Coarse age bands constrain reading level, session length, hints, and child supervision without collecting birth dates. Assignment review requires a real same-learner attempt receipt; current/external facts require a completed source-safe project evidence record. Assessment answers, cheating concealment, child personal data, and urgent wellbeing signals are hard stops. Human resolutions require evidence and never convert the blocked decision into teaching-content authorization. The gate proves restart and raw-text absence but makes no legal, clinical, emergency-response, guardian-contact, or school-policy compliance claim.
+
+`npm run agents:academic-writing-pipeline` is the focused local paper-production gate. An academic-writing project binds a hashed research question, acyclic section plan, claim graph, style guide, and real completed local evidence records into a versioned blueprint. Manuscript drafts and revisions must be genuine `academic-manuscript` submissions with artifact and storage-proof checksums. The assigned reviewer must be independent; each requested change becomes a stable issue id, every issue must be addressed by a newer submission, and only an accepted latest revision with full section and claim coverage can be frozen. Receipts omit the research question, claim prose, and manuscript body, survive file-store restart, and degrade on checksum tampering. Finalization deliberately remains `finalized-awaiting-citation-integrity`: semantic citation support, contradiction, retraction, and staleness checking belong to capability 44.
+
+`npm run agents:citation-integrity` is the focused local semantic citation gate. Every planned claim/source pair must resolve through the capability-43 blueprint to a real project `evidence-source-snapshot/v1`, then receive a checksum-linked assessment from the blueprint's independent citation reviewer. Assessments use closed support and source-status vocabularies, publication/status-check timestamps, locators, and hashes of evidence excerpts and rationales; raw excerpts and rationale text are not persisted. The immutable audit automatically emits blocking findings for missing, irrelevant, uncertain, contradictory, stale, corrected, retracted, or unavailable citations and for claims without active supporting evidence. A corrected assessment appends a version/checksum link rather than overwriting history, and a pass binds the exact final manuscript before the academic pipeline reports `citation-integrity-passed`. This is deterministic local governance over recorded review evidence; it does not query a live retraction registry, determine truth autonomously, detect plagiarism, or make the manuscript publicly production-ready.
+
+`npm run agents:investigation-case` is the focused local case-workflow gate. Investigation-mode roster roles own a versioned, content-minimized case with at least two competing hypotheses. Case evidence must bind a real checksummed source snapshot and the risk reviewer's approved source decision, then records five bounded reliability dimensions and explicit support/contradiction strength against known hypotheses. Acquisition starts an evidence-specific custody chain; verify, transfer, and independent seal events are sequential, time-monotonic, actor-attributed, checksum-linked, and terminal after seal. Opposing evidence automatically creates stable contradiction ids, all require independent resolution, and conclusion confidence is derived from reliability-weighted support/contradiction plus the declared prior rather than caller input. Closure binds the exact conclusion, locks later writes while preserving historical idempotent replay, survives file restart, and degrades on source, resolution, evidence, custody, conclusion, or closure tampering. It is a local traceability/control contract, not legal chain-of-custody, admissibility, investigative authority, live truth verification, or public-production certification.
+
+`npm run agents:investigation-safety` is the focused mandatory investigation authorization gate. A case-bound versioned policy declares one closed authority basis, validated authority evidence, an allowed data-category envelope, retention, and a short decision TTL while retaining non-configurable hard stops. Transient request classification persists only hashes, category/signal ids, target ids, case counts, reason codes, expiry, and checksums. Rule priority fails closed for credentials, doxxing, stalking, impersonation, retaliation, covert surveillance, minors, sensitive categories, undeclared PII, out-of-scope data, missing authority, public-record misuse, external effects, and insufficient/unsealed/contradictory evidence. Human disposition never authorizes the blocked operation; a corrected request must be reevaluated. Allowed decisions are exact-action/target, time-monotonic, unexpired, one-time receipts committed atomically with the evidence, conclusion, or closure write. Capability 45's full API path consumes these decisions, so no legacy write bypass remains. This local policy does not validate lawfulness, consent authenticity, regulatory compliance, or investigative authority.
 
 `npm run agents:project-settings:integrations` is the focused Settings integration capability gate. It writes project settings, verifies `project-integration-capabilities/v1`, confirms provider budget and Agent tool grants are backend-backed editable controls, confirms Proxy/Webhook points to `/projects/:id/adapter-gateway-preflight`, confirms MCP Tools points to `/projects/:id/provider-readiness`, confirms Vector Store points to `/projects/:id/evidence-index-readiness`, confirms Budget Alerts points to `/projects/:id/budget-alert-readiness`, confirms Error Reporting points to `/projects/:id/error-reporting-readiness`, and confirms those five route-backed rows are backend-backed but read-only with production blockers. It prevents the UI from presenting those integrations as either editable fake controls or missing backend APIs.
 
@@ -489,6 +555,40 @@ Latest production build evidence on 2026-07-07: `npm.cmd run build` passed with 
 - P0 Settings privacy policy backend receipt: `npm run agents:project-settings:privacy`
 - P0 Settings provider budget backend receipt: `npm run agents:project-settings:provider-budget`
 - P0 Settings tool grant backend receipt: `npm run agents:project-settings:tool-grants`
+- P0 temporary tool grant and invocation receipt contract: `npm run agents:local-tool-grants`
+- P0 prompt injection quarantine and untrusted-data citation contract: `npm run agents:prompt-boundary`
+- P0 unified local approval and irreversible execution contract: `npm run agents:action-approvals`
+- P0 versioned five-mode quality regression contract: `npm run agents:quality-evaluation`
+- P0 model generation degradation and provenance contract: `npm run agents:model-degradation`
+- P0 team formation explainability and gap governance contract: `npm run agents:team-formation`
+- P0 delegation DAG overdue blocking reassignment and notification contract: `npm run agents:delegation-governance`
+- P0 project shared memory citation version confidence expiry and access-scope contract: `npm run agents:shared-memory`
+- P0 review handoff acknowledgement lease fence stale-submission and acceptance contract: `npm run agents:review-handoff`
+- P0 project autonomy governor version pause resume terminal-stop cost step and tool contract: `npm run agents:autonomy-governor`
+- P0 local learning syllabus diagnostic pace practice mastery and spaced-review contract: `npm run agents:learning-program`
+- P0 local teaching age integrity privacy evidence uncertainty and wellbeing contract: `npm run agents:teaching-safety`
+- P0 local academic question outline claims draft review revision and finalization contract: `npm run agents:academic-writing-pipeline`
+- P0 local claim source support contradiction freshness status and citation integrity contract: `npm run agents:citation-integrity`
+- P0 local investigation hypotheses reliability custody contradictions confidence review and closure contract: `npm run agents:investigation-case`
+- P0 local investigation authority privacy minimization sufficiency human review and one-time authorization contract: `npm run agents:investigation-safety`
+- P0 local requirements implementation tests security review rollback rehearsal and release evidence contract: `npm run agents:technical-delivery`
+- P0 local dependency secret permission static analysis remediation exception and release attestation contract: `npm run agents:engineering-security`
+- P0 local creative brief iteration critique export quality and acknowledged handoff contract: `npm run agents:creative-studio`
+- P0 local asset rights license attribution generation provenance derivative lineage and exact export audit contract: `npm run agents:rights-provenance`
+- P0 local fine-grained authorization mutation audit transaction recovery contract: `npm run agents:fine-grained-authorization`
+- P0 local store migration archive journal crash recovery validation and explicit rollback contract: `npm run agents:store-migration-safety`
+- P0 local canonical artifact inventory retention legal hold and workspace drift contract: `npm run agents:local-artifact-storage`
+- P0 local audit checkpoint archive quarantine recovery and recovery-receipt contract: `npm run agents:local-audit-integrity`
+- P0 local privacy lifecycle automatic scan exact dual approval journal recovery and residual-boundary contract: `npm run agents:local-privacy-lifecycle`
+- P0 local durable three-lane enqueue lease receipt acknowledgement and restart-recovery contract: `npm run agents:local-durable-task-queue`
+- P0 local exactly-once commit stable Provider key ambiguity blocking and reconciliation contract: `npm run agents:local-idempotent-execution`
+- P0 local durable timeout active cancellation fence Provider ambiguity and workspace child termination contract: `npm run agents:local-timeout-cancellation`
+- P0 local UTC interval schedule stable slot clock rollback missed-run coalescing and durable dispatch contract: `npm run agents:local-scheduling-governance`
+- P0 local durable dead-letter immutable source exact replay lease receipt recovery and disposition contract: `npm run agents:local-dead-letter-governance`
+- P0 local process-safe Provider project actor model tool quota and concurrency admission contract: `npm run agents:local-rate-concurrency-governance`
+- P0 local quiesce HTTP scheduler drain forced-timeout durable-recovery and shutdown-receipt contract: `npm run agents:local-graceful-shutdown`
+- P0 local event SHA-256 chain verified checkpoint quarantine valid-tail recovery and restart-idempotent receipt contract: `npm run agents:local-event-recovery`
+- P0 local safe HTTP trace context unique request span causal graph topology async links and hash-chain receipt contract: `npm run agents:local-causal-request-tracing`
 - P0 Settings integration readiness contract: `npm run agents:settings-integration-readiness`
 - P0 Settings workspace capability backend receipt: `npm run agents:project-settings:workspace`
 - P0 Evidence Index readiness contract: `npm run agents:evidence-index-readiness`

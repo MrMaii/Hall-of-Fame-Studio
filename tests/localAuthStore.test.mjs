@@ -52,3 +52,72 @@ test('local auth persists sessions, rejects bad passwords, and revokes logout to
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test('locks repeated local password failures and clears the lockout after the retry window', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'hofs-local-auth-lockout-'));
+  const filePath = join(directory, 'local-auth.json');
+  try {
+    const auth = createLocalAuthStore({ filePath, maxFailedLoginAttempts: 2, loginLockoutMs: 60_000 });
+    auth.bootstrap({ username: 'owner', password: 'correct horse battery staple', now: '2026-07-10T00:00:00.000Z' });
+
+    assert.equal(auth.login({ username: 'owner', password: 'wrong password', now: '2026-07-10T00:00:01.000Z' }).reason, 'local-auth-invalid-credentials');
+    const locked = auth.login({ username: 'owner', password: 'wrong password', now: '2026-07-10T00:00:02.000Z' });
+    assert.equal(locked.reason, 'local-auth-login-locked');
+    assert.equal(locked.retryAt, '2026-07-10T00:01:02.000Z');
+    assert.equal(auth.login({ username: 'owner', password: 'correct horse battery staple', now: '2026-07-10T00:00:03.000Z' }).reason, 'local-auth-login-locked');
+    assert.equal(auth.login({ username: 'owner', password: 'correct horse battery staple', now: '2026-07-10T00:01:03.000Z' }).verified, true);
+
+    const disk = readFileSync(filePath, 'utf8');
+    assert.equal(disk.includes('correct horse battery staple'), false);
+    assert.equal(JSON.stringify(auth.listUsers()).includes('failedLoginAttempts'), false);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('disabling a local account revokes every session without allowing the last security admin to be disabled', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'hofs-local-auth-disable-'));
+  const filePath = join(directory, 'local-auth.json');
+  try {
+    const auth = createLocalAuthStore({ filePath });
+    const owner = auth.bootstrap({ username: 'owner', password: 'correct horse battery staple', now: '2026-07-10T00:00:00.000Z' });
+    const manager = auth.createUser({ username: 'manager', password: 'another correct horse battery staple', role: 'manager', now: '2026-07-10T00:00:01.000Z' });
+    const managerLogin = auth.login({ username: 'manager', password: 'another correct horse battery staple', now: '2026-07-10T00:00:02.000Z' });
+
+    const disabled = auth.disableUser({ userId: manager.user.id, now: '2026-07-10T01:00:00.000Z' });
+    assert.equal(disabled.user.disabledAt, '2026-07-10T01:00:00.000Z');
+    assert.equal(disabled.revokedSessionCount, 1);
+    assert.equal(auth.status().disabledUserCount, 1);
+    assert.equal(auth.verifySession({ token: managerLogin.token }).reason, 'local-auth-session-revoked');
+    assert.throws(() => auth.disableUser({ userId: owner.user.id, now: '2026-07-10T01:00:01.000Z' }), /last security administrator/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('rotating a local password revokes prior sessions and issues one replacement session', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'hofs-local-auth-password-'));
+  const filePath = join(directory, 'local-auth.json');
+  try {
+    const auth = createLocalAuthStore({ filePath });
+    const owner = auth.bootstrap({ username: 'owner', password: 'correct horse battery staple', now: '2026-07-10T00:00:00.000Z' });
+    const secondSession = auth.login({ username: 'owner', password: 'correct horse battery staple', now: '2026-07-10T00:01:00.000Z' });
+    const rotated = auth.changePassword({
+      userId: owner.user.id,
+      currentPassword: 'correct horse battery staple',
+      newPassword: 'new correct horse battery staple',
+      now: '2026-07-10T02:00:00.000Z',
+    });
+
+    assert.equal(rotated.revokedSessionCount, 2);
+    assert.notEqual(rotated.token, owner.token);
+    assert.equal(auth.verifySession({ token: owner.token, now: '2026-07-10T02:01:00.000Z' }).reason, 'local-auth-session-revoked');
+    assert.equal(auth.verifySession({ token: secondSession.token, now: '2026-07-10T02:01:00.000Z' }).reason, 'local-auth-session-revoked');
+    assert.equal(auth.verifySession({ token: rotated.token, now: '2026-07-10T02:01:00.000Z' }).verified, true);
+    assert.equal(auth.login({ username: 'owner', password: 'correct horse battery staple', now: '2026-07-10T02:01:00.000Z' }).verified, false);
+    assert.equal(auth.login({ username: 'owner', password: 'new correct horse battery staple', now: '2026-07-10T02:02:00.000Z' }).verified, true);
+    assert.equal(readFileSync(filePath, 'utf8').includes('new correct horse battery staple'), false);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});

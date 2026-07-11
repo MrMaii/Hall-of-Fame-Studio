@@ -4,11 +4,13 @@ import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { replaceFileWithRetry } from './atomicFileReplace.js';
 
-const AUTH_STORE_VERSION = 1;
+const AUTH_STORE_VERSION = 2;
 const PASSWORD_HASH_VERSION = 'scrypt';
 const PASSWORD_KEY_LENGTH = 64;
 const PASSWORD_COST = 1 << 15;
 const DEFAULT_SESSION_TTL_MS = 12 * 60 * 60 * 1000;
+const DEFAULT_MAX_FAILED_LOGIN_ATTEMPTS = 5;
+const DEFAULT_LOGIN_LOCKOUT_MS = 15 * 60 * 1000;
 const USER_ROLES = new Set(['security-admin', 'manager', 'observer']);
 
 function resolveFilePath(filePath) {
@@ -43,6 +45,15 @@ function normalizeRole(role = 'observer') {
 
 function sha256(value = '') {
   return createHash('sha256').update(String(value || '')).digest('hex');
+}
+
+function auditTransactionChecksum(transaction = {}) {
+  const { checksum: _checksum, ...base } = transaction;
+  return sha256(JSON.stringify(base));
+}
+
+function validAuditTransaction(transaction = {}) {
+  return Boolean(transaction.id && transaction.checksum && transaction.checksum === auditTransactionChecksum(transaction));
 }
 
 function passwordHash(password = '') {
@@ -96,13 +107,14 @@ function publicSession(session = {}) {
 }
 
 function readSnapshot(filePath) {
-  if (!filePath || !existsSync(filePath)) return { users: [], sessions: [] };
+  if (!filePath || !existsSync(filePath)) return { users: [], sessions: [], auditTransactions: [] };
   const raw = readFileSync(filePath, 'utf8').trim();
-  if (!raw) return { users: [], sessions: [] };
+  if (!raw) return { users: [], sessions: [], auditTransactions: [] };
   const parsed = JSON.parse(raw);
   return {
     users: Array.isArray(parsed.users) ? parsed.users : [],
     sessions: Array.isArray(parsed.sessions) ? parsed.sessions : [],
+    auditTransactions: Array.isArray(parsed.auditTransactions) ? parsed.auditTransactions : [],
   };
 }
 
@@ -115,16 +127,25 @@ function writeSnapshot(filePath, snapshot) {
     updatedAt: nowIso(),
     users: snapshot.users,
     sessions: snapshot.sessions,
+    auditTransactions: snapshot.auditTransactions,
   }, null, 2));
   replaceFileWithRetry(tempPath, filePath);
 }
 
-export function createLocalAuthStore({ filePath = null, sessionTtlMs = DEFAULT_SESSION_TTL_MS } = {}) {
+export function createLocalAuthStore({
+  filePath = null,
+  sessionTtlMs = DEFAULT_SESSION_TTL_MS,
+  maxFailedLoginAttempts = DEFAULT_MAX_FAILED_LOGIN_ATTEMPTS,
+  loginLockoutMs = DEFAULT_LOGIN_LOCKOUT_MS,
+} = {}) {
   const resolvedPath = resolveFilePath(filePath);
   const snapshot = readSnapshot(resolvedPath);
   let users = snapshot.users;
   let sessions = snapshot.sessions;
-  const persist = () => writeSnapshot(resolvedPath, { users, sessions });
+  let auditTransactions = snapshot.auditTransactions;
+  const configuredMaxFailedLoginAttempts = Math.max(1, Number(maxFailedLoginAttempts) || DEFAULT_MAX_FAILED_LOGIN_ATTEMPTS);
+  const configuredLoginLockoutMs = Math.max(1, Number(loginLockoutMs) || DEFAULT_LOGIN_LOCKOUT_MS);
+  const persist = () => writeSnapshot(resolvedPath, { users, sessions, auditTransactions });
   const activeUsers = () => users.filter((user) => !user.disabledAt);
   const findUserByUsername = (username) => users.find((user) => user.username === username) || null;
   const issueSession = (user, now = nowIso(), ttlMs = sessionTtlMs) => {
@@ -138,8 +159,28 @@ export function createLocalAuthStore({ filePath = null, sessionTtlMs = DEFAULT_S
       revokedAt: null,
     };
     sessions = [session, ...sessions].slice(0, 512);
-    persist();
     return { token, session: publicSession(session) };
+  };
+  const commitAuditTransaction = ({ operation, username = '', actorUserId = null, targetUserId = null, sessionId = null, outcome = 'committed', now = nowIso() } = {}) => {
+    const base = {
+      schemaVersion: 'local-auth-audit-transaction/v1',
+      id: `lat_${randomBytes(12).toString('base64url')}`,
+      operation: String(operation || '').trim(),
+      subjectHash: sha256(String(username || '').trim().toLowerCase()),
+      actorUserId: actorUserId || null,
+      targetUserId: targetUserId || null,
+      sessionId: sessionId || null,
+      outcome: String(outcome || 'committed'),
+      status: 'audit-pending',
+      auditRecordId: null,
+      auditRecordChecksum: null,
+      createdAt: now,
+      confirmedAt: null,
+    };
+    const transaction = { ...base, checksum: auditTransactionChecksum(base) };
+    auditTransactions = [transaction, ...auditTransactions].slice(0, 256);
+    persist();
+    return transaction;
   };
 
   return {
@@ -150,9 +191,30 @@ export function createLocalAuthStore({ filePath = null, sessionTtlMs = DEFAULT_S
         storage: resolvedPath ? 'file' : 'memory',
         bootstrapRequired: activeUsers().length === 0,
         userCount: activeUsers().length,
+        disabledUserCount: users.filter((user) => Boolean(user.disabledAt)).length,
         sessionTtlMs,
+        maxFailedLoginAttempts: configuredMaxFailedLoginAttempts,
+        loginLockoutMs: configuredLoginLockoutMs,
         passwordHashAlgorithm: 'scrypt',
+        pendingAuditTransactionCount: auditTransactions.filter((row) => validAuditTransaction(row) && row.status === 'audit-pending').length,
+        confirmedAuditTransactionCount: auditTransactions.filter((row) => validAuditTransaction(row) && row.status === 'audit-confirmed').length,
+        invalidAuditTransactionCount: auditTransactions.filter((row) => !validAuditTransaction(row)).length,
       };
+    },
+    pendingAuditTransactions() {
+      return auditTransactions.filter((row) => validAuditTransaction(row) && row.status === 'audit-pending').map((row) => ({ ...row }));
+    },
+    acknowledgeAuditTransaction({ transactionId, auditRecordId, auditRecordChecksum, now = nowIso() } = {}) {
+      const transaction = auditTransactions.find((row) => row.id === transactionId) || null;
+      if (!transaction || !validAuditTransaction(transaction)) throw new Error('Local auth audit transaction was not found or is invalid.');
+      if (transaction.status === 'audit-confirmed') return { transaction: { ...transaction }, idempotent: true };
+      if (!auditRecordId || !(/^[a-f0-9]{64}$/.test(String(auditRecordChecksum || '')) || /^chk_[a-f0-9]{8,64}$/.test(String(auditRecordChecksum || '')))) throw new Error('Local auth audit confirmation proof is invalid.');
+      const { checksum: _checksum, ...prior } = transaction;
+      const updatedBase = { ...prior, status: 'audit-confirmed', auditRecordId: String(auditRecordId), auditRecordChecksum: String(auditRecordChecksum), confirmedAt: now };
+      const updated = { ...updatedBase, checksum: auditTransactionChecksum(updatedBase) };
+      auditTransactions = auditTransactions.map((row) => (row.id === transaction.id ? updated : row));
+      persist();
+      return { transaction: { ...updated }, idempotent: false };
     },
     bootstrap({ username, password, displayName = '', now = nowIso() } = {}) {
       if (activeUsers().length) throw new Error('Local auth bootstrap is already complete.');
@@ -168,11 +230,11 @@ export function createLocalAuthStore({ filePath = null, sessionTtlMs = DEFAULT_S
         disabledAt: null,
       };
       users = [user, ...users];
-      persist();
       const issued = issueSession(user, now);
+      commitAuditTransaction({ operation: 'bootstrap', username: normalizedUsername, actorUserId: user.id, targetUserId: user.id, sessionId: issued.session.id, outcome: 'bootstrap-success', now });
       return { user: publicUser(user), ...issued };
     },
-    createUser({ username, password, displayName = '', role = 'observer', now = nowIso() } = {}) {
+    createUser({ username, password, displayName = '', role = 'observer', actorUserId = null, now = nowIso() } = {}) {
       const normalizedUsername = normalizeUsername(username);
       if (findUserByUsername(normalizedUsername)) throw new Error('Username is already in use.');
       const user = {
@@ -186,11 +248,51 @@ export function createLocalAuthStore({ filePath = null, sessionTtlMs = DEFAULT_S
         disabledAt: null,
       };
       users = [user, ...users];
-      persist();
+      commitAuditTransaction({ operation: 'create-user', username: normalizedUsername, actorUserId, targetUserId: user.id, outcome: 'user-created', now });
       return { user: publicUser(user) };
     },
     listUsers() {
       return users.map(publicUser);
+    },
+    disableUser({ userId, actorUserId = null, now = nowIso() } = {}) {
+      const user = users.find((item) => item.id === userId) || null;
+      if (!user) throw new Error('Local user was not found.');
+      if (user.disabledAt) return { user: publicUser(user), revokedSessionCount: 0 };
+      if (user.role === 'security-admin' && activeUsers().filter((item) => item.role === 'security-admin').length <= 1) {
+        throw new Error('Cannot disable the last security administrator.');
+      }
+      let revokedSessionCount = 0;
+      const disabledUser = { ...user, disabledAt: now };
+      users = users.map((item) => (item.id === user.id ? disabledUser : item));
+      sessions = sessions.map((session) => {
+        if (session.userId !== user.id || session.revokedAt) return session;
+        revokedSessionCount += 1;
+        return { ...session, revokedAt: now };
+      });
+      commitAuditTransaction({ operation: 'disable-user', actorUserId, targetUserId: user.id, outcome: 'user-disabled', now });
+      return { user: publicUser(disabledUser), revokedSessionCount };
+    },
+    changePassword({ userId, currentPassword, newPassword, now = nowIso() } = {}) {
+      const user = users.find((item) => item.id === userId) || null;
+      if (!user || user.disabledAt) throw new Error('Local user was not found.');
+      if (!passwordMatches(currentPassword, user.passwordHash)) throw new Error('Current local password is not valid.');
+      const updatedUser = {
+        ...user,
+        passwordHash: passwordHash(newPassword),
+        passwordChangedAt: now,
+        failedLoginAttempts: 0,
+        loginLockedUntil: null,
+      };
+      let revokedSessionCount = 0;
+      users = users.map((item) => (item.id === user.id ? updatedUser : item));
+      sessions = sessions.map((session) => {
+        if (session.userId !== user.id || session.revokedAt) return session;
+        revokedSessionCount += 1;
+        return { ...session, revokedAt: now };
+      });
+      const issued = issueSession(updatedUser, now);
+      commitAuditTransaction({ operation: 'change-password', username: user.username, actorUserId: user.id, targetUserId: user.id, sessionId: issued.session.id, outcome: 'password-changed', now });
+      return { user: publicUser(updatedUser), revokedSessionCount, ...issued };
     },
     login({ username, password, now = nowIso() } = {}) {
       let normalizedUsername = '';
@@ -200,12 +302,41 @@ export function createLocalAuthStore({ filePath = null, sessionTtlMs = DEFAULT_S
         return { verified: false, reason: 'local-auth-invalid-credentials' };
       }
       const user = findUserByUsername(normalizedUsername);
+      const nowMs = Date.parse(now) || Date.now();
+      const lockedUntilMs = Date.parse(user?.loginLockedUntil || '');
+      if (user && !user.disabledAt && Number.isFinite(lockedUntilMs) && lockedUntilMs > nowMs) {
+        commitAuditTransaction({ operation: 'login', username: normalizedUsername, targetUserId: user.id, outcome: 'login-locked', now });
+        return { verified: false, reason: 'local-auth-login-locked', retryAt: user.loginLockedUntil };
+      }
       if (!user || user.disabledAt || !passwordMatches(password, user.passwordHash)) {
+        if (user && !user.disabledAt) {
+          const priorFailures = lockedUntilMs > 0 && lockedUntilMs <= nowMs
+            ? 0
+            : Number(user.failedLoginAttempts || 0);
+          const failedLoginAttempts = priorFailures + 1;
+          const loginLockedUntil = failedLoginAttempts >= configuredMaxFailedLoginAttempts
+            ? new Date(nowMs + configuredLoginLockoutMs).toISOString()
+            : null;
+          users = users.map((item) => (
+            item.id === user.id ? { ...item, failedLoginAttempts, loginLockedUntil } : item
+          ));
+          if (loginLockedUntil) {
+            commitAuditTransaction({ operation: 'login', username: normalizedUsername, targetUserId: user.id, outcome: 'login-locked', now });
+            return { verified: false, reason: 'local-auth-login-locked', retryAt: loginLockedUntil };
+          }
+        }
+        commitAuditTransaction({ operation: 'login', username: normalizedUsername, targetUserId: user?.id || null, outcome: 'login-failed', now });
         return { verified: false, reason: 'local-auth-invalid-credentials' };
       }
-      const updatedUser = { ...user, lastLoginAt: now };
+      const updatedUser = {
+        ...user,
+        lastLoginAt: now,
+        failedLoginAttempts: 0,
+        loginLockedUntil: null,
+      };
       users = users.map((item) => (item.id === user.id ? updatedUser : item));
       const issued = issueSession(updatedUser, now);
+      commitAuditTransaction({ operation: 'login', username: normalizedUsername, actorUserId: user.id, targetUserId: user.id, sessionId: issued.session.id, outcome: 'login-success', now });
       return { verified: true, user: publicUser(updatedUser), ...issued };
     },
     verifySession({ token, now = nowIso() } = {}) {
@@ -227,7 +358,7 @@ export function createLocalAuthStore({ filePath = null, sessionTtlMs = DEFAULT_S
       if (session.revokedAt) return { revoked: true, session: publicSession(session) };
       const revoked = { ...session, revokedAt: now };
       sessions = sessions.map((item) => (item.id === session.id ? revoked : item));
-      persist();
+      commitAuditTransaction({ operation: 'logout', actorUserId: session.userId, targetUserId: session.userId, sessionId: session.id, outcome: 'logout-success', now });
       return { revoked: true, session: publicSession(revoked) };
     },
     filePath: resolvedPath,

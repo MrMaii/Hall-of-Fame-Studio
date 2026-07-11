@@ -268,7 +268,7 @@ const initialCacheSection = sliceBetween(
 assertIncludes(initialCacheSection, [
   'const cachedBrowserProjectIds = () => new Set',
   'const loadInitialProjects = () =>',
-  '.filter(project => !isManagerDemoProject(project))',
+  '.filter(project => !isBackendManagedBrowserCacheProject(project))',
 ], 'initial project cache boundary');
 
 const initialChatCacheSection = sliceBetween(
@@ -334,11 +334,11 @@ assertIncludes(storageHelperSection, [
 assertIncludes(appSource, [
   'const hasConfiguredBackendBaseUrl = () => {',
   'const isValidBackendBaseUrl = (value) => {',
-  "return url.protocol === 'http:' || url.protocol === 'https:';",
+  'return isLocalNetworkEndpoint(value);',
   'const storedBackendUrl = readStoredJson(STORAGE_KEYS.backendUrl, null);',
   'return isValidBackendBaseUrl(storedBackendUrl)',
   'if (storedBackendUrl !== null) return isValidBackendBaseUrl(JSON.parse(storedBackendUrl));',
-  'return isValidBackendBaseUrl(import.meta.env?.VITE_AGENT_BACKEND_URL || DEFAULT_AGENT_BACKEND_URL);',
+  "return isValidBackendBaseUrl(import.meta.env?.VITE_AGENT_BACKEND_URL || '');",
   'const [backendUrlConfigured, setBackendUrlConfigured] = useState(hasConfiguredBackendBaseUrl);',
   'const backendConfiguredTargetLabel = backendUrlConfigured',
   'const backendHealthTargetLabel = backendUrlConfigured',
@@ -350,7 +350,7 @@ assertIncludes(appSource, [
   'Enter a full backend API URL before saving, for example http://127.0.0.1:8787.',
   'new URL(rawDraftUrl).toString().replace(/\\/+$/, \'\')',
   'setBackendUrlConfigured(true);',
-  'syncSettingsProviderRuntime({ runTests: false, baseUrlOverride: baseUrl })',
+  "syncSettingsProviderRuntime({ runTests: false, baseUrlOverride: nextUrl, reason: 'target-change' })",
   'Save the backend API URL in Settings Deployment before syncing provider runtime.',
   'Save the backend API URL in Settings Deployment before running Settings health checks.',
   "providerRuntimeStatus.running || !backendUrlConfigured",
@@ -368,7 +368,7 @@ const manualHealthTargetGuards = appSource.match(/disabled=\{healthCheck\.runnin
 assert(manualHealthTargetGuards.length >= 3, 'Settings Health manual Quick Check, Workflow Smoke, and footer Test Connection must require a configured backend URL before probing backend routes.');
 assertIncludes(appSource, [
   '&& backendUrlConfigured\n    && Boolean((backendStation.baseUrl || \'\').trim())',
-  'const syncBackendProjectCatalog = async ({ silent = true, baseUrl = null } = {}) => {',
+  "const syncBackendProjectCatalog = async ({ silent = true, baseUrl = null, authToken = '' } = {}) => {",
   'if (!baseUrl && !backendUrlConfigured) {',
   'Save the backend API URL in Settings Deployment before syncing backend projects.',
   'if (!baseUrlOverride && !backendUrlConfigured) {',
@@ -1013,7 +1013,7 @@ assertIncludes(initiationApprovalSection, [
   'Product Team Mission Runner approved kickoff and started backend autonomy',
   'refreshProjectInitiationReadModels',
   'No local fallback project was created.',
-  'if (!isDevelopmentInitiationFallbackEnabled())',
+  'if (confirmedKickoffPayload.workMode || !isDevelopmentInitiationFallbackEnabled())',
   "dataSource: 'development-fallback'",
 ], 'Initiation approval Mission Runner boundary');
 assertIncludes(appSource, [
@@ -2018,6 +2018,8 @@ assertIncludes(autonomousRunControlCommandRenderSection, [
   'onClick={() => tickAutonomousRunControlSession()}',
   'data-testid="backend-autonomous-run-control-session-pause"',
   'onClick={() => pauseAutonomousRunControlSession()}',
+  'data-testid="backend-autonomous-run-control-session-cancel"',
+  'onClick={() => cancelAutonomousRunControlSession()}',
   'disabled={!backendCommandAvailable || backendStation.loading}',
   'disabled={!backendCommandAvailable || backendStation.loading || !backendAutonomousRunControlSessionAvailable}',
 ], 'Autonomous Run Control UI backend target boundary');

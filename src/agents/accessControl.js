@@ -123,6 +123,10 @@ function bytesToHex(bytes = []) {
   return bytes.map((byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
+export function portableSha256Hex(value = '') {
+  return bytesToHex(sha256Bytes(toUtf8Bytes(value)));
+}
+
 export function hmacSha256Hex(secret = '', message = '') {
   let key = toUtf8Bytes(secret);
   if (key.length > HMAC_BLOCK_SIZE) key = sha256Bytes(key);
@@ -522,6 +526,47 @@ export function classifyAccessRequest({ method = 'GET', path = '/', body = {} } 
       allowedRoles: ['security-admin'],
     });
   }
+  if (resolvedPath === '/security-access-audit' || resolvedPath === '/security-audit-stream') {
+    return accessRoute({
+      routeKey: resolvedPath.slice(1),
+      capability: resolvedPath === '/security-access-audit'
+        ? 'read local runtime security access audit'
+        : 'read local runtime append-only security audit stream',
+      sensitivity: 'runtime-security-posture-metadata',
+      allowedRoles: ['security-admin'],
+    });
+  }
+  if (['/security-audit-integrity', '/security-audit-checkpoints', '/security-audit-recovery'].includes(resolvedPath)) {
+    return accessRoute({
+      routeKey: resolvedPath.slice(1),
+      capability: resolvedPath === '/security-audit-integrity'
+        ? 'read local cross-project audit checkpoint and recovery integrity'
+        : resolvedPath === '/security-audit-checkpoints'
+          ? 'create local cross-project audit checkpoint'
+          : 'recover local cross-project audit from verified checkpoint',
+      sensitivity: 'cross-project-security-audit-checkpoint-and-recovery',
+      allowedRoles: ['security-admin'],
+    });
+  }
+  const localAuthControlMatch = resolvedPath.match(/^\/local-auth\/(logout|password|users)(?:\/([^/]+)\/disable)?$/);
+  if (localAuthControlMatch) {
+    const action = localAuthControlMatch[1];
+    const disablingUser = action === 'users' && Boolean(localAuthControlMatch[2]);
+    return accessRoute({
+      routeKey: disablingUser ? 'local-auth-user-disable' : `local-auth-${action}`,
+      capability: disablingUser
+        ? 'disable local user account'
+        : action === 'users'
+          ? (resolvedMethod === 'GET' ? 'read local user accounts' : 'create local user account')
+          : action === 'password'
+            ? 'rotate local user password'
+            : 'revoke local user session',
+      sensitivity: action === 'users' ? 'local-user-administration' : 'local-user-credential-and-session',
+      allowedRoles: action === 'users'
+        ? ['security-admin']
+        : ['security-admin', 'manager', 'observer'],
+    });
+  }
   if (resolvedPath === '/llm/status' || resolvedPath === '/search/status') {
     return accessRoute({
       routeKey: resolvedPath === '/llm/status' ? 'llm-status' : 'search-status',
@@ -678,9 +723,16 @@ export function classifyAccessRequest({ method = 'GET', path = '/', body = {} } 
     });
   }
   if (action === 'identity-sessions') {
+    const identitySessionAction = projectRoute.tail[1];
     return accessRoute({
       routeKey: 'identity-sessions',
-      capability: resolvedMethod === 'GET' ? 'read identity session contract' : projectRoute.tail[1] === 'revoke' ? 'revoke identity session' : 'issue identity session',
+      capability: resolvedMethod === 'GET'
+        ? 'read identity session contract'
+        : identitySessionAction === 'revoke'
+          ? 'revoke identity session'
+          : identitySessionAction === 'rotate'
+            ? 'rotate identity session'
+            : 'issue identity session',
       sensitivity: 'identity-session-and-runtime-credential',
       projectId,
       allowedRoles: ['manager', 'security-admin'],
@@ -738,6 +790,46 @@ export function classifyAccessRequest({ method = 'GET', path = '/', body = {} } 
       sensitivity: 'runtime-scheduler',
       projectId,
       allowedRoles: ['manager', 'runtime-platform', 'security-admin'],
+    });
+  }
+  if (action === 'dead-letters') {
+    return accessRoute({
+      routeKey: resolvedMethod === 'GET' ? 'dead-letter-read' : 'dead-letter-governance-write',
+      capability: resolvedMethod === 'GET' ? 'read local durable dead letters' : 'replay or close a local durable dead letter',
+      sensitivity: 'durable-worker-failure-replay-approval-and-receipt-metadata',
+      projectId,
+      allowedRoles: resolvedMethod === 'GET' ? ['manager', 'security-admin'] : ['security-admin'],
+    });
+  }
+  if (action === 'rate-limit-governance') {
+    return accessRoute({
+      routeKey: 'rate-limit-governance',
+      capability: 'read local Provider rate and concurrency admission evidence',
+      sensitivity: 'provider-quota-dimensions-actor-hashes-and-active-claims',
+      projectId,
+      allowedRoles: ['manager', 'security-admin'],
+    });
+  }
+  if (action === 'traces') {
+    return accessRoute({
+      routeKey: 'project-causal-trace-read',
+      capability: 'read a content-minimized local causal request trace graph',
+      sensitivity: 'trace-span-status-latency-id-hash-and-causal-link-metadata',
+      projectId,
+      allowedRoles: ['manager', 'security-admin'],
+    });
+  }
+  if (action === 'event-recovery') {
+    return accessRoute({
+      routeKey: resolvedMethod === 'GET' ? 'event-recovery-read' : 'event-recovery-write',
+      capability: resolvedMethod === 'GET'
+        ? 'read local project event integrity, checkpoint, and recovery evidence'
+        : projectRoute.tail[0] === 'checkpoints'
+          ? 'create a verified local project event checkpoint'
+          : 'recover a local project event ledger from a verified checkpoint',
+      sensitivity: 'project-event-integrity-checkpoint-quarantine-and-recovery-metadata',
+      projectId,
+      allowedRoles: resolvedMethod === 'GET' ? ['manager', 'security-admin'] : ['security-admin'],
     });
   }
   if (action === 'worker-queue-adapter-plan') {
@@ -977,6 +1069,172 @@ export function classifyAccessRequest({ method = 'GET', path = '/', body = {} } 
       allowedRoles: ['manager', 'runtime-platform', 'security-admin'],
     });
   }
+  if (action === 'prompt-boundary-readiness') {
+    return accessRoute({
+      routeKey: 'prompt-boundary-readiness',
+      capability: 'read local prompt injection quarantine and boundary receipt readiness',
+      sensitivity: 'prompt-boundary-and-untrusted-context-metadata',
+      projectId,
+      allowedRoles: ['manager', 'runtime-platform', 'security-admin'],
+    });
+  }
+  if (action === 'action-approvals') {
+    const isDecision = projectRoute.tail[1] === 'decisions';
+    return accessRoute({
+      routeKey: 'action-approvals',
+      capability: resolvedMethod === 'GET'
+        ? 'read unified local action approvals'
+        : isDecision
+          ? 'record unified local action approval decision'
+          : 'request unified local action approval',
+      sensitivity: 'high-cost-and-irreversible-action-approval',
+      projectId,
+      allowedRoles: resolvedMethod === 'GET'
+        ? ['manager', 'runtime-platform', 'security-admin']
+        : isDecision
+          ? ['manager', 'security-admin']
+          : ['manager', 'runtime-platform', 'security-admin'],
+    });
+  }
+  if (action === 'privacy' && projectRoute.tail[0] === 'lifecycle') {
+    const lifecycleAction = projectRoute.tail[1] || 'read';
+    return accessRoute({
+      routeKey: `privacy-lifecycle-${lifecycleAction}`,
+      capability: lifecycleAction === 'scan'
+        ? 'scan and persist exact local privacy lifecycle plan'
+        : lifecycleAction === 'executions'
+          ? 'execute an exact dual-approved local privacy retention plan'
+          : 'read local privacy lifecycle readiness and residual boundaries',
+      sensitivity: 'artifact-retention-manifest-legal-hold-approval-and-deletion-evidence',
+      projectId,
+      allowedRoles: resolvedMethod === 'GET' ? ['manager', 'security-admin'] : ['security-admin'],
+    });
+  }
+  if (['quality-evaluation-suite', 'quality-evaluation-runs'].includes(action)) {
+    const isBaseline = action === 'quality-evaluation-runs' && projectRoute.tail[1] === 'baseline';
+    return accessRoute({
+      routeKey: action,
+      capability: resolvedMethod === 'GET'
+        ? 'read local versioned quality evaluation'
+        : isBaseline
+          ? 'set local quality evaluation baseline'
+          : 'record local quality evaluation run',
+      sensitivity: 'model-prompt-policy-quality-regression-evidence',
+      projectId,
+      allowedRoles: resolvedMethod === 'GET'
+        ? ['manager', 'runtime-platform', 'security-admin', 'observer']
+        : isBaseline
+          ? ['manager', 'security-admin']
+          : ['manager', 'runtime-platform', 'security-admin'],
+    });
+  }
+  if (action === 'model-degradation-readiness') {
+    return accessRoute({
+      routeKey: 'model-degradation-readiness',
+      capability: 'read local model generation and fallback provenance readiness',
+      sensitivity: 'model-generation-provenance-and-quality-tier-metadata',
+      projectId,
+      allowedRoles: ['manager', 'runtime-platform', 'security-admin', 'observer'],
+    });
+  }
+  if (action === 'team-formation-readiness') {
+    return accessRoute({
+      routeKey: 'team-formation-readiness',
+      capability: 'read local team formation role, risk, and gap explanation',
+      sensitivity: 'team-composition-persona-capability-and-risk-metadata',
+      projectId,
+      allowedRoles: ['manager', 'runtime-platform', 'security-admin', 'observer'],
+    });
+  }
+  if (action === 'delegation-governance') {
+    const isScan = resolvedMethod === 'POST' && projectRoute.tail[0] === 'scan';
+    return accessRoute({
+      routeKey: isScan ? 'delegation-governance-scan' : 'delegation-governance',
+      capability: isScan
+        ? 'scan local task delegation overdue and dependency blocking states'
+        : 'read local task delegation DAG and notification metadata',
+      sensitivity: 'task-assignment-dependency-due-date-and-local-notification-metadata',
+      projectId,
+      allowedRoles: isScan
+        ? ['manager', 'runtime-platform', 'security-admin']
+        : ['manager', 'runtime-platform', 'security-admin', 'observer'],
+    });
+  }
+  if (action === 'tasks' && resolvedMethod === 'POST' && projectRoute.tail[1] === 'delegation') {
+    return accessRoute({
+      routeKey: 'task-delegation-change',
+      capability: 'change local task assignee reviewer and due date',
+      sensitivity: 'task-accountability-and-independent-review-assignment',
+      projectId,
+      allowedRoles: ['manager', 'security-admin'],
+    });
+  }
+  if (action === 'shared-memories') {
+    return accessRoute({
+      routeKey: resolvedMethod === 'GET' ? 'project-shared-memory-read' : 'project-shared-memory-governance-write',
+      capability: resolvedMethod === 'GET'
+        ? 'read identity-scoped local project shared memory'
+        : 'create revise or revoke local project shared memory',
+      sensitivity: 'cited-versioned-project-knowledge-with-identity-scoped-content',
+      projectId,
+      allowedRoles: resolvedMethod === 'GET'
+        ? ['manager', 'runtime-platform', 'security-admin', 'observer', 'agent', 'reviewer-agent']
+        : ['manager', 'security-admin'],
+    });
+  }
+  if (action === 'review-handoffs') {
+    const transition = projectRoute.tail[1] || (projectRoute.tail[0] === 'scan' ? 'scan' : null);
+    const allowedRoles = resolvedMethod === 'GET'
+      ? ['manager', 'runtime-platform', 'security-admin', 'observer', 'agent', 'reviewer-agent']
+      : transition === 'scan'
+        ? ['manager', 'runtime-platform', 'security-admin']
+        : ['acknowledge', 'claim', 'complete'].includes(transition)
+          ? ['reviewer-agent', 'security-admin']
+          : ['manager', 'security-admin', 'agent'];
+    return accessRoute({
+      routeKey: transition ? `review-handoff-${transition}` : resolvedMethod === 'GET' ? 'review-handoff-read' : 'review-handoff-create',
+      capability: transition
+        ? `${transition} local independent review handoff`
+        : resolvedMethod === 'GET'
+          ? 'read local review handoff governance'
+          : 'request local independent review handoff',
+      sensitivity: 'submission-fingerprint-acceptance-criteria-reviewer-lease-and-verdict-metadata',
+      projectId,
+      allowedRoles,
+    });
+  }
+  if (action === 'provider-budget-approvals') {
+    const approvalAction = projectRoute.tail[1];
+    return accessRoute({
+      routeKey: 'provider-budget-approvals',
+      capability: resolvedMethod === 'GET'
+        ? 'read local Provider budget approvals'
+        : approvalAction === 'revoke'
+          ? 'revoke local Provider budget approval'
+          : 'create local Provider budget approval',
+      sensitivity: 'provider-budget-overage-approval',
+      projectId,
+      allowedRoles: resolvedMethod === 'GET'
+        ? ['manager', 'runtime-platform', 'security-admin']
+        : ['manager', 'security-admin'],
+    });
+  }
+  if (action === 'tool-grant-leases') {
+    const leaseAction = projectRoute.tail[1];
+    return accessRoute({
+      routeKey: 'tool-grant-leases',
+      capability: resolvedMethod === 'GET'
+        ? 'read local temporary tool grants and invocation receipt integrity'
+        : leaseAction === 'revoke'
+          ? 'revoke local temporary tool grant'
+          : 'create local temporary tool grant',
+      sensitivity: 'temporary-agent-tool-authorization',
+      projectId,
+      allowedRoles: resolvedMethod === 'GET'
+        ? ['manager', 'runtime-platform', 'security-admin']
+        : ['manager', 'security-admin'],
+    });
+  }
   if (action === 'provider-vault-bindings') {
     return accessRoute({
       routeKey: 'provider-vault-bindings',
@@ -993,6 +1251,134 @@ export function classifyAccessRequest({ method = 'GET', path = '/', body = {} } 
       sensitivity: 'provider-policy-budget-and-usage-run-plan',
       projectId,
       allowedRoles: ['manager', 'runtime-platform', 'security-admin'],
+    });
+  }
+  if (action === 'autonomy-governor') {
+    return accessRoute({
+      routeKey: 'autonomy-governor',
+      capability: resolvedMethod === 'GET' ? 'read project autonomy governance' : 'write project autonomy governance',
+      sensitivity: 'project-autonomy-policy-budget-and-control',
+      projectId,
+      allowedRoles: resolvedMethod === 'GET'
+        ? ['manager', 'runtime-platform', 'security-admin', 'observer']
+        : ['manager', 'security-admin'],
+    });
+  }
+  if (action === 'learning-program') {
+    return accessRoute({
+      routeKey: 'learning-program',
+      capability: resolvedMethod === 'GET' ? 'read private local learning program' : 'write private local learning evidence',
+      sensitivity: 'learner-syllabus-diagnostic-pace-practice-and-mastery-metadata',
+      projectId,
+      allowedRoles: ['manager', 'security-admin'],
+    });
+  }
+  if (action === 'teaching-safety') {
+    return accessRoute({
+      routeKey: 'teaching-safety',
+      capability: resolvedMethod === 'GET' ? 'read private local teaching safety' : 'write private local teaching safety evidence',
+      sensitivity: 'learner-age-band-integrity-privacy-wellbeing-and-guidance-metadata',
+      projectId,
+      allowedRoles: ['manager', 'security-admin'],
+    });
+  }
+  if (action === 'academic-writing-pipeline') {
+    return accessRoute({
+      routeKey: 'academic-writing-pipeline',
+      capability: resolvedMethod === 'GET' ? 'read private local academic writing pipeline' : 'write private local academic writing lineage',
+      sensitivity: 'research-question-outline-claims-manuscript-review-and-revision-metadata',
+      projectId,
+      allowedRoles: ['manager', 'security-admin'],
+    });
+  }
+  if (action === 'citation-integrity') {
+    return accessRoute({
+      routeKey: 'citation-integrity',
+      capability: resolvedMethod === 'GET' ? 'read private local citation integrity' : 'write private local citation assessment and audit evidence',
+      sensitivity: 'claim-source-semantic-support-freshness-status-and-review-metadata',
+      projectId,
+      allowedRoles: ['manager', 'security-admin'],
+    });
+  }
+  if (action === 'investigation-case') {
+    return accessRoute({
+      routeKey: 'investigation-case',
+      capability: resolvedMethod === 'GET' ? 'read private local investigation case' : 'write private local investigation case evidence and decisions',
+      sensitivity: 'case-scope-hypotheses-source-reliability-custody-contradictions-and-conclusions',
+      projectId,
+      allowedRoles: ['manager', 'security-admin'],
+    });
+  }
+  if (action === 'investigation-safety') {
+    return accessRoute({
+      routeKey: 'investigation-safety',
+      capability: resolvedMethod === 'GET' ? 'read private local investigation safety' : 'write private local investigation safety policy and authorization evidence',
+      sensitivity: 'investigation-authority-consent-pii-sensitive-data-minimization-and-operation-authorization',
+      projectId,
+      allowedRoles: ['manager', 'security-admin'],
+    });
+  }
+  if (action === 'technical-delivery-workflow') {
+    return accessRoute({
+      routeKey: 'technical-delivery-workflow',
+      capability: resolvedMethod === 'GET' ? 'read private local technical delivery workflow' : 'write private local technical delivery evidence',
+      sensitivity: 'requirements-change-test-security-review-rollback-and-local-release-metadata',
+      projectId,
+      allowedRoles: ['manager', 'security-admin'],
+    });
+  }
+  if (action === 'engineering-security') {
+    return accessRoute({
+      routeKey: 'engineering-security',
+      capability: resolvedMethod === 'GET' ? 'read private local engineering security risk ledger' : 'write private local engineering security evidence and decisions',
+      sensitivity: 'dependency-secret-permission-static-analysis-findings-exceptions-and-release-attestation',
+      projectId,
+      allowedRoles: ['manager', 'security-admin'],
+    });
+  }
+  if (action === 'creative-studio-workflow') {
+    return accessRoute({
+      routeKey: 'creative-studio-workflow',
+      capability: resolvedMethod === 'GET' ? 'read private local creative studio workflow' : 'write private local creative brief iteration critique export and handoff evidence',
+      sensitivity: 'creative-direction-audience-artifact-critique-export-quality-and-handoff-metadata',
+      projectId,
+      allowedRoles: ['manager', 'security-admin'],
+    });
+  }
+  if (action === 'rights-provenance') {
+    return accessRoute({
+      routeKey: 'rights-provenance',
+      capability: resolvedMethod === 'GET' ? 'read private local rights and provenance ledger' : 'write private local rights declarations provenance lineage and export audits',
+      sensitivity: 'asset-ownership-license-attribution-generation-provenance-derivative-and-export-audit-metadata',
+      projectId,
+      allowedRoles: ['manager', 'security-admin'],
+    });
+  }
+  if (action === 'local-artifact-storage') {
+    return accessRoute({
+      routeKey: 'local-artifact-storage',
+      capability: resolvedMethod === 'GET' ? 'read private local canonical artifact inventory' : 'govern private local artifact legal holds',
+      sensitivity: 'artifact-checksums-retention-legal-hold-and-workspace-projection-metadata',
+      projectId,
+      allowedRoles: ['manager', 'security-admin'],
+    });
+  }
+  if (action === 'durable-task-queue') {
+    return accessRoute({
+      routeKey: `durable-task-queue${projectRoute.tail.length ? `-${projectRoute.tail.at(-1)}` : ''}`,
+      capability: resolvedMethod === 'GET' ? 'read private durable local task queue' : 'govern durable local task discovery and cancellation',
+      sensitivity: 'worker-route-idempotency-lease-fence-retry-receipt-and-trace-metadata',
+      projectId,
+      allowedRoles: resolvedMethod === 'GET' ? ['manager', 'security-admin'] : ['security-admin'],
+    });
+  }
+  if (action === 'idempotent-executions') {
+    return accessRoute({
+      routeKey: projectRoute.tail[1] === 'reconcile' ? 'idempotent-execution-reconcile' : 'idempotent-executions',
+      capability: resolvedMethod === 'GET' ? 'read private local idempotent execution outcomes' : 'reconcile an ambiguous local Provider operation',
+      sensitivity: 'operation-intent-request-hash-provider-response-result-reconciliation-and-trace-metadata',
+      projectId,
+      allowedRoles: resolvedMethod === 'GET' ? ['manager', 'security-admin'] : ['security-admin'],
     });
   }
   if (action === 'provider-eval-runs') {
@@ -1351,6 +1737,10 @@ export function publicAccessDecision(decision = {}) {
       sessionId: decision.identitySession.sessionId || null,
       status: decision.identitySession.status || 'unknown',
       expiresAt: decision.identitySession.expiresAt || null,
+      identityType: decision.identitySession.identityType || 'user',
+      serviceId: decision.identitySession.serviceId || null,
+      audiences: decision.identitySession.audiences || [],
+      verifiedAudience: decision.identitySession.verifiedAudience || null,
     } : null,
     signature: decision.signature ? {
       required: Boolean(decision.signature.required),
@@ -1413,11 +1803,11 @@ export function buildAccessControlPolicySnapshot() {
     identitySessionContract: {
       status: 'local-token-hash-contract',
       schemaVersion: 'identity-session/v1',
-      behavior: 'Manager or security-admin can issue a project-scoped identity-session token that is returned once, stored as a token hash, accepted through x-hofs-session-token, and revocable through the same backend route.',
+      behavior: 'Manager or security-admin can issue a project-scoped identity-session token that is returned once, stored as a token hash, accepted through x-hofs-session-token, and revocable through the same backend route. Service identities require a machine subject and exact access-control route audiences.',
       tokenHeader: 'x-hofs-session-token',
       persistedProjectRoute: '/projects/:projectId/identity-sessions',
       persistenceTables: ['identity_sessions'],
-      productionRequirement: 'Replace local token hashing with first-party IdP/session storage, service credential issuance, rotation, audience binding, and centralized audit.',
+      productionRequirement: 'This local project-scoped identity system does not replace distributed workload identity, hardware-backed keys, centralized revocation, or cross-host audit.',
     },
     roles: [
       { id: 'manager', purpose: 'Director/manager project control and read access.' },

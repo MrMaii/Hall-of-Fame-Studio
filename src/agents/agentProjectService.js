@@ -13,6 +13,7 @@ import {
   evaluateAutonomousSchedule,
   evaluateCollaborationState,
   evaluateManagerScenarioReadiness,
+  EVENT_LEDGER_RETAINED_LIMIT,
   handleFeatureChangeRequest,
   handleLeaderChatAssignment,
   handlePeerHandoff,
@@ -22,6 +23,7 @@ import {
   publishAutonomousCycleChat,
   runRoundtableExchange,
   summarizeProjectEventLedger,
+  verifyProjectEventLedger,
 } from './agentRuntime.js';
 import { createAgentProjectMemoryStore } from './agentProjectStore.js';
 import {
@@ -35,8 +37,169 @@ import { createSecretVaultFromEnv, normalizeSecretVaultStatus } from './secretVa
 import { providerSecretBindingForRecord, findProviderVaultRecord } from './providerSecretBinding.js';
 import { createModelProviderFromEnv } from './modelProvider.js';
 import { createSearchProviderFromEnv } from './searchProvider.js';
+import { evaluateLocalNetworkEndpoint } from './localNetworkPolicy.js';
+import { evaluateLocalIntervalSchedule } from './localScheduleGovernance.js';
+import {
+  buildArtifactDraftPromptBoundary,
+  createUntrustedContentEnvelope,
+  publicPromptBoundaryReceipt,
+  verifyPromptBoundaryReceipt,
+} from './localPromptBoundary.js';
+import {
+  actionApprovalState,
+  claimActionApprovalExecution,
+  createActionApprovalDecision,
+  createActionApprovalRecord,
+  publicActionApproval,
+  verifyActionApprovalRecord,
+  withActionApprovalDecisions,
+} from './localActionApproval.js';
+import {
+  acknowledgeLocalDurableTask,
+  acquireLocalDurableTaskLease,
+  cancelLocalDurableTask,
+  durableTaskQueueChecksum,
+  enqueueLocalDurableDeadLetterReplay,
+  enqueueLocalDurableTask,
+  failLocalDurableTask,
+  finalizeLocalDurableTaskCancellation,
+  requestLocalDurableTaskCancellation,
+  snapshotLocalDurableTaskQueue,
+} from './localDurableTaskQueue.js';
+import {
+  auditLocalIdempotentExecutions,
+  completeLocalIdempotentExecution,
+  markLocalIdempotentExecutionAmbiguous,
+  markLocalIdempotentExecutionDispatched,
+  prepareLocalIdempotentExecution,
+  reconcileLocalIdempotentExecution,
+} from './localIdempotentExecution.js';
+import {
+  createLocalQualityEvaluationRun,
+  getLocalQualityEvaluationSuite,
+  localQualityEvaluationChecksum,
+  publicLocalQualityEvaluationRun,
+  verifyLocalQualityEvaluationRun,
+} from './localQualityEvaluation.js';
+import {
+  createModelGenerationProvenance,
+  publicModelGenerationProvenance,
+  verifyModelGenerationProvenance,
+} from './localModelDegradation.js';
+import { buildLocalTeamFormationBrief, publicLocalTeamFormationBrief } from './localTeamFormationBrief.js';
+import {
+  buildLocalDelegationGovernance,
+  createLocalDelegationNotification,
+  createLocalTaskDelegationChange,
+  verifyLocalDelegationNotification,
+  verifyLocalTaskDelegationChange,
+} from './localDelegationGovernance.js';
+import {
+  buildLocalProjectSharedMemory,
+  createLocalProjectMemoryEntry,
+  createLocalProjectMemoryRevocation,
+  verifyLocalProjectMemoryEntry,
+  verifyLocalProjectMemoryRevocation,
+} from './localProjectSharedMemory.js';
+import {
+  buildLocalAutonomyGovernor,
+  createLocalAutonomyCommand,
+  createLocalAutonomyPolicy,
+  evaluateLocalAutonomyExecution,
+} from './localAutonomyGovernor.js';
+import {
+  buildLocalLearningProgram,
+  createLocalLearningAttempt as createLearningAttemptReceipt,
+  createLocalLearningPlan as createLearningPlanReceipt,
+} from './localLearningProgram.js';
+import {
+  buildLocalTeachingSafety,
+  createLocalTeachingSafetyDecision as createTeachingSafetyDecisionReceipt,
+  createLocalTeachingSafetyPolicy as createTeachingSafetyPolicyReceipt,
+  createLocalTeachingSafetyResolution as createTeachingSafetyResolutionReceipt,
+} from './localTeachingSafety.js';
+import {
+  buildLocalAcademicWritingPipeline,
+  createLocalAcademicDraftReceipt as createAcademicDraftReceipt,
+  createLocalAcademicFinalization as createAcademicFinalizationReceipt,
+  createLocalAcademicRevisionReceipt as createAcademicRevisionReceipt,
+  createLocalAcademicWritingBlueprint as createAcademicWritingBlueprintReceipt,
+} from './localAcademicWritingPipeline.js';
+import {
+  buildLocalCitationIntegrity,
+  createLocalCitationAssessment as createCitationAssessmentReceipt,
+  createLocalCitationIntegrityAudit as createCitationIntegrityAuditReceipt,
+} from './localCitationIntegrity.js';
+import {
+  buildLocalInvestigationCaseWorkflow,
+  createLocalInvestigationCase as createInvestigationCaseReceipt,
+  createLocalInvestigationClosure as createInvestigationClosureReceipt,
+  createLocalInvestigationConclusion as createInvestigationConclusionReceipt,
+  createLocalInvestigationContradictionResolution as createInvestigationContradictionResolutionReceipt,
+  createLocalInvestigationCustodyEvent as createInvestigationCustodyEventReceipt,
+  createLocalInvestigationEvidence as createInvestigationEvidenceReceipt,
+  investigationContradictionIds,
+} from './localInvestigationCase.js';
+import {
+  buildLocalInvestigationSafety,
+  createLocalInvestigationSafetyDecision as createInvestigationSafetyDecisionReceipt,
+  createLocalInvestigationSafetyPolicy as createInvestigationSafetyPolicyReceipt,
+  createLocalInvestigationSafetyResolution as createInvestigationSafetyResolutionReceipt,
+  createLocalInvestigationSafetyUse as createInvestigationSafetyUseReceipt,
+} from './localInvestigationSafety.js';
+import {
+  buildLocalTechnicalDeliveryWorkflow,
+  createLocalTechnicalDeliveryPlan as createTechnicalDeliveryPlanReceipt,
+  createLocalTechnicalDeliveryRelease as createTechnicalDeliveryReleaseReceipt,
+  createLocalTechnicalDeliveryReview as createTechnicalDeliveryReviewReceipt,
+  createLocalTechnicalDeliveryVerification as createTechnicalDeliveryVerificationReceipt,
+} from './localTechnicalDelivery.js';
+import {
+  buildLocalEngineeringSecurityLedger,
+  createLocalEngineeringSecurityAttestation as createEngineeringSecurityAttestationReceipt,
+  createLocalEngineeringSecurityExceptionApproval as createEngineeringSecurityExceptionApprovalReceipt,
+  createLocalEngineeringSecurityExceptionRequest as createEngineeringSecurityExceptionRequestReceipt,
+  createLocalEngineeringSecurityRemediation as createEngineeringSecurityRemediationReceipt,
+  createLocalEngineeringSecurityScan as createEngineeringSecurityScanReceipt,
+} from './localEngineeringSecurity.js';
+import {
+  buildLocalCreativeStudioWorkflow,
+  createLocalCreativeBrief as createCreativeBriefReceipt,
+  createLocalCreativeCritique as createCreativeCritiqueReceipt,
+  createLocalCreativeExport as createCreativeExportReceipt,
+  createLocalCreativeHandoff as createCreativeHandoffReceipt,
+  createLocalCreativeHandoffAcknowledgement as createCreativeHandoffAcknowledgementReceipt,
+  createLocalCreativeIteration as createCreativeIterationReceipt,
+} from './localCreativeStudio.js';
+import {
+  buildLocalRightsProvenance,
+  createLocalRightsAssetDeclaration as createRightsAssetDeclarationReceipt,
+  createLocalRightsDerivativeLineage as createRightsDerivativeLineageReceipt,
+  createLocalRightsExportAudit as createRightsExportAuditReceipt,
+  createLocalRightsGenerationProvenance as createRightsGenerationProvenanceReceipt,
+} from './localRightsProvenance.js';
+import {
+  buildLocalReviewHandoffGovernance,
+  createLocalReviewHandoff,
+  createLocalReviewHandoffAcknowledgement,
+  createLocalReviewHandoffClaim,
+  createLocalReviewHandoffCompletion,
+  createLocalReviewHandoffEscalation,
+  localReviewHandoffChecksum,
+  localReviewSubmissionFingerprint,
+  verifyLocalReviewHandoff,
+  verifyLocalReviewHandoffAcknowledgement,
+  verifyLocalReviewHandoffClaim,
+  verifyLocalReviewHandoffCompletion,
+  verifyLocalReviewHandoffEscalation,
+} from './localReviewHandoff.js';
 import { createManagedPersistenceAdapterFromEnv, managedPersistenceAdapterStatus } from './managedPersistenceAdapter.js';
 import { createWorkerQueueAdapterFromEnv, workerQueueAdapterStatus } from './workerQueueAdapter.js';
+import {
+  acknowledgeLocalAutopilotLease,
+  acquireLocalAutopilotLease,
+} from './localAutopilotLease.js';
+import { createHash, randomUUID } from 'node:crypto';
 import { createHttpJsonAdapterGatewayClient } from './adapterGatewayClient.js';
 import { meetingTurnDelayMs } from './meetingQueueProtocol.js';
 import {
@@ -57,8 +220,12 @@ import {
 } from './modelKickoffParsing.js';
 import { compactPreview } from './textPreview.js';
 import { createTranslator, localizeText, normalizeLanguage } from '../i18n/runtime.js';
+import { appendLocalTraceGraphReceipt, buildLocalTraceGraph } from './localTraceGraph.js';
 
 const nowIso = () => new Date().toISOString();
+const normalizeLocalTraceId = (traceId = '') => (
+  redactSensitiveText(String(traceId || '')).slice(0, 160) || null
+);
 function offsetIso(baseIso = nowIso(), offsetMs = 0) {
   const baseMs = Date.parse(baseIso);
   const startMs = Number.isFinite(baseMs) ? baseMs : Date.now();
@@ -97,6 +264,7 @@ const SECURITY_ACCESS_AUDIT_LIMIT = 240;
 const PROJECT_MEMBERSHIP_AUDIT_LIMIT = 80;
 const PROJECT_SETTINGS_AUDIT_LIMIT = 80;
 const PROJECT_PRIVACY_RETENTION_MODES = new Set(['project-local', 'session-only', 'manual-export']);
+const PROJECT_PRIVACY_LIFECYCLE_SCAN_MODES = new Set(['manual', 'automatic-review']);
 const PROJECT_PRIVACY_PROVIDER_LOG_MODES = new Set(['redacted', 'metadata-only']);
 const PROJECT_PROVIDER_BUDGET_CURRENCIES = new Set(['USD']);
 const PROJECT_WORKSPACE_INTERFACE_DENSITIES = new Set(['comfortable', 'compact', 'expanded']);
@@ -299,6 +467,10 @@ const PROJECT_WORKSPACE_CAPABILITY_ROWS = [
 ];
 const IDENTITY_SESSION_LIMIT = 120;
 const PROVIDER_USAGE_LEDGER_LIMIT = 240;
+const PROVIDER_BUDGET_APPROVAL_LIMIT = 120;
+const TOOL_GRANT_LEASE_LIMIT = 120;
+const TOOL_INVOCATION_RECEIPT_LIMIT = 500;
+const PROMPT_BOUNDARY_RECEIPT_LIMIT = 240;
 const PROJECT_PROVIDER_EVAL_RUN_LIMIT = 120;
 const PROJECT_EVIDENCE_EXPORT_LIMIT = 120;
 const PRIVATE_PILOT_RELEASE_CANDIDATE_LIMIT = 80;
@@ -377,11 +549,13 @@ const AGENT_SUBMISSION_ARTIFACT_TYPES = new Set([
   'outline',
   'claim-citation-graph',
   'revision-lineage',
+  'academic-manuscript',
   'hypothesis-register',
   'source-custody-log',
   'contradiction-matrix',
   'test-evidence',
   'rollback-plan',
+  'creative-work',
   'creative-brief',
   'critique-log',
   'rights-provenance-register',
@@ -741,81 +915,6 @@ function buildAgentArtifactDraft({
   };
 }
 
-function buildAgentSubmissionDraftMessages({
-  project = {},
-  agent = {},
-  task = null,
-  artifactType = 'progress-brief',
-  instruction = '',
-  evidenceSearches = [],
-  priorSubmissions = [],
-  reviews = [],
-  now = nowIso(),
-} = {}) {
-  return [
-    {
-      role: 'system',
-      content: [
-        'You are the artifact drafting engine for Hall of Fame Studio.',
-        'Return compact JSON only with title, summary, body, and tags.',
-        'Draft a generic AI product-team artifact, not a research-only paper section.',
-        'Do not include secrets, API keys, bearer tokens, or raw credentials.',
-      ].join('\n'),
-    },
-    {
-      role: 'user',
-      content: JSON.stringify({
-        now,
-        artifactType,
-        instruction,
-        project: {
-          id: project.id || null,
-          name: project.name || null,
-          objective: project.currentObjective || project.objective || project.summary || project.brief || null,
-          status: project.status || null,
-        },
-        agent: {
-          id: agent.id || null,
-          name: agent.name || null,
-          role: agent.role || agent.title || null,
-          skill: agent.skill || null,
-        },
-        task: task ? {
-          id: task.id || null,
-          text: task.text || task.title || null,
-          status: task.status || null,
-        } : null,
-        evidenceSearches: evidenceSearches.slice(0, 4).map((record) => ({
-          id: record.id || null,
-          query: record.query || null,
-          purpose: record.purpose || null,
-          judgement: record.evidenceJudgement || record.qualitySummary?.judgement || null,
-          sourceCount: record.sources?.length || 0,
-        })),
-        priorSubmissions: priorSubmissions.slice(0, 6).map((submission) => ({
-          id: submission.id || null,
-          artifactType: submission.artifactType || null,
-          title: submission.title || null,
-          summary: submission.summary || null,
-          reviewStatus: submission.reviewStatus || null,
-        })),
-        reviews: reviews.slice(0, 4).map((review) => ({
-          id: review.id || null,
-          submissionId: review.submissionId || null,
-          verdict: review.verdict || review.status || null,
-          comments: compactPreview(review.comments || '', 220),
-        })),
-        requiredShape: {
-          title: 'short manager-readable title',
-          summary: 'one sentence summary',
-          body: 'markdown body with context, output, evidence, risks, and next handoff',
-          tags: ['2-5 generic product-team tags'],
-        },
-      }),
-    },
-  ];
-}
-
 function normalizeModelArtifactDraftPayload(value = {}) {
   if (!value || typeof value !== 'object') return {};
   return {
@@ -856,6 +955,7 @@ function evaluateAgentArtifactDraftQuality({
   modelResult = null,
   modelStatus = {},
   source = 'local-artifact-draft-generator',
+  generationProvenance = null,
   now = nowIso(),
 } = {}) {
   const cleanTitle = redactSensitiveText(String(title || ''));
@@ -928,15 +1028,32 @@ function evaluateAgentArtifactDraftQuality({
   ];
   const failedRequiredGates = gates.filter((gate) => gate.severity === 'required' && !gate.passed);
   const score = Math.round((gates.filter((gate) => gate.passed).length / gates.length) * 100);
-  const qualityLevel = score >= 90 ? 'strong' : score >= 75 ? 'usable' : score >= 60 ? 'review-required' : 'blocked';
+  const generationMode = generationProvenance?.generationMode
+    || (modelUsed ? 'model-provider-output' : 'explicit-local-template');
+  const computedQualityLevel = score >= 90 ? 'strong' : score >= 75 ? 'usable' : score >= 60 ? 'review-required' : 'blocked';
+  const qualityLevel = generationMode === 'model-provider-output' ? computedQualityLevel : 'review-required';
+  const structurallyReadyForReview = failedRequiredGates.length === 0;
+  const qualityStatus = generationMode === 'requested-model-fallback'
+    ? 'degraded-review-required'
+    : generationMode === 'explicit-local-template'
+      ? 'template-review-required'
+      : structurallyReadyForReview
+        ? 'local-quality-ready'
+        : 'needs-review';
   return {
     schemaVersion: 'artifact-draft-quality/v1',
-    status: failedRequiredGates.length ? 'needs-review' : 'local-quality-ready',
+    status: qualityStatus,
     qualityScore: score,
     qualityLevel,
-    readyForLocalPilot: failedRequiredGates.length === 0,
+    structurallyReadyForReview,
+    readyForLocalPilot: generationMode === 'model-provider-output' && structurallyReadyForReview,
     readyForProduction: false,
-    humanReviewRequired: Boolean(modelUsed),
+    humanReviewRequired: true,
+    generationMode,
+    qualityTier: generationProvenance?.qualityTier || (modelUsed ? 'model-draft' : 'local-template'),
+    qualityCeiling: generationProvenance?.qualityCeiling || null,
+    releaseEligibility: generationProvenance?.releaseEligibility || null,
+    generationProvenanceChecksum: generationProvenance?.checksum || null,
     modelOutput: {
       used: Boolean(modelUsed),
       provider: modelResult?.provider || modelStatus.provider || null,
@@ -976,6 +1093,8 @@ function evaluateAgentArtifactDraftQuality({
       summary: cleanSummary,
       body: cleanBody,
       modelUsed: Boolean(modelUsed),
+      generationMode,
+      generationProvenanceChecksum: generationProvenance?.checksum || null,
       score,
       gateRows: gates.map((gate) => [gate.id, gate.passed]),
       evaluatedAt: now,
@@ -996,6 +1115,8 @@ function buildAgentSubmissionDraft({
   modelPayload = {},
   modelResult = null,
   modelStatus = {},
+  promptBoundary = null,
+  generationProvenance = null,
   source = 'local-artifact-draft-generator',
 } = {}) {
   const normalizedType = normalizeAgentSubmissionArtifactType(artifactType);
@@ -1069,10 +1190,11 @@ function buildAgentSubmissionDraft({
     evidenceSearches,
     priorSubmissions,
     reviews,
-    modelUsed: Boolean(modelResult?.ok),
+    modelUsed: Boolean(generationProvenance?.modelUsed),
     modelResult,
     modelStatus,
     source,
+    generationProvenance,
     now,
   });
   const draft = {
@@ -1088,8 +1210,9 @@ function buildAgentSubmissionDraft({
     taskId: task?.id || null,
     instruction: safeInstruction,
     source,
-    modelUsed: Boolean(modelResult?.ok),
-    modelProvider: modelResult?.ok ? {
+    modelUsed: Boolean(generationProvenance?.modelUsed),
+    generationProvenance: generationProvenance ? publicModelGenerationProvenance(generationProvenance) : null,
+    modelProvider: generationProvenance?.modelUsed ? {
       provider: modelResult.provider || modelStatus.provider || null,
       model: modelResult.model || modelStatus.model || null,
       responseId: modelResult.id || modelResult.responseId || null,
@@ -1098,8 +1221,10 @@ function buildAgentSubmissionDraft({
       provider: modelStatus.provider || null,
       model: modelStatus.model || null,
       enabled: Boolean(modelStatus.enabled),
-      reason: modelResult?.reason || modelResult?.error || (modelStatus.enabled ? 'model-not-used' : 'model-provider-disabled'),
+      reason: generationProvenance?.degradationReason
+        || (generationProvenance?.generationMode === 'explicit-local-template' ? 'model-not-requested' : 'provider-unavailable'),
     },
+    promptBoundary: promptBoundary ? publicPromptBoundaryReceipt(promptBoundary) : null,
     tags: uniqueStrings([
       'agent-artifact-draft',
       normalizedType,
@@ -1124,6 +1249,8 @@ function buildAgentSubmissionDraft({
       createdAt: draft.createdAt,
       source: draft.source,
       modelUsed: draft.modelUsed,
+      generationProvenanceChecksum: draft.generationProvenance?.checksum || null,
+      promptBoundaryChecksum: draft.promptBoundary?.checksum || null,
     }),
   };
 }
@@ -1959,20 +2086,21 @@ export function evaluateAgentWorkSchedule({
 
   const state = project.agentStates?.[agent.id] || {};
   const management = agentManagementPriority({ project, agent, state });
-  const nowMs = safeDateMs(now);
   const cadenceMs = agentWorkIntervalMs(project, state, intervalMs);
-  const nextRunAt = state.nextAgentRunAt
-    || (state.lastAgentRunAt ? new Date(safeDateMs(state.lastAgentRunAt, nowMs) + cadenceMs).toISOString() : now);
-  const nextRunMs = safeDateMs(nextRunAt, nowMs);
-  const due = Boolean(forceDue) || nextRunMs <= nowMs;
+  const schedule = evaluateLocalIntervalSchedule({
+    lane: 'agent', now, intervalMs: cadenceMs,
+    lastCompletedAt: state.lastAgentRunAt || null, storedNextAt: state.nextAgentRunAt || null,
+    enabled: true, forceDue,
+    reasons: {
+      forced: forceReason, first: 'agent-cadence-due', due: 'agent-cadence-due', waiting: 'agent-cadence-waiting',
+      clockRegression: 'agent-clock-regression-recovery', missed: 'agent-missed-cadence-recovery',
+    },
+  });
 
   return {
-    due,
-    reason: forceDue ? forceReason : due ? 'agent-cadence-due' : 'agent-cadence-waiting',
+    ...schedule,
     agentId: agent.id,
     cadenceMs,
-    dueAt: forceDue ? now : nextRunAt,
-    nextRunAt,
     forced: Boolean(forceDue),
     managementPriority: management.score,
     managementReasons: management.reasons,
@@ -2221,12 +2349,87 @@ function withWorkerRunControlFields(run = {}, options = {}) {
 
 function workerRunsForProject(project = {}) {
   const projectId = project.id || null;
+  const dispositionsByDeadLetterId = new Map();
+  (project.localDeadLetterDispositionLedger || []).forEach((row) => {
+    if (row?.deadLetterId && !dispositionsByDeadLetterId.has(row.deadLetterId)) {
+      dispositionsByDeadLetterId.set(row.deadLetterId, row);
+    }
+  });
+  const applyDisposition = (run) => {
+    const disposition = run.deadLetter?.id ? dispositionsByDeadLetterId.get(run.deadLetter.id) : null;
+    if (!disposition) return run;
+    return {
+      ...run,
+      deadLetter: {
+        ...run.deadLetter,
+        status: disposition.status,
+        disposition,
+      },
+    };
+  };
   return [
     ...(project.autonomousLedger || []).map((run) => withWorkerRunControlFields(run, { projectId, workerKind: 'project-autonomous' })),
     ...(project.autonomousSchedulerLedger || []).map((run) => withWorkerRunControlFields(run, { projectId, workerKind: 'project-scheduler' })),
     ...(project.agentWorkerLedger || []).map((run) => withWorkerRunControlFields(run, { projectId, workerKind: 'agent-worker' })),
     ...(project.autonomousRunControlSessionTickLedger || []).map((run) => withWorkerRunControlFields(run, { projectId, workerKind: 'autopilot-session' })),
-  ];
+  ].map(applyDisposition);
+}
+
+function verifyLocalDeadLetterDisposition(row = {}) {
+  const { checksum, ...base } = row;
+  return Boolean(checksum) && (checksum === durableTaskQueueChecksum(base) || checksum === persistenceChecksum(base));
+}
+
+function projectDeadLetterFacts(project = {}) {
+  const dispositions = project.localDeadLetterDispositionLedger || [];
+  if (dispositions.some((row) => !verifyLocalDeadLetterDisposition(row))) {
+    throw new Error('local-dead-letter-disposition-integrity-invalid');
+  }
+  const dispositionById = new Map(dispositions.map((row) => [row.deadLetterId, row]));
+  const durable = (project.localDurableTaskQueue || [])
+    .filter((job) => job.status === 'dead-lettered')
+    .map((job) => {
+      const id = `dead_durable_${job.id}`;
+      const disposition = dispositionById.get(id) || null;
+      return {
+        schemaVersion: 'worker-dead-letter/v1',
+        id,
+        projectId: job.projectId,
+        workerKind: job.workerKind,
+        agentId: job.agentId || null,
+        sessionId: job.sessionId || null,
+        status: disposition?.status || 'dead-lettered',
+        sourceKind: 'durable-task',
+        sourceJobId: job.id,
+        sourceChecksum: job.checksum,
+        queuedAt: job.updatedAt || job.createdAt,
+        attemptCount: job.attemptCount,
+        maxAttempts: job.maxAttempts,
+        failureCodeHash: job.failureCodeHash || null,
+        idempotencyKeyHash: durableTaskQueueChecksum(job.idempotencyKey),
+        traceId: job.traceId || null,
+        disposition,
+        storesRequestBody: false,
+      };
+    });
+  const legacy = workerRunsForProject(project)
+    .filter((run) => run.deadLetter?.schemaVersion === 'worker-dead-letter/v1')
+    .map((run) => {
+      const { disposition: _existingDisposition, ...base } = run.deadLetter;
+      const immutableBase = { ...base, status: 'dead-lettered' };
+      const sourceChecksum = durableTaskQueueChecksum(immutableBase);
+      const disposition = dispositionById.get(base.id) || null;
+      return {
+        ...immutableBase,
+        status: disposition?.status || base.status,
+        sourceKind: 'legacy-worker-run',
+        sourceJobId: null,
+        sourceChecksum,
+        disposition,
+        storesRequestBody: false,
+      };
+    });
+  return [...durable, ...legacy];
 }
 
 function attachWorkerRunControlsToProject(project = {}) {
@@ -2242,6 +2445,104 @@ function attachWorkerRunControlsToProject(project = {}) {
 
 export function hydrateAgentProject(project = {}) {
   return attachWorkerRunControlsToProject(backfillProjectEventLedger(project));
+}
+
+function projectEventSnapshot(project = {}) {
+  return {
+    schemaVersion: 'local-project-event-snapshot/v1',
+    projectId: project.id || null,
+    eventLedger: structuredClone(project.eventLedger || []),
+    eventLedgerChainVersion: project.eventLedgerChainVersion || 0,
+    eventLedgerPreviousHash: project.eventLedgerPreviousHash || null,
+    eventLedgerRootHash: project.eventLedgerRootHash || null,
+    eventLedgerFirstSequence: project.eventLedgerFirstSequence || 0,
+    eventLedgerLastSequence: project.eventLedgerLastSequence || 0,
+    eventLedgerEventCount: project.eventLedgerEventCount || project.eventLedgerLastSequence || 0,
+  };
+}
+
+function projectFromEventSnapshot(project = {}, snapshot = {}) {
+  return {
+    ...project,
+    eventLedger: structuredClone(snapshot.eventLedger || []),
+    eventLedgerChainVersion: snapshot.eventLedgerChainVersion,
+    eventLedgerPreviousHash: snapshot.eventLedgerPreviousHash,
+    eventLedgerRootHash: snapshot.eventLedgerRootHash,
+    eventLedgerFirstSequence: snapshot.eventLedgerFirstSequence,
+    eventLedgerLastSequence: snapshot.eventLedgerLastSequence,
+    eventLedgerEventCount: snapshot.eventLedgerEventCount,
+    eventLedgerIntegrityStatus: 'valid',
+  };
+}
+
+function verifyProjectEventSnapshot(snapshot = {}) {
+  if (snapshot.schemaVersion !== 'local-project-event-snapshot/v1' || !snapshot.projectId || !Array.isArray(snapshot.eventLedger)) {
+    return { valid: false, findings: [{ code: 'event-snapshot-shape-invalid', eventId: null }] };
+  }
+  return verifyProjectEventLedger(projectFromEventSnapshot({ id: snapshot.projectId }, snapshot));
+}
+
+function publicProjectEventCheckpoint(checkpoint = null) {
+  if (!checkpoint) return null;
+  return {
+    schemaVersion: checkpoint.schemaVersion,
+    id: checkpoint.id,
+    projectId: checkpoint.projectId,
+    status: checkpoint.status,
+    contentChecksum: checkpoint.contentChecksum,
+    checksum: checkpoint.checksum,
+    eventCount: checkpoint.eventSnapshot?.eventLedgerEventCount || 0,
+    retainedCount: checkpoint.eventSnapshot?.eventLedger?.length || 0,
+    firstSequence: checkpoint.eventSnapshot?.eventLedgerFirstSequence || 0,
+    lastSequence: checkpoint.eventSnapshot?.eventLedgerLastSequence || 0,
+    rootHash: checkpoint.eventSnapshot?.eventLedgerRootHash || null,
+    createdAt: checkpoint.createdAt,
+    localOnly: true,
+    externalWormStorage: false,
+    idempotent: Boolean(checkpoint.idempotent),
+  };
+}
+
+function validEventsAfterCheckpoint(checkpointSnapshot = {}, activeSnapshot = {}) {
+  const candidates = (activeSnapshot.eventLedger || []).filter((event) => event.sequence > checkpointSnapshot.eventLedgerLastSequence);
+  const valid = [];
+  let previousHash = checkpointSnapshot.eventLedgerRootHash;
+  let expectedSequence = checkpointSnapshot.eventLedgerLastSequence + 1;
+  for (const event of candidates) {
+    if (event.sequence !== expectedSequence) break;
+    const probe = {
+      id: checkpointSnapshot.projectId,
+      eventLedger: [event],
+      eventLedgerChainVersion: 1,
+      eventLedgerPreviousHash: previousHash,
+      eventLedgerRootHash: event.eventHash,
+      eventLedgerFirstSequence: event.sequence,
+      eventLedgerLastSequence: event.sequence,
+    };
+    if (!verifyProjectEventLedger(probe).valid) break;
+    valid.push(event);
+    previousHash = event.eventHash;
+    expectedSequence += 1;
+  }
+  return valid;
+}
+
+function rebuildProjectEventLedger(project = {}, checkpointSnapshot = {}, validTail = []) {
+  const combined = [...structuredClone(checkpointSnapshot.eventLedger || []), ...structuredClone(validTail)];
+  const retained = combined.slice(-EVENT_LEDGER_RETAINED_LIMIT);
+  const first = retained[0] || null;
+  const last = retained.at(-1) || null;
+  return {
+    ...project,
+    eventLedger: retained,
+    eventLedgerChainVersion: 1,
+    eventLedgerPreviousHash: first?.previousEventHash || checkpointSnapshot.eventLedgerPreviousHash,
+    eventLedgerRootHash: last?.eventHash || checkpointSnapshot.eventLedgerPreviousHash,
+    eventLedgerFirstSequence: first?.sequence || 0,
+    eventLedgerLastSequence: last?.sequence || 0,
+    eventLedgerEventCount: last?.sequence || checkpointSnapshot.eventLedgerEventCount || 0,
+    eventLedgerIntegrityStatus: 'valid',
+  };
 }
 
 export function resolveProjectChatTargets(text = '', team = []) {
@@ -3879,6 +4180,9 @@ export function submitProjectMultiChannelChangeRequest({
 
 export function runProjectAutonomousCycle({
   project = {},
+  traceId = null,
+  workerIdempotencyKey = null,
+  workerLeaseKey = null,
   cadence = 'hourly',
   messages = [],
   now = nowIso(),
@@ -3910,8 +4214,19 @@ export function runProjectAutonomousCycle({
     language: currentLanguage,
   });
 
+  const projectWithWorkerIntent = workerIdempotencyKey && publishedCycle.project.autonomousLedger?.length
+    ? {
+        ...publishedCycle.project,
+        autonomousLedger: publishedCycle.project.autonomousLedger.map((run, index) => index === 0 ? {
+          ...run,
+          traceId: normalizeLocalTraceId(traceId),
+          idempotencyKey: workerIdempotencyKey,
+          leaseKey: workerLeaseKey || `lease:${workerIdempotencyKey}`,
+        } : run),
+      }
+    : publishedCycle.project;
   return {
-    project: attachWorkerRunControlsToProject(publishedCycle.project),
+    project: attachWorkerRunControlsToProject(projectWithWorkerIntent),
     cycle: result.cycle,
     messages: publishedCycle.messages,
   };
@@ -3920,6 +4235,10 @@ export function runProjectAutonomousCycle({
 export function runAgentWorkCycle({
   project = {},
   agentId,
+  traceId = null,
+  requestSpanId = null,
+  workerIdempotencyKey = null,
+  workerLeaseKey = null,
   now = nowIso(),
   trigger = 'agent-worker',
   cadence = 'agent-pulse',
@@ -3958,6 +4277,7 @@ export function runAgentWorkCycle({
   useAutonomousStrategy = false,
 } = {}) {
   const currentLanguage = normalizeLanguage(language);
+  const normalizedTraceId = normalizeLocalTraceId(traceId);
   const t = createTranslator(currentLanguage);
   const team = project.team || [];
   const agent = team.find((member) => member.id === agentId || member.name === agentId);
@@ -4094,6 +4414,7 @@ export function runAgentWorkCycle({
     weight: completed ? t('agent.completedWeight') : t('agent.progressWeight'),
     agentWorker: {
       cycleId,
+      traceId: normalizedTraceId,
       agentId: agent.id,
       taskId: task?.id || null,
       trigger,
@@ -4123,6 +4444,7 @@ export function runAgentWorkCycle({
   const artifactRecord = {
     ...artifactDraft,
     ...redactedWrittenArtifact,
+    traceId: normalizedTraceId,
     existsOnDisk: Boolean(writtenArtifact?.absolutePath || writtenArtifact?.path),
     source: typeof artifactWriter === 'function' ? 'agent-artifact-writer' : 'agent-artifact-draft',
   };
@@ -4144,6 +4466,7 @@ export function runAgentWorkCycle({
   });
   const progressLog = {
     id: logId,
+    traceId: normalizedTraceId,
     time: now,
     agent: agent.name,
     agentId: agent.id,
@@ -4376,6 +4699,10 @@ export function runAgentWorkCycle({
     agentWorkerLedger: [
       withWorkerRunControlFields({
         id: cycleId,
+        traceId: normalizedTraceId,
+        requestSpanId: /^span_[a-f0-9]{32}$/.test(String(requestSpanId || '')) ? requestSpanId : null,
+        idempotencyKey: workerIdempotencyKey || undefined,
+        leaseKey: workerLeaseKey || undefined,
         agentId: agent.id,
         taskId: task?.id || null,
         trigger,
@@ -4418,6 +4745,7 @@ export function runAgentWorkCycle({
         logId: progressLog.id,
       },
       payload: {
+        traceId: normalizedTraceId,
         trigger,
         cadence,
         dueAt,
@@ -4545,6 +4873,7 @@ export function runAgentWorkCycle({
     evidenceSearchResult = recordAgentEvidenceSearch({
       project: finalProject,
       agentId: agent.id,
+      traceId: normalizedTraceId,
       taskId: task?.id || null,
       channelId,
       now,
@@ -4576,6 +4905,7 @@ export function runAgentWorkCycle({
     workSubmissionResult = submitAgentArtifact({
       project: finalProject,
       agentId: agent.id,
+      traceId: normalizedTraceId,
       artifactType: resolvedWorkArtifactType,
       title: `${agent.name || agent.id} autonomous ${resolvedWorkArtifactLabel}`,
       summary: `${agent.name || agent.id} completed a worker cycle for ${workText} and submitted a proofed ${resolvedWorkArtifactLabel}.`,
@@ -4655,6 +4985,7 @@ export function runAgentWorkCycle({
       reviewResult = reviewAgentSubmission({
         project: finalProject,
         submissionId: pendingSubmission.id,
+        traceId: normalizedTraceId,
         reviewerAgentId: agent.id,
         verdict: normalizedReviewVerdict,
         comments: resolvedAgentReviewComments || (
@@ -4702,6 +5033,7 @@ export function runAgentWorkCycle({
       reviewResponseResult = submitAgentArtifact({
         project: finalProject,
         agentId: agent.id,
+        traceId: normalizedTraceId,
         artifactType: responseArtifactType,
         title: isFinalResponse
           ? `${agent.name || agent.id} final response to review`
@@ -4789,13 +5121,14 @@ export function runAgentWorkCycle({
 export function submitAgentArtifact({
   project = {},
   agentId,
+  traceId = null,
   artifactType = 'progress-brief',
   title = '',
   summary = '',
   body = '',
   taskId = null,
   status = 'submitted',
-  reviewStatus = 'pending-review',
+  reviewStatus: requestedReviewStatus = 'pending-review',
   reviewerAgentId = null,
   dependsOn = [],
   revisesSubmissionId = null,
@@ -4813,6 +5146,7 @@ export function submitAgentArtifact({
   language = project.language || 'en',
 } = {}) {
   const currentLanguage = normalizeLanguage(language);
+  const normalizedTraceId = normalizeLocalTraceId(traceId);
   const team = project.team || [];
   const agent = team.find((member) => member.id === agentId || member.name === agentId);
   if (!agent) throw new Error(`Agent not found: ${agentId}`);
@@ -4871,7 +5205,9 @@ export function submitAgentArtifact({
   if (explicitRevisionTargetId && !revisionTarget) throw new Error(`Revision target submission not found: ${explicitRevisionTargetId}`);
 
   const normalizedType = normalizeAgentSubmissionArtifactType(artifactType);
-  const normalizedStatus = normalizeAgentSubmissionStatus(status);
+  const generatedDraftInput = Boolean(originDraft && typeof originDraft === 'object');
+  const normalizedStatus = normalizeAgentSubmissionStatus(generatedDraftInput ? 'submitted' : status);
+  const reviewStatus = generatedDraftInput ? 'pending-review' : requestedReviewStatus;
   const timestamp = Date.parse(now) || Date.now();
   const submissionId = `agent_submission_${project.id || 'project'}_${agent.id}_${normalizedType}_${timestamp}`;
   const safeTitle = redactSensitiveText(String(title || '').trim() || `${agent.name || 'Agent'} ${normalizedType.replace(/-/g, ' ')}`);
@@ -4901,6 +5237,7 @@ export function submitAgentArtifact({
       modelProvider: redactSensitiveObject(originDraft.modelProvider || {}),
       proofContext: redactSensitiveObject(originDraft.proofContext || {}),
       artifactDraftQuality: redactSensitiveObject(originDraft.artifactDraftQuality || {}),
+      generationProvenance: redactSensitiveObject(originDraft.generationProvenance || {}),
       checksum: redactSensitiveText(originDraft.checksum || ''),
       createdAt: originDraft.createdAt || null,
     }
@@ -4972,6 +5309,7 @@ export function submitAgentArtifact({
   const artifactRecord = {
     ...artifactDraft,
     ...redactedWrittenArtifact,
+    traceId: normalizedTraceId,
     existsOnDisk: Boolean(writtenArtifact?.absolutePath || writtenArtifact?.path),
     source: typeof artifactWriter === 'function' ? 'agent-submission-artifact-writer' : 'agent-submission-artifact-draft',
     contentChecksum: artifactStorageProof.contentChecksum,
@@ -5047,6 +5385,7 @@ export function submitAgentArtifact({
   };
   const submission = {
     id: submissionId,
+    traceId: normalizedTraceId,
     projectId: project.id || null,
     agentId: agent.id,
     agentName: agent.name || agent.id,
@@ -5089,6 +5428,8 @@ export function submitAgentArtifact({
     artifactDraftQualityScore: normalizedOriginDraft?.artifactDraftQuality?.qualityScore ?? null,
     artifactDraftQualityStatus: normalizedOriginDraft?.artifactDraftQuality?.status || null,
     artifactDraftHumanReviewRequired: Boolean(normalizedOriginDraft?.artifactDraftQuality?.humanReviewRequired),
+    artifactDraftGenerationMode: normalizedOriginDraft?.generationProvenance?.generationMode || null,
+    artifactDraftGenerationProvenanceChecksum: normalizedOriginDraft?.generationProvenance?.checksum || null,
     artifactDraftChecksum: normalizedOriginDraft?.checksum || null,
     requestedReviewAgentId: reviewer?.id || null,
     requestedReviewAgentName: reviewer?.name || null,
@@ -5103,6 +5444,7 @@ export function submitAgentArtifact({
   };
   const log = {
     id: logId,
+    traceId: normalizedTraceId,
     time: now,
     agent: agent.name,
     agentId: agent.id,
@@ -5265,6 +5607,7 @@ export function submitAgentArtifact({
         logId: log.id,
       },
       payload: {
+        traceId: normalizedTraceId,
         submission,
         artifact: artifactRecord,
         artifactStorageProof,
@@ -5296,6 +5639,7 @@ export function submitAgentArtifact({
 export function recordAgentEvidenceSearch({
   project = {},
   agentId,
+  traceId = null,
   query = '',
   purpose = '',
   taskId = null,
@@ -5313,6 +5657,7 @@ export function recordAgentEvidenceSearch({
   language = project.language || 'en',
 } = {}) {
   const currentLanguage = normalizeLanguage(language);
+  const normalizedTraceId = normalizeLocalTraceId(traceId);
   const team = project.team || [];
   const agent = team.find((member) => member.id === agentId || member.name === agentId);
   if (!agent) throw new Error(`Agent not found: ${agentId}`);
@@ -5402,6 +5747,7 @@ export function recordAgentEvidenceSearch({
   const eventId = `evt_${evidenceSearchId}`;
   const evidenceSearch = {
     id: evidenceSearchId,
+    traceId: normalizedTraceId,
     projectId: project.id || null,
     agentId: agent.id,
     agentName: agent.name || agent.id,
@@ -5442,6 +5788,7 @@ export function recordAgentEvidenceSearch({
   };
   const log = {
     id: logId,
+    traceId: normalizedTraceId,
     time: now,
     agent: agent.name,
     agentId: agent.id,
@@ -5560,6 +5907,7 @@ export function recordAgentEvidenceSearch({
         logId,
       },
       payload: {
+        traceId: normalizedTraceId,
         query: safeQuery,
         purpose: safePurpose,
         provider,
@@ -5601,6 +5949,8 @@ export function recordAgentEvidenceSearch({
 export function reviewAgentSubmission({
   project = {},
   submissionId,
+  traceId = null,
+  requestSpanId = null,
   reviewerAgentId = null,
   verdict = 'under-review',
   comments = '',
@@ -5613,6 +5963,8 @@ export function reviewAgentSubmission({
   const team = project.team || [];
   const submission = (project.agentSubmissions || []).find((item) => String(item.id) === String(submissionId));
   if (!submission) throw new Error(`Submission not found: ${submissionId}`);
+  const requestTraceId = normalizeLocalTraceId(traceId);
+  const normalizedTraceId = normalizeLocalTraceId(submission.traceId || traceId);
   const submitter = team.find((member) => member.id === submission.agentId || member.name === submission.agentName) || null;
   const task = submission.taskId
     ? (project.tasks || []).find((item) => String(item.id) === String(submission.taskId))
@@ -5640,6 +5992,9 @@ export function reviewAgentSubmission({
   if (!reviewer) throw new Error('Reviewer not found.');
   if (governedWorkModeTask && reviewer.id === submitter?.id) {
     throw new Error(`task-reviewer-must-be-independent:${task.id}`);
+  }
+  if (reviewer.id === submitter?.id) {
+    throw new Error(`submission-reviewer-must-be-independent:${submission.id}`);
   }
   const normalizedVerdict = normalizeSubmissionReviewStatus(verdict);
   const timestamp = Date.parse(now) || Date.now();
@@ -5679,6 +6034,9 @@ export function reviewAgentSubmission({
   const eventId = `evt_${reviewId}`;
   const review = {
     id: reviewId,
+    traceId: normalizedTraceId,
+    requestTraceId,
+    requestSpanId: /^span_[a-f0-9]{32}$/.test(String(requestSpanId || '')) ? requestSpanId : null,
     projectId: project.id || null,
     submissionId: submission.id,
     taskId: submission.taskId || null,
@@ -5740,6 +6098,7 @@ export function reviewAgentSubmission({
   });
   const log = {
     id: logId,
+    traceId: normalizedTraceId,
     time: now,
     agent: reviewer.name,
     agentId: reviewer.id,
@@ -5865,6 +6224,7 @@ export function reviewAgentSubmission({
         logId,
       },
       payload: {
+        traceId: normalizedTraceId,
         verdict: normalizedVerdict,
         comments: safeComments,
         requestedChanges: normalizedChanges,
@@ -6475,25 +6835,21 @@ function evaluateAutopilotRunControlSessionSchedule({
   forceReason = 'autopilot-forced-sweep',
 } = {}) {
   const lastTickAt = session.lastTickAt || null;
-  const lastRunAt = lastTickAt || session.startedAt || session.createdAt || session.updatedAt || now;
-  const dueAt = lastTickAt
-    ? new Date(safeDateMs(lastRunAt, safeDateMs(now)) + (Number(intervalMs) || 60_000)).toISOString()
-    : now;
-  const due = Boolean(forceDue) || !lastTickAt || safeDateMs(now) >= safeDateMs(dueAt);
-  const reason = forceDue
-    ? forceReason
-    : !lastTickAt
-      ? 'autopilot-session-first-tick'
-      : due
-        ? 'autopilot-session-due'
-        : 'autopilot-session-waiting';
+  const normalizedIntervalMs = Math.max(1, Number(intervalMs) || 60_000);
+  const schedule = evaluateLocalIntervalSchedule({
+    lane: 'autopilot-session', now, intervalMs: normalizedIntervalMs,
+    lastCompletedAt: lastTickAt,
+    initialAt: session.startedAt || session.createdAt || session.updatedAt || now,
+    enabled: true, forceDue,
+    reasons: {
+      forced: forceReason, first: 'autopilot-session-first-tick', due: 'autopilot-session-due', waiting: 'autopilot-session-waiting',
+      clockRegression: 'autopilot-session-clock-regression-recovery', missed: 'autopilot-session-missed-cadence-recovery',
+    },
+  });
   return {
+    ...schedule,
     schemaVersion: 'autopilot-session-schedule/v1',
-    due,
-    reason,
-    dueAt: due ? now : dueAt,
-    nextRunAt: due ? now : dueAt,
-    intervalMs: Number(intervalMs) || 60_000,
+    intervalMs: normalizedIntervalMs,
     lastTickAt,
   };
 }
@@ -8809,6 +9165,16 @@ function normalizeIdentitySessionRole(role = '') {
   return value || 'observer';
 }
 
+function normalizeIdentitySessionType(identityType = '') {
+  return String(identityType || '').trim().toLowerCase() === 'service' ? 'service' : 'user';
+}
+
+function normalizeIdentitySessionAudiences(audiences = []) {
+  return uniqueStrings(Array.isArray(audiences) ? audiences : [audiences])
+    .map((audience) => String(audience || '').trim().toLowerCase())
+    .filter(Boolean);
+}
+
 function identitySessionStatus(session = {}, now = nowIso()) {
   if (session.revokedAt || session.status === 'revoked') return 'revoked';
   const expiresAt = Date.parse(session.expiresAt || '');
@@ -8844,6 +9210,8 @@ function summarizeIdentitySessions(project = {}, now = nowIso()) {
     reviewerCount: rows.filter((session) => session.role === 'reviewer-agent').length,
     runtimeCount: rows.filter((session) => session.role === 'runtime-platform').length,
     securityAdminCount: rows.filter((session) => session.role === 'security-admin').length,
+    serviceCount: rows.filter((session) => session.identityType === 'service').length,
+    rotatedCount: rows.filter((session) => Boolean(session.rotatedToSessionId)).length,
     latestSessionId: rows[0]?.id || null,
     latestIssuedAt: rows[0]?.issuedAt || null,
   };
@@ -8854,6 +9222,16 @@ function buildIdentitySessionRecord(project = {}, input = {}, {
   token = '',
 } = {}) {
   const role = normalizeIdentitySessionRole(input.role || input.actorRole || input.accessRole || 'observer');
+  const identityType = normalizeIdentitySessionType(input.identityType || input.subjectType);
+  const serviceId = String(input.serviceId || input.subjectId || '').trim();
+  const audiences = normalizeIdentitySessionAudiences(input.audiences || input.audience);
+  if (identityType === 'service') {
+    if (!serviceId) throw new Error('Service identity requires serviceId.');
+    if (!['runtime-platform', 'agent', 'reviewer-agent'].includes(role)) {
+      throw new Error(`Service identity role is not allowed: ${role}`);
+    }
+    if (!audiences.length) throw new Error('Service identity requires at least one audience.');
+  }
   const index = (project.identitySessions || []).length + 1;
   const id = input.id || `identity_session_${role}_${Date.parse(now) || Date.now()}_${index}`;
   const ttlMs = Number.isFinite(Number(input.ttlMs))
@@ -8874,6 +9252,9 @@ function buildIdentitySessionRecord(project = {}, input = {}, {
     role,
     userId: input.userId || input.actorUserId || '',
     agentId: input.agentId || input.actorAgentId || '',
+    identityType,
+    serviceId: identityType === 'service' ? serviceId : '',
+    audiences: identityType === 'service' ? audiences : [],
     issuedAt: now,
     expiresAt,
     issuerRole: normalizeIdentitySessionRole(input.issuerRole || input.updatedByRole || 'manager'),
@@ -8882,6 +9263,7 @@ function buildIdentitySessionRecord(project = {}, input = {}, {
     status: 'active',
     tokenHash: identitySessionTokenHash(issuedToken),
     scope: uniqueStrings(input.scope || input.scopes || ['project']),
+    rotatedFromSessionId: input.rotatedFromSessionId || null,
   };
   return {
     session: {
@@ -8902,6 +9284,9 @@ function publicIdentitySession(session = {}, now = nowIso()) {
     role: session.role || null,
     userId: session.userId || null,
     agentId: session.agentId || null,
+    identityType: normalizeIdentitySessionType(session.identityType),
+    serviceId: session.serviceId || null,
+    audiences: normalizeIdentitySessionAudiences(session.audiences),
     status: identitySessionStatus(session, now),
     issuedAt: session.issuedAt || null,
     expiresAt: session.expiresAt || null,
@@ -8910,6 +9295,8 @@ function publicIdentitySession(session = {}, now = nowIso()) {
     issuerId: session.issuerId || null,
     source: session.source || null,
     scope: session.scope || [],
+    rotatedFromSessionId: session.rotatedFromSessionId || null,
+    rotatedToSessionId: session.rotatedToSessionId || null,
     checksum: session.checksum || null,
     tokenHash: session.tokenHash ? `${String(session.tokenHash).slice(0, 10)}...` : null,
   };
@@ -9291,6 +9678,8 @@ function normalizeProjectPrivacyPolicy(input, previous = {}) {
     : {
         schemaVersion: 'project-privacy-policy/v1',
         retentionMode: 'project-local',
+        retentionDays: 365,
+        lifecycleScanMode: 'manual',
         modelTrainingAllowed: false,
         providerLogMode: 'redacted',
         evidenceExportRequiresApproval: true,
@@ -9304,9 +9693,15 @@ function normalizeProjectPrivacyPolicy(input, previous = {}) {
   const providerLogMode = PROJECT_PRIVACY_PROVIDER_LOG_MODES.has(value.providerLogMode)
     ? value.providerLogMode
     : base.providerLogMode;
+  const retentionDays = Math.max(1, Math.min(3650, Math.round(Number(value.retentionDays ?? base.retentionDays ?? 365) || 365)));
+  const lifecycleScanMode = PROJECT_PRIVACY_LIFECYCLE_SCAN_MODES.has(value.lifecycleScanMode)
+    ? value.lifecycleScanMode
+    : (base.lifecycleScanMode || 'manual');
   return {
     schemaVersion: 'project-privacy-policy/v1',
     retentionMode,
+    retentionDays,
+    lifecycleScanMode,
     modelTrainingAllowed: value.modelTrainingAllowed === true,
     providerLogMode,
     evidenceExportRequiresApproval: value.evidenceExportRequiresApproval !== false,
@@ -9909,25 +10304,28 @@ function judgeEvidenceSourceSafety(item = {}) {
     safeJsonForInspection(item.metadata || item.extra || {}),
   ].filter(Boolean).join('\n');
   const urlSafety = inspectSourceUrlSafety(rawUrl);
+  const promptBoundaryEnvelope = createUntrustedContentEnvelope({
+    originType: 'source',
+    originId: item.id || item.title || item.name || rawUrl || 'source',
+    content: rawText,
+  });
   const promptInjectionSignals = [
-    /\bignore\s+(?:all\s+)?(?:previous|prior|above)\s+(?:instructions|messages|prompts?)\b/i.test(rawText) ? 'prompt-injection:ignore-instructions' : null,
-    /\b(?:system|developer)\s+(?:prompt|message|instructions?)\b/i.test(rawText) ? 'prompt-injection:system-prompt-reference' : null,
-    /\b(?:exfiltrat|leak|reveal|dump|print)\w*\b[\s\S]{0,80}\b(?:secret|token|api[_\s-]?key|credential|prompt)\b/i.test(rawText) ? 'prompt-injection:exfiltration-request' : null,
-    /\b(?:tool|function)\s*call\b[\s\S]{0,80}\b(?:without|ignore|bypass)\b/i.test(rawText) ? 'prompt-injection:tool-bypass-request' : null,
-  ].filter(Boolean);
+    ...promptBoundaryEnvelope.criticalSignals,
+    ...promptBoundaryEnvelope.reviewSignals,
+  ].filter((signal) => signal.startsWith('prompt-injection:'));
   const rawSecretScan = scanTextForRawSecretLeaks(rawText);
   const isInternalProof = /project-proof|runtime-proof|backend-route|task-evidence|ledger|transcript/.test(kind);
   const signals = [
     'source-safety-screened',
     isInternalProof ? 'internal-runtime-proof' : 'external-source',
     ...urlSafety.signals,
-    ...promptInjectionSignals,
+    ...promptBoundaryEnvelope.criticalSignals,
+    ...promptBoundaryEnvelope.reviewSignals,
     rawSecretScan.count > 0 ? 'raw-secret-pattern-redacted' : null,
   ].filter(Boolean);
   const reviewCount = urlSafety.reviewCount
-    + promptInjectionSignals.length
-    + (rawSecretScan.count > 0 ? 1 : 0);
-  const blockedCount = urlSafety.blockedCount;
+    + promptBoundaryEnvelope.reviewSignals.length;
+  const blockedCount = urlSafety.blockedCount + promptBoundaryEnvelope.criticalSignals.length;
   const sourceSafetyLevel = blockedCount > 0
     ? 'blocked'
     : reviewCount > 0
@@ -9942,6 +10340,9 @@ function judgeEvidenceSourceSafety(item = {}) {
     sourceSafetyBlockedSignalCount: blockedCount,
     promptInjectionSignalCount: promptInjectionSignals.length,
     secretPatternSignalCount: rawSecretScan.count,
+    promptBoundaryDecision: promptBoundaryEnvelope.decision,
+    promptBoundaryCitationId: promptBoundaryEnvelope.citationId,
+    promptBoundaryContentChecksum: promptBoundaryEnvelope.contentChecksum,
     judgement: sourceSafetyLevel === 'blocked'
       ? 'blocked-source'
       : sourceSafetyLevel === 'review'
@@ -10089,6 +10490,9 @@ function normalizeEvidenceSources(sources = [], now = nowIso()) {
       sourceSafetyBlockedSignalCount: safety.sourceSafetyBlockedSignalCount,
       promptInjectionSignalCount: safety.promptInjectionSignalCount,
       secretPatternSignalCount: safety.secretPatternSignalCount,
+      promptBoundaryDecision: safety.promptBoundaryDecision,
+      promptBoundaryCitationId: safety.promptBoundaryCitationId,
+      promptBoundaryContentChecksum: safety.promptBoundaryContentChecksum,
       sourceSafetyJudgement: safety.judgement,
       capturedAt: item.capturedAt || item.searchedAt || now,
     };
@@ -10227,6 +10631,9 @@ function buildEvidenceSourceSnapshots({
       sourceSafetyLevel: source.sourceSafetyLevel || null,
       sourceSafetyScore: source.sourceSafetyScore ?? null,
       sourceSafetyJudgement: source.sourceSafetyJudgement || null,
+      promptBoundaryDecision: source.promptBoundaryDecision || null,
+      promptBoundaryCitationId: source.promptBoundaryCitationId || null,
+      promptBoundaryContentChecksum: source.promptBoundaryContentChecksum || null,
       capturedAt: source.capturedAt || now,
     });
     const snapshot = {
@@ -10251,6 +10658,9 @@ function buildEvidenceSourceSnapshots({
       qualityLevel: safeSource.qualityLevel,
       sourceSafetyLevel: safeSource.sourceSafetyLevel,
       sourceSafetyJudgement: safeSource.sourceSafetyJudgement,
+      promptBoundaryDecision: safeSource.promptBoundaryDecision,
+      promptBoundaryCitationId: safeSource.promptBoundaryCitationId,
+      promptBoundaryContentChecksum: safeSource.promptBoundaryContentChecksum,
       createdAt: now,
     };
     return {
@@ -10265,6 +10675,8 @@ function buildEvidenceSourceSnapshots({
         providerReceiptId: snapshot.providerReceiptId,
         sourceChecksum: snapshot.sourceChecksum,
         summaryChecksum: snapshot.summaryChecksum,
+        promptBoundaryDecision: snapshot.promptBoundaryDecision,
+        promptBoundaryContentChecksum: snapshot.promptBoundaryContentChecksum,
         capturedAt: snapshot.capturedAt,
       }),
     };
@@ -10302,6 +10714,10 @@ function buildAgentArtifactStorageProof({
     relativePath,
     path: storedPath,
     url: writtenArtifact?.url || null,
+    contentAddress: writtenArtifact?.contentAddress || null,
+    immutablePath: writtenArtifact?.immutableAbsolutePath || null,
+    immutableRelativePath: writtenArtifact?.immutableRelativePath || null,
+    immutableUrl: writtenArtifact?.immutableUrl || null,
     contentChecksum,
     pathChecksum: persistenceChecksum({
       relativePath,
@@ -12514,6 +12930,14 @@ function buildReadinessProofMap({ project = {}, messages = [], managerReadyPacka
     });
   };
 
+  const readinessWithProofRoutes = {
+    ...readiness,
+    checks: (readiness.checks || []).map((check) => ({
+      ...check,
+      ...routeForCheck(check),
+    })),
+  };
+
   const productionInfrastructureRehearsalProofIds = uniqueStrings([
     ...productionDeploymentControlReceiptProofIds,
     ...(project.productionOperationsControlReceipts || []).flatMap((record) => [
@@ -12577,7 +13001,7 @@ function buildReadinessProofMap({ project = {}, messages = [], managerReadyPacka
     score: readiness.score,
     passedCount: readiness.passedCount,
     totalCount: readiness.totalCount,
-    readiness,
+    readiness: readinessWithProofRoutes,
     roleNegotiationRoutes,
     roleNegotiationSummary: {
       count: roleNegotiationRoutes.length,
@@ -19185,6 +19609,12 @@ function buildAutonomousRunControl({
   now = nowIso(),
 } = {}) {
   const projectId = project.id || managerDashboard.projectId || null;
+  const autonomyGovernor = projectId ? buildLocalAutonomyGovernor({ project, now }) : null;
+  const autonomyDefaultEvaluation = projectId ? evaluateLocalAutonomyExecution({
+    project,
+    now,
+    request: { requestedSteps: 1, estimatedCostCents: 0, toolOperations: [] },
+  }) : null;
   const managerQueue = managerDashboard.managerActionQueue || {};
   const agentQueue = managerDashboard.agentAutonomousActionQueue || {};
   const continuousLoop = managerDashboard.continuousWorkLoop || {};
@@ -19349,8 +19779,25 @@ function buildAutonomousRunControl({
       eventIds: [latestSchedulerRecord?.eventId].filter(Boolean),
     },
   ].filter(Boolean);
+  const autonomyExecutionAllowed = autonomyDefaultEvaluation?.allowed ?? false;
+  if (!autonomyExecutionAllowed) {
+    nextActions.forEach((row) => {
+      row.canRun = false;
+      row.status = `governor-${autonomyGovernor.status}`;
+      row.autonomyGovernorBlocked = true;
+    });
+  }
   const runnableCount = nextActions.filter((row) => row.canRun).length;
   const gates = [
+    {
+      id: 'local-autonomy-governor-ready',
+      label: 'Project autonomy policy permits execution',
+      passed: autonomyExecutionAllowed,
+      apiPath: projectId ? `/projects/${projectId}/autonomy-governor` : null,
+      detail: autonomyGovernor?.policy
+        ? `Governor ${autonomyGovernor.status}; ${autonomyGovernor.remaining?.steps ?? 0} step(s), ${autonomyGovernor.remaining?.costCents ?? 0} cent(s), ${autonomyGovernor.remaining?.toolInvocations ?? 0} tool call(s) remain.`
+        : 'No explicit policy is configured; legacy local execution remains compatible.',
+    },
     {
       id: 'manager-action-route-ready',
       label: 'Manager orchestration route is visible',
@@ -19399,6 +19846,8 @@ function buildAutonomousRunControl({
   ];
   const status = !projectId
     ? 'project-missing'
+    : autonomyGovernor?.policy && !autonomyExecutionAllowed
+      ? `governor-${autonomyGovernor.status}`
     : agentReadyCount > 0
       ? 'agent-action-ready'
       : managerReadyCount > 0
@@ -19430,6 +19879,10 @@ function buildAutonomousRunControl({
     timelineLogIdCount: timelineLogIds.length,
     eventIdCount: eventIds.length,
     localPilotRunnable: Boolean(projectId && runnableCount > 0),
+    autonomyGovernorConfigured: Boolean(autonomyGovernor?.policy),
+    autonomyGovernorState: autonomyGovernor?.state || 'unconfigured',
+    autonomyGovernorStatus: autonomyGovernor?.status || 'policy-required',
+    autonomyGovernorIntegrityValid: autonomyGovernor?.integrity?.valid ?? true,
     readyForProduction: false,
   };
   const base = {
@@ -19441,6 +19894,7 @@ function buildAutonomousRunControl({
     generatedAt: now,
     summary,
     nextActions,
+    autonomyGovernor,
     gates,
     proofIds,
     timelineLogIds,
@@ -19467,6 +19921,9 @@ function buildAutonomousRunControl({
     backendRoutes: {
       autonomousRunControl: projectId ? `/projects/${projectId}/autonomous-run-control` : null,
       autonomousRunControlRunTemplate: projectId ? `/projects/${projectId}/autonomous-run-control/:actionId/run` : null,
+      autonomyGovernor: projectId ? `/projects/${projectId}/autonomy-governor` : null,
+      autonomyGovernorPolicies: projectId ? `/projects/${projectId}/autonomy-governor/policies` : null,
+      autonomyGovernorCommands: projectId ? `/projects/${projectId}/autonomy-governor/commands` : null,
       managerCommandCenter: projectId ? `/projects/${projectId}/manager-command-center` : null,
       managerActionQueue: projectId ? `/projects/${projectId}/manager-action-queue` : null,
       agentAutonomousActionQueue: projectId ? `/projects/${projectId}/agent-autonomous-action-queue` : null,
@@ -19489,6 +19946,7 @@ function buildAutonomousRunControl({
     checksum: persistenceChecksum({
       summary,
       nextActions,
+      autonomyGovernor,
       gates,
       proofIds,
       timelineLogIds,
@@ -22179,12 +22637,29 @@ function buildArtifactQualityAudit({
       || (submission.supersedesSubmissionIds || []).length
       || artifactType !== 'revision-note'
     );
+    const generationMode = submission.artifactDraftGenerationMode
+      || submission.artifactDraft?.generationProvenance?.generationMode
+      || null;
+    const generatedRevisionResponseReady = linkedReviews.some((review) => (
+      review.verdict === 'accepted'
+      || (review.verdict === 'changes-requested' && submissions.some((candidate) => (
+        candidate.revisesSubmissionId === submission.id
+        || candidate.respondsToReviewId === review.id
+        || (candidate.supersedesSubmissionIds || []).includes(submission.id)
+      )))
+    ));
+    const structuralDraftQualityReady = Boolean(
+      submission.artifactDraftQuality?.structurallyReadyForReview
+      || submission.artifactDraft?.artifactDraftQuality?.structurallyReadyForReview
+      || submission.artifactDraftQuality?.readyForLocalPilot
+      || submission.artifactDraftQualityStatus === 'local-quality-ready'
+      || submission.artifactDraft?.artifactDraftQuality?.readyForLocalPilot
+    );
     const draftQualityReady = !submission.isGeneratedDraft && !submission.artifactDraft
       ? true
-      : Boolean(
-        submission.artifactDraftQuality?.readyForLocalPilot
-        || submission.artifactDraftQualityStatus === 'local-quality-ready'
-        || submission.artifactDraft?.artifactDraftQuality?.readyForLocalPilot
+      : structuralDraftQualityReady && (
+        !['requested-model-fallback', 'explicit-local-template'].includes(generationMode)
+        || generatedRevisionResponseReady
       );
     const leakScan = scanTextForRawSecretLeaks(`${cleanTitle}\n${cleanSummary}\n${cleanBody}`);
     const signals = [
@@ -22221,6 +22696,8 @@ function buildArtifactQualityAudit({
       artifactDraftSource: submission.artifactDraftSource || submission.artifactDraft?.source || null,
       artifactDraftQualityStatus: submission.artifactDraftQualityStatus || submission.artifactDraftQuality?.status || submission.artifactDraft?.artifactDraftQuality?.status || null,
       artifactDraftHumanReviewRequired: Boolean(submission.artifactDraftHumanReviewRequired || submission.artifactDraftQuality?.humanReviewRequired || submission.artifactDraft?.artifactDraftQuality?.humanReviewRequired),
+      artifactDraftGenerationMode: generationMode,
+      generatedDraftReviewClosureReady: generatedRevisionResponseReady,
       artifactChecksum: submission.artifactChecksum || submission.artifactStorageProofChecksum || submission.artifact?.artifactChecksum || artifactStorageProof?.checksum || null,
       artifactStorageProof: artifactStorageProof ? {
         schemaVersion: artifactStorageProof.schemaVersion || 'agent-artifact-storage-proof/v1',
@@ -22470,6 +22947,7 @@ function buildSubmissionReviewWorkflow({
   project = {},
   managerDashboard = {},
   artifactQualityAudit = {},
+  reviewHandoffGovernance = {},
   now = nowIso(),
 } = {}) {
   const projectId = project.id || managerDashboard.projectId || managerDashboard.project?.id || null;
@@ -22500,12 +22978,17 @@ function buildSubmissionReviewWorkflow({
     return review.verdict === 'accepted'
       && (submission?.artifactType === 'final-deliverable' || submission?.status === 'final');
   });
+  const governedCompletionByReviewId = new Map((project.localReviewHandoffCompletions || [])
+    .map((completion) => [completion.reviewId, completion]));
+  const handoffById = new Map((project.localReviewHandoffs || []).map((handoff) => [handoff.id, handoff]));
   const roundRows = reviews.map((review, index) => {
     const submission = submissionById.get(String(review.submissionId || '')) || {};
     const responseSubmissions = responseSubmissionsForReview(review);
     const reviewRoute = routeForReview(review);
     const submissionRoute = routeForSubmission(submission);
     const responseRoutes = responseSubmissions.map(routeForSubmission).filter(Boolean);
+    const governedCompletion = governedCompletionByReviewId.get(review.id) || null;
+    const governedHandoff = governedCompletion ? handoffById.get(governedCompletion.handoffId) || null : null;
     const resolved = review.verdict !== 'changes-requested' || responseSubmissions.length > 0;
     return redactSensitiveObject({
       id: review.id || null,
@@ -22533,6 +23016,11 @@ function buildSubmissionReviewWorkflow({
       taskId: review.taskId || submission.taskId || null,
       createdAt: review.createdAt || null,
       checksum: review.checksum || null,
+      leaseGoverned: Boolean(governedCompletion),
+      governedHandoffId: governedHandoff?.id || null,
+      governedFence: governedCompletion?.fence || null,
+      acceptanceCriteriaChecksum: governedHandoff?.acceptanceCriteriaChecksum || null,
+      criterionResultsChecksum: governedCompletion?.criterionResultsChecksum || null,
     });
   });
   const openChangeRequestRows = roundRows.filter((row) => row.verdict === 'changes-requested' && row.status !== 'closed');
@@ -22585,6 +23073,23 @@ function buildSubmissionReviewWorkflow({
       apiPath: projectId ? `/projects/${projectId}/artifact-quality-audit` : null,
     }),
     gate({
+      id: 'review-handoff-governance-integrity',
+      label: 'Review handoff receipts and lease fences are integrity-valid',
+      passed: reviewHandoffGovernance.schemaVersion === 'local-review-handoff-governance/v1'
+        && reviewHandoffGovernance.integrity?.valid === true,
+      detail: `${reviewHandoffGovernance.summary?.completedCount || 0}/${reviewHandoffGovernance.summary?.handoffCount || 0} governed handoff(s) completed; ${reviewHandoffGovernance.summary?.overdueCount || 0} overdue.`,
+      apiPath: projectId ? `/projects/${projectId}/review-handoffs` : null,
+      severity: 'warning',
+    }),
+    gate({
+      id: 'lease-governed-review-coverage',
+      label: 'Submission reviews use acknowledgement and fenced Reviewer claims',
+      passed: reviews.length > 0 && roundRows.every((row) => row.leaseGoverned),
+      detail: `${roundRows.filter((row) => row.leaseGoverned).length}/${roundRows.length} review round(s) are handoff and lease governed; remaining rows are legacy-compatible reviews.`,
+      apiPath: projectId ? `/projects/${projectId}/review-handoffs` : null,
+      severity: 'warning',
+    }),
+    gate({
       id: 'production-review-governance-blocked',
       label: 'Production review governance still needs calibrated policy',
       passed: false,
@@ -22616,6 +23121,13 @@ function buildSubmissionReviewWorkflow({
     proofReadyCount,
     reviewRouteCount: reviewRoutes.length,
     revisionRouteCount: revisionRoutes.length,
+    governedReviewCount: roundRows.filter((row) => row.leaseGoverned).length,
+    legacyReviewCount: roundRows.filter((row) => !row.leaseGoverned).length,
+    reviewHandoffCount: reviewHandoffGovernance.summary?.handoffCount || 0,
+    openReviewHandoffCount: (reviewHandoffGovernance.rows || []).filter((row) => row.state !== 'completed').length,
+    overdueReviewHandoffCount: reviewHandoffGovernance.summary?.overdueCount || 0,
+    activeReviewClaimCount: reviewHandoffGovernance.summary?.activeClaimCount || 0,
+    reviewHandoffIntegrityValid: reviewHandoffGovernance.integrity?.valid === true,
     gateCount: gates.length,
     passedGateCount: gates.filter((item) => item.passed).length,
     failedGateCount: failedGates.length,
@@ -22630,6 +23142,7 @@ function buildSubmissionReviewWorkflow({
     readyForPrivatePilotReview,
     readyForProduction: false,
     roundRows,
+    reviewHandoffGovernance,
     openChangeRequestRows,
     acceptedFinalReviewRows: acceptedFinalReviewRows.map((review) => ({
       id: review.id,
@@ -22655,6 +23168,7 @@ function buildSubmissionReviewWorkflow({
       artifactQualityAudit: managerDashboard.backendRoutes?.artifactQualityAudit || (projectId ? `/projects/${projectId}/artifact-quality-audit` : null),
       readinessProofMap: managerDashboard.backendRoutes?.readinessProofMap || (projectId ? `/projects/${projectId}/readiness-proof-map` : null),
       managerReadyPackage: managerDashboard.backendRoutes?.managerReadyPackage || (projectId ? `/projects/${projectId}/manager-ready-package` : null),
+      reviewHandoffs: projectId ? `/projects/${projectId}/review-handoffs` : null,
     },
     proofIds: uniqueStrings(roundRows.flatMap((row) => row.proofIds || [])),
     timelineLogIds: uniqueStrings(roundRows.flatMap((row) => row.timelineLogIds || [])),
@@ -22668,6 +23182,7 @@ function buildSubmissionReviewWorkflow({
       status: workflow.status,
       rounds: roundRows.map((row) => [row.id, row.submissionId, row.verdict, row.status, row.responseSubmissionIds]),
       gates: gates.map((item) => [item.id, item.passed]),
+      reviewHandoffGovernanceChecksum: reviewHandoffGovernance.checksum || null,
       generatedAt: now,
     }),
   };
@@ -25046,6 +25561,7 @@ function buildProjectMemoryReadinessSnapshot({
   evidenceIndexReadiness = {},
   persistenceAdapterPlan = {},
   meetingSummaries = {},
+  sharedMemoryGovernance = {},
   now = nowIso(),
 } = {}) {
   const projectId = project.id || evidenceIndexReadiness.projectId || persistenceAdapterPlan.projectId || meetingSummaries.projectId || null;
@@ -25113,6 +25629,19 @@ function buildProjectMemoryReadinessSnapshot({
       detail: `Managed adapter plan status is ${persistenceAdapterPlan.status || 'unknown'}; production memory cutover remains blocked until adapter, backup, restore, and rollback controls pass.`,
       checksum: persistenceAdapterPlan.checksum || null,
     }),
+    row({
+      id: 'shared-memory-governance',
+      label: 'Project shared memory governance',
+      status: sharedMemoryGovernance.schemaVersion !== 'local-project-shared-memory/v1'
+        ? 'missing-route'
+        : sharedMemoryGovernance.integrity?.valid
+          ? 'route-backed'
+          : 'integrity-invalid',
+      route: projectId ? `/projects/${projectId}/shared-memories` : null,
+      recordCount: sharedMemoryGovernance.summary?.versionCount || 0,
+      detail: `${sharedMemoryGovernance.summary?.versionCount || 0} immutable version(s), ${sharedMemoryGovernance.summary?.activeCount || 0} active, ${sharedMemoryGovernance.summary?.expiredCount || 0} expired, and ${sharedMemoryGovernance.summary?.lowConfidenceActiveCount || 0} low-confidence active memory row(s).`,
+      checksum: sharedMemoryGovernance.checksum || null,
+    }),
   ];
   const rawSecretScan = scanTextForRawSecretLeaks(stableJson(rows));
   const gate = ({ id, label, passed, detail, apiPath = memoryRoute, severity = 'blocker', localRequired = true }) => ({
@@ -25157,6 +25686,14 @@ function buildProjectMemoryReadinessSnapshot({
       label: 'Memory readiness output is redaction-clean',
       passed: rawSecretScan.count === 0,
       detail: `${rawSecretScan.count} raw secret leak pattern(s) detected.`,
+    }),
+    gate({
+      id: 'shared-memory-governance-route-backed',
+      label: 'Project shared memory is citation and integrity governed',
+      passed: sharedMemoryGovernance.schemaVersion === 'local-project-shared-memory/v1'
+        && sharedMemoryGovernance.integrity?.valid === true,
+      detail: `Shared memory status ${sharedMemoryGovernance.status || 'unknown'} with ${sharedMemoryGovernance.summary?.versionCount || 0} version(s).`,
+      apiPath: projectId ? `/projects/${projectId}/shared-memories` : memoryRoute,
     }),
     gate({
       id: 'managed-long-term-memory-production-blocked',
@@ -25208,6 +25745,9 @@ function buildProjectMemoryReadinessSnapshot({
       persistenceAdapterPlanChecksum: persistenceAdapterPlan.checksum || null,
       meetingSummariesStatus: meetingSummaries.status || null,
       meetingSummariesChecksum: meetingSummaries.checksum || null,
+      sharedMemoryStatus: sharedMemoryGovernance.status || null,
+      sharedMemoryChecksum: sharedMemoryGovernance.checksum || null,
+      sharedMemoryIntegrityValid: sharedMemoryGovernance.integrity?.valid === true,
     },
     backendRoutes: {
       memoryReadiness: memoryRoute,
@@ -25218,6 +25758,7 @@ function buildProjectMemoryReadinessSnapshot({
       persistenceAdapterPlan: projectId ? `/projects/${projectId}/persistence-adapter-plan` : null,
       persistenceSnapshot: projectId ? `/projects/${projectId}/persistence-snapshot` : null,
       projectSettings: projectId ? `/projects/${projectId}/project-settings` : null,
+      sharedMemories: projectId ? `/projects/${projectId}/shared-memories` : null,
     },
     summary: {
       rowCount: rows.length,
@@ -25228,6 +25769,12 @@ function buildProjectMemoryReadinessSnapshot({
       evidenceSearchCount: evidenceSummary.evidenceSearchCount || 0,
       submissionCount: evidenceSummary.submissionCount || 0,
       sourceSnapshotCount: evidenceSummary.sourceSnapshotCount || 0,
+      sharedMemoryKeyCount: sharedMemoryGovernance.summary?.memoryKeyCount || 0,
+      sharedMemoryVersionCount: sharedMemoryGovernance.summary?.versionCount || 0,
+      sharedMemoryActiveCount: sharedMemoryGovernance.summary?.activeCount || 0,
+      sharedMemoryExpiredCount: sharedMemoryGovernance.summary?.expiredCount || 0,
+      sharedMemoryRevokedCount: sharedMemoryGovernance.summary?.revokedCount || 0,
+      sharedMemoryLowConfidenceActiveCount: sharedMemoryGovernance.summary?.lowConfidenceActiveCount || 0,
       failedLocalGateCount: failedLocalGates.length,
       productionBlockerCount: gates.filter((item) => item.severity === 'production-blocker').length,
       readyForLocalMvp,
@@ -25252,6 +25799,16 @@ function buildBudgetAlertReadinessSnapshot({
   const usageLedgerIsReadable = project.providerUsageLedger === undefined || Array.isArray(project.providerUsageLedger);
   const usageRows = Array.isArray(project.providerUsageLedger) ? project.providerUsageLedger : [];
   const usageSummary = summarizeProviderUsageLedger(usageRows, now);
+  const approvalRows = (project.providerBudgetApprovals || []).map((approval) => publicProviderBudgetApproval(approval, now));
+  const approvalSummary = {
+    count: approvalRows.length,
+    activeCount: approvalRows.filter((row) => row.status === 'active').length,
+    exhaustedCount: approvalRows.filter((row) => row.status === 'exhausted').length,
+    expiredCount: approvalRows.filter((row) => row.status === 'expired').length,
+    revokedCount: approvalRows.filter((row) => row.status === 'revoked').length,
+    remainingCostCents: approvalRows.filter((row) => row.status === 'active').reduce((sum, row) => sum + row.remainingCostCents, 0),
+    remainingRequestCount: approvalRows.filter((row) => row.status === 'active').reduce((sum, row) => sum + row.remainingRequestCount, 0),
+  };
   const effectiveBudgetPolicy = {
     schemaVersion: providerControlPolicy.schemaVersion || 'provider-control-policy/v1',
     configured: Boolean(
@@ -25265,6 +25822,53 @@ function buildBudgetAlertReadinessSnapshot({
     dailyBudgetCents: Math.max(0, Number(providerControlPolicy.dailyBudgetCents ?? projectBudgetPolicy.dailyBudgetCents) || 0),
     maxRequestsPerProjectHour: Math.max(0, Number(providerControlPolicy.maxRequestsPerProjectHour ?? projectBudgetPolicy.maxRequestsPerProjectHour) || 0),
     currency: providerControlPolicy.currency || projectBudgetPolicy.currency || 'USD',
+  };
+  const nowMs = Date.parse(now) || Date.now();
+  const currentUtcDayStartMs = Date.UTC(
+    new Date(nowMs).getUTCFullYear(),
+    new Date(nowMs).getUTCMonth(),
+    new Date(nowMs).getUTCDate(),
+  );
+  const elapsedUtcDayMinutes = Math.max(1, Math.min(1440, (nowMs - currentUtcDayStartMs) / 60_000));
+  const projectedDailyCostCents = usageSummary.dailyRequestCount
+    ? Math.max(usageSummary.dailyCostCents, Math.round((usageSummary.dailyCostCents / elapsedUtcDayMinutes) * 1440))
+    : 0;
+  const projectedPercentOfBudget = effectiveBudgetPolicy.dailyBudgetCents > 0
+    ? Math.round((projectedDailyCostCents / effectiveBudgetPolicy.dailyBudgetCents) * 1000) / 10
+    : null;
+  const forecastSeverity = !usageSummary.dailyRequestCount
+    ? 'insufficient-data'
+    : !(effectiveBudgetPolicy.dailyBudgetCents > 0)
+      ? 'unlimited'
+      : projectedDailyCostCents >= effectiveBudgetPolicy.dailyBudgetCents
+        ? 'critical'
+        : projectedDailyCostCents >= effectiveBudgetPolicy.dailyBudgetCents * 0.8
+          ? 'warning'
+          : 'ok';
+  const costForecast = {
+    schemaVersion: 'local-provider-cost-forecast/v1',
+    basis: 'observed-utc-day-cost-divided-by-elapsed-day-fraction',
+    observedAt: now,
+    utcDayStartedAt: new Date(currentUtcDayStartMs).toISOString(),
+    elapsedUtcDayMinutes: Math.round(elapsedUtcDayMinutes * 10) / 10,
+    observedRequestCount: usageSummary.dailyRequestCount,
+    observedCostCents: usageSummary.dailyCostCents,
+    projectedDailyCostCents,
+    dailyBudgetCents: effectiveBudgetPolicy.dailyBudgetCents,
+    projectedPercentOfBudget,
+    currency: effectiveBudgetPolicy.currency,
+    confidence: usageSummary.dailyRequestCount < 3 ? 'low' : usageSummary.dailyRequestCount < 10 ? 'medium' : 'high',
+    severity: forecastSeverity,
+    recommendation: forecastSeverity === 'critical'
+      ? 'Pause non-essential Provider work or obtain a bounded local overage approval before continuing.'
+      : forecastSeverity === 'warning'
+        ? 'Review remaining Provider work and budget headroom before the next autonomous cycle.'
+        : forecastSeverity === 'insufficient-data'
+          ? 'Collect at least three settled Provider usage rows before relying on the forecast.'
+          : forecastSeverity === 'unlimited'
+            ? 'Configure a local daily Provider budget to evaluate forecast risk.'
+            : 'Projected Provider cost remains within the local daily budget.',
+    estimateOnly: true,
   };
   const percentUsed = (used, limit) => (
     limit > 0 ? Math.round((Number(used) / Number(limit)) * 1000) / 10 : null
@@ -25334,9 +25938,38 @@ function buildBudgetAlertReadinessSnapshot({
       ? 'Usage rows are available for local headroom checks.'
       : 'Headroom can be computed, but no provider calls have been recorded yet.',
   };
-  const rows = [dailyBudgetRow, hourlyRequestRow, ledgerRow];
+  const forecastRow = {
+    id: 'projected-daily-provider-cost',
+    label: 'Projected daily Provider cost',
+    status: costForecast.severity,
+    used: costForecast.observedCostCents,
+    projected: costForecast.projectedDailyCostCents,
+    limit: costForecast.dailyBudgetCents,
+    percentUsed: costForecast.projectedPercentOfBudget,
+    unit: `cents-${costForecast.currency}`,
+    route: budgetRoute,
+    localAction: costForecast.recommendation,
+  };
+  const approvalRow = {
+    id: 'provider-budget-approvals',
+    label: 'Bounded Provider overage approvals',
+    status: approvalSummary.activeCount ? 'active' : approvalSummary.count ? 'no-active-approval' : 'not-used',
+    count: approvalSummary.count,
+    activeCount: approvalSummary.activeCount,
+    exhaustedCount: approvalSummary.exhaustedCount,
+    expiredCount: approvalSummary.expiredCount,
+    revokedCount: approvalSummary.revokedCount,
+    remainingCostCents: approvalSummary.remainingCostCents,
+    remainingRequestCount: approvalSummary.remainingRequestCount,
+    route: projectId ? `/projects/${projectId}/provider-budget-approvals` : null,
+    localAction: approvalSummary.activeCount
+      ? 'Use only for its exact approved operation/Agent before expiry.'
+      : 'Create a bounded approval only when critical Provider work must exceed the base limit.',
+  };
+  const rows = [dailyBudgetRow, hourlyRequestRow, forecastRow, approvalRow, ledgerRow];
   const redactionScan = scanTextForRawSecretLeaks(stableJson({
     rows,
+    providerBudgetApprovals: approvalRows,
     providerUsageRows: usageRows.slice(0, 20).map((row) => redactSensitiveObject(row)),
   }));
   const gate = ({
@@ -25391,6 +26024,13 @@ function buildBudgetAlertReadinessSnapshot({
       detail: budgetRoute || 'Project route missing.',
     }),
     gate({
+      id: 'provider-budget-approval-route-linked',
+      label: 'Provider overage approval route is linked',
+      passed: Boolean(projectId),
+      detail: projectId ? `/projects/${projectId}/provider-budget-approvals` : 'Project route missing.',
+      apiPath: projectId ? `/projects/${projectId}/provider-budget-approvals` : budgetRoute,
+    }),
+    gate({
       id: 'redaction-scan-clean',
       label: 'Budget alert output is redaction-clean',
       passed: redactionScan.count === 0,
@@ -25411,8 +26051,12 @@ function buildBudgetAlertReadinessSnapshot({
   const unlimitedAlertRows = rows.filter((row) => row.status === 'unlimited');
   const alertState = blockingAlertRows.length
     ? 'blocked'
+    : costForecast.severity === 'critical'
+      ? 'forecast-critical'
     : warningAlertRows.length
       ? 'warning'
+      : costForecast.severity === 'warning'
+        ? 'forecast-warning'
       : unlimitedAlertRows.length === 2
         ? 'unlimited-local-budget'
         : 'ok';
@@ -25421,6 +26065,8 @@ function buildBudgetAlertReadinessSnapshot({
     projectId,
     effectiveBudgetPolicy,
     usageSummary,
+    costForecast,
+    approvalSummary,
     rows: rows.map((row) => [row.id, row.status, row.used ?? row.count, row.limit ?? null]),
     gates: gates.map((row) => [row.id, row.passed, row.status]),
   });
@@ -25438,6 +26084,11 @@ function buildBudgetAlertReadinessSnapshot({
     projectBudgetPolicy,
     effectiveBudgetPolicy,
     usageSummary,
+    costForecast,
+    providerBudgetApprovals: {
+      summary: approvalSummary,
+      rows: approvalRows.slice(0, 20),
+    },
     rows,
     recentUsageRows: usageRows.slice(0, 20).map((row) => redactSensitiveObject(row)),
     gates,
@@ -25458,6 +26109,7 @@ function buildBudgetAlertReadinessSnapshot({
       projectSettings: projectId ? `/projects/${projectId}/project-settings` : null,
       providerReadiness: projectId ? `/projects/${projectId}/provider-readiness` : null,
       providerControlledRun: projectId ? `/projects/${projectId}/provider-controlled-run` : null,
+      providerBudgetApprovals: projectId ? `/projects/${projectId}/provider-budget-approvals` : null,
       operationsReadiness: projectId ? `/projects/${projectId}/operations-readiness` : null,
       events: projectId ? `/projects/${projectId}/events` : null,
     },
@@ -25468,6 +26120,16 @@ function buildBudgetAlertReadinessSnapshot({
       providerUsageDeniedCount: usageSummary.deniedCount,
       dailyBudgetCents: effectiveBudgetPolicy.dailyBudgetCents,
       dailyCostCents: usageSummary.dailyCostCents,
+      projectedDailyCostCents: costForecast.projectedDailyCostCents,
+      projectedPercentOfBudget: costForecast.projectedPercentOfBudget,
+      forecastSeverity: costForecast.severity,
+      providerBudgetApprovalCount: approvalSummary.count,
+      activeProviderBudgetApprovalCount: approvalSummary.activeCount,
+      exhaustedProviderBudgetApprovalCount: approvalSummary.exhaustedCount,
+      expiredProviderBudgetApprovalCount: approvalSummary.expiredCount,
+      revokedProviderBudgetApprovalCount: approvalSummary.revokedCount,
+      approvedRemainingCostCents: approvalSummary.remainingCostCents,
+      approvedRemainingRequestCount: approvalSummary.remainingRequestCount,
       dailyBudgetRemainingCents: effectiveBudgetPolicy.dailyBudgetCents > 0
         ? Math.max(0, effectiveBudgetPolicy.dailyBudgetCents - usageSummary.dailyCostCents)
         : null,
@@ -25498,6 +26160,7 @@ function buildErrorReportingReadinessSnapshot({
   const projectId = project.id || operationsReadiness.projectId || null;
   const errorRoute = projectId ? `/projects/${projectId}/error-reporting-readiness` : null;
   const operationsRoute = projectId ? `/projects/${projectId}/operations-readiness` : null;
+  const runtimeErrorsRoute = '/runtime-errors';
   const observability = operationsReadiness.observability || {};
   const metrics = observability.metrics || {};
   const logStreams = Array.isArray(observability.logStreams) ? observability.logStreams : [];
@@ -25566,6 +26229,14 @@ function buildErrorReportingReadinessSnapshot({
       auditHashIssueCount: (metrics.securityAuditStreamChainBreakCount || 0) + (metrics.securityAuditStreamHashMismatchCount || 0),
       incidentDrillFailedReceiptCount: metrics.incidentDrillFailedReceiptCount || 0,
       route: operationsRoute,
+    },
+    {
+      id: 'local-runtime-error-registry',
+      label: 'Local runtime error registry',
+      status: 'route-linked',
+      count: null,
+      route: runtimeErrorsRoute,
+      lifecycle: ['open', 'acknowledged', 'resolved'],
     },
   ];
   const redactionScan = scanTextForRawSecretLeaks(stableJson({
@@ -25640,6 +26311,13 @@ function buildErrorReportingReadinessSnapshot({
       detail: `${redactionScan.count} raw secret leak pattern(s) detected.`,
     }),
     gate({
+      id: 'runtime-error-registry-route-linked',
+      label: 'Local runtime error registry is linked',
+      passed: Boolean(runtimeErrorsRoute),
+      detail: 'Unhandled local errors are deduplicated and managed through /runtime-errors.',
+      apiPath: runtimeErrorsRoute,
+    }),
+    gate({
       id: 'centralized-logs-traces-production-blocked',
       label: 'Production logs and traces remain blocked',
       passed: false,
@@ -25686,6 +26364,7 @@ function buildErrorReportingReadinessSnapshot({
     ],
     backendRoutes: {
       errorReportingReadiness: errorRoute,
+      runtimeErrors: runtimeErrorsRoute,
       operationsReadiness: operationsRoute,
       timeline: projectId ? `/projects/${projectId}/timeline` : null,
       events: projectId ? `/projects/${projectId}/events` : null,
@@ -25705,6 +26384,7 @@ function buildErrorReportingReadinessSnapshot({
       incidentDrillReceiptCount: incidentDrill.summary?.receiptCount || 0,
       incidentDrillFailedReceiptCount: incidentDrill.summary?.failedReceiptCount || 0,
       localErrorCount,
+      runtimeErrorRegistryLinked: true,
       gateCount: gates.length,
       passedGateCount: gates.filter((row) => row.passed).length,
       failedLocalGateCount: failedLocalGates.length,
@@ -34202,6 +34882,7 @@ function summarizeSecurityAuditStream(rows = []) {
 function buildSecurityAccessAuditRecord({
   projectId,
   decision = {},
+  traceId = null,
   method = 'GET',
   path = '/',
   statusCode = null,
@@ -34212,9 +34893,13 @@ function buildSecurityAccessAuditRecord({
   const actor = decision.actor || {};
   const routeKey = route.routeKey || 'unknown';
   const timestamp = Date.parse(now) || Date.now();
+  const auditScope = projectId ? 'project' : 'runtime';
   return redactSensitiveObject({
     id: `access_audit_${projectId || 'project'}_${routeKey}_${timestamp}_${Math.random().toString(36).slice(2, 8)}`,
     projectId,
+    auditScope,
+    scopeId: projectId || 'local-runtime',
+    traceId: normalizeLocalTraceId(traceId),
     time: now,
     method: String(method || 'GET').toUpperCase(),
     path: redactSensitiveText(path || '/'),
@@ -34261,6 +34946,29 @@ function buildSecurityAccessAuditRecord({
       sessionId: decision.identitySession.sessionId || null,
       status: decision.identitySession.status || 'unknown',
       expiresAt: decision.identitySession.expiresAt || null,
+      identityType: decision.identitySession.identityType || 'user',
+      serviceId: decision.identitySession.serviceId || null,
+      audiences: normalizeIdentitySessionAudiences(decision.identitySession.audiences),
+      verifiedAudience: decision.identitySession.verifiedAudience || null,
+    } : null,
+    authentication: decision.authentication ? {
+      eventType: redactSensitiveText(decision.authentication.eventType || ''),
+      outcome: redactSensitiveText(decision.authentication.outcome || ''),
+      subjectHash: String(decision.authentication.subjectHash || '').slice(0, 64) || null,
+      sessionId: decision.authentication.sessionId || null,
+      retryAt: decision.authentication.retryAt || null,
+      transactionId: decision.authentication.transactionId || null,
+      operation: redactSensitiveText(decision.authentication.operation || ''),
+      targetUserId: decision.authentication.targetUserId || null,
+      recovered: Boolean(decision.authentication.recovered),
+    } : null,
+    auditRecovery: decision.auditRecovery ? {
+      checkpointId: decision.auditRecovery.checkpointId || null,
+      operationId: decision.auditRecovery.operationId || null,
+      quarantineChecksum: decision.auditRecovery.quarantineChecksum || null,
+      rebuiltChecksum: decision.auditRecovery.rebuiltChecksum || null,
+      rebuiltRecordCount: Number(decision.auditRecovery.rebuiltRecordCount || 0),
+      actorId: decision.auditRecovery.actorId || null,
     } : null,
     route: {
       projectId: route.projectId || projectId || null,
@@ -34274,7 +34982,7 @@ function buildSecurityAccessAuditRecord({
 }
 
 function securityAuditStreamChecksumPayload(streamRecord = {}) {
-  return {
+  const payload = {
     id: streamRecord.id,
     projectId: streamRecord.projectId,
     streamType: streamRecord.streamType,
@@ -34290,6 +34998,12 @@ function securityAuditStreamChecksumPayload(streamRecord = {}) {
     identitySession: streamRecord.identitySession,
     time: streamRecord.time,
   };
+  if (streamRecord.traceId) payload.traceId = streamRecord.traceId;
+  if (streamRecord.auditScope) payload.auditScope = streamRecord.auditScope;
+  if (streamRecord.scopeId) payload.scopeId = streamRecord.scopeId;
+  if (streamRecord.authentication) payload.authentication = streamRecord.authentication;
+  if (streamRecord.auditRecovery) payload.auditRecovery = streamRecord.auditRecovery;
+  return payload;
 }
 
 function computeSecurityAuditStreamHash(streamRecord = {}) {
@@ -36779,8 +37493,8 @@ function buildWorkerQueueSnapshot({
     const idempotencyKey = buildWorkerIdempotencyKey({
       workerKind: 'project-autonomous',
       projectId: project.id,
-      dueAt,
-      reason,
+      dueAt: forced ? now : schedule.idempotencySlotAt || dueAt,
+      reason: forced ? reason : schedule.idempotencyReason || reason,
     });
     const leaseKey = `lease:${idempotencyKey}`;
     return {
@@ -36837,8 +37551,8 @@ function buildWorkerQueueSnapshot({
         workerKind: 'agent-work',
         projectId: project.id,
         agentId: agent.id,
-          dueAt: schedule.dueAt,
-          reason: schedule.reason,
+          dueAt: schedule.idempotencySlotAt || schedule.dueAt,
+          reason: schedule.idempotencyReason || schedule.reason,
         });
       const leaseKey = `lease:${idempotencyKey}`;
       const autonomousActionRow = agentQueueRowsByAgentId.get(String(agent.id)) || null;
@@ -36928,8 +37642,8 @@ function buildWorkerQueueSnapshot({
           workerKind: 'autopilot-session',
           projectId: project.id,
           sessionId: session.id,
-          dueAt: schedule.dueAt,
-          reason: schedule.reason,
+          dueAt: schedule.idempotencySlotAt || schedule.dueAt,
+          reason: schedule.idempotencyReason || schedule.reason,
         });
         const leaseKey = `lease:${idempotencyKey}`;
         autopilotRows.push({
@@ -37012,6 +37726,9 @@ function buildWorkerQueueSnapshot({
     .map((run) => run.executionReceipt)
     .filter((receipt) => receipt?.schemaVersion === 'worker-execution-receipt/v1');
   const deadLetterQueue = workerRuns
+    .filter((run) => run.deadLetter?.schemaVersion === 'worker-dead-letter/v1' && run.deadLetter.status === 'dead-lettered')
+    .map((run) => run.deadLetter);
+  const deadLetterHistory = workerRuns
     .filter((run) => run.deadLetter?.schemaVersion === 'worker-dead-letter/v1')
     .map((run) => run.deadLetter);
   const retryableFailureCount = workerRuns.filter((run) => run.retry?.retryable).length;
@@ -37074,6 +37791,7 @@ function buildWorkerQueueSnapshot({
     autopilotQueue: autopilotRows,
     executionReceipts,
     deadLetterQueue,
+    deadLetterHistory,
     workerRoutes: {
       projectDueWorker: '/workers/autonomous/due',
       agentDueWorker: '/workers/agents/due',
@@ -39502,6 +40220,10 @@ function normalizeProviderControlPolicy(policy = {}, env = globalThis.process?.e
   const defaultToolGrants = parsePolicyList(policy.defaultToolGrants || env.PROVIDER_DEFAULT_TOOL_GRANTS || 'provider:test,model:kickoff,model:intent,model:artifact-draft,search:evidence');
   const agentToolGrants = normalizeProviderToolGrants(policy.agentToolGrants || {});
   const maxRequestsPerProjectHour = Math.max(0, Number(policy.maxRequestsPerProjectHour ?? policy.maxRequestsPerProjectPerHour ?? env.PROVIDER_MAX_REQUESTS_PER_PROJECT_HOUR ?? env.PROVIDER_MAX_REQUESTS_PER_PROJECT_PER_HOUR ?? 0) || 0);
+  const maxRequestsPerActorHour = Math.max(0, Number(policy.maxRequestsPerActorHour ?? env.PROVIDER_MAX_REQUESTS_PER_ACTOR_HOUR ?? 0) || 0);
+  const maxRequestsPerModelHour = Math.max(0, Number(policy.maxRequestsPerModelHour ?? env.PROVIDER_MAX_REQUESTS_PER_MODEL_HOUR ?? 0) || 0);
+  const maxRequestsPerToolHour = Math.max(0, Number(policy.maxRequestsPerToolHour ?? env.PROVIDER_MAX_REQUESTS_PER_TOOL_HOUR ?? 0) || 0);
+  const maxConcurrentPerProject = Math.max(0, Number(policy.maxConcurrentPerProject ?? env.PROVIDER_MAX_CONCURRENT_PER_PROJECT ?? 0) || 0);
   const dailyBudgetCents = Math.max(0, Number(policy.dailyBudgetCents ?? policy.maxDailyCostCents ?? env.PROVIDER_DAILY_BUDGET_CENTS ?? env.PROVIDER_MAX_DAILY_COST_CENTS ?? 0) || 0);
   const modelCostCentsPer1kTokens = Math.max(0, Number(policy.modelCostCentsPer1kTokens ?? env.PROVIDER_MODEL_COST_CENTS_PER_1K_TOKENS ?? 0) || 0);
   const searchCostCentsPerRequest = Math.max(0, Number(policy.searchCostCentsPerRequest ?? env.PROVIDER_SEARCH_COST_CENTS_PER_REQUEST ?? 0) || 0);
@@ -39536,6 +40258,10 @@ function normalizeProviderControlPolicy(policy = {}, env = globalThis.process?.e
     || allowedSearchEndpointHosts.length
     || Object.keys(agentToolGrants).length
     || maxRequestsPerProjectHour
+    || maxRequestsPerActorHour
+    || maxRequestsPerModelHour
+    || maxRequestsPerToolHour
+    || maxConcurrentPerProject
     || dailyBudgetCents
     || failurePolicyConfigured
   );
@@ -39553,6 +40279,10 @@ function normalizeProviderControlPolicy(policy = {}, env = globalThis.process?.e
     allowedModels,
     allowedSearchEndpointHosts,
     maxRequestsPerProjectHour,
+    maxRequestsPerActorHour,
+    maxRequestsPerModelHour,
+    maxRequestsPerToolHour,
+    maxConcurrentPerProject,
     dailyBudgetCents,
     currency: policy.currency || env.PROVIDER_BUDGET_CURRENCY || 'USD',
     modelCostCentsPer1kTokens,
@@ -39601,8 +40331,16 @@ function summarizeProviderUsageLedger(records = [], now = nowIso()) {
   const nowMs = Date.parse(now) || Date.now();
   const hourStartMs = nowMs - 60 * 60 * 1000;
   const rows = Array.isArray(records) ? records : [];
-  const hourlyRows = rows.filter((row) => (Date.parse(row.completedAt || row.startedAt || row.time || '') || 0) >= hourStartMs);
-  const dailyRows = rows.filter((row) => sameUtcDay(row.completedAt || row.startedAt || row.time, now));
+  const dispatchedRows = rows.filter((row) => row.allowed !== false && String(row.status || '').toLowerCase() !== 'denied');
+  const timestampFor = (row) => {
+    const completedAtMs = Date.parse(row.completedAt || '') || 0;
+    const startedAtMs = Date.parse(row.startedAt || row.time || '') || 0;
+    if (completedAtMs > 0 && completedAtMs <= nowMs) return completedAtMs;
+    if (startedAtMs > 0 && startedAtMs <= nowMs) return startedAtMs;
+    return completedAtMs || startedAtMs;
+  };
+  const hourlyRows = dispatchedRows.filter((row) => timestampFor(row) >= hourStartMs && timestampFor(row) <= nowMs);
+  const dailyRows = dispatchedRows.filter((row) => sameUtcDay(row.completedAt || row.startedAt || row.time, now) && timestampFor(row) <= nowMs);
   const costCents = (items) => items.reduce((sum, row) => sum + (Number(row.costCents) || 0), 0);
   return {
     count: rows.length,
@@ -39629,6 +40367,329 @@ function estimateProviderCostCents({ kind = '', result = {}, policy = {}, estima
   return Math.round((tokens / 1000) * (Number(policy.modelCostCentsPer1kTokens) || 0));
 }
 
+function activeToolGrantReservationCount(project = {}, leaseId = '', now = nowIso()) {
+  const nowMs = Date.parse(now) || Date.now();
+  return (project.providerBudgetReservations || []).filter((reservation) => (
+    reservation.status === 'active'
+    && reservation.toolGrantLeaseId === leaseId
+    && (Date.parse(reservation.expiresAt || '') || 0) > nowMs
+  )).length;
+}
+
+function toolGrantLeaseStatus(lease = {}, now = nowIso(), reservedInvocationCount = null) {
+  if (lease.revokedAt || lease.status === 'revoked') return 'revoked';
+  if ((Date.parse(lease.expiresAt || '') || 0) <= (Date.parse(now) || Date.now())) return 'expired';
+  const remaining = Math.max(0,
+    (Number(lease.maxInvocations) || 0)
+      - (Number(lease.consumedInvocationCount) || 0)
+      - (reservedInvocationCount === null
+        ? Number(lease.reservedInvocationCount) || 0
+        : Math.max(0, Number(reservedInvocationCount) || 0)));
+  return remaining <= 0 ? 'exhausted' : 'active';
+}
+
+function publicToolGrantLease(lease = {}, now = nowIso(), { reservedInvocationCount = null } = {}) {
+  const maxInvocations = Math.max(0, Number(lease.maxInvocations) || 0);
+  const consumedInvocationCount = Math.max(0, Number(lease.consumedInvocationCount) || 0);
+  const effectiveReservedInvocationCount = reservedInvocationCount === null
+    ? Math.max(0, Number(lease.reservedInvocationCount) || 0)
+    : Math.max(0, Number(reservedInvocationCount) || 0);
+  return {
+    id: lease.id,
+    schemaVersion: lease.schemaVersion || 'local-tool-grant-lease/v1',
+    projectId: lease.projectId || null,
+    operation: lease.operation || null,
+    agentId: lease.agentId || null,
+    taskId: lease.taskId || null,
+    grantedBy: lease.grantedBy || null,
+    purpose: lease.purpose || null,
+    status: toolGrantLeaseStatus(lease, now, effectiveReservedInvocationCount),
+    maxInvocations,
+    consumedInvocationCount,
+    reservedInvocationCount: effectiveReservedInvocationCount,
+    remainingInvocationCount: Math.max(0, maxInvocations - consumedInvocationCount - effectiveReservedInvocationCount),
+    createdAt: lease.createdAt || null,
+    expiresAt: lease.expiresAt || null,
+    revokedAt: lease.revokedAt || null,
+    revokedBy: lease.revokedBy || null,
+    revocationReason: lease.revocationReason || null,
+    checksum: lease.checksum || null,
+  };
+}
+
+function publicToolInvocationReceipt(receipt = {}) {
+  return {
+    id: receipt.id || null,
+    schemaVersion: receipt.schemaVersion || 'local-tool-invocation-receipt/v1',
+    projectId: receipt.projectId || null,
+    providerUsageId: receipt.providerUsageId || null,
+    traceId: receipt.traceId || null,
+    operation: receipt.operation || null,
+    agentId: receipt.agentId || null,
+    taskId: receipt.taskId || null,
+    authorizationSource: receipt.authorizationSource || 'none',
+    toolGrantLeaseId: receipt.toolGrantLeaseId || null,
+    toolGrantLeaseChecksum: receipt.toolGrantLeaseChecksum || null,
+    allowed: Boolean(receipt.allowed),
+    status: receipt.status || null,
+    ok: Boolean(receipt.ok),
+    decisionReason: receipt.decisionReason || null,
+    startedAt: receipt.startedAt || null,
+    completedAt: receipt.completedAt || null,
+    previousReceiptChecksum: receipt.previousReceiptChecksum || null,
+    checksum: receipt.checksum || null,
+  };
+}
+
+function verifyToolInvocationReceiptIntegrity(receipts = []) {
+  const rawRows = Array.isArray(receipts) ? receipts : [];
+  const rows = rawRows.map(publicToolInvocationReceipt);
+  const allowedKeys = new Set(Object.keys(publicToolInvocationReceipt({})));
+  let checksumFailureCount = 0;
+  let chainFailureCount = 0;
+  let unexpectedFieldCount = 0;
+  rows.forEach((receipt, index) => {
+    const { checksum, ...base } = receipt;
+    if (!checksum || persistenceChecksum(base) !== checksum) checksumFailureCount += 1;
+    unexpectedFieldCount += Object.keys(rawRows[index] || {}).filter((key) => !allowedKeys.has(key)).length;
+    if (index < rows.length - 1 && receipt.previousReceiptChecksum !== rows[index + 1].checksum) {
+      chainFailureCount += 1;
+    }
+  });
+  const valid = checksumFailureCount === 0 && chainFailureCount === 0 && unexpectedFieldCount === 0;
+  return {
+    schemaVersion: 'local-tool-invocation-receipt-integrity/v1',
+    status: rows.length ? (valid ? 'verified' : 'degraded') : 'empty',
+    valid,
+    receiptCount: rows.length,
+    checksumFailureCount,
+    chainFailureCount,
+    unexpectedFieldCount,
+    newestReceiptChecksum: rows[0]?.checksum || null,
+    retainedBoundaryPreviousChecksum: rows.at(-1)?.previousReceiptChecksum || null,
+  };
+}
+
+function buildToolGrantGovernance(project = {}, now = nowIso()) {
+  const leases = (project.toolGrantLeases || []).map((lease) => publicToolGrantLease(lease, now, {
+    reservedInvocationCount: activeToolGrantReservationCount(project, lease.id, now),
+  }));
+  const invocationReceipts = (project.toolInvocationReceipts || []).map(publicToolInvocationReceipt);
+  return {
+    schemaVersion: 'local-tool-grant-governance/v1',
+    projectId: project.id || null,
+    generatedAt: now,
+    leases,
+    invocationReceipts,
+    receiptIntegrity: verifyToolInvocationReceiptIntegrity(invocationReceipts),
+    summary: {
+      leaseCount: leases.length,
+      activeLeaseCount: leases.filter((lease) => lease.status === 'active').length,
+      exhaustedLeaseCount: leases.filter((lease) => lease.status === 'exhausted').length,
+      expiredLeaseCount: leases.filter((lease) => lease.status === 'expired').length,
+      revokedLeaseCount: leases.filter((lease) => lease.status === 'revoked').length,
+      invocationReceiptCount: invocationReceipts.length,
+    },
+    routes: {
+      leases: project.id ? `/projects/${project.id}/tool-grant-leases` : null,
+      providerReadiness: project.id ? `/projects/${project.id}/provider-readiness` : null,
+      projectSettings: project.id ? `/projects/${project.id}/project-settings` : null,
+    },
+    readyForProduction: false,
+    productionBlockers: [
+      'managed runtime identity',
+      'managed append-only authorization audit',
+      'cross-host atomic authorization storage',
+    ],
+  };
+}
+
+function matchingToolGrantLease({
+  project = {},
+  operation = '',
+  agentId = '',
+  taskId = '',
+  now = nowIso(),
+} = {}) {
+  return (project.toolGrantLeases || [])
+    .filter((lease) => toolGrantLeaseStatus(
+      lease,
+      now,
+      activeToolGrantReservationCount(project, lease.id, now),
+    ) === 'active')
+    .filter((lease) => lease.operation === operation)
+    .filter((lease) => lease.agentId === agentId)
+    .filter((lease) => !lease.taskId || lease.taskId === taskId)
+    .map((lease) => publicToolGrantLease(lease, now, {
+      reservedInvocationCount: activeToolGrantReservationCount(project, lease.id, now),
+    }))
+    .filter((lease) => lease.remainingInvocationCount >= 1)
+    .sort((left, right) => (Date.parse(left.expiresAt || '') || 0) - (Date.parse(right.expiresAt || '') || 0))[0] || null;
+}
+
+function buildPromptBoundaryReadiness(project = {}, now = nowIso()) {
+  const rawReceipts = Array.isArray(project.promptBoundaryReceipts) ? project.promptBoundaryReceipts : [];
+  const receipts = rawReceipts.map(publicPromptBoundaryReceipt);
+  const receiptChecks = rawReceipts.map(verifyPromptBoundaryReceipt);
+  const invalidReceiptCount = receiptChecks.filter((check) => !check.valid).length;
+  const evidenceSources = (project.evidenceSearches || []).flatMap((search) => search.sources || []);
+  const quarantinedEvidenceSourceCount = evidenceSources.filter((source) => (
+    source.promptBoundaryDecision === 'quarantined'
+    || source.sourceSafetyLevel === 'blocked' && (source.promptInjectionSignalCount || 0) > 0
+  )).length;
+  const injectionSignalCount = evidenceSources.reduce((sum, source) => (
+    sum + (Number(source.promptInjectionSignalCount) || 0)
+  ), 0);
+  const summary = {
+    receiptCount: receipts.length,
+    validReceiptCount: receipts.length - invalidReceiptCount,
+    invalidReceiptCount,
+    contextCount: receipts.reduce((sum, receipt) => sum + receipt.summary.contextCount, 0),
+    includedContextCount: receipts.reduce((sum, receipt) => sum + receipt.summary.includedCount, 0),
+    quarantinedContextCount: receipts.reduce((sum, receipt) => sum + receipt.summary.quarantinedCount, 0),
+    reviewContextCount: receipts.reduce((sum, receipt) => sum + receipt.summary.reviewCount, 0),
+    criticalSignalCount: receipts.reduce((sum, receipt) => sum + receipt.summary.criticalSignalCount, 0),
+    evidenceSourceCount: evidenceSources.length,
+    quarantinedEvidenceSourceCount,
+    injectionSignalCount,
+  };
+  const receiptIntegrity = {
+    schemaVersion: 'local-prompt-boundary-receipt-integrity/v1',
+    valid: invalidReceiptCount === 0,
+    status: receipts.length ? (invalidReceiptCount ? 'degraded' : 'verified') : 'empty',
+    receiptCount: receipts.length,
+    validReceiptCount: summary.validReceiptCount,
+    invalidReceiptCount,
+  };
+  const status = invalidReceiptCount
+    ? 'degraded'
+    : receipts.length
+      ? 'local-control-ready'
+      : 'awaiting-model-boundary-proof';
+  const snapshot = {
+    schemaVersion: 'local-prompt-boundary-readiness/v1',
+    projectId: project.id || null,
+    generatedAt: now,
+    status,
+    receipts,
+    receiptIntegrity,
+    summary,
+    gates: [
+      {
+        id: 'untrusted-content-envelope',
+        passed: receipts.length > 0,
+        detail: `${receipts.length} model prompt boundary receipt(s).`,
+      },
+      {
+        id: 'quarantine-physical-removal',
+        passed: receipts.every((receipt) => receipt.summary.rawContentPersisted === false),
+        detail: `${summary.quarantinedContextCount} context item(s) quarantined; persisted receipts contain manifest metadata only.`,
+      },
+      {
+        id: 'prompt-boundary-receipt-integrity',
+        passed: receiptIntegrity.valid,
+        detail: `${summary.validReceiptCount}/${summary.receiptCount} receipt checksum(s) verified.`,
+      },
+    ],
+    backendRoutes: {
+      promptBoundaryReadiness: project.id ? `/projects/${project.id}/prompt-boundary-readiness` : null,
+      evidenceSearches: project.id ? `/projects/${project.id}/evidence-searches` : null,
+      evidenceQualityAudit: project.id ? `/projects/${project.id}/evidence-quality-audit` : null,
+      providerReadiness: project.id ? `/projects/${project.id}/provider-readiness` : null,
+    },
+    readyForLocalModelUse: receipts.length > 0 && receiptIntegrity.valid,
+    readyForProduction: false,
+    productionBlockers: [
+      'semantic adversarial prompt-injection evaluation',
+      'managed policy distribution and audit storage',
+      'hardware-backed immutable prompt audit',
+      'cross-model calibrated attack detection',
+    ],
+  };
+  return {
+    ...snapshot,
+    checksum: persistenceChecksum({
+      projectId: snapshot.projectId,
+      status,
+      receiptChecks: receipts.map((receipt, index) => [receipt.id, receipt.checksum, receiptChecks[index]?.valid]),
+      summary,
+    }),
+  };
+}
+
+function providerBudgetApprovalStatus(approval = {}, now = nowIso()) {
+  if (approval.revokedAt || approval.status === 'revoked') return 'revoked';
+  if ((Date.parse(approval.expiresAt || '') || 0) <= (Date.parse(now) || Date.now())) return 'expired';
+  const remainingCostCents = Math.max(0,
+    (Number(approval.maxExtraCostCents) || 0)
+      - (Number(approval.consumedCostCents) || 0)
+      - (Number(approval.reservedCostCents) || 0));
+  const remainingRequestCount = Math.max(0,
+    (Number(approval.maxExtraRequests) || 0)
+      - (Number(approval.consumedRequestCount) || 0)
+      - (Number(approval.reservedRequestCount) || 0));
+  if ((Number(approval.maxExtraCostCents) > 0 && remainingCostCents <= 0)
+    || (Number(approval.maxExtraRequests) > 0 && remainingRequestCount <= 0)) return 'exhausted';
+  return 'active';
+}
+
+function publicProviderBudgetApproval(approval = {}, now = nowIso()) {
+  const maxExtraCostCents = Math.max(0, Number(approval.maxExtraCostCents) || 0);
+  const maxExtraRequests = Math.max(0, Number(approval.maxExtraRequests) || 0);
+  const consumedCostCents = Math.max(0, Number(approval.consumedCostCents) || 0);
+  const consumedRequestCount = Math.max(0, Number(approval.consumedRequestCount) || 0);
+  const reservedCostCents = Math.max(0, Number(approval.reservedCostCents) || 0);
+  const reservedRequestCount = Math.max(0, Number(approval.reservedRequestCount) || 0);
+  return {
+    id: approval.id,
+    schemaVersion: approval.schemaVersion || 'local-provider-budget-approval/v1',
+    projectId: approval.projectId || null,
+    operation: approval.operation || null,
+    agentId: approval.agentId || null,
+    approvedBy: approval.approvedBy || null,
+    purpose: approval.purpose || null,
+    status: providerBudgetApprovalStatus(approval, now),
+    maxExtraCostCents,
+    maxExtraRequests,
+    consumedCostCents,
+    consumedRequestCount,
+    reservedCostCents,
+    reservedRequestCount,
+    remainingCostCents: Math.max(0, maxExtraCostCents - consumedCostCents - reservedCostCents),
+    remainingRequestCount: Math.max(0, maxExtraRequests - consumedRequestCount - reservedRequestCount),
+    createdAt: approval.createdAt || null,
+    expiresAt: approval.expiresAt || null,
+    revokedAt: approval.revokedAt || null,
+    revokedBy: approval.revokedBy || null,
+    revocationReason: approval.revocationReason || null,
+    checksum: approval.checksum || null,
+  };
+}
+
+function matchingProviderBudgetApproval({
+  project = {},
+  operation = '',
+  agentId = '',
+  estimatedCostCents = 0,
+  needsCost = false,
+  needsRequest = false,
+  now = nowIso(),
+} = {}) {
+  return (project.providerBudgetApprovals || [])
+    .filter((approval) => providerBudgetApprovalStatus(approval, now) === 'active')
+    .filter((approval) => approval.operation === operation)
+    .filter((approval) => !approval.agentId || approval.agentId === agentId)
+    .map((approval) => publicProviderBudgetApproval(approval, now))
+    .filter((approval) => !needsCost || (
+      approval.maxExtraCostCents > 0
+      && approval.remainingCostCents >= Math.max(0, Number(estimatedCostCents) || 0)
+    ))
+    .filter((approval) => !needsRequest || (
+      approval.maxExtraRequests > 0 && approval.remainingRequestCount >= 1
+    ))
+    .sort((left, right) => (Date.parse(left.expiresAt || '') || 0) - (Date.parse(right.expiresAt || '') || 0))[0] || null;
+}
+
 function evaluateProviderPolicy({
   project = {},
   policy = {},
@@ -39636,14 +40697,29 @@ function evaluateProviderPolicy({
   operation = 'search:evidence',
   providerStatus = {},
   agentId = '',
+  taskId = '',
   model = '',
   estimatedCostCents = 0,
   now = nowIso(),
 } = {}) {
   const usage = summarizeProviderUsageLedger(project.providerUsageLedger || [], now);
+  const nowMs = Date.parse(now) || Date.now();
+  const activeReservations = (project.providerBudgetReservations || []).filter((reservation) => (
+    reservation?.status === 'active'
+    && (Date.parse(reservation.expiresAt || '') || 0) > nowMs
+  ));
+  const expiredReservationCount = (project.providerBudgetReservations || []).filter((reservation) => (
+    reservation?.status === 'active'
+    && (Date.parse(reservation.expiresAt || '') || 0) <= nowMs
+  )).length;
+  const reservedRequestCount = activeReservations.length;
+  const reservedCostCents = activeReservations.reduce((sum, reservation) => (
+    sum + (Number(reservation.estimatedCostCents) || 0)
+  ), 0);
   const reasons = [];
   const provider = providerStatus.provider || 'unknown';
   const resolvedModel = model || providerStatus.model || '';
+  const baselineToolGranted = providerToolGranted(policy, agentId || '*', operation);
   if (policy.configured && policy.enabled) {
     if (kind === 'model' && policy.allowedModelProviders?.length && !policy.allowedModelProviders.includes(provider)) {
       reasons.push('provider-not-allowlisted');
@@ -39654,14 +40730,46 @@ function evaluateProviderPolicy({
     if (kind === 'model' && policy.allowedModels?.length && resolvedModel && !policy.allowedModels.includes(resolvedModel)) {
       reasons.push('model-not-allowlisted');
     }
-    if (!providerToolGranted(policy, agentId || '*', operation)) {
+    if (!baselineToolGranted) {
       reasons.push('agent-tool-grant-missing');
     }
-    if (policy.maxRequestsPerProjectHour > 0 && usage.hourlyRequestCount >= policy.maxRequestsPerProjectHour) {
+    if (
+      policy.maxRequestsPerProjectHour > 0
+      && usage.hourlyRequestCount + reservedRequestCount >= policy.maxRequestsPerProjectHour
+    ) {
       reasons.push('hourly-rate-limit-exceeded');
     }
-    if (policy.dailyBudgetCents > 0 && usage.dailyCostCents + (Number(estimatedCostCents) || 0) > policy.dailyBudgetCents) {
+    if (
+      policy.dailyBudgetCents > 0
+      && usage.dailyCostCents + reservedCostCents + (Number(estimatedCostCents) || 0) > policy.dailyBudgetCents
+    ) {
       reasons.push('daily-budget-exceeded');
+    }
+  }
+  const toolGrantLease = reasons.includes('agent-tool-grant-missing')
+    ? matchingToolGrantLease({ project, operation, agentId, taskId, now })
+    : null;
+  if (toolGrantLease) {
+    const index = reasons.indexOf('agent-tool-grant-missing');
+    if (index >= 0) reasons.splice(index, 1);
+  }
+  const needsRequestApproval = reasons.includes('hourly-rate-limit-exceeded');
+  const needsCostApproval = reasons.includes('daily-budget-exceeded');
+  const budgetApproval = (needsRequestApproval || needsCostApproval)
+    ? matchingProviderBudgetApproval({
+        project,
+        operation,
+        agentId,
+        estimatedCostCents,
+        needsCost: needsCostApproval,
+        needsRequest: needsRequestApproval,
+        now,
+      })
+    : null;
+  if (budgetApproval) {
+    for (const reason of ['hourly-rate-limit-exceeded', 'daily-budget-exceeded']) {
+      const index = reasons.indexOf(reason);
+      if (index >= 0) reasons.splice(index, 1);
     }
   }
   const wouldDeny = reasons.length > 0;
@@ -39672,7 +40780,15 @@ function evaluateProviderPolicy({
     reason: reasons[0] || 'allowed',
     enforcementEnabled: Boolean(policy.enforcementEnabled),
     policyConfigured: Boolean(policy.configured),
-    usage,
+    toolAuthorizationSource: toolGrantLease ? 'temporary-lease' : baselineToolGranted ? 'project-policy' : 'none',
+    toolGrantLease,
+    budgetApproval,
+    usage: {
+      ...usage,
+      activeReservationCount: reservedRequestCount,
+      activeReservedCostCents: reservedCostCents,
+      expiredReservationCount,
+    },
   };
 }
 
@@ -39790,6 +40906,7 @@ function evaluateProviderCircuitBreaker({
 function providerRetryableResult(result = {}) {
   if (!result || result.ok) return false;
   if (result.skipped) return false;
+  if (result.idempotency?.outcome === 'ambiguous' && result.idempotency?.endpointHonoringAttested !== true) return false;
   const status = Number(result.statusCode || result.status || 0);
   return !status || status === 408 || status === 409 || status === 425 || status === 429 || status >= 500;
 }
@@ -39803,6 +40920,7 @@ async function runProviderWithRetry({
   run,
   policy = {},
   now = nowIso(),
+  signal = null,
 } = {}) {
   const retryPolicy = policy.retryPolicy || {};
   const maxRetries = retryPolicy.configured ? Math.max(0, Number(retryPolicy.attempts) || 0) : 0;
@@ -39811,6 +40929,10 @@ async function runProviderWithRetry({
   const attempts = [];
   let lastResult = null;
   for (let index = 0; index < maxAttempts; index += 1) {
+    if (signal?.aborted) {
+      lastResult = { ok: false, skipped: true, reason: 'provider-request-aborted' };
+      break;
+    }
     const startedAt = index === 0 ? now : nowIso();
     try {
       const result = await run({ attempt: index + 1 });
@@ -39823,6 +40945,10 @@ async function runProviderWithRetry({
         startedAt,
         completedAt: nowIso(),
       });
+      if (signal?.aborted) {
+        lastResult = { ok: false, skipped: true, reason: 'provider-request-aborted' };
+        break;
+      }
       if (result?.ok || !providerRetryableResult(result) || index === maxAttempts - 1) break;
     } catch (error) {
       lastResult = {
@@ -39837,6 +40963,10 @@ async function runProviderWithRetry({
         startedAt,
         completedAt: nowIso(),
       });
+      if (signal?.aborted) {
+        lastResult = { ok: false, skipped: true, reason: 'provider-request-aborted' };
+        break;
+      }
       if (index === maxAttempts - 1) break;
     }
     await waitMs(backoffMs[index] ?? backoffMs[backoffMs.length - 1] ?? 0);
@@ -47385,6 +48515,87 @@ function buildManagerFlowGraphSnapshot({ project = {}, messages = [], managerRea
   };
 }
 
+function localInvestigationRoleIds(project = {}) {
+  const roleId = (id) => project.workModeContract?.roles?.find((row) => row.id === id)?.personaSlug;
+  const roles = {
+    leadId: roleId('investigation-lead'),
+    investigatorId: roleId('evidence-investigator'),
+    analystId: roleId('causal-analyst'),
+    reviewerId: roleId('risk-reviewer'),
+  };
+  if (Object.values(roles).some((value) => !value) || new Set(Object.values(roles)).size !== 4) throw new Error('investigation-work-mode-roles-required');
+  return roles;
+}
+
+function localTechnicalDeliveryRoleIds(project = {}) {
+  const roleId = (id) => project.workModeContract?.roles?.find((row) => row.id === id)?.personaSlug;
+  const roles = {
+    authorId: roleId('delivery-lead'),
+    implementerId: roleId('systems-engineer'),
+    reviewerId: roleId('quality-security-reviewer'),
+    productOwnerId: roleId('product-owner'),
+  };
+  if (Object.values(roles).some((value) => !value) || new Set(Object.values(roles)).size !== 4) throw new Error('technical-delivery-work-mode-roles-required');
+  return roles;
+}
+
+function localCreativeStudioRoleIds(project = {}) {
+  const roleId = (id) => project.workModeContract?.roles?.find((row) => row.id === id)?.personaSlug;
+  const roles = {
+    creativeLeadId: roleId('creative-lead'),
+    artDirectorId: roleId('art-director'),
+    audienceResearcherId: roleId('audience-researcher'),
+    rightsReviewerId: roleId('rights-reviewer'),
+  };
+  if (Object.values(roles).some((value) => !value) || new Set(Object.values(roles)).size !== 4) throw new Error('creative-studio-work-mode-roles-required');
+  return roles;
+}
+
+function localCreativeStudioEvidenceIds(project = {}) {
+  return new Set([
+    ...(project.evidenceSearches || []).flatMap((row) => [row.id, ...(row.evidenceIds || []), ...(row.sourceSnapshotIds || [])]),
+    ...(project.evidenceSourceSnapshots || []).map((row) => row.id),
+    ...(project.evidenceSourceReviews || []).flatMap((row) => [row.id, ...(row.evidenceIds || [])]),
+    ...(project.agentSubmissions || []).flatMap((row) => [row.id, row.artifactStorageProofChecksum, row.artifactChecksum]),
+    ...(project.events || []).map((row) => row.id),
+    ...(project.logs || []).map((row) => row.id),
+  ].filter(Boolean).map(String));
+}
+
+function localInvestigationAuthorityEvidenceIds(project = {}) {
+  return new Set([
+    ...(project.events || []).map((row) => row.id),
+    ...(project.agentSubmissions || []).flatMap((row) => [row.id, ...(row.evidenceIds || [])]),
+    ...(project.evidenceSearches || []).flatMap((row) => [row.id, ...(row.evidenceIds || []), ...(row.sourceSnapshotIds || [])]),
+    ...(project.evidenceSourceSnapshots || []).map((row) => row.id),
+    ...(project.evidenceSourceReviews || []).flatMap((row) => [row.id, ...(row.evidenceIds || [])]),
+    ...(project.logs || []).map((row) => row.id),
+    ...(project.messages || []).map((row) => row.id),
+  ].filter(Boolean).map(String));
+}
+
+function localInvestigationSafetyCaseState(project = {}, now = nowIso()) {
+  const workflow = buildLocalInvestigationCaseWorkflow({ project, now });
+  return {
+    evidenceCount: workflow.summary?.evidenceCount || 0,
+    sealedEvidenceCount: workflow.summary?.sealedEvidenceCount || 0,
+    unresolvedContradictionCount: workflow.summary?.unresolvedContradictionCount || 0,
+    conclusionCount: workflow.summary?.conclusionCount || 0,
+  };
+}
+
+function consumeInvestigationSafetyDecision({ project = {}, decisionId, actionType, targetIds = [], actorId, idempotencyKey, now }) {
+  if (!decisionId) throw new Error('investigation-safety-decision-required');
+  const current = buildLocalInvestigationSafety({ project, now: now || nowIso() });
+  if (!current.integrity.valid) throw new Error('investigation-safety-current-state-invalid');
+  const policy = (project.localInvestigationSafetyPolicies || [])[0];
+  if (!policy) throw new Error('investigation-safety-policy-required');
+  const decision = (project.localInvestigationSafetyDecisions || []).find((row) => row.id === decisionId);
+  if (!decision || decision.policyId !== policy.id) throw new Error('investigation-safety-decision-invalid');
+  if ((project.localInvestigationSafetyUses || []).some((row) => row.decisionId === decision.id)) throw new Error('investigation-safety-decision-already-used');
+  return createInvestigationSafetyUseReceipt({ decision, actionType, targetIds, actorId, idempotencyKey, now });
+}
+
 export function createAgentProjectService({
   projects = [],
   messages = [],
@@ -47396,6 +48607,7 @@ export function createAgentProjectService({
   searchProvider = null,
   providerPolicy = {},
   secretVault = null,
+  rateLimitLedger = null,
   store = createAgentProjectMemoryStore({
     projects,
     messages,
@@ -47405,6 +48617,39 @@ export function createAgentProjectService({
   }),
 } = {}) {
   const resolvedSecretVault = secretVault || createSecretVaultFromEnv();
+  const memoryRateLimitEntries = [];
+  const localRateLimitLedger = rateLimitLedger || store.localRateLimitLedger || {
+    claim(input = {}) {
+      const claimBase = {
+        schemaVersion: 'local-rate-limit-claim/v1', id: `memory_rate_claim_${randomUUID()}`,
+        projectId: input.projectId, actorHash: durableTaskQueueChecksum(input.actorId || 'local-runtime'),
+        provider: input.provider || 'unknown', model: input.model || '', tool: input.tool || '',
+        status: 'active', counted: false, createdAt: input.now || nowIso(),
+        expiresAt: new Date((Date.parse(input.now || '') || Date.now()) + Math.max(1, Number(input.ttlMs) || 900_000)).toISOString(),
+      };
+      const claim = { ...claimBase, checksum: durableTaskQueueChecksum(claimBase) };
+      memoryRateLimitEntries.unshift(claim);
+      return { allowed: true, action: 'claimed', claim, reason: null };
+    },
+    resolve({ claimId, outcome = 'settled', counted = true, now = nowIso() } = {}) {
+      const index = memoryRateLimitEntries.findIndex((row) => row.id === claimId);
+      const claim = memoryRateLimitEntries[index];
+      if (!claim) return { action: 'already-resolved', claim: null };
+      const { checksum: _checksum, ...claimBase } = claim;
+      const resolvedBase = { ...claimBase, status: 'resolved', outcome, counted: Boolean(counted), resolvedAt: now };
+      const resolved = { ...resolvedBase, checksum: durableTaskQueueChecksum(resolvedBase) };
+      memoryRateLimitEntries[index] = resolved;
+      return { action: 'resolved', claim: resolved };
+    },
+    snapshot({ now = nowIso() } = {}) {
+      const base = { schemaVersion: 'local-rate-limit-snapshot/v1', generatedAt: now, revision: 0, entryCount: memoryRateLimitEntries.length, activeCount: memoryRateLimitEntries.filter((row) => row.status === 'active').length, expiredActiveCount: 0, entries: memoryRateLimitEntries, processSafeOnSingleHost: false, distributedSafe: false };
+      return { ...base, checksum: durableTaskQueueChecksum(base) };
+    },
+  };
+  const activeAutopilotAbortControllers = new Map();
+  const activeDurableTaskAbortControllers = new Map();
+  const autopilotCancellationKey = (projectId, sessionId) => `${projectId}:${sessionId}`;
+  const durableTaskCancellationKey = (projectId, jobId, fenceToken) => `${projectId}:${jobId}:${fenceToken}`;
   const readModelCache = new Map();
   const clearReadModelCache = () => {
     readModelCache.clear();
@@ -47421,6 +48666,7 @@ export function createAgentProjectService({
   };
   const readModelOptionSignature = (options = {}) => persistenceChecksum({
     language: options.language || null,
+    now: options.now || null,
     includeContents: options.includeContents ?? null,
     exportRequestId: options.exportRequestId || null,
     requestId: options.requestId || null,
@@ -47470,6 +48716,26 @@ export function createAgentProjectService({
         latestChange: project.changeLedger?.[0] ? [project.changeLedger[0].id, project.changeLedger[0].status] : null,
         submissionCount: project.agentSubmissions?.length || 0,
         latestSubmission: project.agentSubmissions?.[0] ? [project.agentSubmissions[0].id, project.agentSubmissions[0].status, project.agentSubmissions[0].superseded] : null,
+        reviewHandoffCount: project.localReviewHandoffs?.length || 0,
+        latestReviewHandoff: project.localReviewHandoffs?.[0]
+          ? [project.localReviewHandoffs[0].id, project.localReviewHandoffs[0].dueAt, project.localReviewHandoffs[0].checksum]
+          : null,
+        reviewHandoffClaimCount: project.localReviewHandoffClaims?.length || 0,
+        latestReviewHandoffClaim: project.localReviewHandoffClaims?.[0]
+          ? [project.localReviewHandoffClaims[0].id, project.localReviewHandoffClaims[0].fence, project.localReviewHandoffClaims[0].checksum]
+          : null,
+        reviewHandoffCompletionCount: project.localReviewHandoffCompletions?.length || 0,
+        latestReviewHandoffCompletion: project.localReviewHandoffCompletions?.[0]
+          ? [project.localReviewHandoffCompletions[0].id, project.localReviewHandoffCompletions[0].reviewId, project.localReviewHandoffCompletions[0].checksum]
+          : null,
+        sharedMemoryEntryCount: project.localProjectMemoryEntries?.length || 0,
+        latestSharedMemoryEntry: project.localProjectMemoryEntries?.[0]
+          ? [project.localProjectMemoryEntries[0].id, project.localProjectMemoryEntries[0].version, project.localProjectMemoryEntries[0].checksum]
+          : null,
+        sharedMemoryRevocationCount: project.localProjectMemoryRevocations?.length || 0,
+        latestSharedMemoryRevocation: project.localProjectMemoryRevocations?.[0]
+          ? [project.localProjectMemoryRevocations[0].id, project.localProjectMemoryRevocations[0].memoryId, project.localProjectMemoryRevocations[0].checksum]
+          : null,
         evidenceSearchCount: project.evidenceSearches?.length || 0,
         latestEvidenceSearch: project.evidenceSearches?.[0] ? [project.evidenceSearches[0].id, project.evidenceSearches[0].status] : null,
         reviewCount: project.submissionReviews?.length || 0,
@@ -47494,6 +48760,52 @@ export function createAgentProjectService({
         latestAutonomousRunControlSession: project.autonomousRunControlSessionLedger?.[0] ? [project.autonomousRunControlSessionLedger[0].id, project.autonomousRunControlSessionLedger[0].status, project.autonomousRunControlSessionLedger[0].checksum] : null,
         autonomousRunControlSessionTickCount: project.autonomousRunControlSessionTickLedger?.length || 0,
         latestAutonomousRunControlSessionTick: project.autonomousRunControlSessionTickLedger?.[0] ? [project.autonomousRunControlSessionTickLedger[0].id, project.autonomousRunControlSessionTickLedger[0].statusAfter, project.autonomousRunControlSessionTickLedger[0].checksum] : null,
+        localAutonomyPolicyCount: project.localAutonomyPolicies?.length || 0,
+        latestLocalAutonomyPolicy: project.localAutonomyPolicies?.[0] ? [project.localAutonomyPolicies[0].id, project.localAutonomyPolicies[0].version, project.localAutonomyPolicies[0].checksum] : null,
+        localAutonomyCommandCount: project.localAutonomyCommands?.length || 0,
+        latestLocalAutonomyCommand: project.localAutonomyCommands?.[0] ? [project.localAutonomyCommands[0].id, project.localAutonomyCommands[0].command, project.localAutonomyCommands[0].checksum] : null,
+        localLearningPlanCount: project.localLearningPlans?.length || 0,
+        localLearningPlans: (project.localLearningPlans || []).map((row) => [row.id, row.version, row.pace?.weeklyMinutes, row.checksum]),
+        localLearningAttemptCount: project.localLearningAttempts?.length || 0,
+        localLearningAttempts: (project.localLearningAttempts || []).map((row) => [row.id, row.planId, row.topicId, row.scoreBps, row.hintCount, row.checksum]),
+        localTeachingSafetyPolicies: (project.localTeachingSafetyPolicies || []).map((row) => [row.id, row.version, row.ageBand, row.supervisionMode, row.status, row.checksum]),
+        localTeachingSafetyDecisions: (project.localTeachingSafetyDecisions || []).map((row) => [row.id, row.policyId, row.riskLevel, row.responseAuthorization?.mode, row.responseAuthorization?.canGenerateTeachingContent, row.checksum]),
+        localTeachingSafetyResolutions: (project.localTeachingSafetyResolutions || []).map((row) => [row.id, row.decisionId, row.resolutionCode, row.authorizesTeachingContent, row.checksum]),
+        localAcademicWritingBlueprints: (project.localAcademicWritingBlueprints || []).map((row) => [row.id, row.version, row.styleGuideId, row.checksum]),
+        localAcademicDraftReceipts: (project.localAcademicDraftReceipts || []).map((row) => [row.id, row.submissionId, row.draftVersion, row.artifactChecksum, row.checksum]),
+        localAcademicRevisionReceipts: (project.localAcademicRevisionReceipts || []).map((row) => [row.id, row.previousDraftId, row.submissionId, row.draftVersion, row.addressedIssueIds, row.checksum]),
+        localAcademicFinalizations: (project.localAcademicFinalizations || []).map((row) => [row.id, row.latestDraftId, row.acceptedReviewId, row.checksum]),
+        localCitationAssessments: (project.localCitationAssessments || []).map((row) => [row.id, row.claimId, row.sourceEvidenceId, row.sourceSnapshotId, row.version, row.stance, row.sourceStatus, row.checksum]),
+        localCitationIntegrityAudits: (project.localCitationIntegrityAudits || []).map((row) => [row.id, row.finalizationId, row.status, row.assessmentManifest, row.checksum]),
+        localInvestigationCases: (project.localInvestigationCases || []).map((row) => [row.id, row.version, row.hypotheses, row.checksum]),
+        localInvestigationEvidence: (project.localInvestigationEvidence || []).map((row) => [row.id, row.caseId, row.sourceSnapshotId, row.reliabilityScoreBps, row.relations, row.checksum]),
+        localInvestigationCustodyEvents: (project.localInvestigationCustodyEvents || []).map((row) => [row.id, row.evidenceId, row.sequence, row.eventType, row.previousCustodyChecksum, row.checksum]),
+        localInvestigationContradictionResolutions: (project.localInvestigationContradictionResolutions || []).map((row) => [row.id, row.contradictionId, row.resolutionCode, row.checksum]),
+        localInvestigationConclusions: (project.localInvestigationConclusions || []).map((row) => [row.id, row.caseId, row.selectedHypothesisId, row.confidenceBps, row.checksum]),
+        localInvestigationClosures: (project.localInvestigationClosures || []).map((row) => [row.id, row.conclusionId, row.status, row.checksum]),
+        localInvestigationSafetyPolicies: (project.localInvestigationSafetyPolicies || []).map((row) => [row.id, row.version, row.authorityBasis, row.allowedDataCategories, row.checksum]),
+        localInvestigationSafetyDecisions: (project.localInvestigationSafetyDecisions || []).map((row) => [row.id, row.policyId, row.actionType, row.targetIds, row.responseAuthorization?.canProceed, row.expiresAt, row.checksum]),
+        localInvestigationSafetyResolutions: (project.localInvestigationSafetyResolutions || []).map((row) => [row.id, row.decisionId, row.resolutionCode, row.authorizesOperation, row.checksum]),
+        localInvestigationSafetyUses: (project.localInvestigationSafetyUses || []).map((row) => [row.id, row.decisionId, row.operationKey, row.usedAt, row.checksum]),
+        localTechnicalDeliveryPlans: (project.localTechnicalDeliveryPlans || []).map((row) => [row.id, row.version, row.riskLevel, row.checksum]),
+        localTechnicalDeliveryVerifications: (project.localTechnicalDeliveryVerifications || []).map((row) => [row.id, row.planId, row.implementationRevision, row.checksum]),
+        localTechnicalDeliveryReviews: (project.localTechnicalDeliveryReviews || []).map((row) => [row.id, row.verificationId, row.verdict, row.checksum]),
+        localTechnicalDeliveryReleases: (project.localTechnicalDeliveryReleases || []).map((row) => [row.id, row.reviewId, row.operationKey, row.checksum]),
+        localEngineeringSecurityScans: (project.localEngineeringSecurityScans || []).map((row) => [row.id, row.implementationRevision, row.checks, row.findings, row.checksum]),
+        localEngineeringSecurityRemediations: (project.localEngineeringSecurityRemediations || []).map((row) => [row.id, row.scanId, row.findingId, row.resolution, row.checksum]),
+        localEngineeringSecurityExceptionRequests: (project.localEngineeringSecurityExceptionRequests || []).map((row) => [row.id, row.scanId, row.findingId, row.expiresAt, row.checksum]),
+        localEngineeringSecurityExceptionApprovals: (project.localEngineeringSecurityExceptionApprovals || []).map((row) => [row.id, row.requestId, row.approverRole, row.decision, row.checksum]),
+        localEngineeringSecurityAttestations: (project.localEngineeringSecurityAttestations || []).map((row) => [row.id, row.scanId, row.manifestChecksum, row.expiresAt, row.checksum]),
+        localCreativeBriefs: (project.localCreativeBriefs || []).map((row) => [row.id, row.version, row.audienceSegments, row.deliverables, row.checksum]),
+        localCreativeIterations: (project.localCreativeIterations || []).map((row) => [row.id, row.briefId, row.iterationVersion, row.submissionId, row.checksum]),
+        localCreativeCritiques: (project.localCreativeCritiques || []).map((row) => [row.id, row.iterationId, row.perspective, row.verdict, row.issueIds, row.checksum]),
+        localCreativeExports: (project.localCreativeExports || []).map((row) => [row.id, row.iterationId, row.checks, row.checksum]),
+        localCreativeHandoffs: (project.localCreativeHandoffs || []).map((row) => [row.id, row.exportId, row.manifestChecksum, row.checksum]),
+        localCreativeHandoffAcknowledgements: (project.localCreativeHandoffAcknowledgements || []).map((row) => [row.id, row.handoffId, row.status, row.checksum]),
+        localRightsAssetDeclarations: (project.localRightsAssetDeclarations || []).map((row) => [row.id, row.targetType, row.targetId, row.assetChecksum, row.version, row.previousDeclarationId, row.checksum]),
+        localRightsGenerationProvenance: (project.localRightsGenerationProvenance || []).map((row) => [row.id, row.declarationId, row.assetChecksum, row.checksum]),
+        localRightsDerivativeLineages: (project.localRightsDerivativeLineages || []).map((row) => [row.id, row.outputDeclarationId, row.inputDeclarationIds, row.checksum]),
+        localRightsExportAudits: (project.localRightsExportAudits || []).map((row) => [row.id, row.creativeExportId, row.status, row.validUntil, row.checksum]),
         securityAccessAuditCount: project.securityAccessAudit?.length || 0,
         providerUsageCount: project.providerUsageLedger?.length || 0,
         providerEvalRunCount: project.providerEvalRuns?.length || 0,
@@ -47543,6 +48855,56 @@ export function createAgentProjectService({
     clearReadModelCache();
     return savedProject;
   };
+  const sealProjectTrace = (project, traceId, { reason, actorId = 'local-runtime', now = nowIso() } = {}) => {
+    const normalizedTraceId = normalizeLocalTraceId(traceId);
+    if (!normalizedTraceId) return { project, receipt: null, graph: null, idempotent: true };
+    const sealed = appendLocalTraceGraphReceipt(project, normalizedTraceId, { reason, actorId, now });
+    return { ...sealed, project: saveProject(sealed.project) };
+  };
+  const resolveProjectMemoryCitations = (projectId, citations = []) => {
+    const project = store.getProject(projectId);
+    const messages = store.getMessages(projectId) || [];
+    const sources = {
+      task: project.tasks || [],
+      submission: project.agentSubmissions || [],
+      'evidence-search': project.evidenceSearches || [],
+      'transcript-message': messages,
+      event: project.eventLedger || [],
+    };
+    if (!Array.isArray(citations) || !citations.length) throw new Error('project-memory-citation-required');
+    return citations.map((citation = {}) => {
+      const sourceType = String(citation.sourceType || '').trim();
+      const sourceId = String(citation.sourceId || '').trim();
+      const source = (sources[sourceType] || []).find((item) => String(item?.id || '') === sourceId);
+      if (!source) throw new Error(`project-memory-citation-not-found:${sourceType || 'unknown'}:${sourceId || 'missing'}`);
+      const sourceChecksum = createHash('sha256').update(stableJson(source), 'utf8').digest('hex');
+      if (citation.sourceChecksum && String(citation.sourceChecksum).toLowerCase() !== sourceChecksum) {
+        throw new Error('project-memory-citation-checksum-mismatch');
+      }
+      return { sourceType, sourceId, sourceChecksum };
+    });
+  };
+  const rejectSensitiveProjectMemoryContent = (content = '') => {
+    const normalized = String(content || '').trim();
+    if (redactSensitiveText(normalized) !== normalized) throw new Error('project-memory-sensitive-content-rejected');
+    return normalized;
+  };
+  const projectMemoryEntryIntentChecksum = (entry = {}) => persistenceChecksum({
+    projectId: entry.projectId,
+    memoryKey: entry.memoryKey,
+    kind: entry.kind,
+    contentChecksum: entry.contentChecksum,
+    citations: entry.citations,
+    confidence: entry.confidence,
+    confidenceBasis: entry.confidenceBasis,
+    expiresAt: entry.expiresAt,
+    accessScope: entry.accessScope,
+    version: entry.version,
+    previousVersionId: entry.previousVersionId,
+    previousVersionChecksum: entry.previousVersionChecksum,
+    actorId: entry.actorId,
+    idempotencyKey: entry.idempotencyKey,
+  });
   const appendMessages = (nextMessages = []) => {
     const appended = store.appendMessages(nextMessages);
     if (nextMessages.length) clearReadModelCache();
@@ -47558,6 +48920,11 @@ export function createAgentProjectService({
     typeof store.listSecurityAuditRecords === 'function'
       ? store.listSecurityAuditRecords(projectId)
       : []
+  );
+  const listRuntimeSecurityAuditStreamRecords = () => (
+    listSecurityAuditStreamRecords().filter((record) => (
+      !record.projectId && (!record.auditScope || record.auditScope === 'runtime')
+    ))
   );
   const listAccessReplayRecords = (projectId) => (
     typeof store.listAccessReplayRecords === 'function'
@@ -47578,6 +48945,306 @@ export function createAgentProjectService({
       ...result,
       messages: result.messages || [],
       allMessages: store.getMessages(result.project?.id),
+    };
+  };
+  const durableJobFromQueueRow = (row = {}) => {
+    const workerKind = row.workerKind === 'agent-work' ? 'agent-worker' : row.workerKind;
+    const requestBody = workerKind === 'project-autonomous'
+      ? { cadence: row.cadence || 'hourly', reason: row.reason || 'scheduled' }
+      : workerKind === 'agent-worker'
+        ? {
+            agentId: row.agentId,
+            initiativeId: row.initiativeId || null,
+            artifactType: row.initiativeArtifactType || 'progress-brief',
+            useAutonomousStrategy: true,
+          }
+        : {
+            sessionId: row.sessionId,
+            targetKind: row.targetKind || 'product-team-delivery-trace',
+            loopCount: 1,
+          };
+    return {
+      projectId: row.projectId,
+      workerKind,
+      agentId: row.agentId || null,
+      sessionId: row.sessionId || null,
+      idempotencyKey: row.idempotencyKey,
+      runApiPath: row.directRunApiPath,
+      requestBody,
+      traceId: durableTaskQueueChecksum(row.idempotencyKey).slice(0, 32),
+      dueAt: row.dueAt,
+      priority: row.priority || row.managementPriority || 0,
+      maxAttempts: WORKER_QUEUE_MAX_ATTEMPTS,
+      retryBackoffSeconds: WORKER_QUEUE_RETRY_BACKOFF_SECONDS,
+    };
+  };
+  const enqueueDurableQueueRow = (row, now) => {
+    const project = store.getProject(row.projectId);
+    const enqueued = enqueueLocalDurableTask({
+      rows: project.localDurableTaskQueue || [],
+      job: durableJobFromQueueRow(row),
+      now,
+    });
+    const savedProject = enqueued.action === 'enqueued'
+      ? saveProject({ ...project, localDurableTaskQueue: enqueued.rows })
+      : project;
+    return { ...enqueued, project: savedProject };
+  };
+  const registerActiveDurableTask = (job, controller = new AbortController()) => {
+    const key = durableTaskCancellationKey(job.projectId, job.id, job.fenceToken);
+    activeDurableTaskAbortControllers.set(key, controller);
+    return { key, controller };
+  };
+  const releaseActiveDurableTask = (activeTask = {}) => {
+    const { key, controller } = activeTask || {};
+    if (key && activeDurableTaskAbortControllers.get(key) === controller) activeDurableTaskAbortControllers.delete(key);
+  };
+  const finalizePersistedDurableCancellationRequests = (projectId, now) => {
+    let project = store.getProject(projectId);
+    let finalizedCount = 0;
+    for (const job of project.localDurableTaskQueue || []) {
+      if (job.status !== 'cancellation-requested') continue;
+      const finalized = finalizeLocalDurableTaskCancellation({
+        rows: project.localDurableTaskQueue || [], jobId: job.id,
+        cancellationFenceToken: job.cancellationFenceToken, signalDelivered: false, now,
+      });
+      project = saveProject({ ...project, localDurableTaskQueue: finalized.rows });
+      finalizedCount += 1;
+    }
+    return { project, finalizedCount };
+  };
+  const acquireDurableQueueRow = (row, now, workerId) => {
+    finalizePersistedDurableCancellationRequests(row.projectId, now);
+    const enqueued = enqueueDurableQueueRow(row, now);
+    const recoverableReceipt = enqueued.job.status === 'leased'
+      && safeDateMs(enqueued.job.leaseExpiresAt, 0) <= safeDateMs(now)
+      ? workerRunsForProject(enqueued.project)
+        .map((run) => run.executionReceipt)
+        .find((receipt) => receipt?.schemaVersion === 'worker-execution-receipt/v1'
+          && receipt.status === 'succeeded'
+          && receipt.idempotencyKey === enqueued.job.idempotencyKey
+          && receipt.leaseKey === enqueued.job.fenceToken)
+      : null;
+    if (recoverableReceipt) {
+      const recovered = acknowledgeLocalDurableTask({
+        rows: enqueued.project.localDurableTaskQueue || [],
+        jobId: enqueued.job.id,
+        fenceToken: enqueued.job.fenceToken,
+        receipt: recoverableReceipt,
+        now,
+      });
+      const savedProject = saveProject({ ...enqueued.project, localDurableTaskQueue: recovered.rows });
+      return { ...recovered, action: 'recovered-receipt-acknowledged', project: savedProject, enqueuedAction: enqueued.action };
+    }
+    const acquired = acquireLocalDurableTaskLease({
+      rows: enqueued.project.localDurableTaskQueue || [],
+      jobId: enqueued.job.id,
+      workerId,
+      now,
+      leaseSeconds: WORKER_QUEUE_RECOMMENDED_LEASE_SECONDS,
+    });
+    const savedProject = ['acquired', 'recovered-expired-lease'].includes(acquired.action)
+      ? saveProject({ ...enqueued.project, localDurableTaskQueue: acquired.rows })
+      : enqueued.project;
+    return { ...acquired, project: savedProject, enqueuedAction: enqueued.action };
+  };
+  const acknowledgeDurableQueueJob = ({ project, job, receipt, now }) => {
+    const acknowledged = acknowledgeLocalDurableTask({
+      rows: project.localDurableTaskQueue || [],
+      jobId: job.id,
+      fenceToken: job.fenceToken,
+      receipt,
+      now,
+    });
+    return {
+      ...acknowledged,
+      project: acknowledged.action === 'acknowledged'
+        ? saveProject({ ...project, localDurableTaskQueue: acknowledged.rows })
+        : project,
+    };
+  };
+  const failDurableQueueJob = ({ project, job, error, now }) => {
+    const failed = failLocalDurableTask({
+      rows: project.localDurableTaskQueue || [],
+      jobId: job.id,
+      fenceToken: job.fenceToken,
+      retryable: true,
+      failureCode: error?.code || error?.message || 'worker-failed',
+      now,
+    });
+    return { ...failed, project: saveProject({ ...project, localDurableTaskQueue: failed.rows }) };
+  };
+  const recoverDurableQueueReceiptsForProject = (projectId, now) => {
+    let project = store.getProject(projectId);
+    let recoveredCount = 0;
+    for (const job of project.localDurableTaskQueue || []) {
+      if (job.status !== 'leased' || safeDateMs(job.leaseExpiresAt, 0) > safeDateMs(now)) continue;
+      const receipt = workerRunsForProject(project)
+        .map((run) => run.executionReceipt)
+        .find((item) => item?.schemaVersion === 'worker-execution-receipt/v1'
+          && item.status === 'succeeded'
+          && item.idempotencyKey === job.idempotencyKey
+          && item.leaseKey === job.fenceToken);
+      if (!receipt) continue;
+      const recovered = acknowledgeLocalDurableTask({
+        rows: project.localDurableTaskQueue || [], jobId: job.id, fenceToken: job.fenceToken, receipt, now,
+      });
+      project = saveProject({ ...project, localDurableTaskQueue: recovered.rows });
+      recoveredCount += 1;
+    }
+    return { project, recoveredCount };
+  };
+  const prepareProviderIdempotentOperation = ({ projectId, operationKey, operationKind, requestChecksum, traceId, now }) => {
+    const project = store.getProject(projectId);
+    const prepared = prepareLocalIdempotentExecution({
+      rows: project.localIdempotentExecutionLedger || [],
+      intent: {
+        projectId,
+        operationKey,
+        operationKind,
+        requestChecksum,
+        traceId,
+        providerEndpointHonoringAttested: false,
+      },
+      now,
+    });
+    if (prepared.action === 'reuse-completed') return { ...prepared, project };
+    const preparedProject = ['prepared', 'retry-authorized'].includes(prepared.action)
+      ? saveProject({ ...project, localIdempotentExecutionLedger: prepared.rows })
+      : project;
+    const dispatched = markLocalIdempotentExecutionDispatched({
+      rows: preparedProject.localIdempotentExecutionLedger || [],
+      operationId: prepared.operation.id,
+      now,
+    });
+    const dispatchedProject = dispatched.action === 'dispatched'
+      ? saveProject({ ...preparedProject, localIdempotentExecutionLedger: dispatched.rows })
+      : preparedProject;
+    return { ...dispatched, project: dispatchedProject };
+  };
+  const settleProviderIdempotentOperation = ({ projectId, operationId, result = {}, now }) => {
+    const project = store.getProject(projectId);
+    if (result.idempotency?.outcome === 'ambiguous') {
+      const ambiguous = markLocalIdempotentExecutionAmbiguous({
+        rows: project.localIdempotentExecutionLedger || [],
+        operationId,
+        reasonCode: result.error || result.reason || 'provider-outcome-ambiguous',
+        now,
+      });
+      return { ...ambiguous, project: saveProject({ ...project, localIdempotentExecutionLedger: ambiguous.rows }) };
+    }
+    const resultChecksum = createHash('sha256').update(stableJson({
+      ok: Boolean(result.ok),
+      provider: result.provider || null,
+      model: result.model || null,
+      responseId: result.id || result.responseId || null,
+      finishReason: result.finishReason || null,
+      usage: result.usage || null,
+      sourceCount: result.sources?.length || 0,
+      error: result.error || result.reason || null,
+      idempotency: result.idempotency || null,
+    })).digest('hex');
+    const completed = completeLocalIdempotentExecution({
+      rows: project.localIdempotentExecutionLedger || [],
+      operationId,
+      providerResponseId: result.id || result.responseId || null,
+      resultChecksum,
+      now,
+    });
+    return { ...completed, project: saveProject({ ...project, localIdempotentExecutionLedger: completed.rows }) };
+  };
+  const acquireAutopilotSessionLease = ({ projectId, session, schedule, reason, now }) => {
+    const project = store.getProject(projectId);
+    const idempotencyKey = buildWorkerIdempotencyKey({
+      workerKind: 'autopilot-session',
+      projectId,
+      sessionId: session.id,
+      dueAt: schedule.idempotencySlotAt || schedule.dueAt,
+      reason: schedule.idempotencyReason || reason,
+    });
+    const durableExisting = (project.localDurableTaskQueue || []).find((row) => row.idempotencyKey === idempotencyKey);
+    const legacyExisting = (project.localAutopilotLeaseLedger || []).find((row) => row.idempotencyKey === idempotencyKey);
+    if (!durableExisting && legacyExisting) {
+      const legacyAcquisition = acquireLocalAutopilotLease({
+        rows: project.localAutopilotLeaseLedger || [], projectId, sessionId: session.id,
+        idempotencyKey, dueAt: schedule.dueAt, now, leaseSeconds: WORKER_QUEUE_RECOMMENDED_LEASE_SECONDS,
+      });
+      const legacyProject = ['acquired', 'recovered-expired-lease'].includes(legacyAcquisition.action)
+        ? saveProject({ ...project, localAutopilotLeaseLedger: legacyAcquisition.rows })
+        : project;
+      return { ...legacyAcquisition, project: legacyProject, idempotencyKey, leaseKey: legacyAcquisition.lease?.fenceToken || null, legacyOnly: true };
+    }
+    const acquisition = acquireDurableQueueRow({
+      projectId,
+      workerKind: 'autopilot-session',
+      sessionId: session.id,
+      idempotencyKey,
+      directRunApiPath: `/projects/${encodeURIComponent(projectId)}/autonomous-run-control/sessions/${encodeURIComponent(session.id)}/tick`,
+      dueAt: schedule.dueAt,
+      priority: 70,
+      targetKind: session.targetKind || session.targetSnapshot?.targetKind || 'product-team-delivery-trace',
+    }, now, 'autopilot-due-worker');
+    const mappedAction = acquisition.action === 'already-acknowledged' ? 'already-acked' : acquisition.action;
+    const durableLease = acquisition.job ? {
+      schemaVersion: 'local-autopilot-lease/v1',
+      id: `local_autopilot_lease_${idempotencyKey}`,
+      projectId,
+      sessionId: session.id,
+      idempotencyKey,
+      dueAt: schedule.dueAt,
+      status: acquisition.job.status === 'acknowledged' ? 'acked' : acquisition.job.status,
+      attemptCount: acquisition.job.attemptCount,
+      fenceToken: acquisition.job.fenceToken,
+      acquiredAt: acquisition.job.leasedAt,
+      expiresAt: acquisition.job.leaseExpiresAt,
+      acknowledgedAt: acquisition.job.acknowledgedAt,
+      receipt: acquisition.job.executionReceiptChecksum ? { receiptChecksum: acquisition.job.executionReceiptChecksum, status: 'succeeded' } : null,
+    } : null;
+    const legacyRows = durableLease
+      ? [durableLease, ...(acquisition.project.localAutopilotLeaseLedger || []).filter((row) => row.idempotencyKey !== idempotencyKey)].slice(0, 100)
+      : acquisition.project.localAutopilotLeaseLedger || [];
+    const projectWithLease = durableLease
+      ? saveProject({ ...acquisition.project, localAutopilotLeaseLedger: legacyRows })
+      : acquisition.project;
+    return {
+      ...acquisition,
+      action: mappedAction,
+      lease: durableLease,
+      project: projectWithLease,
+      idempotencyKey,
+      leaseKey: durableLease?.fenceToken || null,
+    };
+  };
+  const acknowledgeAutopilotSessionLease = ({ project, lease, receipt, now }) => {
+    const durableJob = (project.localDurableTaskQueue || []).find((row) => row.idempotencyKey === lease.idempotencyKey);
+    if (durableJob) {
+      const durableAcknowledgement = acknowledgeDurableQueueJob({ project, job: durableJob, receipt, now });
+      const legacyAcknowledgement = acknowledgeLocalAutopilotLease({
+        rows: durableAcknowledgement.project.localAutopilotLeaseLedger || [],
+        idempotencyKey: lease.idempotencyKey,
+        fenceToken: lease.fenceToken,
+        receipt,
+        now,
+      });
+      return {
+        ...legacyAcknowledgement,
+        project: legacyAcknowledgement.acknowledged
+          ? saveProject({ ...durableAcknowledgement.project, localAutopilotLeaseLedger: legacyAcknowledgement.rows })
+          : durableAcknowledgement.project,
+      };
+    }
+    const acknowledgement = acknowledgeLocalAutopilotLease({
+      rows: project.localAutopilotLeaseLedger || [],
+      idempotencyKey: lease.idempotencyKey,
+      fenceToken: lease.fenceToken,
+      receipt,
+      now,
+    });
+    return {
+      ...acknowledgement,
+      project: acknowledgement.acknowledged
+        ? saveProject({ ...project, localAutopilotLeaseLedger: acknowledgement.rows })
+        : project,
     };
   };
   const persistMeetingResult = (result) => {
@@ -50122,6 +51789,7 @@ export function createAgentProjectService({
     kind = 'search',
     operation = 'search:evidence',
     agentId = '',
+    taskId = '',
     requested = true,
     requireProvider = false,
     queueReady = true,
@@ -50140,6 +51808,7 @@ export function createAgentProjectService({
       operation,
       providerStatus,
       agentId,
+      taskId,
       model: providerStatus.model,
       estimatedCostCents,
       now,
@@ -50184,6 +51853,7 @@ export function createAgentProjectService({
       kind,
       operation,
       agentId: agentId || null,
+      taskId: taskId || null,
       targetStageId: targetStageId || null,
       requested: Boolean(requested),
       requireProvider: Boolean(requireProvider),
@@ -50253,6 +51923,7 @@ export function createAgentProjectService({
       kind,
       operation,
       agentId,
+      taskId,
       requested: Boolean(requested),
       requireProvider: Boolean(requireProvider),
       queueReady: Boolean(queueReady),
@@ -50271,6 +51942,7 @@ export function createAgentProjectService({
   };
   const appendProviderUsageRecord = ({
     project,
+    traceId = null,
     kind = 'search',
     operation = 'search:evidence',
     providerStatus = {},
@@ -50287,6 +51959,7 @@ export function createAgentProjectService({
     circuitBreaker = null,
     providerVaultBinding = null,
     autonomousProviderPreflight = null,
+    promptBoundaryReceipt = null,
     estimatedCostCents = null,
     startedAt = nowIso(),
     completedAt = nowIso(),
@@ -50295,12 +51968,44 @@ export function createAgentProjectService({
     const policy = providerControlPolicyStatus(project);
     const timestamp = Date.parse(completedAt) || Date.now();
     const costCents = estimateProviderCostCents({ kind, result, policy, estimatedCostCents });
-    const recordId = `provider_usage_${project.id}_${String(kind).replace(/[^a-z0-9_-]/gi, '_')}_${timestamp}`;
+    const recordId = `provider_usage_${project.id}_${String(kind).replace(/[^a-z0-9_-]/gi, '_')}_${timestamp}_${randomUUID()}`;
     const eventId = `evt_${recordId}`;
+    const normalizedTraceId = normalizeLocalTraceId(traceId || request.traceId);
+    const invocationReceiptId = `tool_invocation_receipt_${project.id}_${randomUUID()}`;
+    const previousReceiptChecksum = project.toolInvocationReceipts?.[0]?.checksum || null;
+    const { checksum: _emptyReceiptChecksum, ...receiptBase } = publicToolInvocationReceipt({
+      id: invocationReceiptId,
+      schemaVersion: 'local-tool-invocation-receipt/v1',
+      projectId: project.id,
+      providerUsageId: recordId,
+      traceId: normalizedTraceId,
+      operation,
+      agentId: agentId || null,
+      taskId: request.taskId || null,
+      authorizationSource: decision.toolAuthorizationSource || 'none',
+      toolGrantLeaseId: decision.toolGrantLease?.id || null,
+      toolGrantLeaseChecksum: decision.toolGrantLease?.checksum || null,
+      allowed: Boolean(decision.allowed),
+      status,
+      ok: Boolean(ok),
+      decisionReason: reason || decision.reason || (decision.reasons || [])[0] || (decision.allowed ? 'allowed' : 'denied'),
+      startedAt,
+      completedAt,
+      previousReceiptChecksum,
+    });
+    const invocationReceipt = {
+      ...receiptBase,
+      checksum: persistenceChecksum(receiptBase),
+    };
+    const safePromptBoundaryReceipt = promptBoundaryReceipt
+      ? publicPromptBoundaryReceipt(promptBoundaryReceipt)
+      : null;
     const record = redactSensitiveObject({
       id: recordId,
+      traceId: normalizedTraceId,
       projectId: project.id,
       agentId: agentId || null,
+      taskId: request.taskId || null,
       kind,
       operation,
       provider: providerStatus.provider || result.provider || 'unknown',
@@ -50323,6 +52028,13 @@ export function createAgentProjectService({
       autonomousProviderPreflight: autonomousProviderPreflight ? redactSensitiveObject(autonomousProviderPreflight) : null,
       autonomousProviderPreflightChecksum: autonomousProviderPreflight?.checksum || null,
       autonomousProviderPreflightAction: autonomousProviderPreflight?.action || null,
+      toolAuthorizationSource: invocationReceipt.authorizationSource,
+      toolGrantLeaseId: invocationReceipt.toolGrantLeaseId,
+      toolGrantLeaseChecksum: invocationReceipt.toolGrantLeaseChecksum,
+      toolInvocationReceiptId: invocationReceipt.id,
+      toolInvocationReceiptChecksum: invocationReceipt.checksum,
+      promptBoundaryReceiptId: safePromptBoundaryReceipt?.id || null,
+      promptBoundaryReceiptChecksum: safePromptBoundaryReceipt?.checksum || null,
       responseId: result.id || result.responseId || null,
       providerReceiptId,
       sourceCount: result.sources?.length || 0,
@@ -50352,6 +52064,16 @@ export function createAgentProjectService({
         record,
         ...(project.providerUsageLedger || []),
       ].slice(0, PROVIDER_USAGE_LEDGER_LIMIT),
+      toolInvocationReceipts: [
+        invocationReceipt,
+        ...(project.toolInvocationReceipts || []),
+      ].slice(0, TOOL_INVOCATION_RECEIPT_LIMIT),
+      promptBoundaryReceipts: safePromptBoundaryReceipt
+        ? [
+            safePromptBoundaryReceipt,
+            ...(project.promptBoundaryReceipts || []).filter((receipt) => receipt.id !== safePromptBoundaryReceipt.id),
+          ].slice(0, PROMPT_BOUNDARY_RECEIPT_LIMIT)
+        : (project.promptBoundaryReceipts || []),
     }, [
       createProjectLedgerEvent({
         id: eventId,
@@ -50361,14 +52083,26 @@ export function createAgentProjectService({
         summary: `${record.allowed ? 'Allowed' : 'Denied'} ${record.kind} provider ${record.provider} for ${record.operation}.`,
         source: 'provider-control',
         channelId: 'provider-control',
-        evidenceIds: uniqueStrings([record.id, ...(record.evidenceIds || [])]),
+        evidenceIds: uniqueStrings([
+          record.id,
+          invocationReceipt.id,
+          invocationReceipt.checksum,
+          safePromptBoundaryReceipt?.id,
+          safePromptBoundaryReceipt?.checksum,
+          ...(record.evidenceIds || []),
+        ]),
         entityIds: {
           projectId: project.id,
           agentId: agentId || null,
           providerUsageId: record.id,
           providerReceiptId: providerReceiptId || null,
+          taskId: request.taskId || null,
+          toolGrantLeaseId: invocationReceipt.toolGrantLeaseId,
+          toolInvocationReceiptId: invocationReceipt.id,
+          promptBoundaryReceiptId: safePromptBoundaryReceipt?.id || null,
         },
         payload: redactSensitiveObject({
+          traceId: record.traceId,
           kind: record.kind,
           operation: record.operation,
           provider: record.provider,
@@ -50386,11 +52120,232 @@ export function createAgentProjectService({
           providerVaultBindingRoute: record.providerVaultBindingRoute || null,
           autonomousProviderPreflightChecksum: record.autonomousProviderPreflightChecksum || null,
           autonomousProviderPreflightAction: record.autonomousProviderPreflightAction || null,
+          toolAuthorizationSource: record.toolAuthorizationSource,
+          toolGrantLeaseId: record.toolGrantLeaseId,
+          toolInvocationReceiptId: record.toolInvocationReceiptId,
+          toolInvocationReceiptChecksum: record.toolInvocationReceiptChecksum,
+          promptBoundaryReceiptId: record.promptBoundaryReceiptId,
+          promptBoundaryReceiptChecksum: record.promptBoundaryReceiptChecksum,
         }),
       }),
     ]);
     const savedProject = saveProject(updatedProject);
     return { project: savedProject, record };
+  };
+  const reserveProviderBudget = ({
+    projectId,
+    kind = 'search',
+    operation = 'search:evidence',
+    providerStatus = {},
+    agentId = '',
+    taskId = '',
+    estimatedCostCents = 0,
+    now = nowIso(),
+    ttlMs = 15 * 60 * 1000,
+  } = {}) => {
+    const project = store.getProject(projectId);
+    const policy = providerControlPolicyStatus(project);
+    const decision = evaluateProviderPolicy({
+      project,
+      policy,
+      kind,
+      operation,
+      providerStatus,
+      agentId,
+      taskId,
+      estimatedCostCents,
+      now,
+    });
+    if (!decision.allowed) return { project, policy, decision, reservation: null };
+    const createdAtMs = Date.parse(now) || Date.now();
+    const reservationId = `provider_budget_reservation_${projectId}_${randomUUID()}`;
+    const rateLimit = localRateLimitLedger.claim({
+      projectId,
+      actorId: agentId || 'local-runtime',
+      provider: providerStatus.provider || 'unknown',
+      model: providerStatus.model || '',
+      tool: operation,
+      idempotencyKey: reservationId,
+      limits: {
+        projectHourly: decision.budgetApproval?.maxExtraRequests > 0 ? 0 : policy.maxRequestsPerProjectHour,
+        actorHourly: policy.maxRequestsPerActorHour,
+        modelHourly: policy.maxRequestsPerModelHour,
+        toolHourly: policy.maxRequestsPerToolHour,
+        projectConcurrent: policy.maxConcurrentPerProject,
+      },
+      now,
+      ttlMs,
+    });
+    if (!rateLimit.allowed) {
+      const deniedDecision = {
+        ...decision,
+        allowed: false,
+        wouldDeny: true,
+        reason: rateLimit.reason,
+        reasons: uniqueStrings([...(decision.reasons || []), rateLimit.reason]),
+        rateLimit: { dimension: rateLimit.dimension || null, limit: rateLimit.limit || 0, used: rateLimit.used || 0 },
+      };
+      return { project, policy, decision: deniedDecision, reservation: null, rateLimit };
+    }
+    const reservedApprovalCostCents = decision.budgetApproval?.maxExtraCostCents > 0
+      ? Math.max(0, Number(estimatedCostCents) || 0)
+      : 0;
+    const reservedApprovalRequestCount = decision.budgetApproval?.maxExtraRequests > 0 ? 1 : 0;
+    const reservedToolInvocationCount = decision.toolGrantLease ? 1 : 0;
+    const providerBudgetApprovals = decision.budgetApproval
+      ? (project.providerBudgetApprovals || []).map((approval) => {
+          if (approval.id !== decision.budgetApproval.id) return approval;
+          const next = {
+            ...approval,
+            reservedCostCents: (Number(approval.reservedCostCents) || 0) + reservedApprovalCostCents,
+            reservedRequestCount: (Number(approval.reservedRequestCount) || 0) + reservedApprovalRequestCount,
+            updatedAt: new Date(createdAtMs).toISOString(),
+          };
+          return {
+            ...next,
+            checksum: persistenceChecksum({ ...next, checksum: undefined }),
+          };
+        })
+      : (project.providerBudgetApprovals || []);
+    const toolGrantLeases = decision.toolGrantLease
+      ? (project.toolGrantLeases || []).map((lease) => {
+          if (lease.id !== decision.toolGrantLease.id) return lease;
+          const activeReservedCount = (project.providerBudgetReservations || []).filter((reservation) => (
+            reservation.status === 'active'
+            && reservation.toolGrantLeaseId === lease.id
+            && (Date.parse(reservation.expiresAt || '') || 0) > createdAtMs
+          )).length;
+          const next = {
+            ...lease,
+            reservedInvocationCount: activeReservedCount + reservedToolInvocationCount,
+            updatedAt: new Date(createdAtMs).toISOString(),
+          };
+          return { ...next, checksum: persistenceChecksum({ ...next, checksum: undefined }) };
+        })
+      : (project.toolGrantLeases || []);
+    const reservationBase = {
+      schemaVersion: 'local-provider-budget-reservation/v1',
+      id: reservationId,
+      projectId,
+      agentId: agentId || null,
+      taskId: taskId || null,
+      kind,
+      operation,
+      provider: providerStatus.provider || 'unknown',
+      status: 'active',
+      estimatedCostCents: Math.max(0, Number(estimatedCostCents) || 0),
+      providerBudgetApprovalId: decision.budgetApproval?.id || null,
+      approvalReservedCostCents: reservedApprovalCostCents,
+      approvalReservedRequestCount: reservedApprovalRequestCount,
+      toolGrantLeaseId: decision.toolGrantLease?.id || null,
+      toolGrantLeaseChecksum: decision.toolGrantLease?.checksum || null,
+      toolGrantReservedInvocationCount: reservedToolInvocationCount,
+      rateLimitClaimId: rateLimit.claim.id,
+      rateLimitClaimChecksum: rateLimit.claim.checksum,
+      createdAt: new Date(createdAtMs).toISOString(),
+      expiresAt: new Date(createdAtMs + Math.max(1, Number(ttlMs) || 15 * 60 * 1000)).toISOString(),
+    };
+    const reservation = {
+      ...reservationBase,
+      checksum: persistenceChecksum(reservationBase),
+    };
+    let savedProject;
+    try {
+      savedProject = saveProject({
+        ...project,
+        providerBudgetApprovals,
+        toolGrantLeases,
+        providerBudgetReservations: [
+          reservation,
+          ...(project.providerBudgetReservations || []),
+        ].slice(0, PROVIDER_USAGE_LEDGER_LIMIT),
+      });
+    } catch (error) {
+      localRateLimitLedger.resolve({ claimId: rateLimit.claim.id, outcome: 'pre-dispatch-save-failed', counted: false, now });
+      throw error;
+    }
+    return { project: savedProject, policy, decision, reservation, rateLimit };
+  };
+  const resolveProviderBudgetReservation = ({
+    projectId,
+    reservationId,
+    status,
+    providerUsageId = null,
+    actualCostCents = null,
+    now = nowIso(),
+  } = {}) => {
+    const project = store.getProject(projectId);
+    let resolvedReservation = null;
+    const providerBudgetReservations = (project.providerBudgetReservations || []).map((reservation) => {
+      if (reservation.id !== reservationId || reservation.status !== 'active') return reservation;
+      const resolutionBase = {
+        ...reservation,
+        status,
+        resolvedAt: now,
+        providerUsageId,
+        actualCostCents: actualCostCents === null ? null : Math.max(0, Number(actualCostCents) || 0),
+      };
+      resolvedReservation = {
+        ...resolutionBase,
+        resolutionChecksum: persistenceChecksum(resolutionBase),
+      };
+      return resolvedReservation;
+    });
+    if (!resolvedReservation) return { project, reservation: null };
+    if (resolvedReservation.rateLimitClaimId) {
+      localRateLimitLedger.resolve({
+        claimId: resolvedReservation.rateLimitClaimId,
+        outcome: status,
+        counted: true,
+        now,
+      });
+    }
+    const providerBudgetApprovals = (project.providerBudgetApprovals || []).map((approval) => {
+      if (!resolvedReservation.providerBudgetApprovalId || approval.id !== resolvedReservation.providerBudgetApprovalId) return approval;
+      const settled = status === 'settled';
+      const next = {
+        ...approval,
+        reservedCostCents: Math.max(0, (Number(approval.reservedCostCents) || 0) - (Number(resolvedReservation.approvalReservedCostCents) || 0)),
+        reservedRequestCount: Math.max(0, (Number(approval.reservedRequestCount) || 0) - (Number(resolvedReservation.approvalReservedRequestCount) || 0)),
+        consumedCostCents: (Number(approval.consumedCostCents) || 0) + (settled
+          ? Math.max(0, Number(actualCostCents ?? resolvedReservation.approvalReservedCostCents) || 0)
+          : 0),
+        consumedRequestCount: (Number(approval.consumedRequestCount) || 0) + (settled
+          ? Number(resolvedReservation.approvalReservedRequestCount) || 0
+          : 0),
+        updatedAt: now,
+      };
+      const publicNext = publicProviderBudgetApproval(next, now);
+      return {
+        ...next,
+        status: publicNext.status,
+        checksum: persistenceChecksum({ ...next, status: publicNext.status, checksum: undefined }),
+      };
+    });
+    const toolGrantLeases = (project.toolGrantLeases || []).map((lease) => {
+      if (!resolvedReservation.toolGrantLeaseId || lease.id !== resolvedReservation.toolGrantLeaseId) return lease;
+      const consumed = ['settled', 'released'].includes(status)
+        ? Number(resolvedReservation.toolGrantReservedInvocationCount) || 0
+        : 0;
+      const next = {
+        ...lease,
+        reservedInvocationCount: Math.max(0,
+          (Number(lease.reservedInvocationCount) || 0)
+            - (Number(resolvedReservation.toolGrantReservedInvocationCount) || 0)),
+        consumedInvocationCount: (Number(lease.consumedInvocationCount) || 0) + consumed,
+        updatedAt: now,
+      };
+      const publicNext = publicToolGrantLease(next, now);
+      return {
+        ...next,
+        status: publicNext.status,
+        checksum: persistenceChecksum({ ...next, status: publicNext.status, checksum: undefined }),
+      };
+    });
+    return {
+      project: saveProject({ ...project, providerBudgetReservations, providerBudgetApprovals, toolGrantLeases }),
+      reservation: resolvedReservation,
+    };
   };
   const enrichCommandResultWithModelIntent = async ({
     projectId,
@@ -51016,6 +52971,19 @@ export function createAgentProjectService({
         scope: input.scope || input.metadata?.scope || null,
         source: input.source || 'secret-vault-api',
       });
+      const providerBinding = providerSecretBindingForRecord({ name, metadata });
+      const providerStatus = providerBinding.kind === 'model'
+        ? llmProvider?.status?.()
+        : providerBinding.kind === 'search'
+          ? searchProvider?.status?.()
+          : null;
+      if (
+        providerBinding.target === 'endpoint'
+        && providerStatus?.endpointPolicy?.mode === 'local-only'
+        && !evaluateLocalNetworkEndpoint(value).allowed
+      ) {
+        throw new Error('local-provider-endpoint-required');
+      }
       const sealedRecord = await resolvedSecretVault.seal(name, value, metadata);
       const providerRuntimeBinding = await bindProviderApiKeyFromVaultRecord(sealedRecord);
       clearReadModelCache();
@@ -51153,6 +53121,12 @@ export function createAgentProjectService({
     },
     listProjects() {
       return store.listProjects();
+    },
+    getProjectTrace(projectId, traceId) {
+      const project = store.getProject(projectId);
+      const normalizedTraceId = normalizeLocalTraceId(traceId);
+      if (!normalizedTraceId) throw new Error('local-project-trace-id-required');
+      return buildLocalTraceGraph(project, normalizedTraceId);
     },
     listKickoffMeetings() {
       return store.listKickoffMeetings ? store.listKickoffMeetings() : [];
@@ -51443,22 +53417,29 @@ export function createAgentProjectService({
       let meeting = meetingResult.meeting;
       if (input.confirmLeader !== false) {
         meeting = this.confirmKickoffMeetingLeader({
-          meetingId: config.meetingId,
-          selectedLeaderId: config.selectedLeaderId,
+          meetingId: meeting.id,
+          selectedLeaderId: meeting.leaderElectionResolution?.managerConfirmed
+            ? meeting.leaderElectionResolution.selectedLeaderId
+            : config.selectedLeaderId,
           now: offsetIso(now, 250),
         }).meeting;
       }
+      const confirmedLeaderId = meeting.leaderElectionResolution?.selectedLeaderId
+        || meeting.recommendedLeaderId
+        || config.selectedLeaderId
+        || null;
       if (input.confirmNextActions !== false) {
         meeting = this.confirmKickoffMeetingNextActions({
-          meetingId: config.meetingId,
+          meetingId: meeting.id,
           tasks: config.tasks,
+          selectedLeaderId: confirmedLeaderId,
           now: offsetIso(now, 500),
         }).meeting;
       }
       const approvalResult = this.approveKickoffMeeting({
-        meetingId: config.meetingId,
+        meetingId: meeting.id,
         selectedTeamIds: config.selectedTeamIds,
-        selectedLeaderId: config.selectedLeaderId,
+        selectedLeaderId: confirmedLeaderId,
         reviewerId: config.reviewerId,
         tasks: config.tasks,
         now: offsetIso(now, 750),
@@ -51552,7 +53533,7 @@ export function createAgentProjectService({
             : 'kickoff-approved-awaiting-autopilot',
         managerApproved: Boolean(meeting.status === 'approved' || meeting.approvedProjectId),
         kickoffMeetingId: meeting.id,
-        selectedLeaderId: config.selectedLeaderId,
+        selectedLeaderId: confirmedLeaderId,
         reviewerId: config.reviewerId,
         selectedTeamIds: config.selectedTeamIds,
         taskIds: config.tasks.map((task) => task.id).filter(Boolean),
@@ -51586,7 +53567,7 @@ export function createAgentProjectService({
           meetingId: meeting.id,
           sessionId: session?.id || null,
           tickId: tick?.id || null,
-          selectedLeaderId: config.selectedLeaderId,
+          selectedLeaderId: confirmedLeaderId,
           reviewerId: config.reviewerId,
           selectedTeamIds: config.selectedTeamIds,
           targetKind: session?.targetKind || input.targetKind || 'product-team-delivery-trace',
@@ -51627,7 +53608,11 @@ export function createAgentProjectService({
         kickoffMeetingId: meeting.id,
         kickoffMeetingRoute: `/kickoff-meetings/${encodeURIComponent(meeting.id)}`,
         kickoffApprovalRoute: `/kickoff-meetings/${encodeURIComponent(meeting.id)}/approve`,
-        selectedLeaderId: config.selectedLeaderId,
+        selectedLeaderId: confirmedLeaderId,
+        leaderAgentId: confirmedLeaderId,
+        confirmedLeaderAgentId: meeting.leaderElectionResolution?.managerConfirmed ? confirmedLeaderId : null,
+        leaderElectionResolution: meeting.leaderElectionResolution || null,
+        transcript: meeting.transcript || [],
         reviewerId: config.reviewerId,
         taskIds: config.tasks.map((task) => task.id).filter(Boolean),
         agentIds: config.team.map((agent) => agent.id).filter(Boolean),
@@ -51705,7 +53690,7 @@ export function createAgentProjectService({
             schemaVersion: missionRun.schemaVersion,
             missionType: missionRun.missionType,
             researchOnly: false,
-            selectedLeaderId: config.selectedLeaderId,
+            selectedLeaderId: confirmedLeaderId,
             reviewerId: config.reviewerId,
             autonomousSessionId: session?.id || null,
             runInitialTick: Boolean(tick),
@@ -52483,6 +54468,1312 @@ export function createAgentProjectService({
         }, language);
       });
     },
+    getLocalAutonomyGovernor(projectId, options = {}) {
+      return cachedReadModel('local-autonomy-governor', projectId, options, () => buildLocalAutonomyGovernor({
+        project: store.getProject(projectId),
+        now: options.now || nowIso(),
+      }));
+    },
+    getLocalLearningProgram(projectId, options = {}) {
+      return cachedReadModel('local-learning-program', projectId, options, () => buildLocalLearningProgram({
+        project: store.getProject(projectId),
+        now: options.now || nowIso(),
+      }));
+    },
+    getLocalTeachingSafety(projectId, options = {}) {
+      return cachedReadModel('local-teaching-safety', projectId, options, () => buildLocalTeachingSafety({
+        project: store.getProject(projectId),
+        now: options.now || nowIso(),
+      }));
+    },
+    getLocalAcademicWritingPipeline(projectId, options = {}) {
+      return cachedReadModel('local-academic-writing-pipeline', projectId, options, () => {
+        const project = store.getProject(projectId);
+        const academicWritingPipeline = buildLocalAcademicWritingPipeline({ project, now: options.now || nowIso() });
+        const citationIntegrity = buildLocalCitationIntegrity({ project, now: options.now || nowIso() });
+        const exactFinalization = Boolean(citationIntegrity.latestAudit
+          && citationIntegrity.latestAudit.finalizationId === academicWritingPipeline.finalization?.id
+          && citationIntegrity.latestAudit.finalizationChecksum === academicWritingPipeline.finalization?.checksum);
+        const citationStatus = !citationIntegrity.integrity.valid
+          ? 'citation-integrity-degraded'
+          : exactFinalization && citationIntegrity.latestAudit?.status === 'passed'
+            ? 'citation-integrity-passed'
+            : exactFinalization && citationIntegrity.latestAudit?.status === 'blocked'
+              ? 'citation-integrity-blocked'
+              : academicWritingPipeline.status;
+        return {
+          ...academicWritingPipeline,
+          status: citationStatus,
+          citationIntegrityStatus: citationIntegrity.status,
+          citationIntegrityRoute: citationIntegrity.backendRoutes.citationIntegrity,
+          readyForLocalCitationIntegrity: Boolean(exactFinalization && citationIntegrity.readyForLocalCitationIntegrity),
+          readyForProduction: false,
+        };
+      });
+    },
+    getLocalCitationIntegrity(projectId, options = {}) {
+      return cachedReadModel('local-citation-integrity', projectId, options, () => buildLocalCitationIntegrity({
+        project: store.getProject(projectId),
+        now: options.now || nowIso(),
+      }));
+    },
+    recordLocalCitationAssessment(input = {}) {
+      const project = store.getProject(input.projectId);
+      if (project.workModeContract?.workMode !== 'academic-writing') throw new Error('citation-integrity-academic-writing-work-mode-required');
+      const blueprint = (project.localAcademicWritingBlueprints || [])[0];
+      const finalization = (project.localAcademicFinalizations || [])[0];
+      if (!blueprint || !finalization) throw new Error('citation-integrity-finalized-manuscript-required');
+      const sourceSnapshots = project.evidenceSourceSnapshots || (project.evidenceSearches || []).flatMap((row) => row.sourceSnapshots || []);
+      const sourceSnapshot = sourceSnapshots.find((row) => row.id === input.sourceSnapshotId);
+      if (!sourceSnapshot) throw new Error('citation-integrity-source-snapshot-not-found');
+      const assessments = project.localCitationAssessments || [];
+      const existing = assessments.find((row) => row.idempotencyKey === input.idempotencyKey);
+      const pairRows = assessments
+        .filter((row) => row.blueprintId === blueprint.id && row.claimId === input.claimId && row.sourceEvidenceId === input.sourceEvidenceId)
+        .sort((a, b) => b.version - a.version);
+      const previous = existing
+        ? (existing.previousAssessmentId ? assessments.find((row) => row.id === existing.previousAssessmentId) || null : null)
+        : pairRows[0] || null;
+      if (!existing && previous && (Number(input.expectedAssessmentVersion) !== previous.version || String(input.expectedAssessmentChecksum) !== previous.checksum)) {
+        throw new Error('citation-integrity-stale-assessment');
+      }
+      const citationAssessment = createCitationAssessmentReceipt({
+        ...input,
+        blueprint,
+        sourceSnapshot,
+        version: existing?.version || (previous ? previous.version + 1 : 1),
+        previousAssessmentId: existing?.previousAssessmentId || previous?.id || null,
+        previousAssessmentChecksum: existing?.previousAssessmentChecksum || previous?.checksum || null,
+        now: existing?.createdAt || input.now,
+      });
+      if (existing) {
+        if (existing.checksum !== citationAssessment.checksum) throw new Error('citation-integrity-idempotency-conflict');
+        return {
+          route: 'local-citation-assessment-idempotent', project, citationAssessment: existing,
+          citationIntegrity: this.getLocalCitationIntegrity(project.id, { now: input.now, skipCache: true }),
+          academicWritingPipeline: this.getLocalAcademicWritingPipeline(project.id, { now: input.now, skipCache: true }), idempotent: true,
+        };
+      }
+      const current = buildLocalCitationIntegrity({ project, now: input.now || nowIso() });
+      if (!current.integrity.valid) throw new Error('citation-integrity-current-state-invalid');
+      const savedProject = saveProject({ ...project, localCitationAssessments: [citationAssessment, ...assessments] });
+      return {
+        route: 'local-citation-assessment-recorded', project: savedProject, citationAssessment,
+        citationIntegrity: this.getLocalCitationIntegrity(project.id, { now: input.now, skipCache: true }),
+        academicWritingPipeline: this.getLocalAcademicWritingPipeline(project.id, { now: input.now, skipCache: true }),
+      };
+    },
+    createLocalCitationIntegrityAudit(input = {}) {
+      const project = store.getProject(input.projectId);
+      if (project.workModeContract?.workMode !== 'academic-writing') throw new Error('citation-integrity-academic-writing-work-mode-required');
+      const blueprint = (project.localAcademicWritingBlueprints || [])[0];
+      const finalization = (project.localAcademicFinalizations || [])[0];
+      if (!blueprint || !finalization) throw new Error('citation-integrity-finalized-manuscript-required');
+      const current = buildLocalCitationIntegrity({ project, now: input.now || nowIso() });
+      if (!current.integrity.valid) throw new Error('citation-integrity-current-state-invalid');
+      const latestByPair = new Map();
+      [...(project.localCitationAssessments || [])]
+        .filter((row) => row.blueprintId === blueprint.id)
+        .sort((a, b) => a.version - b.version)
+        .forEach((row) => latestByPair.set(`${row.claimId}\u0000${row.sourceEvidenceId}`, row));
+      const assessments = [...latestByPair.values()];
+      const audits = project.localCitationIntegrityAudits || [];
+      const existing = audits.find((row) => row.idempotencyKey === input.idempotencyKey);
+      const citationIntegrityAudit = createCitationIntegrityAuditReceipt({
+        ...input, blueprint, finalization, assessments, now: existing?.createdAt || input.now,
+      });
+      if (existing) {
+        if (existing.checksum !== citationIntegrityAudit.checksum) throw new Error('citation-integrity-idempotency-conflict');
+        return {
+          route: 'local-citation-integrity-audit-idempotent', project, citationIntegrityAudit: existing,
+          citationIntegrity: this.getLocalCitationIntegrity(project.id, { now: input.now, skipCache: true }),
+          academicWritingPipeline: this.getLocalAcademicWritingPipeline(project.id, { now: input.now, skipCache: true }), idempotent: true,
+        };
+      }
+      const savedProject = saveProject({ ...project, localCitationIntegrityAudits: [citationIntegrityAudit, ...audits] });
+      return {
+        route: 'local-citation-integrity-audited', project: savedProject, citationIntegrityAudit,
+        citationIntegrity: this.getLocalCitationIntegrity(project.id, { now: input.now, skipCache: true }),
+        academicWritingPipeline: this.getLocalAcademicWritingPipeline(project.id, { now: input.now, skipCache: true }),
+      };
+    },
+    getLocalInvestigationCaseWorkflow(projectId, options = {}) {
+      return cachedReadModel('local-investigation-case-workflow', projectId, options, () => buildLocalInvestigationCaseWorkflow({
+        project: store.getProject(projectId),
+        now: options.now || nowIso(),
+      }));
+    },
+    getLocalInvestigationSafety(projectId, options = {}) {
+      return cachedReadModel('local-investigation-safety', projectId, options, () => buildLocalInvestigationSafety({
+        project: store.getProject(projectId),
+        now: options.now || nowIso(),
+      }));
+    },
+    createLocalInvestigationSafetyPolicy(input = {}) {
+      const project = store.getProject(input.projectId);
+      if (project.workModeContract?.workMode !== 'investigation') throw new Error('investigation-safety-investigation-work-mode-required');
+      const caseRecord = (project.localInvestigationCases || [])[0];
+      if (!caseRecord) throw new Error('investigation-safety-case-required');
+      const roles = localInvestigationRoleIds(project);
+      const authorityEvidenceIds = [...new Set((input.authorityEvidenceIds || []).map(String))].sort();
+      const knownEvidenceIds = localInvestigationAuthorityEvidenceIds(project);
+      if (authorityEvidenceIds.some((value) => !knownEvidenceIds.has(value))) throw new Error('investigation-safety-authority-evidence-not-found');
+      const policies = project.localInvestigationSafetyPolicies || [];
+      const existing = policies.find((row) => row.idempotencyKey === input.idempotencyKey);
+      const previous = existing
+        ? (existing.previousPolicyId ? policies.find((row) => row.id === existing.previousPolicyId) || null : null)
+        : policies[0] || null;
+      if (!existing && previous && (Number(input.expectedPolicyVersion) !== previous.version || String(input.expectedPolicyChecksum) !== previous.checksum)) throw new Error('investigation-safety-stale-policy');
+      const investigationSafetyPolicy = createInvestigationSafetyPolicyReceipt({
+        ...input, caseRecord, authorityEvidenceIds, reviewerId: roles.reviewerId, actorId: roles.leadId,
+        version: existing?.version || (previous ? previous.version + 1 : 1),
+        previousPolicyId: existing?.previousPolicyId || previous?.id || null,
+        previousPolicyChecksum: existing?.previousPolicyChecksum || previous?.checksum || null,
+        now: existing?.createdAt || input.now,
+      });
+      if (existing) {
+        if (existing.checksum !== investigationSafetyPolicy.checksum) throw new Error('investigation-safety-idempotency-conflict');
+        return { route: 'local-investigation-safety-policy-idempotent', project, investigationSafetyPolicy: existing, investigationSafety: this.getLocalInvestigationSafety(project.id, { now: input.now, skipCache: true }), idempotent: true };
+      }
+      const current = buildLocalInvestigationSafety({ project, now: input.now || nowIso() });
+      if (!current.integrity.valid) throw new Error('investigation-safety-current-state-invalid');
+      const savedProject = saveProject({ ...project, localInvestigationSafetyPolicies: [investigationSafetyPolicy, ...policies] });
+      return { route: 'local-investigation-safety-policy-created', project: savedProject, investigationSafetyPolicy, investigationSafety: this.getLocalInvestigationSafety(project.id, { now: input.now, skipCache: true }) };
+    },
+    evaluateLocalInvestigationSafety(input = {}) {
+      const project = store.getProject(input.projectId);
+      if (project.workModeContract?.workMode !== 'investigation') throw new Error('investigation-safety-investigation-work-mode-required');
+      const policy = (project.localInvestigationSafetyPolicies || [])[0];
+      const caseRecord = (project.localInvestigationCases || [])[0];
+      if (!policy || !caseRecord) throw new Error('investigation-safety-policy-required');
+      const targetIds = [...new Set((input.context?.targetIds || []).map(String))].sort();
+      const actionType = input.context?.actionType;
+      if (actionType === 'collect-evidence') {
+        const snapshots = project.evidenceSourceSnapshots || (project.evidenceSearches || []).flatMap((row) => row.sourceSnapshots || []);
+        if (targetIds.some((value) => !snapshots.some((row) => row.id === value))) throw new Error('investigation-safety-target-not-found');
+      }
+      if (['draft-conclusion', 'close-case'].includes(actionType) && (targetIds.length !== 1 || targetIds[0] !== caseRecord.id)) throw new Error('investigation-safety-case-target-required');
+      const decisions = project.localInvestigationSafetyDecisions || [];
+      const existing = decisions.find((row) => row.idempotencyKey === input.idempotencyKey);
+      const investigationSafetyDecision = createInvestigationSafetyDecisionReceipt({
+        ...input, policy, caseState: localInvestigationSafetyCaseState(project, input.now || nowIso()), now: existing?.createdAt || input.now,
+      });
+      if (existing) {
+        if (existing.checksum !== investigationSafetyDecision.checksum) throw new Error('investigation-safety-idempotency-conflict');
+        return { route: 'local-investigation-safety-decision-idempotent', project, investigationSafetyDecision: existing, investigationSafety: this.getLocalInvestigationSafety(project.id, { now: input.now, skipCache: true }), idempotent: true };
+      }
+      const current = buildLocalInvestigationSafety({ project, now: input.now || nowIso() });
+      if (!current.integrity.valid) throw new Error('investigation-safety-current-state-invalid');
+      const savedProject = saveProject({ ...project, localInvestigationSafetyDecisions: [investigationSafetyDecision, ...decisions] });
+      return { route: 'local-investigation-safety-evaluated', project: savedProject, investigationSafetyDecision, investigationSafety: this.getLocalInvestigationSafety(project.id, { now: input.now, skipCache: true }) };
+    },
+    resolveLocalInvestigationSafetyDecision(input = {}) {
+      const project = store.getProject(input.projectId);
+      if (project.workModeContract?.workMode !== 'investigation') throw new Error('investigation-safety-investigation-work-mode-required');
+      const roles = localInvestigationRoleIds(project);
+      const decision = (project.localInvestigationSafetyDecisions || []).find((row) => row.id === input.decisionId);
+      if (!decision) throw new Error('investigation-safety-decision-not-found');
+      const evidenceIds = [...new Set((input.evidenceIds || []).map(String))].sort();
+      const knownEvidenceIds = localInvestigationAuthorityEvidenceIds(project);
+      knownEvidenceIds.add(decision.caseId);
+      if (evidenceIds.some((value) => !knownEvidenceIds.has(value))) throw new Error('investigation-safety-resolution-evidence-not-found');
+      const resolutions = project.localInvestigationSafetyResolutions || [];
+      const existing = resolutions.find((row) => row.idempotencyKey === input.idempotencyKey);
+      const investigationSafetyResolution = createInvestigationSafetyResolutionReceipt({
+        ...input, decision, evidenceIds, actorId: roles.reviewerId, now: existing?.createdAt || input.now,
+      });
+      if (existing) {
+        if (existing.checksum !== investigationSafetyResolution.checksum) throw new Error('investigation-safety-idempotency-conflict');
+        return { route: 'local-investigation-safety-resolution-idempotent', project, investigationSafetyResolution: existing, investigationSafety: this.getLocalInvestigationSafety(project.id, { now: input.now, skipCache: true }), idempotent: true };
+      }
+      const current = buildLocalInvestigationSafety({ project, now: input.now || nowIso() });
+      if (!current.integrity.valid) throw new Error('investigation-safety-current-state-invalid');
+      const savedProject = saveProject({ ...project, localInvestigationSafetyResolutions: [investigationSafetyResolution, ...resolutions] });
+      return { route: 'local-investigation-safety-resolved', project: savedProject, investigationSafetyResolution, investigationSafety: this.getLocalInvestigationSafety(project.id, { now: input.now, skipCache: true }) };
+    },
+    getLocalCreativeStudioWorkflow(projectId, options = {}) {
+      return cachedReadModel('local-creative-studio-workflow', projectId, options, () => buildLocalCreativeStudioWorkflow({
+        project: store.getProject(projectId),
+        now: options.now || nowIso(),
+      }));
+    },
+    createLocalCreativeBrief(input = {}) {
+      const project = store.getProject(input.projectId);
+      if (project.workModeContract?.workMode !== 'creative-studio') throw new Error('creative-studio-work-mode-required');
+      const roles = localCreativeStudioRoleIds(project);
+      const rows = project.localCreativeBriefs || [];
+      const existing = rows.find((row) => row.idempotencyKey === input.idempotencyKey);
+      const previous = existing
+        ? (existing.previousBriefId ? rows.find((row) => row.id === existing.previousBriefId) || null : null)
+        : rows[0] || null;
+      if (!existing && previous && (Number(input.expectedBriefVersion) !== previous.version || String(input.expectedBriefChecksum) !== previous.checksum)) throw new Error('creative-studio-stale-brief');
+      const creativeBrief = createCreativeBriefReceipt({
+        ...input,
+        ...roles,
+        knownEvidenceIds: [...localCreativeStudioEvidenceIds(project)],
+        version: existing?.version || (previous ? previous.version + 1 : 1),
+        previousBriefId: existing?.previousBriefId || previous?.id || null,
+        previousBriefChecksum: existing?.previousBriefChecksum || previous?.checksum || null,
+        actorId: roles.creativeLeadId,
+        now: existing?.createdAt || input.now,
+      });
+      if (previous && Date.parse(creativeBrief.createdAt) <= Date.parse(previous.createdAt)) throw new Error('creative-studio-brief-time-invalid');
+      if (existing) {
+        if (existing.checksum !== creativeBrief.checksum) throw new Error('creative-studio-idempotency-conflict');
+        return { route: 'local-creative-brief-idempotent', project, creativeBrief: existing, creativeStudioWorkflow: this.getLocalCreativeStudioWorkflow(project.id, { now: input.now, skipCache: true }), idempotent: true };
+      }
+      const current = buildLocalCreativeStudioWorkflow({ project, now: input.now || nowIso() });
+      if (!current.integrity.valid) throw new Error('creative-studio-current-state-invalid');
+      const savedProject = saveProject({ ...project, localCreativeBriefs: [creativeBrief, ...rows] });
+      return { route: 'local-creative-brief-created', project: savedProject, creativeBrief, creativeStudioWorkflow: this.getLocalCreativeStudioWorkflow(project.id, { now: input.now, skipCache: true }) };
+    },
+    createLocalCreativeIteration(input = {}) {
+      const project = store.getProject(input.projectId);
+      if (project.workModeContract?.workMode !== 'creative-studio') throw new Error('creative-studio-work-mode-required');
+      const brief = (project.localCreativeBriefs || [])[0];
+      if (!brief) throw new Error('creative-studio-brief-required');
+      const submission = (project.agentSubmissions || []).find((row) => row.id === input.submissionId);
+      if (!submission) throw new Error('creative-studio-submission-not-found');
+      const rows = project.localCreativeIterations || [];
+      const existing = rows.find((row) => row.idempotencyKey === input.idempotencyKey);
+      const currentForBrief = rows.find((row) => row.briefId === brief.id) || null;
+      const previousIteration = existing
+        ? (existing.previousIterationId ? rows.find((row) => row.id === existing.previousIterationId) || null : null)
+        : input.previousIterationId ? rows.find((row) => row.id === input.previousIterationId) || null : null;
+      if (!existing && currentForBrief && previousIteration?.id !== currentForBrief.id) throw new Error('creative-studio-latest-iteration-required');
+      if (!existing && input.previousIterationId && !previousIteration) throw new Error('creative-studio-previous-iteration-not-found');
+      const priorCritiques = previousIteration
+        ? (project.localCreativeCritiques || []).filter((row) => row.iterationId === previousIteration.id)
+        : [];
+      const creativeIteration = createCreativeIterationReceipt({
+        ...input,
+        brief,
+        submission,
+        previousIteration,
+        priorCritiques,
+        addressedIssueIds: input.addressedIssueIds || [],
+        now: existing?.createdAt || input.now,
+      });
+      if (existing) {
+        if (existing.checksum !== creativeIteration.checksum) throw new Error('creative-studio-idempotency-conflict');
+        return { route: 'local-creative-iteration-idempotent', project, creativeIteration: existing, creativeStudioWorkflow: this.getLocalCreativeStudioWorkflow(project.id, { now: input.now, skipCache: true }), idempotent: true };
+      }
+      const current = buildLocalCreativeStudioWorkflow({ project, now: input.now || nowIso() });
+      if (!current.integrity.valid) throw new Error('creative-studio-current-state-invalid');
+      const savedProject = saveProject({ ...project, localCreativeIterations: [creativeIteration, ...rows] });
+      return { route: 'local-creative-iteration-created', project: savedProject, creativeIteration, creativeStudioWorkflow: this.getLocalCreativeStudioWorkflow(project.id, { now: input.now, skipCache: true }) };
+    },
+    createLocalCreativeCritique(input = {}) {
+      const project = store.getProject(input.projectId);
+      if (project.workModeContract?.workMode !== 'creative-studio') throw new Error('creative-studio-work-mode-required');
+      const brief = (project.localCreativeBriefs || [])[0];
+      const iteration = (project.localCreativeIterations || []).find((row) => row.id === input.iterationId);
+      if (!brief || !iteration || iteration.briefId !== brief.id) throw new Error('creative-studio-current-iteration-required');
+      const currentIteration = (project.localCreativeIterations || []).find((row) => row.briefId === brief.id);
+      if (currentIteration?.id !== iteration.id) throw new Error('creative-studio-latest-iteration-required');
+      const roles = localCreativeStudioRoleIds(project);
+      const reviewerId = input.perspective === 'creative-lead' ? roles.creativeLeadId : roles.audienceResearcherId;
+      const rows = project.localCreativeCritiques || [];
+      const existing = rows.find((row) => row.idempotencyKey === input.idempotencyKey);
+      const creativeCritique = createCreativeCritiqueReceipt({ ...input, brief, iteration, reviewerId, now: existing?.createdAt || input.now });
+      if (existing) {
+        if (existing.checksum !== creativeCritique.checksum) throw new Error('creative-studio-idempotency-conflict');
+        return { route: 'local-creative-critique-idempotent', project, creativeCritique: existing, creativeStudioWorkflow: this.getLocalCreativeStudioWorkflow(project.id, { now: input.now, skipCache: true }), idempotent: true };
+      }
+      const current = buildLocalCreativeStudioWorkflow({ project, now: input.now || nowIso() });
+      if (!current.integrity.valid) throw new Error('creative-studio-current-state-invalid');
+      if (rows.some((row) => row.iterationId === iteration.id && row.perspective === input.perspective)) throw new Error('creative-studio-critique-perspective-already-recorded');
+      if ((project.localCreativeExports || []).some((row) => row.iterationId === iteration.id)) throw new Error('creative-studio-critique-after-export-forbidden');
+      const savedProject = saveProject({ ...project, localCreativeCritiques: [creativeCritique, ...rows] });
+      return { route: 'local-creative-critique-created', project: savedProject, creativeCritique, creativeStudioWorkflow: this.getLocalCreativeStudioWorkflow(project.id, { now: input.now, skipCache: true }) };
+    },
+    createLocalCreativeExport(input = {}) {
+      const project = store.getProject(input.projectId);
+      if (project.workModeContract?.workMode !== 'creative-studio') throw new Error('creative-studio-work-mode-required');
+      const current = buildLocalCreativeStudioWorkflow({ project, now: input.now || nowIso() });
+      if (!current.integrity.valid) throw new Error('creative-studio-current-state-invalid');
+      const brief = current.latestBrief;
+      const iteration = current.latestIteration;
+      if (!brief || !iteration || input.iterationId !== iteration.id || !current.readyForExport) throw new Error('creative-studio-export-current-approved-iteration-required');
+      const rows = project.localCreativeExports || [];
+      const existing = rows.find((row) => row.idempotencyKey === input.idempotencyKey);
+      const creativeExport = createCreativeExportReceipt({
+        ...input,
+        brief,
+        iteration,
+        critiques: current.latestCritiques,
+        actorId: localCreativeStudioRoleIds(project).artDirectorId,
+        now: existing?.createdAt || input.now,
+      });
+      if (existing) {
+        if (existing.checksum !== creativeExport.checksum) throw new Error('creative-studio-idempotency-conflict');
+        return { route: 'local-creative-export-idempotent', project, creativeExport: existing, creativeStudioWorkflow: this.getLocalCreativeStudioWorkflow(project.id, { now: input.now, skipCache: true }), idempotent: true };
+      }
+      if (rows.some((row) => row.iterationId === iteration.id)) throw new Error('creative-studio-export-already-recorded');
+      const savedProject = saveProject({ ...project, localCreativeExports: [creativeExport, ...rows] });
+      return { route: 'local-creative-export-created', project: savedProject, creativeExport, creativeStudioWorkflow: this.getLocalCreativeStudioWorkflow(project.id, { now: input.now, skipCache: true }) };
+    },
+    createLocalCreativeHandoff(input = {}) {
+      const project = store.getProject(input.projectId);
+      if (project.workModeContract?.workMode !== 'creative-studio') throw new Error('creative-studio-work-mode-required');
+      const current = buildLocalCreativeStudioWorkflow({ project, now: input.now || nowIso() });
+      if (!current.integrity.valid) throw new Error('creative-studio-current-state-invalid');
+      if (!current.latestExport || input.exportId !== current.latestExport.id) throw new Error('creative-studio-current-export-required');
+      const rows = project.localCreativeHandoffs || [];
+      const existing = rows.find((row) => row.idempotencyKey === input.idempotencyKey);
+      const roles = localCreativeStudioRoleIds(project);
+      const creativeHandoff = createCreativeHandoffReceipt({
+        ...input,
+        brief: current.latestBrief,
+        iteration: current.latestIteration,
+        creativeExport: current.latestExport,
+        senderId: roles.artDirectorId,
+        recipientId: roles.creativeLeadId,
+        now: existing?.createdAt || input.now,
+      });
+      if (existing) {
+        if (existing.checksum !== creativeHandoff.checksum) throw new Error('creative-studio-idempotency-conflict');
+        return { route: 'local-creative-handoff-idempotent', project, creativeHandoff: existing, creativeStudioWorkflow: this.getLocalCreativeStudioWorkflow(project.id, { now: input.now, skipCache: true }), idempotent: true };
+      }
+      if (rows.some((row) => row.exportId === current.latestExport.id)) throw new Error('creative-studio-handoff-already-recorded');
+      const savedProject = saveProject({ ...project, localCreativeHandoffs: [creativeHandoff, ...rows] });
+      return { route: 'local-creative-handoff-created', project: savedProject, creativeHandoff, creativeStudioWorkflow: this.getLocalCreativeStudioWorkflow(project.id, { now: input.now, skipCache: true }) };
+    },
+    acknowledgeLocalCreativeHandoff(input = {}) {
+      const project = store.getProject(input.projectId);
+      if (project.workModeContract?.workMode !== 'creative-studio') throw new Error('creative-studio-work-mode-required');
+      const handoff = (project.localCreativeHandoffs || []).find((row) => row.id === input.handoffId);
+      if (!handoff) throw new Error('creative-studio-handoff-not-found');
+      const rows = project.localCreativeHandoffAcknowledgements || [];
+      const existing = rows.find((row) => row.idempotencyKey === input.idempotencyKey);
+      const creativeHandoffAcknowledgement = createCreativeHandoffAcknowledgementReceipt({
+        ...input,
+        handoff,
+        actorId: localCreativeStudioRoleIds(project).creativeLeadId,
+        now: existing?.createdAt || input.now,
+      });
+      if (existing) {
+        if (existing.checksum !== creativeHandoffAcknowledgement.checksum) throw new Error('creative-studio-idempotency-conflict');
+        return { route: 'local-creative-handoff-acknowledgement-idempotent', project, creativeHandoffAcknowledgement: existing, creativeStudioWorkflow: this.getLocalCreativeStudioWorkflow(project.id, { now: input.now, skipCache: true }), idempotent: true };
+      }
+      const current = buildLocalCreativeStudioWorkflow({ project, now: input.now || nowIso() });
+      if (!current.integrity.valid) throw new Error('creative-studio-current-state-invalid');
+      if (current.latestHandoff?.id !== handoff.id) throw new Error('creative-studio-current-handoff-required');
+      if (rows.some((row) => row.handoffId === handoff.id)) throw new Error('creative-studio-handoff-already-acknowledged');
+      const savedProject = saveProject({ ...project, localCreativeHandoffAcknowledgements: [creativeHandoffAcknowledgement, ...rows] });
+      return { route: 'local-creative-handoff-acknowledgement-created', project: savedProject, creativeHandoffAcknowledgement, creativeStudioWorkflow: this.getLocalCreativeStudioWorkflow(project.id, { now: input.now, skipCache: true }) };
+    },
+    getLocalRightsProvenance(projectId, options = {}) {
+      return cachedReadModel('local-rights-provenance', projectId, options, () => buildLocalRightsProvenance({
+        project: store.getProject(projectId),
+        now: options.now || nowIso(),
+      }));
+    },
+    getLocalArtifactStorage(projectId, options = {}) {
+      if (!projectRuntime?.auditArtifactStore) throw new Error('local-artifact-storage-runtime-required');
+      return projectRuntime.auditArtifactStore(store.getProject(projectId), { now: options.now || nowIso() });
+    },
+    placeLocalArtifactLegalHold(input = {}) {
+      if (!projectRuntime?.placeArtifactLegalHold) throw new Error('local-artifact-storage-runtime-required');
+      const project = store.getProject(input.projectId);
+      const current = projectRuntime.auditArtifactStore(project, { now: input.now || nowIso() });
+      if (!current.integrity.valid) throw new Error('local-artifact-storage-integrity-invalid');
+      const artifactLegalHold = projectRuntime.placeArtifactLegalHold(project, input);
+      return { route: 'local-artifact-legal-hold-placed', project, artifactLegalHold, localArtifactStorage: projectRuntime.auditArtifactStore(project, { now: input.now || nowIso() }) };
+    },
+    releaseLocalArtifactLegalHold(input = {}) {
+      if (!projectRuntime?.releaseArtifactLegalHold) throw new Error('local-artifact-storage-runtime-required');
+      const project = store.getProject(input.projectId);
+      const current = projectRuntime.auditArtifactStore(project, { now: input.now || nowIso() });
+      if (!current.integrity.valid) throw new Error('local-artifact-storage-integrity-invalid');
+      const artifactLegalHoldRelease = projectRuntime.releaseArtifactLegalHold(project, input);
+      return { route: 'local-artifact-legal-hold-released', project, artifactLegalHoldRelease, localArtifactStorage: projectRuntime.auditArtifactStore(project, { now: input.now || nowIso() }) };
+    },
+    createLocalRightsAssetDeclaration(input = {}) {
+      const project = store.getProject(input.projectId);
+      if (project.workModeContract?.workMode !== 'creative-studio') throw new Error('rights-provenance-creative-studio-work-mode-required');
+      const creative = buildLocalCreativeStudioWorkflow({ project, now: input.now || nowIso() });
+      if (!creative.integrity.valid || !creative.readyForRightsProvenanceAudit) throw new Error('rights-provenance-creative-terminal-state-required');
+      const rows = project.localRightsAssetDeclarations || [];
+      const existing = rows.find((row) => row.idempotencyKey === input.idempotencyKey);
+      const previousDeclaration = existing?.previousDeclarationId
+        ? rows.find((row) => row.id === existing.previousDeclarationId) || null
+        : input.replacesDeclarationId ? rows.find((row) => row.id === input.replacesDeclarationId) || null : null;
+      if (!existing && input.replacesDeclarationId && !previousDeclaration) throw new Error('rights-provenance-previous-declaration-not-found');
+      const rightsAssetDeclaration = createRightsAssetDeclarationReceipt({
+        ...input,
+        projectId: project.id,
+        creativeExport: creative.latestExport,
+        handoff: creative.latestHandoff,
+        previousDeclaration,
+        actorId: localCreativeStudioRoleIds(project).artDirectorId,
+        now: existing?.createdAt || input.now,
+      });
+      if (existing) {
+        if (existing.checksum !== rightsAssetDeclaration.checksum) throw new Error('rights-provenance-idempotency-conflict');
+        return { route: 'local-rights-asset-declaration-idempotent', project, rightsAssetDeclaration: existing, rightsProvenance: this.getLocalRightsProvenance(project.id, { now: input.now, skipCache: true }), idempotent: true };
+      }
+      const current = buildLocalRightsProvenance({ project, now: input.now || nowIso() });
+      if (!current.integrity.valid) throw new Error('rights-provenance-current-state-invalid');
+      const currentForTarget = current.declarations.find((row) => row.targetType === input.targetType && row.targetId === input.targetId);
+      if ((!previousDeclaration && currentForTarget) || (previousDeclaration && currentForTarget?.id !== previousDeclaration.id)) throw new Error('rights-provenance-target-already-declared');
+      const savedProject = saveProject({ ...project, localRightsAssetDeclarations: [rightsAssetDeclaration, ...rows] });
+      return { route: 'local-rights-asset-declaration-created', project: savedProject, rightsAssetDeclaration, rightsProvenance: this.getLocalRightsProvenance(project.id, { now: input.now, skipCache: true }) };
+    },
+    createLocalRightsGenerationProvenance(input = {}) {
+      const project = store.getProject(input.projectId);
+      if (project.workModeContract?.workMode !== 'creative-studio') throw new Error('rights-provenance-creative-studio-work-mode-required');
+      const declarations = project.localRightsAssetDeclarations || [];
+      const declaration = declarations.find((row) => row.id === input.declarationId);
+      if (!declaration) throw new Error('rights-provenance-declaration-not-found');
+      const rows = project.localRightsGenerationProvenance || [];
+      const existing = rows.find((row) => row.idempotencyKey === input.idempotencyKey);
+      const rightsGenerationProvenance = createRightsGenerationProvenanceReceipt({
+        ...input, declaration, declarations, actorId: localCreativeStudioRoleIds(project).artDirectorId,
+        humanEditorId: localCreativeStudioRoleIds(project).artDirectorId, now: existing?.createdAt || input.now,
+      });
+      if (existing) {
+        if (existing.checksum !== rightsGenerationProvenance.checksum) throw new Error('rights-provenance-idempotency-conflict');
+        return { route: 'local-rights-generation-provenance-idempotent', project, rightsGenerationProvenance: existing, rightsProvenance: this.getLocalRightsProvenance(project.id, { now: input.now, skipCache: true }), idempotent: true };
+      }
+      const current = buildLocalRightsProvenance({ project, now: input.now || nowIso() });
+      if (!current.integrity.valid) throw new Error('rights-provenance-current-state-invalid');
+      if (rows.some((row) => row.declarationId === declaration.id)) throw new Error('rights-provenance-generation-already-recorded');
+      const savedProject = saveProject({ ...project, localRightsGenerationProvenance: [rightsGenerationProvenance, ...rows] });
+      return { route: 'local-rights-generation-provenance-created', project: savedProject, rightsGenerationProvenance, rightsProvenance: this.getLocalRightsProvenance(project.id, { now: input.now, skipCache: true }) };
+    },
+    createLocalRightsDerivativeLineage(input = {}) {
+      const project = store.getProject(input.projectId);
+      if (project.workModeContract?.workMode !== 'creative-studio') throw new Error('rights-provenance-creative-studio-work-mode-required');
+      const declarations = project.localRightsAssetDeclarations || [];
+      const outputDeclaration = declarations.find((row) => row.id === input.outputDeclarationId);
+      if (!outputDeclaration) throw new Error('rights-provenance-declaration-not-found');
+      const rows = project.localRightsDerivativeLineages || [];
+      const existing = rows.find((row) => row.idempotencyKey === input.idempotencyKey);
+      const rightsDerivativeLineage = createRightsDerivativeLineageReceipt({
+        ...input, outputDeclaration, declarations, existingLineages: existing ? rows.filter((row) => row.id !== existing.id) : rows,
+        actorId: localCreativeStudioRoleIds(project).artDirectorId, now: existing?.createdAt || input.now,
+      });
+      if (existing) {
+        if (existing.checksum !== rightsDerivativeLineage.checksum) throw new Error('rights-provenance-idempotency-conflict');
+        return { route: 'local-rights-derivative-lineage-idempotent', project, rightsDerivativeLineage: existing, rightsProvenance: this.getLocalRightsProvenance(project.id, { now: input.now, skipCache: true }), idempotent: true };
+      }
+      const current = buildLocalRightsProvenance({ project, now: input.now || nowIso() });
+      if (!current.integrity.valid) throw new Error('rights-provenance-current-state-invalid');
+      if (rows.some((row) => row.outputDeclarationId === outputDeclaration.id)) throw new Error('rights-provenance-derivative-already-recorded');
+      const savedProject = saveProject({ ...project, localRightsDerivativeLineages: [rightsDerivativeLineage, ...rows] });
+      return { route: 'local-rights-derivative-lineage-created', project: savedProject, rightsDerivativeLineage, rightsProvenance: this.getLocalRightsProvenance(project.id, { now: input.now, skipCache: true }) };
+    },
+    createLocalRightsExportAudit(input = {}) {
+      const project = store.getProject(input.projectId);
+      if (project.workModeContract?.workMode !== 'creative-studio') throw new Error('rights-provenance-creative-studio-work-mode-required');
+      const current = buildLocalRightsProvenance({ project, now: input.now || nowIso() });
+      if (!current.integrity.valid) throw new Error('rights-provenance-current-state-invalid');
+      const rows = project.localRightsExportAudits || [];
+      const existing = rows.find((row) => row.idempotencyKey === input.idempotencyKey);
+      const rightsExportAudit = createRightsExportAuditReceipt({
+        ...input,
+        creativeWorkflow: current.creativeWorkflow,
+        declarations: current.declarations,
+        generationProvenance: (project.localRightsGenerationProvenance || []).filter((row) => current.declarations.some((declaration) => declaration.id === row.declarationId)),
+        derivativeLineages: (project.localRightsDerivativeLineages || []).filter((row) => current.declarations.some((declaration) => declaration.id === row.outputDeclarationId)),
+        reviewerId: localCreativeStudioRoleIds(project).rightsReviewerId,
+        now: existing?.createdAt || input.now,
+      });
+      if (existing) {
+        if (existing.checksum !== rightsExportAudit.checksum) throw new Error('rights-provenance-idempotency-conflict');
+        return { route: 'local-rights-export-audit-idempotent', project, rightsExportAudit: existing, rightsProvenance: this.getLocalRightsProvenance(project.id, { now: input.now, skipCache: true }), idempotent: true };
+      }
+      const savedProject = saveProject({ ...project, localRightsExportAudits: [rightsExportAudit, ...rows] });
+      return { route: 'local-rights-export-audit-created', project: savedProject, rightsExportAudit, rightsProvenance: this.getLocalRightsProvenance(project.id, { now: input.now, skipCache: true }) };
+    },
+    getLocalEngineeringSecurity(projectId, options = {}) {
+      return cachedReadModel('local-engineering-security', projectId, options, () => buildLocalEngineeringSecurityLedger({
+        project: store.getProject(projectId),
+        now: options.now || nowIso(),
+      }));
+    },
+    createLocalEngineeringSecurityScan(input = {}) {
+      const project = store.getProject(input.projectId);
+      if (project.workModeContract?.workMode !== 'technical-delivery') throw new Error('engineering-security-technical-delivery-work-mode-required');
+      const verification = (project.localTechnicalDeliveryVerifications || [])[0];
+      if (!verification || input.implementationRevision !== verification.implementationRevision) throw new Error('engineering-security-current-verification-revision-required');
+      const rows = project.localEngineeringSecurityScans || [];
+      const existing = rows.find((row) => row.idempotencyKey === input.idempotencyKey);
+      const engineeringSecurityScan = createEngineeringSecurityScanReceipt({
+        ...input,
+        actorId: localTechnicalDeliveryRoleIds(project).implementerId,
+        now: existing?.createdAt || input.now,
+      });
+      if (existing) {
+        if (existing.checksum !== engineeringSecurityScan.checksum) throw new Error('engineering-security-idempotency-conflict');
+        return { route: 'local-engineering-security-scan-idempotent', project, engineeringSecurityScan: existing, engineeringSecurity: this.getLocalEngineeringSecurity(project.id, { now: input.now, skipCache: true }), idempotent: true };
+      }
+      const current = buildLocalEngineeringSecurityLedger({ project, now: input.now || nowIso() });
+      if (!current.integrity.valid) throw new Error('engineering-security-current-state-invalid');
+      const savedProject = saveProject({ ...project, localEngineeringSecurityScans: [engineeringSecurityScan, ...rows] });
+      return { route: 'local-engineering-security-scan-created', project: savedProject, engineeringSecurityScan, engineeringSecurity: this.getLocalEngineeringSecurity(project.id, { now: input.now, skipCache: true }) };
+    },
+    createLocalEngineeringSecurityRemediation(input = {}) {
+      const project = store.getProject(input.projectId);
+      if (project.workModeContract?.workMode !== 'technical-delivery') throw new Error('engineering-security-technical-delivery-work-mode-required');
+      const scan = (project.localEngineeringSecurityScans || []).find((row) => row.id === input.scanId);
+      if (!scan) throw new Error('engineering-security-scan-not-found');
+      const roles = localTechnicalDeliveryRoleIds(project);
+      const rows = project.localEngineeringSecurityRemediations || [];
+      const existing = rows.find((row) => row.idempotencyKey === input.idempotencyKey);
+      const engineeringSecurityRemediation = createEngineeringSecurityRemediationReceipt({
+        ...input,
+        scan,
+        actorId: input.resolution === 'false-positive' ? roles.reviewerId : roles.implementerId,
+        securityReviewerId: roles.reviewerId,
+        now: existing?.createdAt || input.now,
+      });
+      if (existing) {
+        if (existing.checksum !== engineeringSecurityRemediation.checksum) throw new Error('engineering-security-idempotency-conflict');
+        return { route: 'local-engineering-security-remediation-idempotent', project, engineeringSecurityRemediation: existing, engineeringSecurity: this.getLocalEngineeringSecurity(project.id, { now: input.now, skipCache: true }), idempotent: true };
+      }
+      const current = buildLocalEngineeringSecurityLedger({ project, now: input.now || nowIso() });
+      if (!current.integrity.valid) throw new Error('engineering-security-current-state-invalid');
+      if (current.latestScan?.id !== scan.id) throw new Error('engineering-security-latest-scan-required');
+      if (rows.some((row) => row.scanId === scan.id && row.findingId === input.findingId)) throw new Error('engineering-security-finding-already-resolved');
+      const savedProject = saveProject({ ...project, localEngineeringSecurityRemediations: [engineeringSecurityRemediation, ...rows] });
+      return { route: 'local-engineering-security-remediation-created', project: savedProject, engineeringSecurityRemediation, engineeringSecurity: this.getLocalEngineeringSecurity(project.id, { now: input.now, skipCache: true }) };
+    },
+    createLocalEngineeringSecurityExceptionRequest(input = {}) {
+      const project = store.getProject(input.projectId);
+      if (project.workModeContract?.workMode !== 'technical-delivery') throw new Error('engineering-security-technical-delivery-work-mode-required');
+      const scan = (project.localEngineeringSecurityScans || []).find((row) => row.id === input.scanId);
+      if (!scan) throw new Error('engineering-security-scan-not-found');
+      const rows = project.localEngineeringSecurityExceptionRequests || [];
+      const existing = rows.find((row) => row.idempotencyKey === input.idempotencyKey);
+      const engineeringSecurityExceptionRequest = createEngineeringSecurityExceptionRequestReceipt({
+        ...input,
+        scan,
+        requesterId: localTechnicalDeliveryRoleIds(project).implementerId,
+        now: existing?.createdAt || input.now,
+      });
+      if (existing) {
+        if (existing.checksum !== engineeringSecurityExceptionRequest.checksum) throw new Error('engineering-security-idempotency-conflict');
+        return { route: 'local-engineering-security-exception-request-idempotent', project, engineeringSecurityExceptionRequest: existing, engineeringSecurity: this.getLocalEngineeringSecurity(project.id, { now: input.now, skipCache: true }), idempotent: true };
+      }
+      const current = buildLocalEngineeringSecurityLedger({ project, now: input.now || nowIso() });
+      if (!current.integrity.valid) throw new Error('engineering-security-current-state-invalid');
+      if (current.latestScan?.id !== scan.id) throw new Error('engineering-security-latest-scan-required');
+      if ((project.localEngineeringSecurityRemediations || []).some((row) => row.scanId === scan.id && row.findingId === input.findingId)
+        || rows.some((row) => row.scanId === scan.id && row.findingId === input.findingId)) throw new Error('engineering-security-finding-already-governed');
+      const savedProject = saveProject({ ...project, localEngineeringSecurityExceptionRequests: [engineeringSecurityExceptionRequest, ...rows] });
+      return { route: 'local-engineering-security-exception-request-created', project: savedProject, engineeringSecurityExceptionRequest, engineeringSecurity: this.getLocalEngineeringSecurity(project.id, { now: input.now, skipCache: true }) };
+    },
+    createLocalEngineeringSecurityExceptionApproval(input = {}) {
+      const project = store.getProject(input.projectId);
+      if (project.workModeContract?.workMode !== 'technical-delivery') throw new Error('engineering-security-technical-delivery-work-mode-required');
+      const request = (project.localEngineeringSecurityExceptionRequests || []).find((row) => row.id === input.requestId);
+      if (!request) throw new Error('engineering-security-exception-request-not-found');
+      const roles = localTechnicalDeliveryRoleIds(project);
+      const rows = project.localEngineeringSecurityExceptionApprovals || [];
+      const existing = rows.find((row) => row.idempotencyKey === input.idempotencyKey);
+      const approverId = input.approverRole === 'security-reviewer' ? roles.reviewerId : roles.productOwnerId;
+      const engineeringSecurityExceptionApproval = createEngineeringSecurityExceptionApprovalReceipt({
+        ...input,
+        request,
+        approverId,
+        securityReviewerId: roles.reviewerId,
+        productOwnerId: roles.productOwnerId,
+        now: existing?.createdAt || input.now,
+      });
+      if (existing) {
+        if (existing.checksum !== engineeringSecurityExceptionApproval.checksum) throw new Error('engineering-security-idempotency-conflict');
+        return { route: 'local-engineering-security-exception-approval-idempotent', project, engineeringSecurityExceptionApproval: existing, engineeringSecurity: this.getLocalEngineeringSecurity(project.id, { now: input.now, skipCache: true }), idempotent: true };
+      }
+      const current = buildLocalEngineeringSecurityLedger({ project, now: input.now || nowIso() });
+      if (!current.integrity.valid) throw new Error('engineering-security-current-state-invalid');
+      if (current.latestScan?.id !== request.scanId) throw new Error('engineering-security-latest-scan-required');
+      if (rows.some((row) => row.requestId === request.id && row.approverRole === input.approverRole)) throw new Error('engineering-security-exception-role-already-decided');
+      const savedProject = saveProject({ ...project, localEngineeringSecurityExceptionApprovals: [engineeringSecurityExceptionApproval, ...rows] });
+      return { route: 'local-engineering-security-exception-approval-created', project: savedProject, engineeringSecurityExceptionApproval, engineeringSecurity: this.getLocalEngineeringSecurity(project.id, { now: input.now, skipCache: true }) };
+    },
+    createLocalEngineeringSecurityAttestation(input = {}) {
+      const project = store.getProject(input.projectId);
+      if (project.workModeContract?.workMode !== 'technical-delivery') throw new Error('engineering-security-technical-delivery-work-mode-required');
+      const rows = project.localEngineeringSecurityAttestations || [];
+      const existing = rows.find((row) => row.idempotencyKey === input.idempotencyKey);
+      const ledger = buildLocalEngineeringSecurityLedger({ project, now: existing?.createdAt || input.now || nowIso() });
+      if (!existing && !ledger.integrity.valid) throw new Error('engineering-security-current-state-invalid');
+      const roles = localTechnicalDeliveryRoleIds(project);
+      const engineeringSecurityAttestation = createEngineeringSecurityAttestationReceipt({
+        ...input,
+        ledger,
+        actorId: roles.reviewerId,
+        securityReviewerId: roles.reviewerId,
+        now: existing?.createdAt || input.now,
+      });
+      if (existing) {
+        if (existing.checksum !== engineeringSecurityAttestation.checksum) throw new Error('engineering-security-idempotency-conflict');
+        return { route: 'local-engineering-security-attestation-idempotent', project, engineeringSecurityAttestation: existing, engineeringSecurity: this.getLocalEngineeringSecurity(project.id, { now: input.now, skipCache: true }), idempotent: true };
+      }
+      const savedProject = saveProject({ ...project, localEngineeringSecurityAttestations: [engineeringSecurityAttestation, ...rows] });
+      return { route: 'local-engineering-security-attestation-created', project: savedProject, engineeringSecurityAttestation, engineeringSecurity: this.getLocalEngineeringSecurity(project.id, { now: input.now, skipCache: true }) };
+    },
+    getLocalTechnicalDeliveryWorkflow(projectId, options = {}) {
+      return cachedReadModel('local-technical-delivery-workflow', projectId, options, () => buildLocalTechnicalDeliveryWorkflow({
+        project: store.getProject(projectId),
+      }));
+    },
+    createLocalTechnicalDeliveryPlan(input = {}) {
+      const project = store.getProject(input.projectId);
+      if (project.workModeContract?.workMode !== 'technical-delivery') throw new Error('technical-delivery-work-mode-required');
+      const roles = localTechnicalDeliveryRoleIds(project);
+      const rows = project.localTechnicalDeliveryPlans || [];
+      const existing = rows.find((row) => row.idempotencyKey === input.idempotencyKey);
+      const technicalDeliveryPlan = createTechnicalDeliveryPlanReceipt({ ...input, ...roles, now: existing?.createdAt || input.now });
+      if (existing) {
+        if (existing.checksum !== technicalDeliveryPlan.checksum) throw new Error('technical-delivery-idempotency-conflict');
+        return { route: 'local-technical-delivery-plan-idempotent', project, technicalDeliveryPlan: existing, technicalDeliveryWorkflow: this.getLocalTechnicalDeliveryWorkflow(project.id, { skipCache: true }), idempotent: true };
+      }
+      const current = buildLocalTechnicalDeliveryWorkflow({ project });
+      if (!current.integrity.valid) throw new Error('technical-delivery-current-state-invalid');
+      if (rows.length) throw new Error('technical-delivery-plan-already-exists');
+      const savedProject = saveProject({ ...project, localTechnicalDeliveryPlans: [technicalDeliveryPlan, ...rows] });
+      return { route: 'local-technical-delivery-plan-created', project: savedProject, technicalDeliveryPlan, technicalDeliveryWorkflow: this.getLocalTechnicalDeliveryWorkflow(project.id, { skipCache: true }) };
+    },
+    createLocalTechnicalDeliveryVerification(input = {}) {
+      const project = store.getProject(input.projectId);
+      if (project.workModeContract?.workMode !== 'technical-delivery') throw new Error('technical-delivery-work-mode-required');
+      const plan = (project.localTechnicalDeliveryPlans || []).find((row) => row.id === input.planId);
+      if (!plan) throw new Error('technical-delivery-plan-not-found');
+      const rows = project.localTechnicalDeliveryVerifications || [];
+      const existing = rows.find((row) => row.idempotencyKey === input.idempotencyKey);
+      const technicalDeliveryVerification = createTechnicalDeliveryVerificationReceipt({ ...input, plan, actorId: localTechnicalDeliveryRoleIds(project).implementerId, now: existing?.createdAt || input.now });
+      if (existing) {
+        if (existing.checksum !== technicalDeliveryVerification.checksum) throw new Error('technical-delivery-idempotency-conflict');
+        return { route: 'local-technical-delivery-verification-idempotent', project, technicalDeliveryVerification: existing, technicalDeliveryWorkflow: this.getLocalTechnicalDeliveryWorkflow(project.id, { skipCache: true }), idempotent: true };
+      }
+      if (!buildLocalTechnicalDeliveryWorkflow({ project }).integrity.valid) throw new Error('technical-delivery-current-state-invalid');
+      const savedProject = saveProject({ ...project, localTechnicalDeliveryVerifications: [technicalDeliveryVerification, ...rows] });
+      return { route: 'local-technical-delivery-verification-created', project: savedProject, technicalDeliveryVerification, technicalDeliveryWorkflow: this.getLocalTechnicalDeliveryWorkflow(project.id, { skipCache: true }) };
+    },
+    createLocalTechnicalDeliveryReview(input = {}) {
+      const project = store.getProject(input.projectId);
+      if (project.workModeContract?.workMode !== 'technical-delivery') throw new Error('technical-delivery-work-mode-required');
+      const plan = (project.localTechnicalDeliveryPlans || []).find((row) => row.id === input.planId);
+      const verification = (project.localTechnicalDeliveryVerifications || []).find((row) => row.id === input.verificationId);
+      if (!plan || !verification) throw new Error('technical-delivery-review-input-not-found');
+      const rows = project.localTechnicalDeliveryReviews || [];
+      const existing = rows.find((row) => row.idempotencyKey === input.idempotencyKey);
+      const technicalDeliveryReview = createTechnicalDeliveryReviewReceipt({ ...input, plan, verification, reviewerId: input.reviewerId, now: existing?.createdAt || input.now });
+      if (input.reviewerId !== localTechnicalDeliveryRoleIds(project).reviewerId) throw new Error('technical-delivery-assigned-reviewer-required');
+      if (existing) {
+        if (existing.checksum !== technicalDeliveryReview.checksum) throw new Error('technical-delivery-idempotency-conflict');
+        return { route: 'local-technical-delivery-review-idempotent', project, technicalDeliveryReview: existing, technicalDeliveryWorkflow: this.getLocalTechnicalDeliveryWorkflow(project.id, { skipCache: true }), idempotent: true };
+      }
+      if (!buildLocalTechnicalDeliveryWorkflow({ project }).integrity.valid) throw new Error('technical-delivery-current-state-invalid');
+      const savedProject = saveProject({ ...project, localTechnicalDeliveryReviews: [technicalDeliveryReview, ...rows] });
+      return { route: 'local-technical-delivery-review-created', project: savedProject, technicalDeliveryReview, technicalDeliveryWorkflow: this.getLocalTechnicalDeliveryWorkflow(project.id, { skipCache: true }) };
+    },
+    createLocalTechnicalDeliveryRelease(input = {}) {
+      const project = store.getProject(input.projectId);
+      if (project.workModeContract?.workMode !== 'technical-delivery') throw new Error('technical-delivery-work-mode-required');
+      const plan = (project.localTechnicalDeliveryPlans || []).find((row) => row.id === input.planId);
+      const verification = (project.localTechnicalDeliveryVerifications || []).find((row) => row.id === input.verificationId);
+      const review = (project.localTechnicalDeliveryReviews || []).find((row) => row.id === input.reviewId);
+      if (!plan || !verification || !review) throw new Error('technical-delivery-release-input-not-found');
+      const rows = project.localTechnicalDeliveryReleases || [];
+      const existing = rows.find((row) => row.idempotencyKey === input.idempotencyKey);
+      if (!existing && !buildLocalTechnicalDeliveryWorkflow({ project }).integrity.valid) throw new Error('technical-delivery-current-state-invalid');
+      const engineeringSecurity = buildLocalEngineeringSecurityLedger({ project, now: existing?.createdAt || input.now || nowIso() });
+      if (!existing && !engineeringSecurity.integrity.valid) throw new Error('engineering-security-current-state-invalid');
+      if (!existing && !engineeringSecurity.latestAttestation) throw new Error('technical-delivery-engineering-security-attestation-required');
+      if (!existing && !engineeringSecurity.readyForRelease) throw new Error('technical-delivery-engineering-security-attestation-not-ready');
+      const engineeringSecurityAttestation = existing
+        ? (project.localEngineeringSecurityAttestations || []).find((row) => row.id === existing.engineeringSecurityAttestationId)
+        : engineeringSecurity.latestAttestation;
+      const technicalDeliveryRelease = createTechnicalDeliveryReleaseReceipt({
+        ...input, plan, verification, review, engineeringSecurityAttestation, existingReleases: existing ? rows.filter((row) => row.id !== existing.id) : rows,
+        actorId: localTechnicalDeliveryRoleIds(project).productOwnerId, now: existing?.createdAt || input.now,
+      });
+      if (existing) {
+        if (existing.checksum !== technicalDeliveryRelease.checksum) throw new Error('technical-delivery-idempotency-conflict');
+        return { route: 'local-technical-delivery-release-idempotent', project, technicalDeliveryRelease: existing, technicalDeliveryWorkflow: this.getLocalTechnicalDeliveryWorkflow(project.id, { skipCache: true }), idempotent: true };
+      }
+      const savedProject = saveProject({ ...project, localTechnicalDeliveryReleases: [technicalDeliveryRelease, ...rows] });
+      return { route: 'local-technical-delivery-release-created', project: savedProject, technicalDeliveryRelease, technicalDeliveryWorkflow: this.getLocalTechnicalDeliveryWorkflow(project.id, { skipCache: true }), engineeringSecurity: this.getLocalEngineeringSecurity(project.id, { now: input.now, skipCache: true }) };
+    },
+    createLocalInvestigationCase(input = {}) {
+      const project = store.getProject(input.projectId);
+      if (project.workModeContract?.workMode !== 'investigation') throw new Error('investigation-work-mode-required');
+      const roles = localInvestigationRoleIds(project);
+      const cases = project.localInvestigationCases || [];
+      const existing = cases.find((row) => row.idempotencyKey === input.idempotencyKey);
+      if (!existing && (project.localInvestigationClosures || []).length) throw new Error('investigation-case-closed');
+      const previous = existing
+        ? (existing.previousCaseId ? cases.find((row) => row.id === existing.previousCaseId) || null : null)
+        : cases[0] || null;
+      if (!existing && previous && (project.localInvestigationEvidence || []).some((row) => row.caseId === previous.id)) throw new Error('investigation-case-revision-after-evidence-forbidden');
+      if (!existing && previous && (Number(input.expectedCaseVersion) !== previous.version || String(input.expectedCaseChecksum) !== previous.checksum)) throw new Error('investigation-stale-case');
+      const investigationCase = createInvestigationCaseReceipt({
+        ...input, ...roles,
+        version: existing?.version || (previous ? previous.version + 1 : 1),
+        previousCaseId: existing?.previousCaseId || previous?.id || null,
+        previousCaseChecksum: existing?.previousCaseChecksum || previous?.checksum || null,
+        actorId: input.actorId || roles.leadId,
+        now: existing?.createdAt || input.now,
+      });
+      if (existing) {
+        if (existing.checksum !== investigationCase.checksum) throw new Error('investigation-idempotency-conflict');
+        return { route: 'local-investigation-case-idempotent', project, investigationCase: existing, investigationCaseWorkflow: this.getLocalInvestigationCaseWorkflow(project.id, { now: input.now, skipCache: true }), idempotent: true };
+      }
+      const current = buildLocalInvestigationCaseWorkflow({ project, now: input.now || nowIso() });
+      if (!current.integrity.valid) throw new Error('investigation-current-state-invalid');
+      const savedProject = saveProject({ ...project, localInvestigationCases: [investigationCase, ...cases] });
+      return { route: 'local-investigation-case-created', project: savedProject, investigationCase, investigationCaseWorkflow: this.getLocalInvestigationCaseWorkflow(project.id, { now: input.now, skipCache: true }) };
+    },
+    recordLocalInvestigationEvidence(input = {}) {
+      const project = store.getProject(input.projectId);
+      if (project.workModeContract?.workMode !== 'investigation') throw new Error('investigation-work-mode-required');
+      const roles = localInvestigationRoleIds(project);
+      const caseRecord = (project.localInvestigationCases || [])[0];
+      if (!caseRecord) throw new Error('investigation-case-required');
+      const sourceSnapshots = project.evidenceSourceSnapshots || (project.evidenceSearches || []).flatMap((row) => row.sourceSnapshots || []);
+      const sourceSnapshot = sourceSnapshots.find((row) => row.id === input.sourceSnapshotId);
+      const sourceReview = (project.evidenceSourceReviews || []).find((row) => row.id === input.sourceReviewId);
+      if (!sourceSnapshot || !sourceReview) throw new Error('investigation-evidence-source-reference-not-found');
+      const evidenceRows = project.localInvestigationEvidence || [];
+      const existing = evidenceRows.find((row) => row.idempotencyKey === input.idempotencyKey);
+      if (!existing && (project.localInvestigationClosures || []).length) throw new Error('investigation-case-closed');
+      const investigationEvidence = createInvestigationEvidenceReceipt({
+        ...input, caseRecord, sourceSnapshot, sourceReview,
+        collectorId: roles.investigatorId, analystId: roles.analystId, custodianId: roles.investigatorId,
+        now: existing?.createdAt || input.now,
+      });
+      if (existing) {
+        if (existing.checksum !== investigationEvidence.checksum) throw new Error('investigation-idempotency-conflict');
+        return { route: 'local-investigation-evidence-idempotent', project, investigationEvidence: existing, investigationCaseWorkflow: this.getLocalInvestigationCaseWorkflow(project.id, { now: input.now, skipCache: true }), idempotent: true };
+      }
+      const current = buildLocalInvestigationCaseWorkflow({ project, now: input.now || nowIso() });
+      if (!current.integrity.valid) throw new Error('investigation-current-state-invalid');
+      const investigationSafetyUse = consumeInvestigationSafetyDecision({
+        project, decisionId: input.safetyDecisionId, actionType: 'collect-evidence', targetIds: [sourceSnapshot.id],
+        actorId: roles.investigatorId, idempotencyKey: input.idempotencyKey, now: input.now,
+      });
+      const savedProject = saveProject({
+        ...project,
+        localInvestigationEvidence: [investigationEvidence, ...evidenceRows],
+        localInvestigationSafetyUses: [investigationSafetyUse, ...(project.localInvestigationSafetyUses || [])],
+      });
+      return {
+        route: 'local-investigation-evidence-recorded', project: savedProject, investigationEvidence, investigationSafetyUse,
+        investigationCaseWorkflow: this.getLocalInvestigationCaseWorkflow(project.id, { now: input.now, skipCache: true }),
+        investigationSafety: this.getLocalInvestigationSafety(project.id, { now: input.now, skipCache: true }),
+      };
+    },
+    recordLocalInvestigationCustodyEvent(input = {}) {
+      const project = store.getProject(input.projectId);
+      if (project.workModeContract?.workMode !== 'investigation') throw new Error('investigation-work-mode-required');
+      const caseRecord = (project.localInvestigationCases || [])[0];
+      const evidence = (project.localInvestigationEvidence || []).find((row) => row.id === input.evidenceId);
+      if (!caseRecord || !evidence) throw new Error('investigation-custody-reference-not-found');
+      const events = project.localInvestigationCustodyEvents || [];
+      const existing = events.find((row) => row.idempotencyKey === input.idempotencyKey);
+      if (!existing && (project.localInvestigationClosures || []).length) throw new Error('investigation-case-closed');
+      const evidenceEvents = events.filter((row) => row.evidenceId === evidence.id).sort((a, b) => b.sequence - a.sequence);
+      const previousEvent = existing
+        ? (existing.previousCustodyEventId ? events.find((row) => row.id === existing.previousCustodyEventId) || null : null)
+        : evidenceEvents[0] || null;
+      const investigationCustodyEvent = createInvestigationCustodyEventReceipt({
+        ...input, caseRecord, evidence, previousEvent,
+        occurredAt: existing?.occurredAt || input.occurredAt,
+        idempotencyKey: input.idempotencyKey,
+      });
+      if (existing) {
+        if (existing.checksum !== investigationCustodyEvent.checksum) throw new Error('investigation-idempotency-conflict');
+        return { route: 'local-investigation-custody-event-idempotent', project, investigationCustodyEvent: existing, investigationCaseWorkflow: this.getLocalInvestigationCaseWorkflow(project.id, { now: input.occurredAt, skipCache: true }), idempotent: true };
+      }
+      const current = buildLocalInvestigationCaseWorkflow({ project, now: input.occurredAt || nowIso() });
+      if (!current.integrity.valid) throw new Error('investigation-current-state-invalid');
+      const savedProject = saveProject({ ...project, localInvestigationCustodyEvents: [investigationCustodyEvent, ...events] });
+      return { route: 'local-investigation-custody-event-recorded', project: savedProject, investigationCustodyEvent, investigationCaseWorkflow: this.getLocalInvestigationCaseWorkflow(project.id, { now: input.occurredAt, skipCache: true }) };
+    },
+    resolveLocalInvestigationContradiction(input = {}) {
+      const project = store.getProject(input.projectId);
+      if (project.workModeContract?.workMode !== 'investigation') throw new Error('investigation-work-mode-required');
+      const caseRecord = (project.localInvestigationCases || [])[0];
+      const evidenceRecords = (project.localInvestigationEvidence || []).filter((row) => row.caseId === caseRecord?.id);
+      const contradiction = investigationContradictionIds(evidenceRecords).find((row) => row.id === input.contradictionId);
+      if (!caseRecord || !contradiction) throw new Error('investigation-contradiction-not-found');
+      const resolutions = project.localInvestigationContradictionResolutions || [];
+      const existing = resolutions.find((row) => row.idempotencyKey === input.idempotencyKey);
+      if (!existing && (project.localInvestigationClosures || []).length) throw new Error('investigation-case-closed');
+      const investigationContradictionResolution = createInvestigationContradictionResolutionReceipt({
+        ...input, caseRecord, contradiction, evidenceRecords, reviewerId: caseRecord.reviewerId, now: existing?.createdAt || input.now,
+      });
+      if (existing) {
+        if (existing.checksum !== investigationContradictionResolution.checksum) throw new Error('investigation-idempotency-conflict');
+        return { route: 'local-investigation-contradiction-resolution-idempotent', project, investigationContradictionResolution: existing, investigationCaseWorkflow: this.getLocalInvestigationCaseWorkflow(project.id, { now: input.now, skipCache: true }), idempotent: true };
+      }
+      const current = buildLocalInvestigationCaseWorkflow({ project, now: input.now || nowIso() });
+      if (!current.integrity.valid) throw new Error('investigation-current-state-invalid');
+      const savedProject = saveProject({ ...project, localInvestigationContradictionResolutions: [investigationContradictionResolution, ...resolutions] });
+      return { route: 'local-investigation-contradiction-resolved', project: savedProject, investigationContradictionResolution, investigationCaseWorkflow: this.getLocalInvestigationCaseWorkflow(project.id, { now: input.now, skipCache: true }) };
+    },
+    createLocalInvestigationConclusion(input = {}) {
+      const project = store.getProject(input.projectId);
+      if (project.workModeContract?.workMode !== 'investigation') throw new Error('investigation-work-mode-required');
+      const caseRecord = (project.localInvestigationCases || [])[0];
+      if (!caseRecord) throw new Error('investigation-case-required');
+      const evidenceRecords = (project.localInvestigationEvidence || []).filter((row) => row.caseId === caseRecord.id);
+      const custodyEvents = (project.localInvestigationCustodyEvents || []).filter((row) => row.caseId === caseRecord.id);
+      const resolutions = (project.localInvestigationContradictionResolutions || []).filter((row) => row.caseId === caseRecord.id);
+      const conclusions = project.localInvestigationConclusions || [];
+      const existing = conclusions.find((row) => row.idempotencyKey === input.idempotencyKey);
+      if (!existing && (project.localInvestigationClosures || []).length) throw new Error('investigation-case-closed');
+      const investigationConclusion = createInvestigationConclusionReceipt({
+        ...input, caseRecord, evidenceRecords, custodyEvents, resolutions, analystId: caseRecord.analystId, now: existing?.createdAt || input.now,
+      });
+      if (existing) {
+        if (existing.checksum !== investigationConclusion.checksum) throw new Error('investigation-idempotency-conflict');
+        return { route: 'local-investigation-conclusion-idempotent', project, investigationConclusion: existing, investigationCaseWorkflow: this.getLocalInvestigationCaseWorkflow(project.id, { now: input.now, skipCache: true }), idempotent: true };
+      }
+      const current = buildLocalInvestigationCaseWorkflow({ project, now: input.now || nowIso() });
+      if (!current.integrity.valid) throw new Error('investigation-current-state-invalid');
+      if (conclusions.length) throw new Error('investigation-conclusion-already-recorded');
+      const investigationSafetyUse = consumeInvestigationSafetyDecision({
+        project, decisionId: input.safetyDecisionId, actionType: 'draft-conclusion', targetIds: [caseRecord.id],
+        actorId: caseRecord.analystId, idempotencyKey: input.idempotencyKey, now: input.now,
+      });
+      const savedProject = saveProject({
+        ...project,
+        localInvestigationConclusions: [investigationConclusion, ...conclusions],
+        localInvestigationSafetyUses: [investigationSafetyUse, ...(project.localInvestigationSafetyUses || [])],
+      });
+      return {
+        route: 'local-investigation-conclusion-recorded', project: savedProject, investigationConclusion, investigationSafetyUse,
+        investigationCaseWorkflow: this.getLocalInvestigationCaseWorkflow(project.id, { now: input.now, skipCache: true }),
+        investigationSafety: this.getLocalInvestigationSafety(project.id, { now: input.now, skipCache: true }),
+      };
+    },
+    closeLocalInvestigationCase(input = {}) {
+      const project = store.getProject(input.projectId);
+      if (project.workModeContract?.workMode !== 'investigation') throw new Error('investigation-work-mode-required');
+      const caseRecord = (project.localInvestigationCases || [])[0];
+      const conclusion = (project.localInvestigationConclusions || [])[0];
+      if (!caseRecord || !conclusion) throw new Error('investigation-conclusion-required');
+      const closures = project.localInvestigationClosures || [];
+      const existing = closures.find((row) => row.idempotencyKey === input.idempotencyKey);
+      const investigationClosure = createInvestigationClosureReceipt({
+        ...input, caseRecord, conclusion, now: existing?.createdAt || input.now,
+      });
+      if (existing) {
+        if (existing.checksum !== investigationClosure.checksum) throw new Error('investigation-idempotency-conflict');
+        return { route: 'local-investigation-closure-idempotent', project, investigationClosure: existing, investigationCaseWorkflow: this.getLocalInvestigationCaseWorkflow(project.id, { now: input.now, skipCache: true }), idempotent: true };
+      }
+      const current = buildLocalInvestigationCaseWorkflow({ project, now: input.now || nowIso() });
+      if (!current.integrity.valid) throw new Error('investigation-current-state-invalid');
+      if (closures.length) throw new Error('investigation-case-already-closed');
+      const investigationSafetyUse = consumeInvestigationSafetyDecision({
+        project, decisionId: input.safetyDecisionId, actionType: 'close-case', targetIds: [caseRecord.id],
+        actorId: caseRecord.reviewerId, idempotencyKey: input.idempotencyKey, now: input.now,
+      });
+      const savedProject = saveProject({
+        ...project,
+        localInvestigationClosures: [investigationClosure, ...closures],
+        localInvestigationSafetyUses: [investigationSafetyUse, ...(project.localInvestigationSafetyUses || [])],
+      });
+      return {
+        route: 'local-investigation-case-closed', project: savedProject, investigationClosure, investigationSafetyUse,
+        investigationCaseWorkflow: this.getLocalInvestigationCaseWorkflow(project.id, { now: input.now, skipCache: true }),
+        investigationSafety: this.getLocalInvestigationSafety(project.id, { now: input.now, skipCache: true }),
+      };
+    },
+    createLocalAcademicWritingBlueprint(input = {}) {
+      const project = store.getProject(input.projectId);
+      if (project.workModeContract?.workMode !== 'academic-writing') throw new Error('academic-writing-work-mode-required');
+      const knownSourceEvidenceIds = [];
+      for (const search of project.evidenceSearches || []) {
+        if (search.status !== 'completed' || search.sourceSafetySummary?.sourceSafetyReady !== true) continue;
+        [search.id, search.providerReceiptId, ...(search.evidenceIds || []), ...(search.sourceSnapshotIds || []), ...(search.sources || []).flatMap((row) => [row.id, row.sourceSnapshotId, row.providerReceiptId])]
+          .filter(Boolean).forEach((value) => knownSourceEvidenceIds.push(String(value)));
+      }
+      const blueprints = project.localAcademicWritingBlueprints || [];
+      const existing = blueprints.find((row) => row.idempotencyKey === input.idempotencyKey);
+      const candidate = createAcademicWritingBlueprintReceipt({ ...input, knownSourceEvidenceIds, now: existing?.createdAt || input.now });
+      if (existing) {
+        if (candidate.checksum !== existing.checksum) throw new Error('academic-writing-idempotency-conflict');
+        return { route: 'local-academic-blueprint-idempotent', project, academicWritingBlueprint: existing, academicWritingPipeline: this.getLocalAcademicWritingPipeline(project.id, { now: input.now, skipCache: true }), idempotent: true };
+      }
+      if (blueprints.length) throw new Error('academic-writing-blueprint-already-configured');
+      const savedProject = saveProject({ ...project, localAcademicWritingBlueprints: [candidate] });
+      return { route: 'local-academic-blueprint-created', project: savedProject, academicWritingBlueprint: candidate, academicWritingPipeline: this.getLocalAcademicWritingPipeline(project.id, { now: input.now, skipCache: true }) };
+    },
+    reviseLocalAcademicWritingBlueprint(input = {}) {
+      const project = store.getProject(input.projectId);
+      if (project.workModeContract?.workMode !== 'academic-writing') throw new Error('academic-writing-work-mode-required');
+      const blueprints = project.localAcademicWritingBlueprints || [];
+      const latest = blueprints[0];
+      if (!latest) throw new Error('academic-writing-blueprint-required');
+      const knownSourceEvidenceIds = [];
+      for (const search of project.evidenceSearches || []) {
+        if (search.status !== 'completed' || search.sourceSafetySummary?.sourceSafetyReady !== true) continue;
+        [search.id, ...(search.evidenceIds || []), ...(search.sourceSnapshotIds || []), ...(search.sources || []).flatMap((row) => [row.id, row.sourceSnapshotId, row.providerReceiptId])]
+          .filter(Boolean).forEach((value) => knownSourceEvidenceIds.push(String(value)));
+      }
+      const existing = blueprints.find((row) => row.idempotencyKey === input.idempotencyKey);
+      if (existing) {
+        const previous = blueprints.find((row) => row.id === existing.previousBlueprintId) || null;
+        const candidate = createAcademicWritingBlueprintReceipt({ ...input, knownSourceEvidenceIds, version: existing.version, previousBlueprintId: previous?.id || null, previousBlueprintChecksum: previous?.checksum || null, governanceStartedAt: existing.governanceStartedAt, now: existing.createdAt });
+        if (candidate.checksum !== existing.checksum) throw new Error('academic-writing-idempotency-conflict');
+        return { route: 'local-academic-blueprint-revision-idempotent', project, academicWritingBlueprint: existing, academicWritingPipeline: this.getLocalAcademicWritingPipeline(project.id, { now: input.now, skipCache: true }), idempotent: true };
+      }
+      if (input.blueprintId !== latest.id || Number(input.expectedBlueprintVersion) !== latest.version || String(input.expectedBlueprintChecksum) !== latest.checksum) throw new Error('academic-writing-stale-blueprint');
+      const current = buildLocalAcademicWritingPipeline({ project, now: input.now || nowIso() });
+      if (!current.integrity.valid) throw new Error('academic-writing-integrity-invalid');
+      const academicWritingBlueprint = createAcademicWritingBlueprintReceipt({ ...input, knownSourceEvidenceIds, version: latest.version + 1, previousBlueprintId: latest.id, previousBlueprintChecksum: latest.checksum, governanceStartedAt: latest.governanceStartedAt });
+      const savedProject = saveProject({ ...project, localAcademicWritingBlueprints: [academicWritingBlueprint, ...blueprints] });
+      return { route: 'local-academic-blueprint-revised', project: savedProject, academicWritingBlueprint, academicWritingPipeline: this.getLocalAcademicWritingPipeline(project.id, { now: input.now, skipCache: true }) };
+    },
+    recordLocalAcademicDraft(input = {}) {
+      const project = store.getProject(input.projectId);
+      if (project.workModeContract?.workMode !== 'academic-writing') throw new Error('academic-writing-work-mode-required');
+      const blueprint = (project.localAcademicWritingBlueprints || [])[0];
+      if (!blueprint) throw new Error('academic-writing-blueprint-required');
+      const submission = (project.agentSubmissions || []).find((row) => row.id === input.submissionId);
+      if (!submission) throw new Error('academic-writing-manuscript-submission-not-found');
+      const drafts = project.localAcademicDraftReceipts || [];
+      const existing = drafts.find((row) => row.idempotencyKey === input.idempotencyKey);
+      const academicDraft = createAcademicDraftReceipt({ ...input, blueprint, submission, now: existing?.createdAt || input.now });
+      if (existing) {
+        if (existing.checksum !== academicDraft.checksum) throw new Error('academic-writing-idempotency-conflict');
+        return { route: 'local-academic-draft-idempotent', project, academicDraft: existing, academicWritingPipeline: this.getLocalAcademicWritingPipeline(project.id, { now: input.now, skipCache: true }), idempotent: true };
+      }
+      const current = buildLocalAcademicWritingPipeline({ project, now: input.now || nowIso() });
+      if (!current.integrity.valid) throw new Error('academic-writing-integrity-invalid');
+      const savedProject = saveProject({ ...project, localAcademicDraftReceipts: [academicDraft, ...drafts] });
+      return { route: 'local-academic-draft-recorded', project: savedProject, academicDraft, academicWritingPipeline: this.getLocalAcademicWritingPipeline(project.id, { now: input.now, skipCache: true }) };
+    },
+    recordLocalAcademicRevision(input = {}) {
+      const project = store.getProject(input.projectId);
+      if (project.workModeContract?.workMode !== 'academic-writing') throw new Error('academic-writing-work-mode-required');
+      const blueprint = (project.localAcademicWritingBlueprints || [])[0];
+      const previousDraft = [...(project.localAcademicDraftReceipts || []), ...(project.localAcademicRevisionReceipts || [])].find((row) => row.id === input.draftId);
+      const submission = (project.agentSubmissions || []).find((row) => row.id === input.submissionId);
+      const review = (project.submissionReviews || []).find((row) => row.id === input.reviewId);
+      if (!blueprint || !previousDraft || !submission || !review) throw new Error('academic-writing-revision-reference-not-found');
+      const revisions = project.localAcademicRevisionReceipts || [];
+      const existing = revisions.find((row) => row.idempotencyKey === input.idempotencyKey);
+      const academicRevision = createAcademicRevisionReceipt({ ...input, blueprint, previousDraft, submission, review, now: existing?.createdAt || input.now });
+      if (existing) {
+        if (existing.checksum !== academicRevision.checksum) throw new Error('academic-writing-idempotency-conflict');
+        return { route: 'local-academic-revision-idempotent', project, academicRevision: existing, academicWritingPipeline: this.getLocalAcademicWritingPipeline(project.id, { now: input.now, skipCache: true }), idempotent: true };
+      }
+      const current = buildLocalAcademicWritingPipeline({ project, now: input.now || nowIso() });
+      if (!current.integrity.valid) throw new Error('academic-writing-integrity-invalid');
+      const savedProject = saveProject({ ...project, localAcademicRevisionReceipts: [academicRevision, ...revisions] });
+      return { route: 'local-academic-revision-recorded', project: savedProject, academicRevision, academicWritingPipeline: this.getLocalAcademicWritingPipeline(project.id, { now: input.now, skipCache: true }) };
+    },
+    finalizeLocalAcademicWriting(input = {}) {
+      const project = store.getProject(input.projectId);
+      if (project.workModeContract?.workMode !== 'academic-writing') throw new Error('academic-writing-work-mode-required');
+      const blueprint = (project.localAcademicWritingBlueprints || [])[0];
+      const latestDraft = [...(project.localAcademicDraftReceipts || []), ...(project.localAcademicRevisionReceipts || [])].find((row) => row.id === input.draftId);
+      const acceptedReview = (project.submissionReviews || []).find((row) => row.id === input.reviewId);
+      if (!blueprint || !latestDraft || !acceptedReview) throw new Error('academic-writing-finalization-reference-not-found');
+      const newestDraft = [...(project.localAcademicDraftReceipts || []), ...(project.localAcademicRevisionReceipts || [])].sort((a, b) => b.draftVersion - a.draftVersion)[0];
+      if (latestDraft.id !== newestDraft?.id) throw new Error('academic-writing-latest-draft-required');
+      const finalizations = project.localAcademicFinalizations || [];
+      const existing = finalizations.find((row) => row.idempotencyKey === input.idempotencyKey);
+      const academicFinalization = createAcademicFinalizationReceipt({ ...input, blueprint, latestDraft, acceptedReview, now: existing?.createdAt || input.now });
+      if (existing) {
+        if (existing.checksum !== academicFinalization.checksum) throw new Error('academic-writing-idempotency-conflict');
+        return { route: 'local-academic-finalization-idempotent', project, academicFinalization: existing, academicWritingPipeline: this.getLocalAcademicWritingPipeline(project.id, { now: input.now, skipCache: true }), idempotent: true };
+      }
+      const current = buildLocalAcademicWritingPipeline({ project, now: input.now || nowIso() });
+      if (!current.integrity.valid) throw new Error('academic-writing-integrity-invalid');
+      const savedProject = saveProject({ ...project, localAcademicFinalizations: [academicFinalization, ...finalizations] });
+      return { route: 'local-academic-finalized', project: savedProject, academicFinalization, academicWritingPipeline: this.getLocalAcademicWritingPipeline(project.id, { now: input.now, skipCache: true }) };
+    },
+    createLocalTeachingSafetyPolicy(input = {}) {
+      const project = store.getProject(input.projectId);
+      if (project.workModeContract?.workMode !== 'learning') throw new Error('teaching-safety-learning-work-mode-required');
+      const policies = project.localTeachingSafetyPolicies || [];
+      const existing = policies.find((row) => row.idempotencyKey === input.idempotencyKey);
+      if (existing) {
+        const candidate = createTeachingSafetyPolicyReceipt({ ...input, now: existing.createdAt });
+        if (candidate.checksum !== existing.checksum) throw new Error('teaching-safety-idempotency-conflict');
+        return { route: 'local-teaching-safety-policy-idempotent', project, teachingSafetyPolicy: existing, teachingSafety: this.getLocalTeachingSafety(project.id, { now: input.now, skipCache: true }), idempotent: true };
+      }
+      if (policies.length) throw new Error('teaching-safety-policy-already-configured');
+      const teachingSafetyPolicy = createTeachingSafetyPolicyReceipt(input);
+      const savedProject = saveProject({ ...project, localTeachingSafetyPolicies: [teachingSafetyPolicy] });
+      return { route: 'local-teaching-safety-policy-created', project: savedProject, teachingSafetyPolicy, teachingSafety: this.getLocalTeachingSafety(project.id, { now: input.now, skipCache: true }) };
+    },
+    reviseLocalTeachingSafetyPolicy(input = {}) {
+      const project = store.getProject(input.projectId);
+      if (project.workModeContract?.workMode !== 'learning') throw new Error('teaching-safety-learning-work-mode-required');
+      const policies = project.localTeachingSafetyPolicies || [];
+      const latest = policies[0];
+      if (!latest) throw new Error('teaching-safety-policy-required');
+      const existing = policies.find((row) => row.idempotencyKey === input.idempotencyKey);
+      if (existing) {
+        const previous = policies.find((row) => row.id === existing.previousPolicyId) || null;
+        const candidate = createTeachingSafetyPolicyReceipt({
+          ...input,
+          version: existing.version,
+          previousPolicyId: previous?.id || null,
+          previousPolicyChecksum: previous?.checksum || null,
+          governanceStartedAt: existing.governanceStartedAt,
+          now: existing.createdAt,
+        });
+        if (candidate.checksum !== existing.checksum) throw new Error('teaching-safety-idempotency-conflict');
+        return { route: 'local-teaching-safety-policy-revision-idempotent', project, teachingSafetyPolicy: existing, teachingSafety: this.getLocalTeachingSafety(project.id, { now: input.now, skipCache: true }), idempotent: true };
+      }
+      if (input.policyId !== latest.id || Number(input.expectedPolicyVersion) !== latest.version || String(input.expectedPolicyChecksum) !== latest.checksum) throw new Error('teaching-safety-stale-policy');
+      const current = buildLocalTeachingSafety({ project, now: input.now || nowIso() });
+      if (!current.integrity.valid) throw new Error('teaching-safety-integrity-invalid');
+      const teachingSafetyPolicy = createTeachingSafetyPolicyReceipt({
+        ...input,
+        version: latest.version + 1,
+        previousPolicyId: latest.id,
+        previousPolicyChecksum: latest.checksum,
+        governanceStartedAt: latest.governanceStartedAt,
+      });
+      const savedProject = saveProject({ ...project, localTeachingSafetyPolicies: [teachingSafetyPolicy, ...policies] });
+      return { route: 'local-teaching-safety-policy-revised', project: savedProject, teachingSafetyPolicy, teachingSafety: this.getLocalTeachingSafety(project.id, { now: input.now, skipCache: true }) };
+    },
+    evaluateLocalTeachingSafety(input = {}) {
+      const project = store.getProject(input.projectId);
+      if (project.workModeContract?.workMode !== 'learning') throw new Error('teaching-safety-learning-work-mode-required');
+      if (['answer', 'rawAnswer', 'modelOutput', 'responseBody', 'generatedText'].some((field) => Object.hasOwn(input, field))) throw new Error('teaching-safety-raw-response-forbidden');
+      const policy = (project.localTeachingSafetyPolicies || [])[0];
+      if (!policy) throw new Error('teaching-safety-policy-required');
+      const requestedAttemptIds = Array.isArray(input.learnerAttemptEvidenceIds) ? input.learnerAttemptEvidenceIds.map(String) : [];
+      const knownAttemptIds = new Set((project.localLearningAttempts || [])
+        .filter((row) => row.learnerId === policy.learnerId)
+        .map((row) => String(row.id)));
+      if (requestedAttemptIds.some((attemptId) => !knownAttemptIds.has(attemptId))) throw new Error('teaching-safety-learner-attempt-evidence-invalid');
+      const requestedSourceIds = Array.isArray(input.sourceEvidenceIds) ? input.sourceEvidenceIds.map(String) : [];
+      const knownSourceIds = new Set();
+      for (const search of project.evidenceSearches || []) {
+        if (search.status !== 'completed' || search.sourceSafetySummary?.sourceSafetyReady !== true) continue;
+        [
+          search.id,
+          search.providerReceiptId,
+          ...(search.evidenceIds || []),
+          ...(search.sourceSnapshotIds || []),
+          ...(search.sources || []).flatMap((source) => [source.id, source.sourceSnapshotId, source.providerReceiptId]),
+        ].filter(Boolean).forEach((value) => knownSourceIds.add(String(value)));
+      }
+      if (requestedSourceIds.some((sourceId) => !knownSourceIds.has(sourceId))) throw new Error('teaching-safety-source-evidence-invalid');
+      const current = buildLocalTeachingSafety({ project, now: input.now || nowIso() });
+      if (!current.integrity.valid) throw new Error('teaching-safety-integrity-invalid');
+      const decisions = project.localTeachingSafetyDecisions || [];
+      const existing = decisions.find((row) => row.idempotencyKey === input.idempotencyKey);
+      const teachingSafetyDecision = createTeachingSafetyDecisionReceipt({
+        ...input,
+        policy,
+        now: existing?.createdAt || input.now,
+      });
+      if (existing) {
+        if (existing.checksum !== teachingSafetyDecision.checksum) throw new Error('teaching-safety-idempotency-conflict');
+        return { route: 'local-teaching-safety-decision-idempotent', project, teachingSafetyDecision: existing, teachingSafety: current, idempotent: true };
+      }
+      const savedProject = saveProject({ ...project, localTeachingSafetyDecisions: [teachingSafetyDecision, ...decisions] });
+      return { route: 'local-teaching-safety-decision-created', project: savedProject, teachingSafetyDecision, teachingSafety: this.getLocalTeachingSafety(project.id, { now: input.now, skipCache: true }) };
+    },
+    resolveLocalTeachingSafetyDecision(input = {}) {
+      const project = store.getProject(input.projectId);
+      if (project.workModeContract?.workMode !== 'learning') throw new Error('teaching-safety-learning-work-mode-required');
+      const decision = (project.localTeachingSafetyDecisions || []).find((row) => row.id === input.decisionId);
+      if (!decision) throw new Error('teaching-safety-decision-not-found');
+      const current = buildLocalTeachingSafety({ project, now: input.now || nowIso() });
+      if (!current.integrity.valid) throw new Error('teaching-safety-integrity-invalid');
+      const resolutions = project.localTeachingSafetyResolutions || [];
+      const existing = resolutions.find((row) => row.idempotencyKey === input.idempotencyKey);
+      const teachingSafetyResolution = createTeachingSafetyResolutionReceipt({
+        ...input,
+        decision,
+        now: existing?.createdAt || input.now,
+      });
+      if (existing) {
+        if (existing.checksum !== teachingSafetyResolution.checksum) throw new Error('teaching-safety-idempotency-conflict');
+        return { route: 'local-teaching-safety-resolution-idempotent', project, teachingSafetyResolution: existing, teachingSafety: current, idempotent: true };
+      }
+      if (resolutions.some((row) => row.decisionId === decision.id)) throw new Error('teaching-safety-decision-already-resolved');
+      const savedProject = saveProject({ ...project, localTeachingSafetyResolutions: [teachingSafetyResolution, ...resolutions] });
+      return { route: 'local-teaching-safety-resolution-created', project: savedProject, teachingSafetyResolution, teachingSafety: this.getLocalTeachingSafety(project.id, { now: input.now, skipCache: true }) };
+    },
+    createLocalLearningPlan(input = {}) {
+      const project = store.getProject(input.projectId);
+      if (project.workModeContract?.workMode !== 'learning') throw new Error('learning-program-learning-work-mode-required');
+      const plans = project.localLearningPlans || [];
+      const existing = plans.find((row) => row.idempotencyKey === input.idempotencyKey);
+      if (existing) {
+        const candidate = createLearningPlanReceipt({ ...input, now: existing.createdAt });
+        if (candidate.checksum !== existing.checksum) throw new Error('learning-program-idempotency-conflict');
+        return { route: 'local-learning-plan-idempotent', project, learningPlan: existing, learningProgram: this.getLocalLearningProgram(project.id, { now: input.now, skipCache: true }), idempotent: true };
+      }
+      if (plans.length) throw new Error('learning-program-plan-already-configured');
+      const learningPlan = createLearningPlanReceipt(input);
+      const savedProject = saveProject({ ...project, localLearningPlans: [learningPlan] });
+      return { route: 'local-learning-plan-created', project: savedProject, learningPlan, learningProgram: this.getLocalLearningProgram(project.id, { now: input.now, skipCache: true }) };
+    },
+    reviseLocalLearningPlan(input = {}) {
+      const project = store.getProject(input.projectId);
+      if (project.workModeContract?.workMode !== 'learning') throw new Error('learning-program-learning-work-mode-required');
+      const plans = project.localLearningPlans || [];
+      const latest = plans[0];
+      if (!latest) throw new Error('learning-program-plan-required');
+      const existing = plans.find((row) => row.idempotencyKey === input.idempotencyKey);
+      if (existing) {
+        const previous = plans.find((row) => row.id === existing.previousPlanId) || null;
+        const candidate = createLearningPlanReceipt({
+          ...input,
+          version: existing.version,
+          previousPlanId: previous?.id || null,
+          previousPlanChecksum: previous?.checksum || null,
+          governanceStartedAt: existing.governanceStartedAt,
+          now: existing.createdAt,
+        });
+        if (candidate.checksum !== existing.checksum) throw new Error('learning-program-idempotency-conflict');
+        return { route: 'local-learning-plan-revision-idempotent', project, learningPlan: existing, learningProgram: this.getLocalLearningProgram(project.id, { now: input.now, skipCache: true }), idempotent: true };
+      }
+      if (input.planId !== latest.id || Number(input.expectedPlanVersion) !== latest.version || String(input.expectedPlanChecksum) !== latest.checksum) {
+        throw new Error('learning-program-stale-plan');
+      }
+      const current = buildLocalLearningProgram({ project, now: input.now || nowIso() });
+      if (!current.integrity.valid) throw new Error('learning-program-integrity-invalid');
+      const learningPlan = createLearningPlanReceipt({
+        ...input,
+        version: latest.version + 1,
+        previousPlanId: latest.id,
+        previousPlanChecksum: latest.checksum,
+        governanceStartedAt: latest.governanceStartedAt,
+      });
+      const savedProject = saveProject({ ...project, localLearningPlans: [learningPlan, ...plans] });
+      return { route: 'local-learning-plan-revised', project: savedProject, learningPlan, learningProgram: this.getLocalLearningProgram(project.id, { now: input.now, skipCache: true }) };
+    },
+    recordLocalLearningAttempt(input = {}) {
+      const project = store.getProject(input.projectId);
+      if (project.workModeContract?.workMode !== 'learning') throw new Error('learning-program-learning-work-mode-required');
+      if (['answer', 'rawAnswer', 'responseText', 'responseBody'].some((field) => Object.hasOwn(input, field))) throw new Error('learning-program-raw-answer-forbidden');
+      const plans = project.localLearningPlans || [];
+      const plan = plans[0];
+      if (!plan) throw new Error('learning-program-plan-required');
+      if (input.planId !== plan.id) throw new Error('learning-program-stale-plan');
+      const learningAttempt = createLearningAttemptReceipt({ ...input, plan });
+      const attempts = project.localLearningAttempts || [];
+      const existing = attempts.find((row) => row.idempotencyKey === input.idempotencyKey);
+      if (existing) {
+        if (existing.checksum !== learningAttempt.checksum) throw new Error('learning-program-idempotency-conflict');
+        return { route: 'local-learning-attempt-idempotent', project, learningAttempt: existing, learningProgram: this.getLocalLearningProgram(project.id, { now: input.occurredAt, skipCache: true }), idempotent: true };
+      }
+      const current = buildLocalLearningProgram({ project, now: input.occurredAt || nowIso() });
+      if (!current.integrity.valid) throw new Error('learning-program-integrity-invalid');
+      const savedProject = saveProject({ ...project, localLearningAttempts: [learningAttempt, ...attempts] });
+      return { route: 'local-learning-attempt-recorded', project: savedProject, learningAttempt, learningProgram: this.getLocalLearningProgram(project.id, { now: input.occurredAt, skipCache: true }) };
+    },
+    createLocalAutonomyPolicy(input = {}) {
+      const project = store.getProject(input.projectId);
+      const policies = project.localAutonomyPolicies || [];
+      if (policies.length) {
+        const existing = policies.find((row) => row.idempotencyKey === input.idempotencyKey);
+        if (existing) {
+          const same = ['maxWallClockMs', 'maxSteps', 'maxCostCents', 'maxToolInvocations', 'actorId']
+            .every((field) => String(existing[field]) === String(input[field]))
+            && JSON.stringify(existing.allowedToolOperations || []) === JSON.stringify([...(input.allowedToolOperations || [])].sort());
+          if (!same) throw new Error('autonomy-governor-idempotency-conflict');
+          return { route: 'local-autonomy-policy-idempotent', project, policy: existing, autonomyGovernor: this.getLocalAutonomyGovernor(project.id, { now: input.now, skipCache: true }), idempotent: true };
+        }
+        throw new Error('autonomy-governor-policy-already-configured');
+      }
+      const policy = createLocalAutonomyPolicy(input);
+      const savedProject = saveProject({ ...project, localAutonomyPolicies: [policy] });
+      return {
+        route: 'local-autonomy-policy-created', project: savedProject, policy,
+        autonomyGovernor: this.getLocalAutonomyGovernor(project.id, { now: input.now, skipCache: true }),
+      };
+    },
+    reviseLocalAutonomyPolicy(input = {}) {
+      const project = store.getProject(input.projectId);
+      const policies = project.localAutonomyPolicies || [];
+      const latest = policies[0];
+      if (!latest) throw new Error('autonomy-governor-policy-required');
+      const existing = policies.find((row) => row.idempotencyKey === input.idempotencyKey);
+      if (existing) {
+        const same = ['maxWallClockMs', 'maxSteps', 'maxCostCents', 'maxToolInvocations', 'actorId']
+          .every((field) => String(existing[field]) === String(input[field]))
+          && JSON.stringify(existing.allowedToolOperations || []) === JSON.stringify([...(input.allowedToolOperations || [])].sort());
+        if (!same) throw new Error('autonomy-governor-idempotency-conflict');
+        return { route: 'local-autonomy-policy-revision-idempotent', project, policy: existing, autonomyGovernor: this.getLocalAutonomyGovernor(project.id, { now: input.now, skipCache: true }), idempotent: true };
+      }
+      if (input.policyId && input.policyId !== latest.id) throw new Error('autonomy-governor-stale-policy');
+      if (Number(input.expectedPolicyVersion) !== latest.version || String(input.expectedPolicyChecksum) !== latest.checksum) {
+        throw new Error('autonomy-governor-stale-policy');
+      }
+      const governor = buildLocalAutonomyGovernor({ project, now: input.now || nowIso() });
+      if (!governor.integrity.valid) throw new Error('autonomy-governor-integrity-invalid');
+      const policy = createLocalAutonomyPolicy({
+        ...input,
+        version: latest.version + 1,
+        previousPolicyId: latest.id,
+        previousPolicyChecksum: latest.checksum,
+        governanceStartedAt: latest.governanceStartedAt,
+      });
+      const savedProject = saveProject({ ...project, localAutonomyPolicies: [policy, ...policies] });
+      return {
+        route: 'local-autonomy-policy-revised', project: savedProject, policy,
+        autonomyGovernor: this.getLocalAutonomyGovernor(project.id, { now: input.now, skipCache: true }),
+      };
+    },
+    commandLocalAutonomy(input = {}) {
+      const project = store.getProject(input.projectId);
+      const policies = project.localAutonomyPolicies || [];
+      const policy = policies[0];
+      if (!policy) throw new Error('autonomy-governor-policy-required');
+      const governor = buildLocalAutonomyGovernor({ project, now: input.now || nowIso() });
+      if (!governor.integrity.valid) throw new Error('autonomy-governor-integrity-invalid');
+      const existing = (project.localAutonomyCommands || []).find((row) => row.idempotencyKey === input.idempotencyKey);
+      if (existing) {
+        if (existing.command !== input.command
+          || existing.policyChecksum !== input.expectedPolicyChecksum
+          || existing.actorId !== input.actorId
+          || existing.reasonCode !== input.reasonCode) throw new Error('autonomy-governor-idempotency-conflict');
+        return { route: 'local-autonomy-command-idempotent', project, command: existing, autonomyGovernor: governor, idempotent: true };
+      }
+      const command = createLocalAutonomyCommand({ ...input, policy, fromState: governor.state });
+      if (['pause', 'stop'].includes(command.command)) {
+        for (const session of project.autonomousRunControlSessionLedger || []) {
+          if (!['running', 'waiting'].includes(session.status)) continue;
+          const controller = activeAutopilotAbortControllers.get(autopilotCancellationKey(project.id, session.id));
+          if (controller && !controller.signal.aborted) controller.abort();
+        }
+      }
+      const sessions = (project.autonomousRunControlSessionLedger || []).map((session) => {
+        let next = session;
+        if (command.command === 'pause' && ['running', 'waiting'].includes(session.status)) {
+          next = { ...session, status: 'paused', statusReason: input.reasonCode, governorPaused: true, updatedAt: command.createdAt };
+        } else if (command.command === 'resume' && session.status === 'paused' && session.governorPaused) {
+          next = { ...session, status: 'waiting', statusReason: input.reasonCode, governorPaused: false, updatedAt: command.createdAt };
+        } else if (command.command === 'stop' && ['running', 'waiting', 'paused'].includes(session.status)) {
+          next = { ...session, status: 'cancelled', statusReason: input.reasonCode, governorStopped: true, governorPaused: false, updatedAt: command.createdAt };
+        }
+        if (next === session) return session;
+        return { ...next, checksum: persistenceChecksum({ ...next, checksum: undefined }) };
+      });
+      const savedProject = saveProject({
+        ...project,
+        localAutonomyCommands: [command, ...(project.localAutonomyCommands || [])],
+        autonomousRunControlSessionLedger: sessions,
+      });
+      return {
+        route: `local-autonomy-${command.command}`, project: savedProject, command,
+        autonomyGovernor: this.getLocalAutonomyGovernor(project.id, { now: input.now, skipCache: true }),
+      };
+    },
+    assertLocalAutonomyExecution(projectId, request = {}) {
+      const evaluation = evaluateLocalAutonomyExecution({ project: store.getProject(projectId), now: request.now || nowIso(), request });
+      if (!evaluation.allowed) throw new Error(`autonomy-governor-denied:${evaluation.reasonCodes.join(',')}`);
+      return evaluation;
+    },
     getAutonomousRunControl(projectId, options = {}) {
       return cachedReadModel('autonomous-run-control', projectId, options, () => {
         const language = options.language || store.getProject(projectId)?.language || 'en';
@@ -52546,6 +55837,12 @@ export function createAgentProjectService({
       now = nowIso(),
       force = false,
     } = {}) {
+      this.assertLocalAutonomyExecution(projectId, {
+        now,
+        requestedSteps: 1,
+        estimatedCostCents: requestBodyOverrides.estimatedCostCents || 0,
+        toolOperations: requestBodyOverrides.toolOperations || [],
+      });
       const language = requestBodyOverrides.language || store.getProject(projectId)?.language || 'en';
       const controlBeforeRun = this.getAutonomousRunControl(projectId, { now, language, skipCache: true });
       const action = actionId === 'next'
@@ -53176,6 +56473,12 @@ export function createAgentProjectService({
       } = input;
       const language = bodyOverrides.language || requestBodyOverrides.language || store.getProject(projectId)?.language || 'en';
       const stepLimit = Math.max(1, Math.min(5, Number(maxSteps) || 3));
+      this.assertLocalAutonomyExecution(projectId, {
+        now,
+        requestedSteps: stepLimit,
+        estimatedCostCents: requestBodyOverrides.estimatedCostCents || 0,
+        toolOperations: requestBodyOverrides.toolOperations || [],
+      });
       const delegatedOverrides = {
         ...bodyOverrides,
         ...requestBodyOverrides,
@@ -53413,6 +56716,7 @@ export function createAgentProjectService({
           start: `/projects/${projectId}/autonomous-run-control/sessions/start`,
           activeTick: activeSession ? `/projects/${projectId}/autonomous-run-control/sessions/${encodeURIComponent(activeSession.id)}/tick` : null,
           activePause: activeSession ? `/projects/${projectId}/autonomous-run-control/sessions/${encodeURIComponent(activeSession.id)}/pause` : null,
+          activeCancel: activeSession ? `/projects/${projectId}/autonomous-run-control/sessions/${encodeURIComponent(activeSession.id)}/cancel` : null,
         },
         summary: {
           sessionCount: sessions.length,
@@ -53476,6 +56780,7 @@ export function createAgentProjectService({
       } = input;
       const project = store.getProject(projectId);
       if (!project?.id) throw new Error(`Project not found: ${projectId}`);
+      this.assertLocalAutonomyExecution(projectId, { now, requestedSteps: 0 });
       const activeSession = (project.autonomousRunControlSessionLedger || []).find((session) => ['running', 'waiting'].includes(session.status));
       if (activeSession && !input.forceNewSession) {
         return {
@@ -53501,6 +56806,7 @@ export function createAgentProjectService({
       const apiPath = `/projects/${projectId}/autonomous-run-control/sessions`;
       const tickApiPath = `/projects/${projectId}/autonomous-run-control/sessions/${encodeURIComponent(sessionId)}/tick`;
       const pauseApiPath = `/projects/${projectId}/autonomous-run-control/sessions/${encodeURIComponent(sessionId)}/pause`;
+      const cancelApiPath = `/projects/${projectId}/autonomous-run-control/sessions/${encodeURIComponent(sessionId)}/cancel`;
       const log = {
         id: `log_${sessionId}`,
         time: now,
@@ -53552,6 +56858,7 @@ export function createAgentProjectService({
         apiPath,
         tickApiPath,
         pauseApiPath,
+        cancelApiPath,
         logId: log.id,
         timelineLogIds: [log.id],
         eventId,
@@ -53634,6 +56941,10 @@ export function createAgentProjectService({
         force = true,
         targetKind: requestedTargetKind,
         requestBodyOverrides = {},
+        workerIdempotencyKey = null,
+        workerLeaseKey = null,
+        workerFenceToken = null,
+        workerDueAt = null,
         ...bodyOverrides
       } = input;
       const project = store.getProject(projectId);
@@ -53646,6 +56957,12 @@ export function createAgentProjectService({
       if (!['running', 'waiting'].includes(session.status)) {
         throw new Error(`Autonomous run control session is not active: ${session.id}`);
       }
+      this.assertLocalAutonomyExecution(projectId, {
+        now,
+        requestedSteps: Math.max(1, Number(loopCount) || 1) * Math.max(1, Number(session.maxStepsPerLoop) || 1),
+        estimatedCostCents: requestBodyOverrides.estimatedCostCents || 0,
+        toolOperations: requestBodyOverrides.toolOperations || [],
+      });
       const activeTargetKind = requestedTargetKind || session.targetKind || session.targetSnapshot?.targetKind || 'product-team-delivery-trace';
       const targetLanguage = bodyOverrides.language
         || requestBodyOverrides.language
@@ -53829,6 +57146,7 @@ export function createAgentProjectService({
         eventId: tickEventId,
         eventIds: uniqueStrings([tickEventId, ...loopEventIds]),
         workerKind: 'autopilot-session',
+        workerFenceToken,
         runApiPath: '/workers/autopilot/due',
         apiPath: `/projects/${projectId}/autonomous-run-control/sessions/${encodeURIComponent(session.id)}/tick`,
         directRunApiPath: `/projects/${projectId}/autonomous-run-control/sessions/${encodeURIComponent(session.id)}/tick`,
@@ -53839,8 +57157,10 @@ export function createAgentProjectService({
           workerKind: 'autopilot-session',
           reason,
           status: failedLoop ? 'failed' : 'succeeded',
+          idempotencyKey: workerIdempotencyKey,
+          leaseKey: workerLeaseKey,
           ranAt: now,
-          dueAt: now,
+          dueAt: workerDueAt || now,
           completedAt: tickLog.time,
           messageIds: resultMessageIds,
           timelineLogIds: uniqueStrings([tickLog.id, ...loopTimelineLogIds]),
@@ -54012,6 +57332,10 @@ export function createAgentProjectService({
         force = true,
         targetKind: requestedTargetKind,
         requestBodyOverrides = {},
+        workerIdempotencyKey = null,
+        workerLeaseKey = null,
+        workerFenceToken = null,
+        workerDueAt = null,
         ...bodyOverrides
       } = input;
       const project = store.getProject(projectId);
@@ -54087,6 +57411,7 @@ export function createAgentProjectService({
         kind: 'search',
         operation: requestBodyOverrides.operation || 'search:evidence',
         agentId: row?.agentId || '',
+        taskId: requestBodyOverrides.taskId || row?.taskId || '',
         requested: Boolean(targetRequestsProviderEvidence || row?.providerEvidenceSearchPlanned),
         requireProvider: Boolean(requestBodyOverrides.requireProviderEvidenceSearch),
         queueReady: Boolean(row && (row.canRun || force)),
@@ -54126,11 +57451,20 @@ export function createAgentProjectService({
         generatedAt: now,
       };
       targetSelection.checksum = persistenceChecksum(targetSelection);
+      const cancellationKey = autopilotCancellationKey(projectId, session.id);
+      if (activeAutopilotAbortControllers.has(cancellationKey)) {
+        throw new Error(`Autonomous run control session already has an active provider tick: ${session.id}`);
+      }
+      const cancellationController = new AbortController();
+      activeAutopilotAbortControllers.set(cancellationKey, cancellationController);
       const queueResult = await this.runAgentAutonomousActionQueueItemWithProviderEvidence({
         projectId,
         agentId: providerRow.agentId,
         now,
         force,
+        signal: cancellationController.signal,
+        durableTaskJobId: input.durableTaskJobId || null,
+        durableTaskFenceToken: input.durableTaskFenceToken || null,
         requestBodyOverrides: {
           ...(session.requestBodyOverrides || {}),
           ...targetExecutionOverrides,
@@ -54147,6 +57481,10 @@ export function createAgentProjectService({
           requireProviderEvidenceSearch: Boolean(requestBodyOverrides.requireProviderEvidenceSearch),
           autonomousProviderPreflight: tickProviderPreflight,
         },
+      }).finally(() => {
+        if (activeAutopilotAbortControllers.get(cancellationKey) === cancellationController) {
+          activeAutopilotAbortControllers.delete(cancellationKey);
+        }
       });
 
       const latestProject = store.getProject(projectId) || queueResult.project || project;
@@ -54445,6 +57783,7 @@ export function createAgentProjectService({
         eventId: tickEventId,
         eventIds: uniqueStrings([tickEventId, ...loopReceipt.eventIds]),
         workerKind: 'autopilot-session',
+        workerFenceToken,
         runApiPath: '/workers/autopilot/due',
         apiPath: `/projects/${projectId}/autonomous-run-control/sessions/${encodeURIComponent(session.id)}/tick`,
         directRunApiPath: `/projects/${projectId}/autonomous-run-control/sessions/${encodeURIComponent(session.id)}/tick`,
@@ -54455,8 +57794,10 @@ export function createAgentProjectService({
           workerKind: 'autopilot-session',
           reason,
           status: 'succeeded',
+          idempotencyKey: workerIdempotencyKey,
+          leaseKey: workerLeaseKey,
           ranAt: now,
-          dueAt: now,
+          dueAt: workerDueAt || now,
           completedAt: tickLog.time,
           messageIds: resultMessageIds,
           timelineLogIds: uniqueStrings([tickLog.id, ...loopReceipt.timelineLogIds]),
@@ -54785,6 +58126,114 @@ export function createAgentProjectService({
         autonomousRunControl: this.getAutonomousRunControl(projectId, { now, language: input.language || project.language || 'en', skipCache: true }),
       };
     },
+    cancelAutonomousRunControlSession(input = {}) {
+      const {
+        projectId,
+        sessionId = 'active',
+        now = nowIso(),
+        actor = 'Manager',
+        reason = 'manager-cancelled-autopilot-session',
+      } = input;
+      let project = store.getProject(projectId);
+      if (!project?.id) throw new Error(`Project not found: ${projectId}`);
+      const sessions = project.autonomousRunControlSessionLedger || [];
+      const session = sessionId === 'active'
+        ? sessions.find((item) => ['running', 'waiting', 'paused'].includes(item.status))
+        : sessions.find((item) => item.id === sessionId);
+      if (!session) throw new Error(`Autonomous run control session not found: ${sessionId}`);
+      const activeAbortController = activeAutopilotAbortControllers.get(autopilotCancellationKey(projectId, session.id));
+      const cancellationAbortRequested = Boolean(activeAbortController && !activeAbortController.signal.aborted);
+      if (cancellationAbortRequested) activeAbortController.abort();
+      if (session.status === 'cancelled') {
+        return {
+          route: 'autonomous-run-control-session-cancelled',
+          project,
+          messages: [],
+          autonomousRunControlSession: session,
+          autonomousRunControlSessions: this.getAutonomousRunControlSessions(projectId, { now, language: input.language }),
+          autonomousRunControl: this.getAutonomousRunControl(projectId, { now, language: input.language || project.language || 'en', skipCache: true }),
+          idempotent: true,
+        };
+      }
+      if (!['running', 'waiting', 'paused'].includes(session.status)) {
+        throw new Error(`Autonomous run control session is not cancellable: ${session.id}`);
+      }
+      const timestamp = Date.parse(now) || Date.now();
+      const logId = `log_autonomous_run_control_session_cancel_${projectId}_${session.id}_${timestamp}`;
+      const eventId = `evt_autonomous_run_control_session_cancel_${projectId}_${session.id}_${timestamp}`;
+      const log = {
+        id: logId,
+        time: now,
+        agent: 'Autonomous Run Control',
+        actor,
+        eventType: 'autonomous-run-control-session-cancelled',
+        source: 'autonomous-run-control',
+        channelId: 'manager-dashboard',
+        sessionId: session.id,
+        log: `${actor} cancelled Autonomous Run Control session ${session.id}.`,
+      };
+      const updatedSession = {
+        ...session,
+        status: 'cancelled',
+        statusReason: reason,
+        updatedAt: now,
+        cancelledAt: now,
+        cancelledBy: actor,
+        cancellationReason: reason,
+        cancellationAbortRequested,
+        timelineLogIds: uniqueStrings([log.id, ...(session.timelineLogIds || [])]),
+        eventIds: uniqueStrings([eventId, ...(session.eventIds || [])]),
+        checksum: persistenceChecksum({
+          projectId,
+          sessionId: session.id,
+          status: 'cancelled',
+          completedLoops: session.completedLoops || 0,
+          completedSteps: session.completedSteps || 0,
+          reason,
+          cancellationAbortRequested,
+        }),
+      };
+      const updatedProject = appendProjectEvents({
+        ...project,
+        logs: [log, ...(project.logs || [])],
+        autonomousRunControlSessionLedger: [
+          updatedSession,
+          ...sessions.filter((item) => item.id !== session.id),
+        ].slice(0, 50),
+      }, [
+        createProjectLedgerEvent({
+          id: eventId,
+          type: 'autonomous-run-control-session-cancelled',
+          time: now,
+          actor,
+          summary: log.log,
+          source: 'autonomous-run-control',
+          channelId: 'manager-dashboard',
+          evidenceIds: [session.id, log.id],
+          entityIds: {
+            projectId,
+            sessionId: session.id,
+            logId: log.id,
+          },
+          payload: {
+            schemaVersion: updatedSession.schemaVersion,
+            status: updatedSession.status,
+            reason,
+            cancellationAbortRequested,
+          },
+        }),
+      ]);
+      const savedProject = saveProject(updatedProject);
+      return {
+        route: 'autonomous-run-control-session-cancelled',
+        project: savedProject,
+        messages: [],
+        autonomousRunControlSession: updatedSession,
+        autonomousRunControlSessions: this.getAutonomousRunControlSessions(projectId, { now, language: input.language }),
+        autonomousRunControl: this.getAutonomousRunControl(projectId, { now, language: input.language || project.language || 'en', skipCache: true }),
+        idempotent: false,
+      };
+    },
     getAgentAutonomousActionQueue(projectId, options = {}) {
       const project = store.getProject(projectId);
       return localizeReadModel(buildAgentAutonomousActionQueue({
@@ -54801,6 +58250,12 @@ export function createAgentProjectService({
       now = nowIso(),
       force = false,
     } = {}) {
+      this.assertLocalAutonomyExecution(projectId, {
+        now,
+        requestedSteps: 1,
+        estimatedCostCents: requestBodyOverrides.estimatedCostCents || 0,
+        toolOperations: requestBodyOverrides.toolOperations || [],
+      });
       const actionQueue = this.getAgentAutonomousActionQueue(projectId, { now, language: requestBodyOverrides.language });
       const row = agentId === 'next'
         ? actionQueue.nextAction
@@ -54965,6 +58420,9 @@ export function createAgentProjectService({
       requestBodyOverrides = {},
       now = nowIso(),
       force = false,
+      signal = null,
+      durableTaskJobId = null,
+      durableTaskFenceToken = null,
     } = {}) {
       const actionQueue = this.getAgentAutonomousActionQueue(projectId, { now, language: requestBodyOverrides.language });
       const row = agentId === 'next'
@@ -54979,11 +58437,18 @@ export function createAgentProjectService({
         ...requestBodyOverrides,
         now,
       };
+      this.assertLocalAutonomyExecution(projectId, {
+        now,
+        requestedSteps: 1,
+        estimatedCostCents: requestBody.estimatedCostCents || 0,
+        toolOperations: requestBody.useProviderEvidenceSearch ? [requestBody.operation || 'search:evidence'] : [],
+      });
       const autonomousProviderPreflight = buildAutonomousProviderPreflight({
         projectId,
         kind: 'search',
         operation: requestBody.operation || 'search:evidence',
         agentId: row.agentId,
+        taskId: requestBody.taskId || row.taskId || '',
         requested: true,
         requireProvider: Boolean(requestBody.requireProviderEvidenceSearch),
         queueReady: Boolean(row.canRun || force),
@@ -55009,12 +58474,30 @@ export function createAgentProjectService({
         });
       }
 
-      const result = await this.runAgentWorkCycleWithProviderEvidence({
-        projectId,
-        agentId: row.agentId,
-        ...requestBody,
-        autonomousProviderPreflight,
-      });
+      let activeDurableTask = null;
+      if (durableTaskJobId || durableTaskFenceToken) {
+        const durableProject = store.getProject(projectId);
+        const durableJob = (durableProject.localDurableTaskQueue || []).find((item) => item.id === durableTaskJobId);
+        if (!durableJob || durableJob.status !== 'leased' || durableJob.fenceToken !== durableTaskFenceToken) throw new Error('local-durable-task-stale-fence');
+        activeDurableTask = registerActiveDurableTask(durableJob);
+      }
+      const durableSignal = activeDurableTask?.controller.signal || signal;
+      const relayAbort = () => activeDurableTask?.controller.abort(signal?.reason);
+      if (activeDurableTask && signal?.aborted) relayAbort();
+      else if (activeDurableTask) signal?.addEventListener('abort', relayAbort, { once: true });
+      let result;
+      try {
+        result = await this.runAgentWorkCycleWithProviderEvidence({
+          projectId,
+          agentId: row.agentId,
+          ...requestBody,
+          autonomousProviderPreflight,
+          signal: durableSignal,
+        });
+      } finally {
+        if (activeDurableTask) signal?.removeEventListener('abort', relayAbort);
+        releaseActiveDurableTask(activeDurableTask);
+      }
       const resultProjectId = result.project?.id || projectId;
       const resultProject = store.getProject(resultProjectId) || result.project;
       const timestamp = Date.parse(now) || Date.now();
@@ -55457,6 +58940,7 @@ export function createAgentProjectService({
           summary: null,
         },
       });
+      const promptBoundaryReadiness = buildPromptBoundaryReadiness(store.getProject(projectId));
       const providerReadinessBase = buildProviderReadinessSnapshot({
         project: store.getProject(projectId),
         managerDashboard,
@@ -55474,11 +58958,15 @@ export function createAgentProjectService({
         backendRoutes: {
           ...(providerReadinessBase.backendRoutes || {}),
           providerVaultBindings: providerVaultBindings.backendRoutes?.providerVaultBindings || `/projects/${projectId}/provider-vault-bindings`,
+          promptBoundaryReadiness: `/projects/${projectId}/prompt-boundary-readiness`,
         },
         summary: {
           ...(providerReadinessBase.summary || {}),
           providerVaultBoundProviderCount: providerVaultBindings.summary?.boundProviderCount || 0,
           providerVaultBindingChecksum: providerVaultBindings.checksum || null,
+          promptBoundaryStatus: promptBoundaryReadiness.status,
+          promptBoundaryReceiptCount: promptBoundaryReadiness.summary.receiptCount,
+          quarantinedPromptContextCount: promptBoundaryReadiness.summary.quarantinedContextCount,
         },
       };
       const budgetAlertReadiness = buildBudgetAlertReadinessSnapshot({
@@ -56049,6 +59537,7 @@ export function createAgentProjectService({
         backendRoutes: {
           ...(managerDashboard.backendRoutes || {}),
           launchOperationsOverview: `/projects/${projectId}/launch-operations-overview`,
+          promptBoundaryReadiness: `/projects/${projectId}/prompt-boundary-readiness`,
         },
         localMvpStartupReadiness,
         publicProductionStartupReadiness,
@@ -56058,6 +59547,7 @@ export function createAgentProjectService({
         settingsIntegrationReadiness,
         securityBoundary,
         providerReadiness,
+        promptBoundaryReadiness,
         budgetAlertReadiness,
         errorReportingReadiness,
         providerControlledRun,
@@ -58122,6 +61612,7 @@ export function createAgentProjectService({
     getSubmissionReviewWorkflow(projectId, options = {}) {
       return cachedReadModel('submission-review-workflow', projectId, options, () => {
         const language = options.language || store.getProject(projectId)?.language || 'en';
+        const now = options.now || nowIso();
         const project = store.getProject(projectId);
         const managerDashboard = this.getManagerDashboard(projectId, { language });
         const artifactQualityAudit = this.getArtifactQualityAudit(projectId, { language });
@@ -58129,6 +61620,8 @@ export function createAgentProjectService({
           project,
           managerDashboard,
           artifactQualityAudit,
+          reviewHandoffGovernance: buildLocalReviewHandoffGovernance({ project, now }),
+          now,
         }), language);
       });
     },
@@ -58368,9 +61861,612 @@ export function createAgentProjectService({
         }), language);
       });
     },
+    getReviewHandoffGovernance(projectId, { now = nowIso() } = {}) {
+      const project = store.getProject(projectId);
+      if (!project?.id) throw new Error(`Project not found: ${projectId}`);
+      return buildLocalReviewHandoffGovernance({ project, now });
+    },
+    createReviewHandoff({
+      projectId,
+      submissionId,
+      reviewerAgentId,
+      acceptanceCriteria,
+      dueAt,
+      idempotencyKey,
+      actorRole = 'manager',
+      actorId = 'local-manager',
+      actorAgentId = null,
+      now = nowIso(),
+    } = {}) {
+      const project = store.getProject(projectId);
+      if (!project?.id) throw new Error(`Project not found: ${projectId}`);
+      const submission = (project.agentSubmissions || []).find((row) => row.id === submissionId);
+      if (!submission) throw new Error(`Submission not found: ${submissionId}`);
+      const normalizedRole = String(actorRole || '').trim().toLowerCase();
+      if (['agent', 'reviewer-agent'].includes(normalizedRole) && String(actorAgentId || '') !== String(submission.agentId || '')) {
+        throw new Error('review-handoff-submitter-required');
+      }
+      const reviewer = (project.team || []).find((member) => String(member.id) === String(reviewerAgentId));
+      if (!reviewer) throw new Error('review-handoff-reviewer-not-on-team');
+      if (String(reviewer.id) === String(submission.agentId)) throw new Error('review-handoff-independent-reviewer-required');
+      if (submission.requestedReviewAgentId && String(submission.requestedReviewAgentId) !== String(reviewer.id)) {
+        throw new Error('review-handoff-requested-reviewer-mismatch');
+      }
+      const safeCriteria = (Array.isArray(acceptanceCriteria) ? acceptanceCriteria : []).map((criterion = {}) => {
+        const label = String(criterion.label || '').trim();
+        const safeLabel = redactSensitiveText(label);
+        if (safeLabel !== label) throw new Error('review-handoff-sensitive-criterion-rejected');
+        return { ...criterion, label: safeLabel };
+      });
+      const handoffs = project.localReviewHandoffs || [];
+      if (handoffs.length >= 500) throw new Error('review-handoff-capacity-exceeded');
+      const candidate = createLocalReviewHandoff({
+        projectId,
+        submission,
+        reviewerAgentId: reviewer.id,
+        acceptanceCriteria: safeCriteria,
+        dueAt,
+        requestedBy: actorAgentId || actorId,
+        idempotencyKey,
+        now,
+      });
+      const existingIdempotent = handoffs.find((row) => row.idempotencyKey === candidate.idempotencyKey);
+      if (existingIdempotent) {
+        if (!verifyLocalReviewHandoff(existingIdempotent).valid) throw new Error('review-handoff-integrity-invalid');
+        const intent = (row) => localReviewHandoffChecksum({
+          submissionId: row.submissionId,
+          submissionFingerprint: row.submissionFingerprint,
+          reviewerAgentId: row.reviewerAgentId,
+          acceptanceCriteria: row.acceptanceCriteria,
+          dueAt: row.dueAt,
+          requestedBy: row.requestedBy,
+          idempotencyKey: row.idempotencyKey,
+        });
+        if (intent(existingIdempotent) !== intent(candidate)) throw new Error('review-handoff-idempotency-conflict');
+        return { project, handoff: existingIdempotent, reviewHandoffGovernance: buildLocalReviewHandoffGovernance({ project, now }), idempotent: true, log: null };
+      }
+      if (handoffs.some((row) => row.submissionId === submission.id)) throw new Error('review-handoff-submission-already-governed');
+      const log = {
+        id: `log_${candidate.id}`, time: now, agent: 'Review Handoff', actor: candidate.requestedBy,
+        eventType: 'review-handoff-requested', source: 'local-review-handoff', channelId: 'review',
+        submissionId: candidate.submissionId, reviewHandoffId: candidate.id,
+        log: `Review handoff ${candidate.id} requested for submission ${candidate.submissionId}.`,
+        evidence: [candidate.id, candidate.checksum, candidate.submissionFingerprint, candidate.acceptanceCriteriaChecksum],
+      };
+      const savedProject = saveProject(appendProjectEvents({
+        ...project,
+        localReviewHandoffs: [candidate, ...handoffs],
+        logs: [log, ...(project.logs || [])],
+      }, [createProjectLedgerEvent({
+        id: `evt_${candidate.id}`, type: log.eventType, time: now, actor: `Review Handoff:${candidate.requestedBy}`,
+        summary: log.log, source: log.source, channelId: log.channelId, evidenceIds: log.evidence,
+        entityIds: { projectId, submissionId: candidate.submissionId, reviewHandoffId: candidate.id, reviewerAgentId: candidate.reviewerAgentId },
+        payload: {
+          schemaVersion: candidate.schemaVersion,
+          submissionFingerprint: candidate.submissionFingerprint,
+          acceptanceCriteriaIds: candidate.acceptanceCriteria.map((criterion) => criterion.id),
+          acceptanceCriteriaChecksum: candidate.acceptanceCriteriaChecksum,
+          dueAt: candidate.dueAt,
+          checksum: candidate.checksum,
+        },
+      })]));
+      return { project: savedProject, handoff: candidate, reviewHandoffGovernance: buildLocalReviewHandoffGovernance({ project: savedProject, now }), idempotent: false, log };
+    },
+    acknowledgeReviewHandoff({ projectId, handoffId, idempotencyKey, actorAgentId, now = nowIso() } = {}) {
+      const project = store.getProject(projectId);
+      const handoff = (project.localReviewHandoffs || []).find((row) => row.id === handoffId);
+      if (!handoff) throw new Error(`Review handoff not found: ${handoffId}`);
+      if (String(actorAgentId || '') !== handoff.reviewerAgentId) throw new Error('review-handoff-reviewer-required');
+      const receipts = project.localReviewHandoffAcknowledgements || [];
+      const existing = receipts.find((row) => row.idempotencyKey === idempotencyKey);
+      if (existing) {
+        if (!verifyLocalReviewHandoffAcknowledgement(existing, handoff).valid) throw new Error('review-handoff-acknowledgement-integrity-invalid');
+        return { project, acknowledgement: existing, reviewHandoffGovernance: buildLocalReviewHandoffGovernance({ project, now }), idempotent: true, log: null };
+      }
+      if (receipts.some((row) => row.handoffId === handoff.id)) throw new Error('review-handoff-already-acknowledged');
+      if (receipts.length >= 500) throw new Error('review-handoff-acknowledgement-capacity-exceeded');
+      const acknowledgement = createLocalReviewHandoffAcknowledgement({ handoff, reviewerAgentId: actorAgentId, idempotencyKey, now });
+      const log = {
+        id: `log_${acknowledgement.id}`, time: now, agent: 'Review Handoff', actor: actorAgentId,
+        eventType: 'review-handoff-acknowledged', source: 'local-review-handoff', channelId: 'review',
+        submissionId: handoff.submissionId, reviewHandoffId: handoff.id,
+        log: `Reviewer ${actorAgentId} acknowledged handoff ${handoff.id}.`, evidence: [handoff.id, handoff.checksum, acknowledgement.id, acknowledgement.checksum],
+      };
+      const savedProject = saveProject(appendProjectEvents({ ...project, localReviewHandoffAcknowledgements: [acknowledgement, ...receipts], logs: [log, ...(project.logs || [])] }, [createProjectLedgerEvent({
+        id: `evt_${acknowledgement.id}`, type: log.eventType, time: now, actor: `Review Handoff:${actorAgentId}`,
+        summary: log.log, source: log.source, channelId: log.channelId, evidenceIds: log.evidence,
+        entityIds: { projectId, submissionId: handoff.submissionId, reviewHandoffId: handoff.id, reviewerAgentId: actorAgentId },
+        payload: { schemaVersion: acknowledgement.schemaVersion, handoffChecksum: handoff.checksum, checksum: acknowledgement.checksum },
+      })]));
+      return { project: savedProject, acknowledgement, reviewHandoffGovernance: buildLocalReviewHandoffGovernance({ project: savedProject, now }), idempotent: false, log };
+    },
+    claimReviewHandoff({ projectId, handoffId, leaseMs = 30 * 60_000, idempotencyKey, actorAgentId, now = nowIso() } = {}) {
+      const project = store.getProject(projectId);
+      const handoff = (project.localReviewHandoffs || []).find((row) => row.id === handoffId);
+      if (!handoff) throw new Error(`Review handoff not found: ${handoffId}`);
+      if (String(actorAgentId || '') !== handoff.reviewerAgentId) throw new Error('review-handoff-reviewer-required');
+      const acknowledgement = (project.localReviewHandoffAcknowledgements || []).find((row) => row.handoffId === handoff.id);
+      if (!acknowledgement || !verifyLocalReviewHandoffAcknowledgement(acknowledgement, handoff).valid) throw new Error('review-handoff-acknowledgement-required');
+      if ((project.localReviewHandoffCompletions || []).some((row) => row.handoffId === handoff.id)) throw new Error('review-handoff-already-completed');
+      const claims = project.localReviewHandoffClaims || [];
+      const existing = claims.find((row) => row.idempotencyKey === idempotencyKey);
+      if (existing) {
+        if (!verifyLocalReviewHandoffClaim(existing, handoff).valid) throw new Error('review-handoff-claim-integrity-invalid');
+        if (existing.handoffId !== handoff.id || existing.leaseMs !== Number(leaseMs)) throw new Error('review-handoff-idempotency-conflict');
+        return { project, claim: existing, reviewHandoffGovernance: buildLocalReviewHandoffGovernance({ project, now }), idempotent: true, log: null };
+      }
+      const handoffClaims = claims.filter((row) => row.handoffId === handoff.id).sort((left, right) => right.fence - left.fence);
+      const latest = handoffClaims[0] || null;
+      if (latest && Date.parse(now) <= Date.parse(latest.expiresAt)) throw new Error('review-handoff-claim-active');
+      if (claims.length >= 500) throw new Error('review-handoff-claim-capacity-exceeded');
+      const claim = createLocalReviewHandoffClaim({ handoff, reviewerAgentId: actorAgentId, fence: (latest?.fence || 0) + 1, leaseMs, idempotencyKey, now });
+      const log = {
+        id: `log_${claim.id}`, time: now, agent: 'Review Handoff', actor: actorAgentId,
+        eventType: 'review-handoff-claimed', source: 'local-review-handoff', channelId: 'review',
+        submissionId: handoff.submissionId, reviewHandoffId: handoff.id,
+        log: `Reviewer ${actorAgentId} claimed handoff ${handoff.id} with fence ${claim.fence}.`, evidence: [handoff.id, handoff.checksum, claim.id, claim.checksum],
+      };
+      const savedProject = saveProject(appendProjectEvents({ ...project, localReviewHandoffClaims: [claim, ...claims], logs: [log, ...(project.logs || [])] }, [createProjectLedgerEvent({
+        id: `evt_${claim.id}`, type: log.eventType, time: now, actor: `Review Handoff:${actorAgentId}`,
+        summary: log.log, source: log.source, channelId: log.channelId, evidenceIds: log.evidence,
+        entityIds: { projectId, submissionId: handoff.submissionId, reviewHandoffId: handoff.id, reviewClaimId: claim.id, reviewerAgentId: actorAgentId },
+        payload: { schemaVersion: claim.schemaVersion, fence: claim.fence, expiresAt: claim.expiresAt, checksum: claim.checksum },
+      })]));
+      return { project: savedProject, claim, reviewHandoffGovernance: buildLocalReviewHandoffGovernance({ project: savedProject, now }), idempotent: false, log };
+    },
+    completeReviewHandoff({
+      projectId,
+      handoffId,
+      claimId,
+      fence,
+      verdict,
+      criterionResults,
+      comments = '',
+      requestedChanges = [],
+      idempotencyKey,
+      actorAgentId,
+      now = nowIso(),
+    } = {}) {
+      const project = store.getProject(projectId);
+      const handoff = (project.localReviewHandoffs || []).find((row) => row.id === handoffId);
+      if (!handoff) throw new Error(`Review handoff not found: ${handoffId}`);
+      if (String(actorAgentId || '') !== handoff.reviewerAgentId) throw new Error('review-handoff-reviewer-required');
+      const reviewIntentChecksum = localReviewHandoffChecksum({
+        verdict: String(verdict || '').trim(),
+        comments: redactSensitiveText(String(comments || '').trim()),
+        requestedChanges: (Array.isArray(requestedChanges) ? requestedChanges : [requestedChanges])
+          .map((item) => redactSensitiveText(String(item || '').trim()))
+          .filter(Boolean),
+      });
+      const completions = project.localReviewHandoffCompletions || [];
+      const existing = completions.find((row) => row.idempotencyKey === idempotencyKey);
+      if (existing) {
+        if (existing.handoffId !== handoff.id || existing.claimId !== claimId || existing.fence !== Number(fence) || existing.verdict !== verdict) {
+          throw new Error('review-handoff-idempotency-conflict');
+        }
+        const existingClaim = (project.localReviewHandoffClaims || []).find((row) => row.id === existing.claimId);
+        const replayCandidate = createLocalReviewHandoffCompletion({
+          handoff,
+          claim: existingClaim,
+          submissionFingerprint: handoff.submissionFingerprint,
+          verdict,
+          criterionResults,
+          reviewId: existing.reviewId,
+          reviewChecksum: existing.reviewChecksum,
+          reviewIntentChecksum,
+          reviewerAgentId: actorAgentId,
+          idempotencyKey,
+          now: existing.completedAt,
+        });
+        if (replayCandidate.criterionResultsChecksum !== existing.criterionResultsChecksum
+          || replayCandidate.reviewIntentChecksum !== existing.reviewIntentChecksum) {
+          throw new Error('review-handoff-idempotency-conflict');
+        }
+        const review = (project.submissionReviews || []).find((row) => row.id === existing.reviewId) || null;
+        return { project, completion: existing, review, reviewHandoffGovernance: buildLocalReviewHandoffGovernance({ project, now }), idempotent: true, log: null, messages: [] };
+      }
+      if (completions.some((row) => row.handoffId === handoff.id)) throw new Error('review-handoff-already-completed');
+      if (completions.length >= 500) throw new Error('review-handoff-completion-capacity-exceeded');
+      const handoffClaims = (project.localReviewHandoffClaims || []).filter((row) => row.handoffId === handoff.id).sort((left, right) => right.fence - left.fence);
+      const latestClaim = handoffClaims[0] || null;
+      if (!latestClaim || latestClaim.id !== claimId || latestClaim.fence !== Number(fence)) throw new Error('review-handoff-stale-claim');
+      if (Date.parse(now) > Date.parse(latestClaim.expiresAt)) throw new Error('review-handoff-claim-expired');
+      const submission = (project.agentSubmissions || []).find((row) => row.id === handoff.submissionId);
+      if (!submission || localReviewSubmissionFingerprint(submission) !== handoff.submissionFingerprint) throw new Error('review-handoff-stale-submission');
+      createLocalReviewHandoffCompletion({
+        handoff, claim: latestClaim, submissionFingerprint: handoff.submissionFingerprint, verdict, criterionResults,
+        reviewId: 'review-preflight', reviewChecksum: '0'.repeat(64), reviewIntentChecksum, reviewerAgentId: actorAgentId,
+        idempotencyKey, now,
+      });
+      const reviewResult = reviewAgentSubmission({
+        project,
+        submissionId: handoff.submissionId,
+        reviewerAgentId: actorAgentId,
+        verdict,
+        comments,
+        requestedChanges,
+        now,
+      });
+      const reviewChecksum = localReviewHandoffChecksum(reviewResult.review);
+      const completion = createLocalReviewHandoffCompletion({
+        handoff, claim: latestClaim, submissionFingerprint: handoff.submissionFingerprint, verdict, criterionResults,
+        reviewId: reviewResult.review.id, reviewChecksum, reviewIntentChecksum, reviewerAgentId: actorAgentId, idempotencyKey, now,
+      });
+      const log = {
+        id: `log_${completion.id}`, time: now, agent: 'Review Handoff', actor: actorAgentId,
+        eventType: 'review-handoff-completed', source: 'local-review-handoff', channelId: 'review',
+        submissionId: handoff.submissionId, reviewHandoffId: handoff.id, reviewId: reviewResult.review.id,
+        log: `Review handoff ${handoff.id} completed at fence ${completion.fence} with verdict ${completion.verdict}.`,
+        evidence: [handoff.id, handoff.checksum, latestClaim.id, latestClaim.checksum, reviewResult.review.id, reviewChecksum, completion.id, completion.checksum],
+      };
+      const savedProject = saveProject(appendProjectEvents({
+        ...reviewResult.project,
+        localReviewHandoffCompletions: [completion, ...completions],
+        logs: [log, ...(reviewResult.project.logs || [])],
+      }, [createProjectLedgerEvent({
+        id: `evt_${completion.id}`, type: log.eventType, time: now, actor: `Review Handoff:${actorAgentId}`,
+        summary: log.log, source: log.source, channelId: log.channelId, evidenceIds: log.evidence,
+        entityIds: { projectId, submissionId: handoff.submissionId, reviewHandoffId: handoff.id, reviewClaimId: latestClaim.id, reviewId: reviewResult.review.id, reviewerAgentId: actorAgentId },
+        payload: {
+          schemaVersion: completion.schemaVersion, fence: completion.fence, verdict: completion.verdict,
+          criterionResultIds: completion.criterionResults.map((row) => row.criterionId),
+          criterionResultsChecksum: completion.criterionResultsChecksum, reviewChecksum, checksum: completion.checksum,
+        },
+      })]));
+      appendMessages(reviewResult.messages || []);
+      return {
+        project: savedProject,
+        completion,
+        review: reviewResult.review,
+        submission: reviewResult.submission,
+        messages: reviewResult.messages || [],
+        reviewHandoffGovernance: buildLocalReviewHandoffGovernance({ project: savedProject, now }),
+        idempotent: false,
+        log,
+      };
+    },
+    scanReviewHandoffs({ projectId, idempotencyKey, now = nowIso() } = {}) {
+      const project = store.getProject(projectId);
+      const normalizedIdempotencyKey = String(idempotencyKey || '').trim();
+      if (!normalizedIdempotencyKey || normalizedIdempotencyKey.length > 160 || !/^[a-zA-Z0-9][a-zA-Z0-9._:/@+\-]*$/.test(normalizedIdempotencyKey)) {
+        throw new Error('review-handoff-scan-idempotency-key-invalid');
+      }
+      const governance = buildLocalReviewHandoffGovernance({ project, now });
+      if (!governance.integrity.valid) throw new Error('review-handoff-governance-integrity-invalid');
+      const existing = project.localReviewHandoffEscalations || [];
+      const overdueRows = governance.rows.filter((row) => row.overdue && !row.escalated);
+      const created = overdueRows.map((row) => {
+        const handoff = (project.localReviewHandoffs || []).find((item) => item.id === row.handoffId);
+        return createLocalReviewHandoffEscalation({ handoff, reasonCode: 'review-overdue', idempotencyKey: `${normalizedIdempotencyKey}:${handoff.id}`, now });
+      }).filter((candidate) => !existing.some((receipt) => receipt.handoffId === candidate.handoffId && receipt.reasonCode === candidate.reasonCode));
+      if (!created.length) {
+        return { project, escalationBatch: { idempotencyKey: normalizedIdempotencyKey, createdCount: 0, escalationIds: [] }, reviewHandoffGovernance: governance, idempotent: true, log: null };
+      }
+      if (existing.length + created.length > 500) throw new Error('review-handoff-escalation-capacity-exceeded');
+      const log = {
+        id: `log_review_handoff_scan_${Date.parse(now) || Date.now()}`, time: now, agent: 'Review Handoff', actor: 'local-review-scanner',
+        eventType: 'review-handoff-escalated', source: 'local-review-handoff', channelId: 'review',
+        log: `${created.length} overdue review handoff(s) escalated.`, evidence: created.flatMap((row) => [row.id, row.checksum]),
+      };
+      const savedProject = saveProject(appendProjectEvents({ ...project, localReviewHandoffEscalations: [...created, ...existing], logs: [log, ...(project.logs || [])] }, [createProjectLedgerEvent({
+        id: `evt_${log.id}`, type: log.eventType, time: now, actor: 'Review Handoff:local-review-scanner', summary: log.log,
+        source: log.source, channelId: log.channelId, evidenceIds: log.evidence, entityIds: { projectId },
+        payload: { schemaVersion: 'local-review-handoff-escalation-batch/v1', idempotencyKey: normalizedIdempotencyKey, escalationIds: created.map((row) => row.id) },
+      })]));
+      return {
+        project: savedProject,
+        escalationBatch: { idempotencyKey: normalizedIdempotencyKey, createdCount: created.length, escalationIds: created.map((row) => row.id) },
+        reviewHandoffGovernance: buildLocalReviewHandoffGovernance({ project: savedProject, now }),
+        idempotent: false,
+        log,
+      };
+    },
+    getProjectSharedMemories(projectId, {
+      actorRole = 'manager',
+      actorId = null,
+      agentId = null,
+      now = nowIso(),
+      includeHistory = false,
+      includeContents = true,
+    } = {}) {
+      const project = store.getProject(projectId);
+      if (!project?.id) throw new Error(`Project not found: ${projectId}`);
+      return buildLocalProjectSharedMemory({
+        project,
+        actor: { role: actorRole, actorId, agentId },
+        now,
+        includeHistory: Boolean(includeHistory),
+        includeContents: includeContents !== false,
+      });
+    },
+    getProjectSharedMemory(projectId, memoryId, options = {}) {
+      const view = this.getProjectSharedMemories(projectId, { ...options, includeHistory: true });
+      const memory = view.rows.find((row) => row.id === memoryId);
+      if (!memory) throw new Error(`Project memory not found: ${memoryId}`);
+      return { memory, sharedMemory: view };
+    },
+    createProjectSharedMemory({
+      projectId,
+      actorId = 'local-manager',
+      now = nowIso(),
+      ...input
+    } = {}) {
+      const project = store.getProject(projectId);
+      if (!project?.id) throw new Error(`Project not found: ${projectId}`);
+      const entries = project.localProjectMemoryEntries || [];
+      if (entries.length >= 500) throw new Error('project-memory-entry-capacity-exceeded');
+      const citations = resolveProjectMemoryCitations(projectId, input.citations);
+      const candidate = createLocalProjectMemoryEntry({
+        ...input,
+        projectId,
+        content: rejectSensitiveProjectMemoryContent(input.content),
+        citations,
+        version: 1,
+        actorId,
+        now,
+      });
+      const existingIdempotent = entries.find((entry) => entry.idempotencyKey === candidate.idempotencyKey);
+      if (existingIdempotent) {
+        if (!verifyLocalProjectMemoryEntry(existingIdempotent).valid) throw new Error('project-memory-integrity-invalid');
+        if (projectMemoryEntryIntentChecksum(existingIdempotent) !== projectMemoryEntryIntentChecksum(candidate)) {
+          throw new Error('project-memory-idempotency-conflict');
+        }
+        return {
+          project,
+          memory: existingIdempotent,
+          sharedMemory: buildLocalProjectSharedMemory({ project, actor: { role: 'manager', actorId }, now, includeHistory: true }),
+          idempotent: true,
+          log: null,
+        };
+      }
+      if (entries.some((entry) => entry.memoryKey === candidate.memoryKey)) {
+        throw new Error('project-memory-key-already-exists-use-revision');
+      }
+      const log = {
+        id: `log_${candidate.id}`,
+        time: now,
+        agent: 'Project Shared Memory',
+        actor: candidate.actorId,
+        eventType: 'project-shared-memory-created',
+        source: 'local-project-shared-memory',
+        channelId: 'management',
+        projectMemoryId: candidate.id,
+        log: `Project memory ${candidate.memoryKey} version ${candidate.version} was created.`,
+        evidence: [candidate.id, candidate.checksum, ...candidate.citations.map((citation) => citation.sourceChecksum)],
+      };
+      const savedProject = saveProject(appendProjectEvents({
+        ...project,
+        localProjectMemoryEntries: [candidate, ...entries],
+        logs: [log, ...(project.logs || [])],
+      }, [createProjectLedgerEvent({
+        id: `evt_${candidate.id}`,
+        type: log.eventType,
+        time: now,
+        actor: `Project Shared Memory:${candidate.actorId}`,
+        summary: log.log,
+        source: log.source,
+        channelId: log.channelId,
+        evidenceIds: log.evidence,
+        entityIds: { projectId, projectMemoryId: candidate.id },
+        payload: {
+          schemaVersion: candidate.schemaVersion,
+          memoryKey: candidate.memoryKey,
+          kind: candidate.kind,
+          version: candidate.version,
+          confidence: candidate.confidence,
+          confidenceBasis: candidate.confidenceBasis,
+          expiresAt: candidate.expiresAt,
+          accessVisibility: candidate.accessScope.visibility,
+          citationIds: candidate.citations.map((citation) => `${citation.sourceType}:${citation.sourceId}`),
+          contentChecksum: candidate.contentChecksum,
+          checksum: candidate.checksum,
+        },
+      })]));
+      return {
+        project: savedProject,
+        memory: candidate,
+        sharedMemory: buildLocalProjectSharedMemory({ project: savedProject, actor: { role: 'manager', actorId }, now, includeHistory: true }),
+        idempotent: false,
+        log,
+      };
+    },
+    reviseProjectSharedMemory({
+      projectId,
+      memoryId,
+      expectedPreviousChecksum,
+      actorId = 'local-manager',
+      now = nowIso(),
+      ...input
+    } = {}) {
+      const project = store.getProject(projectId);
+      if (!project?.id) throw new Error(`Project not found: ${projectId}`);
+      const entries = project.localProjectMemoryEntries || [];
+      if (entries.length >= 500) throw new Error('project-memory-entry-capacity-exceeded');
+      const existingIdempotent = entries.find((entry) => entry.idempotencyKey === input.idempotencyKey);
+      if (existingIdempotent) {
+        const previous = entries.find((entry) => entry.id === existingIdempotent.previousVersionId) || null;
+        if (!verifyLocalProjectMemoryEntry(existingIdempotent, previous).valid) throw new Error('project-memory-integrity-invalid');
+        if (!previous || previous.id !== memoryId || expectedPreviousChecksum !== previous.checksum) {
+          throw new Error('project-memory-idempotency-conflict');
+        }
+        const replayCandidate = createLocalProjectMemoryEntry({
+          ...input,
+          projectId,
+          memoryKey: previous.memoryKey,
+          kind: input.kind || previous.kind,
+          content: rejectSensitiveProjectMemoryContent(input.content),
+          citations: resolveProjectMemoryCitations(projectId, input.citations),
+          version: previous.version + 1,
+          previousVersionId: previous.id,
+          previousVersionChecksum: previous.checksum,
+          actorId,
+          now,
+        });
+        if (projectMemoryEntryIntentChecksum(existingIdempotent) !== projectMemoryEntryIntentChecksum(replayCandidate)) {
+          throw new Error('project-memory-idempotency-conflict');
+        }
+        return {
+          project,
+          memory: existingIdempotent,
+          sharedMemory: buildLocalProjectSharedMemory({ project, actor: { role: 'manager', actorId }, now, includeHistory: true }),
+          idempotent: true,
+          log: null,
+        };
+      }
+      const previous = entries.find((entry) => entry.id === memoryId);
+      if (!previous) throw new Error(`Project memory not found: ${memoryId}`);
+      const latest = entries.filter((entry) => entry.memoryKey === previous.memoryKey)
+        .sort((left, right) => right.version - left.version)[0];
+      if (latest.id !== previous.id || expectedPreviousChecksum !== previous.checksum) {
+        throw new Error('project-memory-stale-version');
+      }
+      const revoked = (project.localProjectMemoryRevocations || [])
+        .some((receipt) => receipt.memoryId === previous.id && verifyLocalProjectMemoryRevocation(receipt, previous).valid);
+      if (revoked) throw new Error('project-memory-revoked');
+      if (!verifyLocalProjectMemoryEntry(previous, previous.version > 1
+        ? entries.find((entry) => entry.id === previous.previousVersionId) || null
+        : null).valid) throw new Error('project-memory-integrity-invalid');
+      const citations = resolveProjectMemoryCitations(projectId, input.citations);
+      const candidate = createLocalProjectMemoryEntry({
+        ...input,
+        projectId,
+        memoryKey: previous.memoryKey,
+        kind: input.kind || previous.kind,
+        content: rejectSensitiveProjectMemoryContent(input.content),
+        citations,
+        version: previous.version + 1,
+        previousVersionId: previous.id,
+        previousVersionChecksum: previous.checksum,
+        actorId,
+        now,
+      });
+      const log = {
+        id: `log_${candidate.id}`,
+        time: now,
+        agent: 'Project Shared Memory',
+        actor: candidate.actorId,
+        eventType: 'project-shared-memory-revised',
+        source: 'local-project-shared-memory',
+        channelId: 'management',
+        projectMemoryId: candidate.id,
+        log: `Project memory ${candidate.memoryKey} advanced to version ${candidate.version}.`,
+        evidence: [candidate.id, candidate.checksum, previous.id, previous.checksum, ...candidate.citations.map((citation) => citation.sourceChecksum)],
+      };
+      const savedProject = saveProject(appendProjectEvents({
+        ...project,
+        localProjectMemoryEntries: [candidate, ...entries],
+        logs: [log, ...(project.logs || [])],
+      }, [createProjectLedgerEvent({
+        id: `evt_${candidate.id}`,
+        type: log.eventType,
+        time: now,
+        actor: `Project Shared Memory:${candidate.actorId}`,
+        summary: log.log,
+        source: log.source,
+        channelId: log.channelId,
+        evidenceIds: log.evidence,
+        entityIds: { projectId, projectMemoryId: candidate.id, previousProjectMemoryId: previous.id },
+        payload: {
+          schemaVersion: candidate.schemaVersion,
+          memoryKey: candidate.memoryKey,
+          version: candidate.version,
+          previousVersionId: previous.id,
+          previousVersionChecksum: previous.checksum,
+          confidence: candidate.confidence,
+          expiresAt: candidate.expiresAt,
+          accessVisibility: candidate.accessScope.visibility,
+          contentChecksum: candidate.contentChecksum,
+          checksum: candidate.checksum,
+        },
+      })]));
+      return {
+        project: savedProject,
+        memory: candidate,
+        sharedMemory: buildLocalProjectSharedMemory({ project: savedProject, actor: { role: 'manager', actorId }, now, includeHistory: true }),
+        idempotent: false,
+        log,
+      };
+    },
+    revokeProjectSharedMemory({
+      projectId,
+      memoryId,
+      reasonCode,
+      idempotencyKey,
+      actorId = 'local-manager',
+      now = nowIso(),
+    } = {}) {
+      const project = store.getProject(projectId);
+      if (!project?.id) throw new Error(`Project not found: ${projectId}`);
+      const entry = (project.localProjectMemoryEntries || []).find((row) => row.id === memoryId);
+      if (!entry) throw new Error(`Project memory not found: ${memoryId}`);
+      const revocations = project.localProjectMemoryRevocations || [];
+      const existingIdempotent = revocations.find((receipt) => receipt.idempotencyKey === idempotencyKey);
+      if (existingIdempotent) {
+        if (!verifyLocalProjectMemoryRevocation(existingIdempotent, entry).valid) throw new Error('project-memory-revocation-integrity-invalid');
+        if (existingIdempotent.memoryId !== memoryId
+          || existingIdempotent.reasonCode !== String(reasonCode || '')
+          || existingIdempotent.actorId !== String(actorId || '')) {
+          throw new Error('project-memory-idempotency-conflict');
+        }
+        const view = buildLocalProjectSharedMemory({ project, actor: { role: 'manager', actorId }, now, includeHistory: true });
+        return { project, revocation: existingIdempotent, memory: view.rows.find((row) => row.id === memoryId), sharedMemory: view, idempotent: true, log: null };
+      }
+      if (revocations.length >= 500) throw new Error('project-memory-revocation-capacity-exceeded');
+      if (revocations.some((receipt) => receipt.memoryId === memoryId && verifyLocalProjectMemoryRevocation(receipt, entry).valid)) {
+        throw new Error('project-memory-already-revoked');
+      }
+      const revocation = createLocalProjectMemoryRevocation({
+        projectId, memoryId, memoryChecksum: entry.checksum, reasonCode, actorId, idempotencyKey, now,
+      });
+      const log = {
+        id: `log_${revocation.id}`,
+        time: now,
+        agent: 'Project Shared Memory',
+        actor: revocation.actorId,
+        eventType: 'project-shared-memory-revoked',
+        source: 'local-project-shared-memory',
+        channelId: 'management',
+        projectMemoryId: entry.id,
+        log: `Project memory ${entry.memoryKey} version ${entry.version} was revoked: ${revocation.reasonCode}.`,
+        evidence: [entry.id, entry.checksum, revocation.id, revocation.checksum],
+      };
+      const savedProject = saveProject(appendProjectEvents({
+        ...project,
+        localProjectMemoryRevocations: [revocation, ...revocations],
+        logs: [log, ...(project.logs || [])],
+      }, [createProjectLedgerEvent({
+        id: `evt_${revocation.id}`,
+        type: log.eventType,
+        time: now,
+        actor: `Project Shared Memory:${revocation.actorId}`,
+        summary: log.log,
+        source: log.source,
+        channelId: log.channelId,
+        evidenceIds: log.evidence,
+        entityIds: { projectId, projectMemoryId: entry.id, projectMemoryRevocationId: revocation.id },
+        payload: {
+          schemaVersion: revocation.schemaVersion,
+          memoryKey: entry.memoryKey,
+          version: entry.version,
+          reasonCode: revocation.reasonCode,
+          memoryChecksum: entry.checksum,
+          checksum: revocation.checksum,
+        },
+      })]));
+      const view = buildLocalProjectSharedMemory({ project: savedProject, actor: { role: 'manager', actorId }, now, includeHistory: true });
+      return {
+        project: savedProject,
+        revocation,
+        memory: view.rows.find((row) => row.id === memoryId),
+        sharedMemory: view,
+        idempotent: false,
+        log,
+      };
+    },
     getProjectMemoryReadiness(projectId, options = {}) {
       return cachedReadModel('memory-readiness', projectId, options, () => {
         const language = options.language || store.getProject(projectId)?.language || 'en';
+        const now = options.now || nowIso();
         const project = store.getProject(projectId);
         return localizeReadModel(buildProjectMemoryReadinessSnapshot({
           project,
@@ -58378,8 +62474,319 @@ export function createAgentProjectService({
           evidenceIndexReadiness: this.getEvidenceIndexReadiness(projectId, { language }),
           persistenceAdapterPlan: this.getPersistenceAdapterPlan(projectId, { language }),
           meetingSummaries: this.getMeetingSummaries(projectId, { language }),
+          sharedMemoryGovernance: this.getProjectSharedMemories(projectId, {
+            actorRole: 'manager',
+            actorId: 'memory-readiness',
+            now,
+            includeHistory: true,
+            includeContents: false,
+          }),
+          now,
         }), language);
       });
+    },
+    getToolGrantLeases(projectId, { now = nowIso() } = {}) {
+      return buildToolGrantGovernance(store.getProject(projectId), now);
+    },
+    getPromptBoundaryReadiness(projectId, { now = nowIso() } = {}) {
+      return buildPromptBoundaryReadiness(store.getProject(projectId), now);
+    },
+    createToolGrantLease({
+      projectId,
+      operation = '',
+      agentId = '',
+      taskId = '',
+      maxInvocations = 1,
+      grantedBy = '',
+      purpose = '',
+      ttlMs = 60 * 60 * 1000,
+      expiresAt = '',
+      now = nowIso(),
+    } = {}) {
+      const project = store.getProject(projectId);
+      const normalizedOperation = String(operation || '').trim();
+      const normalizedAgentId = String(agentId || '').trim();
+      const normalizedTaskId = String(taskId || '').trim();
+      const normalizedGrantedBy = String(grantedBy || '').trim();
+      const normalizedPurpose = redactSensitiveText(compactPreview(purpose, 240));
+      const invocationLimit = Math.round(Number(maxInvocations) || 0);
+      if (!PROJECT_TOOL_GRANT_SET.has(normalizedOperation)) throw new Error('Tool grant lease requires a supported exact operation.');
+      if (!normalizedAgentId) throw new Error('Tool grant lease requires agentId.');
+      if (!(project.team || []).some((agent) => String(agent.id) === normalizedAgentId)) throw new Error(`Tool grant lease Agent not found: ${normalizedAgentId}`);
+      if (normalizedTaskId && !(project.tasks || []).some((task) => String(task.id) === normalizedTaskId)) throw new Error(`Tool grant lease task not found: ${normalizedTaskId}`);
+      if (!normalizedGrantedBy) throw new Error('Tool grant lease requires grantedBy.');
+      if (!normalizedPurpose) throw new Error('Tool grant lease requires purpose.');
+      if (invocationLimit < 1 || invocationLimit > 100) throw new Error('Tool grant lease maxInvocations must be between 1 and 100.');
+      const createdAtMs = Date.parse(now) || Date.now();
+      const requestedExpiresAtMs = expiresAt
+        ? Date.parse(expiresAt)
+        : createdAtMs + Math.max(60_000, Number(ttlMs) || 60 * 60 * 1000);
+      if (!Number.isFinite(requestedExpiresAtMs)
+        || requestedExpiresAtMs <= createdAtMs
+        || requestedExpiresAtMs > createdAtMs + 24 * 60 * 60 * 1000) {
+        throw new Error('Tool grant lease expiry must be within 24 hours.');
+      }
+      const base = {
+        schemaVersion: 'local-tool-grant-lease/v1',
+        id: `tool_grant_lease_${projectId}_${randomUUID()}`,
+        projectId,
+        operation: normalizedOperation,
+        agentId: normalizedAgentId,
+        taskId: normalizedTaskId || null,
+        grantedBy: normalizedGrantedBy,
+        purpose: normalizedPurpose,
+        status: 'active',
+        maxInvocations: invocationLimit,
+        consumedInvocationCount: 0,
+        reservedInvocationCount: 0,
+        createdAt: new Date(createdAtMs).toISOString(),
+        expiresAt: new Date(requestedExpiresAtMs).toISOString(),
+      };
+      const lease = { ...base, checksum: persistenceChecksum(base) };
+      const log = {
+        id: `log_${lease.id}`,
+        time: lease.createdAt,
+        agent: normalizedGrantedBy,
+        actor: normalizedGrantedBy,
+        eventType: 'tool-grant-lease-created',
+        source: 'tool-grant-governance',
+        channelId: 'security',
+        log: `A bounded tool grant lease was created for ${normalizedAgentId}/${normalizedOperation}.`,
+        toolGrantLeaseId: lease.id,
+      };
+      const updatedProject = appendProjectEvents({
+        ...project,
+        toolGrantLeases: [lease, ...(project.toolGrantLeases || [])].slice(0, TOOL_GRANT_LEASE_LIMIT),
+        logs: [log, ...(project.logs || [])],
+      }, [createProjectLedgerEvent({
+        id: `evt_${lease.id}`,
+        type: 'tool-grant-lease-created',
+        time: lease.createdAt,
+        actor: normalizedGrantedBy,
+        summary: log.log,
+        source: 'tool-grant-governance',
+        channelId: 'security',
+        evidenceIds: [lease.id, lease.checksum],
+        entityIds: { projectId, agentId: normalizedAgentId, taskId: normalizedTaskId || null, toolGrantLeaseId: lease.id },
+        payload: publicToolGrantLease(lease, now),
+      })]);
+      const savedProject = saveProject(updatedProject);
+      return {
+        project: savedProject,
+        toolGrantLease: publicToolGrantLease(lease, now),
+        toolGrantGovernance: buildToolGrantGovernance(savedProject, now),
+        log,
+      };
+    },
+    revokeToolGrantLease({ projectId, leaseId = '', revokedBy = '', reason = '', now = nowIso() } = {}) {
+      const project = store.getProject(projectId);
+      const existing = (project.toolGrantLeases || []).find((lease) => lease.id === leaseId);
+      if (!existing) throw new Error(`Tool grant lease not found: ${leaseId}`);
+      if (toolGrantLeaseStatus(existing, now) === 'revoked') {
+        return {
+          project,
+          toolGrantLease: publicToolGrantLease(existing, now),
+          toolGrantGovernance: buildToolGrantGovernance(project, now),
+          log: null,
+          idempotent: true,
+        };
+      }
+      const actor = String(revokedBy || '').trim();
+      if (!actor) throw new Error('Tool grant lease revocation requires revokedBy.');
+      const revoked = {
+        ...existing,
+        status: 'revoked',
+        revokedAt: now,
+        revokedBy: actor,
+        revocationReason: redactSensitiveText(compactPreview(reason || 'tool grant revoked', 240)),
+      };
+      revoked.checksum = persistenceChecksum({ ...revoked, checksum: undefined });
+      const log = {
+        id: `log_revoke_${leaseId}_${Date.parse(now) || Date.now()}`,
+        time: now,
+        agent: actor,
+        actor,
+        eventType: 'tool-grant-lease-revoked',
+        source: 'tool-grant-governance',
+        channelId: 'security',
+        log: `Tool grant lease ${leaseId} was revoked.`,
+        toolGrantLeaseId: leaseId,
+      };
+      const updatedProject = appendProjectEvents({
+        ...project,
+        toolGrantLeases: (project.toolGrantLeases || []).map((lease) => lease.id === leaseId ? revoked : lease),
+        logs: [log, ...(project.logs || [])],
+      }, [createProjectLedgerEvent({
+        id: `evt_revoke_${leaseId}_${Date.parse(now) || Date.now()}`,
+        type: 'tool-grant-lease-revoked',
+        time: now,
+        actor,
+        summary: log.log,
+        source: 'tool-grant-governance',
+        channelId: 'security',
+        evidenceIds: [leaseId, revoked.checksum],
+        entityIds: { projectId, agentId: revoked.agentId, taskId: revoked.taskId, toolGrantLeaseId: leaseId },
+        payload: publicToolGrantLease(revoked, now),
+      })]);
+      const savedProject = saveProject(updatedProject);
+      return {
+        project: savedProject,
+        toolGrantLease: publicToolGrantLease(revoked, now),
+        toolGrantGovernance: buildToolGrantGovernance(savedProject, now),
+        log,
+        idempotent: false,
+      };
+    },
+    getProviderBudgetApprovals(projectId, { now = nowIso() } = {}) {
+      const project = store.getProject(projectId);
+      const rows = (project.providerBudgetApprovals || []).map((approval) => publicProviderBudgetApproval(approval, now));
+      return {
+        schemaVersion: 'local-provider-budget-approval-list/v1',
+        projectId,
+        rows,
+        summary: {
+          count: rows.length,
+          activeCount: rows.filter((row) => row.status === 'active').length,
+          exhaustedCount: rows.filter((row) => row.status === 'exhausted').length,
+          expiredCount: rows.filter((row) => row.status === 'expired').length,
+          revokedCount: rows.filter((row) => row.status === 'revoked').length,
+          remainingCostCents: rows.filter((row) => row.status === 'active').reduce((sum, row) => sum + row.remainingCostCents, 0),
+          remainingRequestCount: rows.filter((row) => row.status === 'active').reduce((sum, row) => sum + row.remainingRequestCount, 0),
+        },
+        routes: {
+          approvals: `/projects/${projectId}/provider-budget-approvals`,
+          budgetAlertReadiness: `/projects/${projectId}/budget-alert-readiness`,
+        },
+      };
+    },
+    createProviderBudgetApproval({
+      projectId,
+      operation = '',
+      agentId = '',
+      maxExtraCostCents = 0,
+      maxExtraRequests = 0,
+      approvedBy = '',
+      purpose = '',
+      ttlMs = 60 * 60 * 1000,
+      expiresAt = '',
+      now = nowIso(),
+    } = {}) {
+      const project = store.getProject(projectId);
+      const normalizedOperation = String(operation || '').trim();
+      const normalizedApprovedBy = String(approvedBy || '').trim();
+      const extraCost = Math.max(0, Math.round(Number(maxExtraCostCents) || 0));
+      const extraRequests = Math.max(0, Math.round(Number(maxExtraRequests) || 0));
+      if (!normalizedOperation) throw new Error('Provider budget approval requires operation.');
+      if (!normalizedApprovedBy) throw new Error('Provider budget approval requires approvedBy.');
+      if (!extraCost && !extraRequests) throw new Error('Provider budget approval requires a positive extra limit.');
+      const createdAtMs = Date.parse(now) || Date.now();
+      const maxExpiresAtMs = createdAtMs + 24 * 60 * 60 * 1000;
+      const requestedExpiresAtMs = expiresAt
+        ? Date.parse(expiresAt)
+        : createdAtMs + Math.max(60_000, Number(ttlMs) || 60 * 60 * 1000);
+      if (!Number.isFinite(requestedExpiresAtMs) || requestedExpiresAtMs <= createdAtMs || requestedExpiresAtMs > maxExpiresAtMs) {
+        throw new Error('Provider budget approval expiry must be within 24 hours.');
+      }
+      const base = {
+        schemaVersion: 'local-provider-budget-approval/v1',
+        id: `provider_budget_approval_${projectId}_${randomUUID()}`,
+        projectId,
+        operation: normalizedOperation,
+        agentId: String(agentId || '').trim() || null,
+        approvedBy: normalizedApprovedBy,
+        purpose: redactSensitiveText(compactPreview(purpose || 'bounded local Provider overage', 240)),
+        status: 'active',
+        maxExtraCostCents: extraCost,
+        maxExtraRequests: extraRequests,
+        consumedCostCents: 0,
+        consumedRequestCount: 0,
+        reservedCostCents: 0,
+        reservedRequestCount: 0,
+        createdAt: new Date(createdAtMs).toISOString(),
+        expiresAt: new Date(requestedExpiresAtMs).toISOString(),
+      };
+      const approval = { ...base, checksum: persistenceChecksum(base) };
+      const log = {
+        id: `log_${approval.id}`,
+        time: approval.createdAt,
+        agent: normalizedApprovedBy,
+        actor: normalizedApprovedBy,
+        eventType: 'provider-budget-approval-created',
+        source: 'provider-budget-approval',
+        channelId: 'security',
+        log: `A bounded Provider overage approval was created for ${normalizedOperation}.`,
+        providerBudgetApprovalId: approval.id,
+      };
+      const updatedProject = appendProjectEvents({
+        ...project,
+        providerBudgetApprovals: [approval, ...(project.providerBudgetApprovals || [])].slice(0, PROVIDER_BUDGET_APPROVAL_LIMIT),
+        logs: [log, ...(project.logs || [])],
+      }, [createProjectLedgerEvent({
+        id: `evt_${approval.id}`,
+        type: 'provider-budget-approval-created',
+        time: approval.createdAt,
+        actor: normalizedApprovedBy,
+        summary: log.log,
+        source: 'provider-budget-approval',
+        channelId: 'security',
+        evidenceIds: [approval.id, approval.checksum],
+        entityIds: { projectId, providerBudgetApprovalId: approval.id, agentId: approval.agentId },
+        payload: publicProviderBudgetApproval(approval, now),
+      })]);
+      const savedProject = saveProject(updatedProject);
+      return {
+        project: savedProject,
+        providerBudgetApproval: publicProviderBudgetApproval(approval, now),
+        providerBudgetApprovals: this.getProviderBudgetApprovals(projectId, { now }),
+        log,
+      };
+    },
+    revokeProviderBudgetApproval({ projectId, approvalId = '', revokedBy = '', reason = '', now = nowIso() } = {}) {
+      const project = store.getProject(projectId);
+      const existing = (project.providerBudgetApprovals || []).find((approval) => approval.id === approvalId);
+      if (!existing) throw new Error(`Provider budget approval not found: ${approvalId}`);
+      const revoked = {
+        ...existing,
+        status: 'revoked',
+        revokedAt: now,
+        revokedBy: String(revokedBy || 'local-manager').trim(),
+        revocationReason: redactSensitiveText(compactPreview(reason || 'approval revoked', 240)),
+      };
+      revoked.checksum = persistenceChecksum({ ...revoked, checksum: undefined });
+      const log = {
+        id: `log_revoke_${approvalId}_${Date.parse(now) || Date.now()}`,
+        time: now,
+        agent: revoked.revokedBy,
+        actor: revoked.revokedBy,
+        eventType: 'provider-budget-approval-revoked',
+        source: 'provider-budget-approval',
+        channelId: 'security',
+        log: `Provider overage approval ${approvalId} was revoked.`,
+        providerBudgetApprovalId: approvalId,
+      };
+      const updatedProject = appendProjectEvents({
+        ...project,
+        providerBudgetApprovals: (project.providerBudgetApprovals || []).map((approval) => approval.id === approvalId ? revoked : approval),
+        logs: [log, ...(project.logs || [])],
+      }, [createProjectLedgerEvent({
+        id: `evt_revoke_${approvalId}_${Date.parse(now) || Date.now()}`,
+        type: 'provider-budget-approval-revoked',
+        time: now,
+        actor: revoked.revokedBy,
+        summary: log.log,
+        source: 'provider-budget-approval',
+        channelId: 'security',
+        evidenceIds: [approvalId, revoked.checksum],
+        entityIds: { projectId, providerBudgetApprovalId: approvalId },
+        payload: publicProviderBudgetApproval(revoked, now),
+      })]);
+      const savedProject = saveProject(updatedProject);
+      return {
+        project: savedProject,
+        providerBudgetApproval: publicProviderBudgetApproval(revoked, now),
+        providerBudgetApprovals: this.getProviderBudgetApprovals(projectId, { now }),
+        log,
+      };
     },
     getBudgetAlertReadiness(projectId, options = {}) {
       return cachedReadModel('budget-alert-readiness', projectId, options, () => {
@@ -58390,6 +62797,7 @@ export function createAgentProjectService({
           project,
           projectSettings,
           providerControlPolicy: providerControlPolicyStatus(project),
+          now: options.now || nowIso(),
         }), language);
       });
     },
@@ -59255,6 +63663,71 @@ export function createAgentProjectService({
         checksum: persistenceChecksum(policy),
       };
     },
+    getRuntimeSecurityAccessAudit() {
+      const rows = listRuntimeSecurityAuditStreamRecords();
+      const summary = summarizeSecurityAccessAudit(rows);
+      const streamSummary = summarizeSecurityAuditStream(rows);
+      return {
+        generatedAt: nowIso(),
+        schemaVersion: 'runtime-security-access-audit/v1',
+        auditScope: 'runtime',
+        scopeId: 'local-runtime',
+        status: summary.count ? 'active' : 'waiting-for-sensitive-runtime-traffic',
+        ...summary,
+        stream: {
+          count: streamSummary.count,
+          deniedCount: streamSummary.deniedCount,
+          firstSequence: streamSummary.firstSequence,
+          lastSequence: streamSummary.lastSequence,
+          sequenceGapCount: streamSummary.sequenceGapCount,
+          hashChainReady: streamSummary.hashChainReady,
+          latestStreamHash: streamSummary.latestStreamHash,
+          apiPath: '/security-audit-stream',
+          storage: streamSummary.count ? 'local-runtime-store-backed' : 'waiting-for-sensitive-runtime-traffic',
+        },
+      };
+    },
+    getRuntimeSecurityAuditStream() {
+      const rows = listRuntimeSecurityAuditStreamRecords();
+      const summary = summarizeSecurityAuditStream(rows);
+      const auditLogIntegrity = typeof store.securityAuditLogIntegrity === 'function'
+        ? store.securityAuditLogIntegrity()
+        : {
+            schemaVersion: 'local-security-audit-log-integrity/v1',
+            status: 'not-configured',
+            auditLogPath: store.securityAuditLogPath || null,
+            malformedLineCount: 0,
+            malformedLineNumbers: [],
+          };
+      const hashChainReady = summary.hashChainReady && auditLogIntegrity.malformedLineCount === 0;
+      return {
+        generatedAt: nowIso(),
+        schemaVersion: 'runtime-security-audit-stream/v1',
+        auditScope: 'runtime',
+        scopeId: 'local-runtime',
+        status: auditLogIntegrity.malformedLineCount
+          ? 'malformed-lines-detected'
+          : summary.count ? 'local-runtime-store-backed' : 'waiting-for-sensitive-runtime-traffic',
+        ...summary,
+        auditLogIntegrity,
+        hashChainReady,
+        storage: {
+          type: store.securityAuditLogPath ? 'file-store-append-log' : store.filePath ? 'file-store-snapshot' : 'memory-store',
+          filePath: store.filePath || null,
+          auditLogPath: store.securityAuditLogPath || null,
+          hashChain: {
+            algorithm: 'stable-json-checksum-chain',
+            genesisHash: SECURITY_AUDIT_STREAM_GENESIS_HASH,
+            ready: hashChainReady,
+            latestStreamHash: summary.latestStreamHash,
+          },
+        },
+        backendRoutes: {
+          runtimeSecurityAccessAudit: '/security-access-audit',
+          runtimeSecurityAuditStream: '/security-audit-stream',
+        },
+      };
+    },
     getSecurityAccessAudit(projectId) {
       const project = store.getProject(projectId);
       const summary = summarizeSecurityAccessAudit(project.securityAccessAudit || []);
@@ -59294,11 +63767,26 @@ export function createAgentProjectService({
     getSecurityAuditStream(projectId) {
       const rows = listSecurityAuditStreamRecords(projectId);
       const summary = summarizeSecurityAuditStream(rows);
+      const auditLogIntegrity = typeof store.securityAuditLogIntegrity === 'function'
+        ? store.securityAuditLogIntegrity()
+        : {
+            schemaVersion: 'local-security-audit-log-integrity/v1',
+            status: 'not-configured',
+            auditLogPath: store.securityAuditLogPath || null,
+            malformedLineCount: 0,
+            malformedLineNumbers: [],
+          };
+      const hashChainReady = summary.hashChainReady && auditLogIntegrity.malformedLineCount === 0;
       return {
         projectId,
         generatedAt: nowIso(),
         schemaVersion: 'security-audit-stream/v1',
-        status: summary.count ? 'prototype-store-backed' : 'waiting-for-enforced-traffic',
+        status: auditLogIntegrity.malformedLineCount
+          ? 'malformed-lines-detected'
+          : summary.count ? 'prototype-store-backed' : 'waiting-for-enforced-traffic',
+        ...summary,
+        auditLogIntegrity,
+        hashChainReady,
         storage: {
           type: store.securityAuditLogPath ? 'file-store-append-log' : store.filePath ? 'file-store-snapshot' : 'memory-store',
           filePath: store.filePath || null,
@@ -59311,11 +63799,10 @@ export function createAgentProjectService({
           hashChain: {
             algorithm: 'stable-json-checksum-chain',
             genesisHash: SECURITY_AUDIT_STREAM_GENESIS_HASH,
-            ready: summary.hashChainReady,
+            ready: hashChainReady,
             latestStreamHash: summary.latestStreamHash,
           },
         },
-        ...summary,
         backendRoutes: {
           securityAccessAudit: `/projects/${projectId}/security-access-audit`,
           securityBoundary: `/projects/${projectId}/security-boundary`,
@@ -59992,6 +64479,387 @@ export function createAgentProjectService({
         projectId,
       }));
     },
+    getDurableTaskQueue(projectId, { now = nowIso() } = {}) {
+      let project = store.getProject(projectId);
+      if (!project?.id) throw new Error(`Project not found: ${projectId}`);
+      project = finalizePersistedDurableCancellationRequests(projectId, now).project;
+      const snapshot = snapshotLocalDurableTaskQueue({ rows: project.localDurableTaskQueue || [], projectId, now });
+      return {
+        ...snapshot,
+        localOnly: true,
+        readyForUnattendedLocalWork: snapshot.integrity.valid,
+        readyForProduction: false,
+        backendRoutes: {
+          durableTaskQueue: `/projects/${projectId}/durable-task-queue`,
+          workerQueue: `/projects/${projectId}/worker-queue`,
+          projectDueWorker: '/workers/autonomous/due',
+          agentDueWorker: '/workers/agents/due',
+          autopilotDueWorker: '/workers/autopilot/due',
+        },
+      };
+    },
+    scanDurableTaskQueue({ projectId, now = nowIso(), ...input } = {}) {
+      const queue = buildWorkerQueueSnapshot({ projects: store.listProjects(), projectId, now, ...input });
+      const rows = [...queue.projectQueue, ...queue.agentQueue, ...queue.autopilotQueue]
+        .filter((row) => row.due && row.status !== 'deferred');
+      const enqueueResults = rows.map((row) => {
+        const result = enqueueDurableQueueRow(row, now);
+        return { jobId: result.job.id, workerKind: result.job.workerKind, action: result.action, idempotencyKey: result.job.idempotencyKey };
+      });
+      return {
+        schemaVersion: 'local-durable-task-queue-scan/v1',
+        projectId,
+        scannedAt: now,
+        discoveredCount: rows.length,
+        enqueuedCount: enqueueResults.filter((row) => row.action === 'enqueued').length,
+        idempotentCount: enqueueResults.filter((row) => row.action === 'already-enqueued').length,
+        enqueueResults,
+        durableTaskQueue: this.getDurableTaskQueue(projectId, { now }),
+        readyForProduction: false,
+      };
+    },
+    cancelDurableTaskQueueJob({ projectId, jobId, actorId, reason, now = nowIso() } = {}) {
+      let project = store.getProject(projectId);
+      if (!project?.id) throw new Error(`Project not found: ${projectId}`);
+      const requested = requestLocalDurableTaskCancellation({ rows: project.localDurableTaskQueue || [], jobId, actorId, reason, now });
+      let cancelled = requested;
+      let signalDelivered = false;
+      if (requested.action === 'cancellation-requested') {
+        project = saveProject({ ...project, localDurableTaskQueue: requested.rows });
+        const activeKey = durableTaskCancellationKey(projectId, jobId, requested.previousFenceToken);
+        const controller = activeDurableTaskAbortControllers.get(activeKey);
+        signalDelivered = Boolean(controller && !controller.signal.aborted);
+        if (signalDelivered) controller.abort(new Error('local-durable-task-cancelled'));
+        cancelled = finalizeLocalDurableTaskCancellation({
+          rows: project.localDurableTaskQueue || [], jobId,
+          cancellationFenceToken: requested.job.cancellationFenceToken, signalDelivered, now,
+        });
+        project = saveProject({ ...project, localDurableTaskQueue: cancelled.rows });
+      } else if (requested.action === 'cancelled') {
+        project = saveProject({ ...project, localDurableTaskQueue: requested.rows });
+      }
+      return {
+        route: 'local-durable-task-cancelled',
+        project,
+        durableTask: cancelled.job,
+        cancellationReceipt: cancelled.receipt || null,
+        cancellationSignalDelivered: signalDelivered,
+        durableTaskQueue: this.getDurableTaskQueue(projectId, { now }),
+        idempotent: !['cancelled', 'cancellation-requested'].includes(requested.action),
+      };
+    },
+    getIdempotentExecutionGovernance(projectId, { now = nowIso() } = {}) {
+      const project = store.getProject(projectId);
+      if (!project?.id) throw new Error(`Project not found: ${projectId}`);
+      const rows = project.localIdempotentExecutionLedger || [];
+      const integrity = auditLocalIdempotentExecutions(rows);
+      if (!integrity.valid) throw new Error('local-idempotent-execution-integrity-invalid');
+      return {
+        schemaVersion: 'local-idempotent-execution-governance/v1',
+        projectId,
+        generatedAt: now,
+        localOnly: true,
+        status: rows.some((row) => row.status === 'ambiguous') ? 'ambiguous-reconciliation-required' : 'ready',
+        rows,
+        integrity,
+        summary: {
+          count: rows.length,
+          preparedCount: rows.filter((row) => row.status === 'prepared').length,
+          dispatchedCount: rows.filter((row) => row.status === 'dispatched').length,
+          ambiguousCount: rows.filter((row) => row.status === 'ambiguous').length,
+          reconciledCount: rows.filter((row) => row.reconciliation).length,
+          completedCount: rows.filter((row) => row.status === 'completed').length,
+        },
+        guarantee: {
+          localCommitExactlyOnce: true,
+          providerHttpExactlyOnce: false,
+          providerEndpointAttestationRequired: true,
+          ambiguousOutcomeBlocksDownstreamMutation: true,
+        },
+        backendRoutes: { idempotentExecutions: `/projects/${projectId}/idempotent-executions` },
+        readyForProduction: false,
+      };
+    },
+    getLocalRateLimitGovernance(projectId, { now = nowIso() } = {}) {
+      const project = store.getProject(projectId);
+      if (!project?.id) throw new Error(`Project not found: ${projectId}`);
+      const snapshot = localRateLimitLedger.snapshot({ now });
+      const entries = snapshot.entries.filter((row) => row.projectId === projectId);
+      return {
+        schemaVersion: 'local-rate-limit-governance/v1',
+        projectId,
+        generatedAt: snapshot.generatedAt,
+        entries,
+        summary: {
+          entryCount: entries.length,
+          activeCount: entries.filter((row) => row.status === 'active' && Date.parse(row.expiresAt) > Date.parse(snapshot.generatedAt)).length,
+          expiredActiveCount: entries.filter((row) => row.status === 'active' && Date.parse(row.expiresAt) <= Date.parse(snapshot.generatedAt)).length,
+          countedCount: entries.filter((row) => row.counted).length,
+        },
+        policy: providerControlPolicyStatus(project),
+        processSafeOnSingleHost: snapshot.processSafeOnSingleHost,
+        distributedSafe: false,
+        checksum: snapshot.checksum,
+        backendRoutes: { rateLimitGovernance: `/projects/${projectId}/rate-limit-governance` },
+        readyForProduction: false,
+      };
+    },
+    reconcileIdempotentExecution({ projectId, operationId, actorId, ...input } = {}) {
+      const project = store.getProject(projectId);
+      if (!project?.id) throw new Error(`Project not found: ${projectId}`);
+      const reconciled = reconcileLocalIdempotentExecution({
+        rows: project.localIdempotentExecutionLedger || [], operationId, actorId, ...input,
+      });
+      const savedProject = saveProject({ ...project, localIdempotentExecutionLedger: reconciled.rows });
+      return {
+        route: 'local-idempotent-execution-reconciled',
+        project: savedProject,
+        idempotentExecution: reconciled.operation,
+        idempotentExecutionGovernance: this.getIdempotentExecutionGovernance(projectId, { now: input.now }),
+      };
+    },
+    getProjectDeadLetters(projectId, input = {}) {
+      const project = store.getProject(projectId);
+      if (!project?.id) throw new Error(`Project not found: ${projectId}`);
+      snapshotLocalDurableTaskQueue({ rows: project.localDurableTaskQueue || [], projectId, now: input.now || nowIso() });
+      const history = projectDeadLetterFacts(project)
+        .sort((left, right) => safeDateMs(right.queuedAt, 0) - safeDateMs(left.queuedAt, 0));
+      return {
+        schemaVersion: 'local-project-dead-letter-list/v1',
+        projectId,
+        generatedAt: input.now || nowIso(),
+        active: history.filter((row) => row.status === 'dead-lettered'),
+        history,
+        dispositionCount: (project.localDeadLetterDispositionLedger || []).length,
+        durableCount: history.filter((row) => row.sourceKind === 'durable-task').length,
+        integrity: { valid: true, sourceRowsVerified: true, dispositionsVerified: true },
+        replayContract: 'enqueue-lease-receipt-ack-disposition',
+        readyForProduction: false,
+      };
+    },
+    replayProjectDeadLetter({ projectId, deadLetterId, actorId = '', approval = {}, now = nowIso(), requestBodyOverrides = {} } = {}) {
+      let project = store.getProject(projectId);
+      if (!project?.id) throw new Error(`Project not found: ${projectId}`);
+      const safeActorId = redactSensitiveText(String(actorId || '').trim());
+      const approvalReason = String(approval.reason || '').trim();
+      if (!safeActorId) throw new Error('local-dead-letter-actor-required');
+      if (!approvalReason) throw new Error('local-dead-letter-replay-approval-required');
+      if (requestBodyOverrides && Object.keys(requestBodyOverrides).length) throw new Error('local-dead-letter-replay-overrides-forbidden');
+      snapshotLocalDurableTaskQueue({ rows: project.localDurableTaskQueue || [], projectId, now });
+      const deadLetter = projectDeadLetterFacts(project).find((row) => row.id === deadLetterId);
+      if (!deadLetter) throw new Error(`Dead letter not found: ${deadLetterId}`);
+      const existing = (project.localDeadLetterDispositionLedger || []).find((row) => row.deadLetterId === deadLetterId);
+      if (existing?.status === 'replayed') {
+        return {
+          route: 'local-dead-letter-replayed',
+          project,
+          deadLetterDisposition: existing,
+          deadLetterReplay: null,
+          deadLetters: this.getProjectDeadLetters(projectId, { now }),
+          idempotent: true,
+        };
+      }
+      if (existing?.status === 'closed' || deadLetter.status === 'closed') throw new Error('local-dead-letter-closed');
+      if (deadLetter.status !== 'dead-lettered') throw new Error('local-dead-letter-not-active');
+      const approvalReasonHash = durableTaskQueueChecksum(approvalReason);
+      const replayApprovalChecksum = durableTaskQueueChecksum({
+        actorId: safeActorId, reasonHash: approvalReasonHash, sourceChecksum: deadLetter.sourceChecksum,
+      });
+      let replayEnqueue;
+      if (deadLetter.sourceKind === 'durable-task') {
+        replayEnqueue = enqueueLocalDurableDeadLetterReplay({
+          rows: project.localDurableTaskQueue || [], sourceJobId: deadLetter.sourceJobId, now, replayApprovalChecksum,
+        });
+      } else {
+        const normalizedWorkerKind = deadLetter.workerKind === 'project-scheduler' ? 'project-autonomous' : deadLetter.workerKind;
+        replayEnqueue = enqueueLocalDurableTask({
+          rows: project.localDurableTaskQueue || [],
+          job: {
+            projectId, workerKind: normalizedWorkerKind, agentId: deadLetter.agentId, sessionId: deadLetter.sessionId,
+            replayOfJobId: deadLetter.id, replayOfSourceChecksum: deadLetter.sourceChecksum,
+            replayApprovalChecksum,
+            idempotencyKey: `dead-letter-replay:${deadLetter.id}:${deadLetter.sourceChecksum}`,
+            runApiPath: deadLetter.directRecoveryApiPath || deadLetter.recoveryApiPath,
+            requestBody: {}, dueAt: deadLetter.queuedAt || now, priority: 80, maxAttempts: WORKER_QUEUE_MAX_ATTEMPTS,
+          },
+          now,
+        });
+      }
+      if (['enqueued', 'replay-enqueued'].includes(replayEnqueue.action)) {
+        project = saveProject({ ...project, localDurableTaskQueue: replayEnqueue.rows });
+      }
+      let replayJob = (project.localDurableTaskQueue || []).find((row) => row.id === replayEnqueue.job.id) || replayEnqueue.job;
+      let replay = null;
+      let receipt = replayJob.executionReceiptChecksum ? {
+        receiptChecksum: replayJob.executionReceiptChecksum,
+        resultChecksum: replayJob.resultChecksum || null,
+        status: 'succeeded',
+      } : null;
+      if (replayJob.status === 'leased') {
+        const recoveredReceipt = workerRunsForProject(project).map((run) => run.executionReceipt)
+          .find((item) => item?.status === 'succeeded'
+            && item.idempotencyKey === replayJob.idempotencyKey
+            && item.leaseKey === replayJob.fenceToken);
+        if (recoveredReceipt) {
+          const recovered = acknowledgeLocalDurableTask({
+            rows: project.localDurableTaskQueue || [], jobId: replayJob.id,
+            fenceToken: replayJob.fenceToken, receipt: recoveredReceipt, now,
+          });
+          project = saveProject({ ...project, localDurableTaskQueue: recovered.rows });
+          replayJob = recovered.job;
+          receipt = recoveredReceipt;
+        }
+      }
+      if (replayJob.status !== 'acknowledged') {
+        if (replayJob.status === 'dead-lettered') throw new Error('local-dead-letter-replay-job-dead-lettered');
+        const acquired = acquireLocalDurableTaskLease({
+          rows: project.localDurableTaskQueue || [], jobId: replayJob.id,
+          workerId: 'local-dead-letter-replay-worker', now, leaseSeconds: WORKER_QUEUE_RECOMMENDED_LEASE_SECONDS,
+        });
+        if (!['acquired', 'recovered-expired-lease'].includes(acquired.action)) {
+          throw new Error(`local-dead-letter-replay-${acquired.action}`);
+        }
+        project = saveProject({ ...project, localDurableTaskQueue: acquired.rows });
+        replayJob = acquired.job;
+        const exactInput = replayJob.requestBody || {};
+        try {
+          if (replayJob.workerKind === 'agent-worker') {
+            replay = this.runAgentWorkCycle({ ...exactInput, projectId, agentId: replayJob.agentId, now, force: true, trigger: 'local-dead-letter-replay', workerIdempotencyKey: replayJob.idempotencyKey, workerLeaseKey: replayJob.fenceToken });
+            receipt = replay.project?.agentWorkerLedger?.[0]?.executionReceipt || store.getProject(projectId).agentWorkerLedger?.[0]?.executionReceipt;
+          } else if (replayJob.workerKind === 'autopilot-session') {
+            replay = this.tickAutonomousRunControlSession({ ...exactInput, projectId, sessionId: replayJob.sessionId, now, force: true, workerIdempotencyKey: replayJob.idempotencyKey, workerLeaseKey: replayJob.fenceToken, workerFenceToken: replayJob.fenceToken });
+            receipt = replay.autonomousRunControlSessionTick?.executionReceipt || null;
+          } else if (replayJob.workerKind === 'project-autonomous') {
+            replay = this.runAutonomousCycle({ ...exactInput, projectId, now, trigger: 'local-dead-letter-replay', workerIdempotencyKey: replayJob.idempotencyKey, workerLeaseKey: replayJob.fenceToken });
+            receipt = replay.project?.autonomousLedger?.[0]?.executionReceipt || store.getProject(projectId).autonomousLedger?.[0]?.executionReceipt;
+          } else {
+            throw new Error(`local-dead-letter-replay-worker-unsupported:${replayJob.workerKind || 'unknown'}`);
+          }
+        } catch (error) {
+          const failedProject = store.getProject(projectId);
+          const persistedReceipt = workerRunsForProject(failedProject).map((run) => run.executionReceipt)
+            .find((item) => item?.status === 'succeeded'
+              && item.idempotencyKey === replayJob.idempotencyKey
+              && item.leaseKey === replayJob.fenceToken);
+          if (!persistedReceipt) {
+            const failed = failLocalDurableTask({
+              rows: failedProject.localDurableTaskQueue || [], jobId: replayJob.id,
+              fenceToken: replayJob.fenceToken, retryable: true,
+              failureCode: error?.code || error?.message || 'dead-letter-replay-failed', now,
+            });
+            saveProject({ ...failedProject, localDurableTaskQueue: failed.rows });
+          }
+          throw error;
+        }
+        if (!receipt) throw new Error('local-dead-letter-replay-receipt-missing');
+        project = store.getProject(projectId);
+        const acknowledged = acknowledgeLocalDurableTask({
+          rows: project.localDurableTaskQueue || [], jobId: replayJob.id,
+          fenceToken: replayJob.fenceToken, receipt, now,
+        });
+        project = saveProject({ ...project, localDurableTaskQueue: acknowledged.rows });
+        replayJob = acknowledged.job;
+      }
+      const dispositionBase = {
+        schemaVersion: 'local-dead-letter-disposition/v1',
+        id: `dead_letter_disposition_${durableTaskQueueChecksum({ deadLetterId, action: 'replay' }).slice(0, 32)}`,
+        deadLetterId,
+        status: 'replayed',
+        action: 'replay',
+        actorId: safeActorId,
+        approval: { approvedBy: safeActorId, reasonHash: approvalReasonHash, approvalChecksum: replayApprovalChecksum, approvedAt: now },
+        workerKind: deadLetter.workerKind,
+        originalRunId: deadLetter.runId || null,
+        sourceKind: deadLetter.sourceKind,
+        sourceJobId: deadLetter.sourceJobId || null,
+        sourceChecksum: deadLetter.sourceChecksum,
+        replayJobId: replayJob.id,
+        replayIntentChecksum: replayJob.intentChecksum,
+        replayWorkerReceiptChecksum: replayJob.executionReceiptChecksum || receipt?.receiptChecksum || null,
+        replayReceiptChecksum: durableTaskQueueChecksum({
+          replayJobId: replayJob.id,
+          workerReceiptChecksum: replayJob.executionReceiptChecksum || receipt?.receiptChecksum || null,
+          resultChecksum: replayJob.resultChecksum || receipt?.resultChecksum || null,
+        }),
+        storesRawReason: false,
+        createdAt: now,
+      };
+      const disposition = { ...dispositionBase, checksum: durableTaskQueueChecksum(dispositionBase) };
+      const log = {
+        id: `log_${disposition.id}`,
+        time: now,
+        actor: safeActorId,
+        eventType: 'local-dead-letter-replayed',
+        source: 'local-dead-letter-operations',
+        log: `${safeActorId} completed governed replay for ${deadLetterId}.`,
+        deadLetterId,
+        dispositionId: disposition.id,
+      };
+      const event = createProjectLedgerEvent({
+        id: `evt_${disposition.id}`,
+        type: 'local-dead-letter-replayed',
+        time: now,
+        actor: safeActorId,
+        summary: log.log,
+        source: 'local-dead-letter-operations',
+        entityIds: { projectId, deadLetterId, dispositionId: disposition.id, originalRunId: deadLetter.runId || null },
+        payload: { disposition, replayRoute: replay?.route || null },
+      });
+      const savedProject = saveProject(appendProjectEvents({
+        ...project,
+        localDeadLetterDispositionLedger: [disposition, ...(project.localDeadLetterDispositionLedger || [])],
+        logs: [log, ...(project.logs || [])],
+      }, [event]));
+      return {
+        route: 'local-dead-letter-replayed',
+        project: savedProject,
+        deadLetterDisposition: disposition,
+        deadLetterReplay: replay,
+        deadLetters: this.getProjectDeadLetters(projectId, { now }),
+        log,
+        idempotent: false,
+      };
+    },
+    closeProjectDeadLetter({ projectId, deadLetterId, actorId = '', reason = '', now = nowIso() } = {}) {
+      const project = store.getProject(projectId);
+      if (!project?.id) throw new Error(`Project not found: ${projectId}`);
+      const safeActorId = redactSensitiveText(String(actorId || '').trim());
+      const safeReason = String(reason || '').trim();
+      if (!safeActorId || !safeReason) throw new Error('local-dead-letter-close-reason-required');
+      snapshotLocalDurableTaskQueue({ rows: project.localDurableTaskQueue || [], projectId, now });
+      const deadLetter = projectDeadLetterFacts(project).find((row) => row.id === deadLetterId);
+      if (!deadLetter) throw new Error(`Dead letter not found: ${deadLetterId}`);
+      const existing = (project.localDeadLetterDispositionLedger || []).find((row) => row.deadLetterId === deadLetterId);
+      if (existing?.status === 'closed') {
+        return { route: 'local-dead-letter-closed', project, deadLetterDisposition: existing, deadLetters: this.getProjectDeadLetters(projectId, { now }), idempotent: true };
+      }
+      if (existing?.status === 'replayed') throw new Error('local-dead-letter-already-replayed');
+      const dispositionBase = {
+        schemaVersion: 'local-dead-letter-disposition/v1',
+        id: `dead_letter_disposition_${durableTaskQueueChecksum({ deadLetterId, action: 'close' }).slice(0, 32)}`,
+        deadLetterId,
+        status: 'closed',
+        action: 'close',
+        actorId: safeActorId,
+        reasonHash: durableTaskQueueChecksum(safeReason),
+        workerKind: deadLetter.workerKind,
+        originalRunId: deadLetter.runId || null,
+        sourceKind: deadLetter.sourceKind,
+        sourceJobId: deadLetter.sourceJobId || null,
+        sourceChecksum: deadLetter.sourceChecksum,
+        storesRawReason: false,
+        createdAt: now,
+      };
+      const disposition = { ...dispositionBase, checksum: durableTaskQueueChecksum(dispositionBase) };
+      const log = { id: `log_${disposition.id}`, time: now, actor: safeActorId, eventType: 'local-dead-letter-closed', source: 'local-dead-letter-operations', log: `${safeActorId} closed ${deadLetterId} with a recorded reason hash.`, deadLetterId, dispositionId: disposition.id };
+      const event = createProjectLedgerEvent({ id: `evt_${disposition.id}`, type: 'local-dead-letter-closed', time: now, actor: safeActorId, summary: log.log, source: 'local-dead-letter-operations', entityIds: { projectId, deadLetterId, dispositionId: disposition.id, originalRunId: deadLetter.runId || null }, payload: { disposition } });
+      const savedProject = saveProject(appendProjectEvents({
+        ...project,
+        localDeadLetterDispositionLedger: [disposition, ...(project.localDeadLetterDispositionLedger || [])],
+        logs: [log, ...(project.logs || [])],
+      }, [event]));
+      return { route: 'local-dead-letter-closed', project: savedProject, deadLetterDisposition: disposition, deadLetters: this.getProjectDeadLetters(projectId, { now }), log, idempotent: false };
+    },
     getAgentDashboard(projectId, agentId) {
       return buildAgentDashboardSnapshot({
         project: store.getProject(projectId),
@@ -60062,6 +64930,8 @@ export function createAgentProjectService({
     async generateAgentArtifactDraft({
       projectId,
       agentId,
+      traceId = null,
+      idempotencyKey = null,
       artifactType = 'progress-brief',
       taskId = null,
       instruction = '',
@@ -60070,6 +64940,7 @@ export function createAgentProjectService({
       reviewIds = [],
       useModel = true,
       requireModel = false,
+      estimatedCostCents = 0,
       submit = false,
       reviewerAgentId = null,
       status = 'submitted',
@@ -60078,6 +64949,7 @@ export function createAgentProjectService({
       now = nowIso(),
     } = {}) {
       let project = store.getProject(projectId);
+      const normalizedTraceId = normalizeLocalTraceId(traceId);
       const agent = (project.team || []).find((member) => member.id === agentId || member.name === agentId);
       if (!agent) throw new Error(`Agent not found: ${agentId}`);
       const task = taskId
@@ -60113,23 +64985,29 @@ export function createAgentProjectService({
       let modelResult = null;
       let modelPayload = {};
       let providerUsage = null;
+      let providerBudgetReservation = null;
+      let promptBoundary = null;
       let draftSource = 'local-artifact-draft-generator';
+      let degradationReason = useModel ? 'provider-unavailable' : null;
 
       if (useModel && modelStatus.enabled && typeof llmProvider?.createChatCompletion === 'function') {
         const providerPolicyStatus = providerControlPolicyStatus(project);
-        const policyDecision = evaluateProviderPolicy({
+        let policyDecision = evaluateProviderPolicy({
           project,
           policy: providerPolicyStatus,
           kind: 'model',
           operation: 'model:artifact-draft',
           providerStatus: modelStatus,
           agentId,
+          taskId: task?.id || '',
           model: modelStatus.model,
+          estimatedCostCents,
           now,
         });
         if (!policyDecision.allowed) {
           const usage = appendProviderUsageRecord({
             project,
+            traceId: normalizedTraceId,
             kind: 'model',
             operation: 'model:artifact-draft',
             providerStatus: modelStatus,
@@ -60138,13 +65016,14 @@ export function createAgentProjectService({
             ok: false,
             status: 'denied',
             reason: policyDecision.reason,
-            request: { command: 'artifact-draft', purpose: instruction },
+            request: { command: 'artifact-draft', purpose: instruction, taskId: task?.id || null },
             providerVaultBinding,
             startedAt: now,
             completedAt: now,
           });
           project = usage.project;
           providerUsage = usage.record;
+          degradationReason = 'policy-denied';
           if (requireModel) throw new Error(`model-provider-denied:${policyDecision.reason}`);
         } else {
           const circuitDecision = evaluateProviderCircuitBreaker({
@@ -60157,6 +65036,7 @@ export function createAgentProjectService({
           if (!circuitDecision.allowed) {
             const usage = appendProviderUsageRecord({
               project,
+              traceId: normalizedTraceId,
               kind: 'model',
               operation: 'model:artifact-draft',
               providerStatus: modelStatus,
@@ -60171,7 +65051,7 @@ export function createAgentProjectService({
               ok: false,
               status: 'circuit-open',
               reason: circuitDecision.reason,
-              request: { command: 'artifact-draft', purpose: instruction },
+              request: { command: 'artifact-draft', purpose: instruction, taskId: task?.id || null },
               circuitBreaker: circuitDecision.row,
               providerVaultBinding,
               startedAt: now,
@@ -60179,57 +65059,144 @@ export function createAgentProjectService({
             });
             project = usage.project;
             providerUsage = usage.record;
+            degradationReason = 'circuit-open';
             if (requireModel) throw new Error(`model-provider-circuit-open:${circuitDecision.reason}`);
           } else {
-            const modelAttempt = await runProviderWithRetry({
-              policy: providerPolicyStatus,
-              now,
-              run: () => llmProvider.createChatCompletion({
-                messages: buildAgentSubmissionDraftMessages({
-                  project,
-                  agent,
-                  task,
-                  artifactType,
-                  instruction,
-                  evidenceSearches,
-                  priorSubmissions,
-                  reviews,
-                  now,
-                }),
-                json: true,
-                maxTokens: 1200,
-              }),
-            });
-            modelResult = {
-              ...(modelAttempt.result || {}),
-              retry: modelAttempt.retry,
-            };
-            const usage = appendProviderUsageRecord({
-              project,
+            const budgetReservation = reserveProviderBudget({
+              projectId,
               kind: 'model',
               operation: 'model:artifact-draft',
               providerStatus: modelStatus,
               agentId,
-              decision: policyDecision,
-              result: modelResult,
-              ok: Boolean(modelResult.ok),
-              status: modelResult.ok ? 'completed' : 'failed',
-              reason: modelResult.error || modelResult.reason || '',
-              request: { command: 'artifact-draft', purpose: instruction },
-              retry: modelAttempt.retry,
-              circuitBreaker: circuitDecision.row,
-              providerVaultBinding,
-              evidenceIds: [...evidenceSearches.map((record) => record.id), ...priorSubmissions.map((submission) => submission.id)].filter(Boolean),
-              startedAt: now,
-              completedAt: now,
+              taskId: task?.id || '',
+              estimatedCostCents,
+              now,
             });
-            project = usage.project;
-            providerUsage = usage.record;
-            if (modelResult.ok) {
-              modelPayload = modelResult.json || { body: modelResult.content || '' };
-              draftSource = 'model-artifact-draft';
-            } else if (requireModel) {
-              throw new Error(`model-artifact-draft-failed:${modelResult.error || modelResult.reason || 'unknown'}`);
+            policyDecision = budgetReservation.decision;
+            if (!budgetReservation.reservation) {
+              const usage = appendProviderUsageRecord({
+                project: budgetReservation.project,
+                traceId: normalizedTraceId,
+                kind: 'model',
+                operation: 'model:artifact-draft',
+                providerStatus: modelStatus,
+                agentId,
+                decision: policyDecision,
+                ok: false,
+                status: 'denied',
+                reason: policyDecision.reason,
+                request: { command: 'artifact-draft', purpose: instruction, taskId: task?.id || null },
+                providerVaultBinding,
+                estimatedCostCents,
+                startedAt: now,
+                completedAt: now,
+              });
+              project = usage.project;
+              providerUsage = usage.record;
+              degradationReason = 'budget-denied';
+              if (requireModel) throw new Error(`model-provider-denied:${policyDecision.reason}`);
+            } else {
+              project = budgetReservation.project;
+              promptBoundary = buildArtifactDraftPromptBoundary({
+                project,
+                agent,
+                task,
+                artifactType,
+                instruction,
+                evidenceSearches,
+                priorSubmissions,
+                reviews,
+                now,
+              });
+              const providerOperationKey = idempotencyKey
+                ? `provider:${String(idempotencyKey)}`
+                : normalizedTraceId
+                  ? `provider:model:${createHash('sha256').update(normalizedTraceId).digest('hex').slice(0, 32)}`
+                  : `provider:${budgetReservation.reservation.id}`;
+              const providerOperation = prepareProviderIdempotentOperation({
+                projectId,
+                operationKey: providerOperationKey,
+                operationKind: 'provider-model-artifact-draft',
+                requestChecksum: createHash('sha256').update(stableJson({
+                  promptBoundaryChecksum: promptBoundary.receipt?.checksum || null,
+                  artifactType,
+                  taskId: task?.id || null,
+                  model: modelStatus.model || null,
+                })).digest('hex'),
+                traceId: normalizedTraceId,
+                now,
+              });
+              project = providerOperation.project;
+              if (providerOperation.action === 'reuse-completed') {
+                throw new Error('model-provider-completed-result-readback-required');
+              }
+              const modelAttempt = await runProviderWithRetry({
+                policy: providerPolicyStatus,
+                now,
+                run: () => llmProvider.createChatCompletion({
+                  messages: promptBoundary.messages,
+                  json: true,
+                  maxTokens: 1200,
+                  idempotencyKey: providerOperationKey,
+                  traceId: normalizedTraceId,
+                }),
+              });
+              modelResult = {
+                ...(modelAttempt.result || {}),
+                retry: modelAttempt.retry,
+              };
+              const providerOperationSettlement = settleProviderIdempotentOperation({
+                projectId,
+                operationId: providerOperation.operation.id,
+                result: modelResult,
+                now,
+              });
+              project = providerOperationSettlement.project;
+              if (providerOperationSettlement.operation.status === 'ambiguous') {
+                throw new Error('model-provider-outcome-ambiguous-reconciliation-required');
+              }
+              const usage = appendProviderUsageRecord({
+                project,
+                traceId: normalizedTraceId,
+                kind: 'model',
+                operation: 'model:artifact-draft',
+                providerStatus: modelStatus,
+                agentId,
+                decision: policyDecision,
+                result: modelResult,
+                ok: Boolean(modelResult.ok),
+                status: modelResult.ok ? 'completed' : 'failed',
+                reason: modelResult.error || modelResult.reason || '',
+                request: { command: 'artifact-draft', purpose: instruction, taskId: task?.id || null },
+                retry: modelAttempt.retry,
+                circuitBreaker: circuitDecision.row,
+                providerVaultBinding,
+                promptBoundaryReceipt: promptBoundary.receipt,
+                estimatedCostCents,
+                evidenceIds: [...evidenceSearches.map((record) => record.id), ...priorSubmissions.map((submission) => submission.id)].filter(Boolean),
+                startedAt: now,
+                completedAt: now,
+              });
+              const resolution = resolveProviderBudgetReservation({
+                projectId,
+                reservationId: budgetReservation.reservation.id,
+                status: modelResult.ok ? 'settled' : 'released',
+                providerUsageId: usage.record?.id || null,
+                actualCostCents: usage.record?.costCents ?? null,
+                now,
+              });
+              project = resolution.project;
+              providerUsage = usage.record;
+              providerBudgetReservation = resolution.reservation;
+              if (modelResult.ok) {
+                modelPayload = modelResult.json || { body: modelResult.content || '' };
+                draftSource = 'model-artifact-draft';
+                degradationReason = null;
+              } else if (requireModel) {
+                throw new Error(`model-artifact-draft-failed:${modelResult.error || modelResult.reason || 'unknown'}`);
+              } else {
+                degradationReason = 'transport-failed';
+              }
             }
           }
         }
@@ -60237,6 +65204,19 @@ export function createAgentProjectService({
         const reason = modelStatus.blockedByPolicy ? 'model-blocked' : modelStatus.configured ? 'provider-disabled' : 'missing-api-key';
         throw new Error(`model-provider-unavailable:${reason}`);
       }
+
+      const generationProvenance = createModelGenerationProvenance({
+        projectId,
+        agentId: agent.id,
+        taskId: task?.id || null,
+        artifactType,
+        modelRequested: Boolean(useModel),
+        modelRequired: Boolean(requireModel),
+        modelResult,
+        modelStatus,
+        degradationReason,
+        now,
+      });
 
       const draft = buildAgentSubmissionDraft({
         project,
@@ -60251,12 +65231,54 @@ export function createAgentProjectService({
         modelPayload,
         modelResult,
         modelStatus,
+        promptBoundary: promptBoundary?.receipt || null,
+        generationProvenance,
         source: draftSource,
       });
       const artifactDraft = {
         ...draft,
+        traceId: normalizedTraceId,
         providerVaultBinding,
       };
+      const provenanceLog = {
+        id: `log_${generationProvenance.id}`,
+        time: now,
+        agent: agent.name || agent.id,
+        agentId: agent.id,
+        actor: 'Model Degradation Control',
+        eventType: 'model-generation-provenance-recorded',
+        source: 'local-model-degradation',
+        channelId: 'quality',
+        modelGenerationProvenanceId: generationProvenance.id,
+        log: `${agent.name || agent.id} generated ${artifactDraft.artifactType} as ${generationProvenance.generationMode}.`,
+        evidence: [generationProvenance.id, generationProvenance.checksum, artifactDraft.checksum],
+      };
+      project = saveProject(appendProjectEvents({
+        ...project,
+        modelGenerationProvenanceReceipts: [
+          generationProvenance,
+          ...(project.modelGenerationProvenanceReceipts || []).filter((receipt) => receipt.id !== generationProvenance.id),
+        ].slice(0, 160),
+        logs: [provenanceLog, ...(project.logs || [])],
+      }, [createProjectLedgerEvent({
+        id: `evt_${generationProvenance.id}`,
+        type: provenanceLog.eventType,
+        time: now,
+        actor: 'Model Degradation Control',
+        summary: provenanceLog.log,
+        source: 'local-model-degradation',
+        channelId: 'quality',
+        evidenceIds: [generationProvenance.id, generationProvenance.checksum, artifactDraft.checksum, provenanceLog.id],
+        entityIds: { projectId, agentId: agent.id, taskId: task?.id || null, modelGenerationProvenanceId: generationProvenance.id },
+        payload: {
+          schemaVersion: generationProvenance.schemaVersion,
+          generationMode: generationProvenance.generationMode,
+          qualityTier: generationProvenance.qualityTier,
+          degradationReason: generationProvenance.degradationReason,
+          modelUsed: generationProvenance.modelUsed,
+          checksum: generationProvenance.checksum,
+        },
+      })]));
 
       if (!submit) {
         return {
@@ -60264,14 +65286,17 @@ export function createAgentProjectService({
           project,
           artifactDraft,
           providerUsage,
+          providerBudgetReservation,
           modelProviderStatus: modelStatus,
           providerVaultBinding,
+          modelGenerationProvenance: publicModelGenerationProvenance(generationProvenance),
         };
       }
 
       const result = persistResult(submitAgentArtifact({
         project,
         agentId,
+        traceId: normalizedTraceId,
         artifactType: artifactDraft.artifactType,
         title: artifactDraft.title,
         summary: artifactDraft.summary,
@@ -60292,41 +65317,50 @@ export function createAgentProjectService({
         route: 'agent-artifact-draft-submitted',
         artifactDraft,
         providerUsage,
+        providerBudgetReservation,
         modelProviderStatus: modelStatus,
         providerVaultBinding,
+        modelGenerationProvenance: publicModelGenerationProvenance(generationProvenance),
       };
     },
     submitAgentArtifact({ projectId, agentId, ...input } = {}) {
-      return persistResult(submitAgentArtifact({
+      const result = persistResult(submitAgentArtifact({
         project: store.getProject(projectId),
         agentId,
         artifactWriter: artifactWriter || (projectRuntime?.writeArtifact ? projectRuntime.writeArtifact.bind(projectRuntime) : null),
         ...input,
       }));
+      const sealed = sealProjectTrace(result.project, result.submission?.traceId || input.traceId, { reason: 'artifact-submission-created', actorId: agentId, now: input.now });
+      return { ...result, project: sealed.project, traceGraphReceipt: sealed.receipt };
     },
     recordAgentEvidenceSearch({ projectId, agentId, ...input } = {}) {
-      return persistResult(recordAgentEvidenceSearch({
+      const result = persistResult(recordAgentEvidenceSearch({
         project: store.getProject(projectId),
         agentId,
         ...input,
       }));
+      const traceSeal = sealProjectTrace(result.project, result.evidenceSearch?.traceId || input.traceId, {
+        reason: 'evidence-search-created', actorId: agentId, now: input.now,
+      });
+      return { ...result, project: traceSeal.project, traceGraphReceipt: traceSeal.receipt };
     },
     async recordAgentEvidenceSearchWithProvider({ projectId, agentId, ...input } = {}) {
       if (typeof searchProvider?.search !== 'function') {
         throw new Error('search-provider-not-configured');
       }
-      const project = store.getProject(projectId);
+      let project = store.getProject(projectId);
       const now = input.now || nowIso();
       const status = searchProviderStatus();
       const providerVaultBinding = buildProviderVaultBindingProof({ projectId, kind: 'search' });
       const providerPolicyStatus = providerControlPolicyStatus(project);
-      const policyDecision = evaluateProviderPolicy({
+      let policyDecision = evaluateProviderPolicy({
         project,
         policy: providerPolicyStatus,
         kind: 'search',
         operation: input.operation || 'search:evidence',
         providerStatus: status,
         agentId,
+        taskId: input.taskId || '',
         estimatedCostCents: input.estimatedCostCents,
         now,
       });
@@ -60384,6 +65418,60 @@ export function createAgentProjectService({
         throw new Error(`provider-policy-denied:${circuitDecision.reason}`);
       }
 
+      const budgetReservation = reserveProviderBudget({
+        projectId,
+        kind: 'search',
+        operation: input.operation || 'search:evidence',
+        providerStatus: status,
+        agentId,
+        taskId: input.taskId || '',
+        estimatedCostCents: input.estimatedCostCents ?? providerPolicyStatus.searchCostCentsPerRequest,
+        now,
+      });
+      policyDecision = budgetReservation.decision;
+      if (!budgetReservation.reservation) {
+        appendProviderUsageRecord({
+          project: budgetReservation.project,
+          kind: 'search',
+          operation: input.operation || 'search:evidence',
+          providerStatus: status,
+          agentId,
+          decision: policyDecision,
+          ok: false,
+          status: 'denied',
+          reason: policyDecision.reason,
+          request: input,
+          providerVaultBinding,
+          estimatedCostCents: input.estimatedCostCents,
+          startedAt: now,
+          completedAt: now,
+        });
+        throw new Error(`provider-policy-denied:${policyDecision.reason}`);
+      }
+      project = budgetReservation.project;
+      const normalizedTraceId = normalizeLocalTraceId(input.traceId);
+      const providerOperationKey = input.idempotencyKey
+        ? `provider:${String(input.idempotencyKey)}`
+        : `provider:${budgetReservation.reservation.id}`;
+      const providerOperation = prepareProviderIdempotentOperation({
+        projectId,
+        operationKey: providerOperationKey,
+        operationKind: 'provider-evidence-search',
+        requestChecksum: createHash('sha256').update(stableJson({
+          queryHash: createHash('sha256').update(String(input.query || '')).digest('hex'),
+          purposeHash: createHash('sha256').update(String(input.purpose || '')).digest('hex'),
+          maxResults: input.maxResults || null,
+          taskId: input.taskId || null,
+          provider: status.provider || null,
+        })).digest('hex'),
+        traceId: normalizedTraceId,
+        now,
+      });
+      project = providerOperation.project;
+      if (providerOperation.action === 'reuse-completed') {
+        throw new Error('search-provider-completed-result-readback-required');
+      }
+
       const providerAttempt = await runProviderWithRetry({
         policy: providerPolicyStatus,
         now,
@@ -60393,15 +65481,27 @@ export function createAgentProjectService({
           now,
           maxResults: input.maxResults,
           extraBody: input.providerBody || {},
+          idempotencyKey: providerOperationKey,
+          traceId: normalizedTraceId,
         }),
       });
       const providerResult = {
         ...(providerAttempt.result || {}),
         retry: providerAttempt.retry,
       };
+      const providerOperationSettlement = settleProviderIdempotentOperation({
+        projectId,
+        operationId: providerOperation.operation.id,
+        result: providerResult,
+        now,
+      });
+      project = providerOperationSettlement.project;
+      if (providerOperationSettlement.operation.status === 'ambiguous') {
+        throw new Error('search-provider-outcome-ambiguous-reconciliation-required');
+      }
       if (!providerResult.ok) {
         const reason = providerResult.reason || providerResult.error || 'unknown';
-        appendProviderUsageRecord({
+        const usage = appendProviderUsageRecord({
           project,
           kind: 'search',
           operation: input.operation || 'search:evidence',
@@ -60418,7 +65518,14 @@ export function createAgentProjectService({
           providerVaultBinding,
           estimatedCostCents: input.estimatedCostCents,
           startedAt: now,
-          completedAt: nowIso(),
+          completedAt: now,
+        });
+        resolveProviderBudgetReservation({
+          projectId,
+          reservationId: budgetReservation.reservation.id,
+          status: 'released',
+          providerUsageId: usage.record?.id || null,
+          now,
         });
         throw new Error(`search-provider-unavailable:${reason}`);
       }
@@ -60470,21 +65577,34 @@ export function createAgentProjectService({
           result.task?.id,
         ].filter(Boolean),
         startedAt: now,
-        completedAt: nowIso(),
+        completedAt: now,
+      });
+      const settled = resolveProviderBudgetReservation({
+        projectId,
+        reservationId: budgetReservation.reservation.id,
+        status: 'settled',
+        providerUsageId: usage.record?.id || null,
+        actualCostCents: usage.record?.costCents ?? null,
+        now,
       });
       return {
         ...result,
-        project: usage.project,
+        project: settled.project,
         providerUsage: usage.record,
+        providerBudgetReservation: settled.reservation,
         providerVaultBinding,
       };
     },
     reviewAgentSubmission({ projectId, submissionId, ...input } = {}) {
-      return persistResult(reviewAgentSubmission({
+      const result = persistResult(reviewAgentSubmission({
         project: store.getProject(projectId),
         submissionId,
         ...input,
       }));
+      const sealed = sealProjectTrace(result.project, result.review?.traceId || input.traceId, {
+        reason: 'submission-review-completed', actorId: result.review?.reviewerAgentId || 'local-reviewer', now: input.now,
+      });
+      return { ...result, project: sealed.project, traceGraphReceipt: sealed.receipt };
     },
     reviewEvidenceSource({ projectId, ...input } = {}) {
       return persistResult(reviewEvidenceSource({
@@ -60565,6 +65685,8 @@ export function createAgentProjectService({
     },
     issueIdentitySession({
       projectId,
+      identityType = 'user',
+      serviceId = '',
       role = 'observer',
       userId = '',
       agentId = '',
@@ -60573,11 +65695,14 @@ export function createAgentProjectService({
       ttlMs,
       expiresAt,
       scope = ['project'],
+      audiences = [],
       source = 'identity-session-api',
       now = nowIso(),
     } = {}) {
       const project = store.getProject(projectId);
       const { session, token } = buildIdentitySessionRecord(project, {
+        identityType,
+        serviceId,
         role,
         userId,
         agentId,
@@ -60586,6 +65711,7 @@ export function createAgentProjectService({
         ttlMs,
         expiresAt,
         scope,
+        audiences,
         source,
       }, { now });
       const log = {
@@ -60597,7 +65723,7 @@ export function createAgentProjectService({
         source: 'identity-session',
         channelId: 'security',
         identitySessionId: session.id,
-        log: `Identity session issued for ${session.role}:${session.userId || session.agentId || 'unknown'} on ${project.name || project.id}.`,
+        log: `Identity session issued for ${session.role}:${session.serviceId || session.userId || session.agentId || 'unknown'} on ${project.name || project.id}.`,
         evidence: [`Session checksum ${session.checksum}`],
       };
       const updatedProject = appendProjectEvents({
@@ -60623,12 +65749,16 @@ export function createAgentProjectService({
             role: session.role,
             userId: session.userId || null,
             agentId: session.agentId || null,
+            serviceId: session.serviceId || null,
           },
           payload: {
             schemaVersion: session.schemaVersion,
             role: session.role,
             userId: session.userId,
             agentId: session.agentId,
+            identityType: session.identityType,
+            serviceId: session.serviceId,
+            audiences: session.audiences,
             expiresAt: session.expiresAt,
             checksum: session.checksum,
           },
@@ -60649,7 +65779,7 @@ export function createAgentProjectService({
         log,
       };
     },
-    verifyIdentitySession({ projectId, token = '', now = nowIso() } = {}) {
+    verifyIdentitySession({ projectId, token = '', audience = '', now = nowIso() } = {}) {
       const project = store.getProject(projectId);
       const tokenHash = identitySessionTokenHash(token);
       const session = (project.identitySessions || []).find((item) => item.tokenHash === tokenHash) || null;
@@ -60671,17 +65801,153 @@ export function createAgentProjectService({
           identitySession: publicIdentitySession(session, now),
         };
       }
+      const normalizedAudience = String(audience || '').trim().toLowerCase();
+      const audiences = normalizeIdentitySessionAudiences(session.audiences);
+      if (normalizeIdentitySessionType(session.identityType) === 'service'
+        && (!normalizedAudience || !audiences.includes(normalizedAudience))) {
+        return {
+          verified: false,
+          reason: 'identity-session-audience-mismatch',
+          projectId,
+          audience: normalizedAudience || null,
+          schemaVersion: 'identity-session-verification/v1',
+          identitySession: publicIdentitySession(session, now),
+        };
+      }
       return {
         verified: true,
         reason: 'identity-session-active',
         projectId,
         schemaVersion: 'identity-session-verification/v1',
         identitySession: publicIdentitySession(session, now),
+        audience: normalizedAudience || null,
         actor: {
           role: session.role,
           userId: session.userId || '',
           agentId: session.agentId || '',
         },
+      };
+    },
+    rotateIdentitySession({
+      projectId,
+      sessionId = '',
+      rotatedBy = '',
+      ttlMs,
+      expiresAt,
+      audiences,
+      now = nowIso(),
+    } = {}) {
+      const project = store.getProject(projectId);
+      const sessions = project.identitySessions || [];
+      const existing = sessions.find((session) => session.id === sessionId);
+      if (!existing) throw new Error(`Identity session not found: ${sessionId}`);
+      if (identitySessionStatus(existing, now) !== 'active') {
+        throw new Error(`Identity session is not active: ${sessionId}`);
+      }
+      const originalTtlMs = Math.max(
+        60_000,
+        (Date.parse(existing.expiresAt || '') || 0) - (Date.parse(existing.issuedAt || '') || 0),
+      );
+      const { session: replacement, token } = buildIdentitySessionRecord(project, {
+        identityType: existing.identityType,
+        serviceId: existing.serviceId,
+        role: existing.role,
+        userId: existing.userId,
+        agentId: existing.agentId,
+        issuerRole: existing.issuerRole,
+        issuerId: rotatedBy || existing.issuerId,
+        ttlMs: ttlMs ?? originalTtlMs,
+        expiresAt,
+        scope: existing.scope,
+        audiences: audiences ?? existing.audiences,
+        source: 'identity-session-rotation',
+        rotatedFromSessionId: existing.id,
+      }, { now });
+      const revokedSession = {
+        ...existing,
+        status: 'revoked',
+        revokedAt: now,
+        revokedBy: rotatedBy || 'security-boundary',
+        revocationReason: 'credential rotated',
+        rotatedToSessionId: replacement.id,
+      };
+      revokedSession.checksum = persistenceChecksum({
+        id: revokedSession.id,
+        projectId,
+        identityType: revokedSession.identityType,
+        serviceId: revokedSession.serviceId,
+        role: revokedSession.role,
+        userId: revokedSession.userId,
+        agentId: revokedSession.agentId,
+        audiences: revokedSession.audiences,
+        issuedAt: revokedSession.issuedAt,
+        expiresAt: revokedSession.expiresAt,
+        revokedAt: revokedSession.revokedAt,
+        status: revokedSession.status,
+        rotatedToSessionId: revokedSession.rotatedToSessionId,
+      });
+      const log = {
+        id: `log_rotate_${sessionId}_${Date.parse(now) || Date.now()}`,
+        time: now,
+        agent: 'Identity Boundary',
+        actor: 'Identity Boundary',
+        eventType: 'identity-session-rotated',
+        source: 'identity-session',
+        channelId: 'security',
+        identitySessionId: replacement.id,
+        rotatedIdentitySessionId: existing.id,
+        log: `Identity session ${existing.id} was rotated to ${replacement.id} for ${replacement.role}:${replacement.serviceId || replacement.userId || replacement.agentId || 'unknown'}.`,
+        evidence: [`Prior checksum ${revokedSession.checksum}`, `Replacement checksum ${replacement.checksum}`],
+      };
+      const updatedProject = appendProjectEvents({
+        ...project,
+        identitySessions: [
+          replacement,
+          ...sessions.map((session) => (session.id === existing.id ? revokedSession : session)),
+        ].slice(0, IDENTITY_SESSION_LIMIT),
+        logs: [log, ...(project.logs || [])],
+      }, [
+        createProjectLedgerEvent({
+          id: `evt_rotate_${sessionId}_${Date.parse(now) || Date.now()}`,
+          type: 'identity-session-rotated',
+          time: now,
+          actor: `Identity Boundary:${rotatedBy || existing.issuerId || existing.issuerRole}`,
+          summary: log.log,
+          source: 'identity-session',
+          channelId: 'security',
+          evidenceIds: [existing.id, replacement.id, revokedSession.checksum, replacement.checksum, log.id],
+          entityIds: {
+            projectId,
+            identitySessionId: replacement.id,
+            rotatedIdentitySessionId: existing.id,
+            serviceId: replacement.serviceId || null,
+          },
+          payload: {
+            schemaVersion: replacement.schemaVersion,
+            identityType: replacement.identityType,
+            role: replacement.role,
+            audiences: replacement.audiences,
+            rotatedFromSessionId: existing.id,
+            rotatedToSessionId: replacement.id,
+            revokedChecksum: revokedSession.checksum,
+            replacementChecksum: replacement.checksum,
+          },
+        }),
+      ]);
+      const savedProject = saveProject(updatedProject);
+      return {
+        project: savedProject,
+        identitySession: publicIdentitySession(replacement, now),
+        rotatedIdentitySession: publicIdentitySession(revokedSession, now),
+        token,
+        tokenContract: {
+          schemaVersion: 'identity-session-token/v1',
+          returnedOnce: true,
+          storage: 'token-hash-only',
+          header: 'x-hofs-session-token',
+        },
+        identitySessions: this.getIdentitySessions(projectId, { now }),
+        log,
       };
     },
     revokeIdentitySession({ projectId, sessionId = '', revokedBy = '', reason = '', now = nowIso() } = {}) {
@@ -60903,19 +66169,344 @@ export function createAgentProjectService({
         summary: summarizeProjectEventLedger(project),
       };
     },
-    recordAccessDecision({ projectId, decision = {}, method = 'GET', path = '/', statusCode = null, outcome = '', now = nowIso() } = {}) {
-      if (!projectId) return null;
+    getLocalEventRecovery(projectId, options = {}) {
       const project = store.getProject(projectId);
-      const auditRecord = buildSecurityAccessAuditRecord({
+      const integrity = verifyProjectEventLedger(project);
+      const checkpoints = typeof store.listProjectEventCheckpoints === 'function'
+        ? store.listProjectEventCheckpoints(projectId).map(publicProjectEventCheckpoint)
+        : [];
+      const recoveries = typeof store.listProjectEventRecoveryReceipts === 'function'
+        ? store.listProjectEventRecoveryReceipts(projectId)
+        : [];
+      return {
+        schemaVersion: 'local-project-event-recovery-status/v1',
         projectId,
+        generatedAt: options.now || nowIso(),
+        status: integrity.valid ? 'ready' : checkpoints.length ? 'recovery-available' : 'degraded-no-checkpoint',
+        integrity,
+        checkpoints,
+        latestCheckpoint: checkpoints.at(-1) || null,
+        lastRecovery: recoveries.at(-1) || null,
+        checkpointReady: integrity.valid && typeof store.createProjectEventCheckpoint === 'function',
+        recoveryReady: !integrity.valid && checkpoints.length > 0 && typeof store.writeProjectEventRecoveryQuarantine === 'function',
+        localOnly: true,
+        externalWormStorage: false,
+      };
+    },
+    createLocalEventCheckpoint(input = {}) {
+      if (typeof store.createProjectEventCheckpoint !== 'function') throw new Error('local-project-event-checkpoint-store-required');
+      const project = store.getProject(input.projectId);
+      const integrity = verifyProjectEventLedger(project);
+      if (!integrity.valid) throw new Error('project-event-ledger-integrity-invalid');
+      const checkpoint = store.createProjectEventCheckpoint({
+        projectId: input.projectId,
+        eventSnapshot: projectEventSnapshot(project),
+        actorId: input.actorId || null,
+        now: input.now || nowIso(),
+      });
+      return {
+        route: checkpoint.idempotent ? 'local-project-event-checkpoint-existing' : 'local-project-event-checkpoint-created',
+        eventCheckpoint: publicProjectEventCheckpoint(checkpoint),
+        eventRecovery: this.getLocalEventRecovery(input.projectId, { now: input.now }),
+      };
+    },
+    recoverLocalEventLedger(input = {}) {
+      const projectId = String(input.projectId || '').trim();
+      const operationId = String(input.operationId || '').trim();
+      if (!/^[A-Za-z0-9][A-Za-z0-9._-]{2,127}$/.test(operationId)) throw new Error('project-event-recovery-operation-id-invalid');
+      if (typeof store.getProjectEventCheckpoint !== 'function'
+        || typeof store.writeProjectEventRecoveryQuarantine !== 'function'
+        || typeof store.writeProjectEventRecoveryReceipt !== 'function') throw new Error('local-project-event-recovery-store-required');
+
+      const checkpoint = store.getProjectEventCheckpoint(projectId, input.checkpointId);
+      const checkpointVerification = verifyProjectEventSnapshot(checkpoint.eventSnapshot);
+      if (!checkpointVerification.valid || checkpoint.eventSnapshot.projectId !== projectId) throw new Error('project-event-checkpoint-ledger-invalid');
+      const priorReceipt = typeof store.getProjectEventRecoveryReceipt === 'function'
+        ? store.getProjectEventRecoveryReceipt(projectId, operationId)
+        : null;
+      if (priorReceipt) {
+        if (priorReceipt.checkpointId !== checkpoint.id) throw new Error('project-event-recovery-operation-conflict');
+        return {
+          route: 'local-project-event-recovered',
+          eventRecoveryReceipt: { ...priorReceipt, idempotent: true },
+          eventRecovery: this.getLocalEventRecovery(projectId, { now: input.now }),
+        };
+      }
+
+      const activeProject = store.getProject(projectId);
+      const activeSnapshot = projectEventSnapshot(activeProject);
+      const existingQuarantine = input.execute === true && typeof store.getProjectEventRecoveryQuarantine === 'function'
+        ? store.getProjectEventRecoveryQuarantine(projectId, operationId)
+        : null;
+      if (existingQuarantine && existingQuarantine.checkpointId !== checkpoint.id) throw new Error('project-event-recovery-operation-conflict');
+      const sourceSnapshot = existingQuarantine?.eventSnapshot || activeSnapshot;
+      const sourceIntegrity = verifyProjectEventSnapshot(sourceSnapshot);
+      const validTail = validEventsAfterCheckpoint(checkpoint.eventSnapshot, sourceSnapshot);
+      const rebuiltBase = rebuildProjectEventLedger(activeProject, checkpoint.eventSnapshot, validTail);
+      const keptHashes = new Set((rebuiltBase.eventLedger || []).map((event) => event.eventHash));
+      const discardedEventCount = (sourceSnapshot.eventLedger || []).filter((event) => !keptHashes.has(event.eventHash)).length;
+      const planBase = {
+        schemaVersion: 'local-project-event-recovery-plan/v1', projectId, checkpointId: checkpoint.id, operationId,
+        sourceIntegrityValid: sourceIntegrity.valid, sourceRetainedCount: sourceSnapshot.eventLedger.length,
+        checkpointRetainedCount: checkpoint.eventSnapshot.eventLedger.length, validPostCheckpointCount: validTail.length,
+        discardedEventCount, checkpointRootHash: checkpoint.eventSnapshot.eventLedgerRootHash,
+        rebuiltRootHash: rebuiltBase.eventLedgerRootHash, rebuiltRetainedCount: rebuiltBase.eventLedger.length,
+        localOnly: true,
+      };
+      const recoveryPlan = { ...planBase, checksum: createHash('sha256').update(stableJson(planBase)).digest('hex') };
+      if (input.execute !== true) {
+        return {
+          route: 'local-project-event-recovery-dry-run',
+          eventRecoveryPlan: recoveryPlan,
+          eventRecovery: this.getLocalEventRecovery(projectId, { now: input.now }),
+        };
+      }
+
+      const quarantine = existingQuarantine || store.writeProjectEventRecoveryQuarantine({
+        projectId, operationId, checkpointId: checkpoint.id, eventSnapshot: sourceSnapshot, now: input.now || nowIso(),
+      });
+      const recoveryEvent = createProjectLedgerEvent({
+        id: `evt_local_event_recovery_${createHash('sha256').update(`${projectId}:${operationId}`).digest('hex').slice(0, 24)}`,
+        type: 'local-event-ledger-recovered',
+        time: quarantine.quarantinedAt,
+        actor: input.actorId || 'local-security-admin',
+        summary: `Recovered the local project event ledger from checkpoint ${checkpoint.id}.`,
+        source: 'local-event-recovery',
+        evidenceIds: [checkpoint.id],
+        entityIds: { projectId },
+        payload: {
+          schemaVersion: 'local-project-event-recovery-event/v1', operationId,
+          checkpointChecksum: checkpoint.checksum, quarantineChecksum: quarantine.checksum,
+          validPostCheckpointCount: validTail.length, discardedEventCount,
+        },
+      });
+      const rebuiltWithReceiptEvent = appendProjectEvents(rebuiltBase, [recoveryEvent]);
+      const rebuiltVerification = verifyProjectEventLedger(rebuiltWithReceiptEvent);
+      if (!rebuiltVerification.valid) throw new Error('project-event-recovery-rebuild-invalid');
+      saveProject(rebuiltWithReceiptEvent);
+      const rereadProject = store.getProject(projectId);
+      const rereadVerification = verifyProjectEventLedger(rereadProject);
+      if (!rereadVerification.valid || rereadVerification.rootHash !== rebuiltWithReceiptEvent.eventLedgerRootHash) {
+        throw new Error('project-event-recovery-reread-invalid');
+      }
+      const receiptBase = {
+        schemaVersion: 'local-project-event-recovery/v1',
+        id: `event_recovery_${createHash('sha256').update(`${projectId}:${operationId}:${checkpoint.id}`).digest('hex').slice(0, 24)}`,
+        status: 'recovered', execute: true, projectId, checkpointId: checkpoint.id, operationId,
+        actorId: input.actorId || null, checkpointChecksum: checkpoint.checksum, quarantineChecksum: quarantine.checksum,
+        sourceIntegrityValid: sourceIntegrity.valid, sourceRootHash: sourceSnapshot.eventLedgerRootHash,
+        validPostCheckpointCount: validTail.length, discardedEventCount,
+        rebuiltRetainedCount: rereadProject.eventLedger.length, rebuiltEventCount: rereadProject.eventLedgerEventCount,
+        rebuiltRootHash: rereadVerification.rootHash, recoveryEventId: recoveryEvent.id,
+        recoveredAt: quarantine.quarantinedAt, rebuiltVerified: true, localOnly: true, externalWormStorage: false,
+      };
+      const receipt = store.writeProjectEventRecoveryReceipt(receiptBase);
+      return {
+        route: 'local-project-event-recovered',
+        eventRecoveryPlan: recoveryPlan,
+        eventRecoveryReceipt: receipt,
+        eventRecovery: this.getLocalEventRecovery(projectId, { now: input.now }),
+      };
+    },
+    recordLocalAuthenticationEvent({
+      eventType = 'local-auth-login',
+      outcome = 'login-failed',
+      username = '',
+      user = null,
+      session = null,
+      reason = '',
+      retryAt = null,
+      traceId = null,
+      now = nowIso(),
+      transactionId = null,
+      operation = null,
+      targetUserId = null,
+      recovered = false,
+    } = {}) {
+      const normalizedSubject = String(username || '').trim().toLowerCase();
+      const subjectHash = createHash('sha256').update(normalizedSubject).digest('hex');
+      const successful = ['bootstrap-success', 'login-success'].includes(String(outcome || ''));
+      return this.recordAccessDecision({
+        projectId: null,
+        traceId,
+        method: 'POST',
+        path: eventType === 'local-auth-bootstrap' ? '/local-auth/bootstrap' : '/local-auth/login',
+        statusCode: successful ? (eventType === 'local-auth-bootstrap' ? 201 : 200) : outcome === 'login-locked' ? 429 : 401,
+        outcome,
+        now,
+        decision: {
+          allowed: successful,
+          enforced: true,
+          mode: 'local-auth',
+          status: successful ? 'allowed' : 'denied',
+          reason: reason || outcome,
+          actor: {
+            role: user?.role || 'anonymous',
+            agentId: null,
+            userId: user?.id || null,
+          },
+          route: {
+            routeKey: eventType,
+            capability: eventType === 'local-auth-bootstrap'
+              ? 'bootstrap local security administrator'
+              : 'authenticate local user',
+            sensitivity: 'local-user-authentication',
+            projectId: null,
+            agentId: null,
+            allowedRoles: ['anonymous', 'security-admin', 'manager', 'observer'],
+          },
+          authentication: {
+            eventType,
+            outcome,
+            subjectHash,
+            sessionId: session?.id || null,
+            retryAt,
+            transactionId,
+            operation,
+            targetUserId,
+            recovered,
+          },
+        },
+      });
+    },
+    recordLocalAuthMutationResult({
+      transactionId, operation, outcome, subjectHash, actorUserId = null, targetUserId = null,
+      sessionId = null, recovered = false, traceId = null, now = nowIso(),
+    } = {}) {
+      const normalizedTransactionId = String(transactionId || '').trim();
+      if (!normalizedTransactionId) throw new Error('local-auth-audit-transaction-id-required');
+      const existing = listRuntimeSecurityAuditStreamRecords().find((row) => row.authentication?.transactionId === normalizedTransactionId);
+      if (existing) return existing;
+      return this.recordAccessDecision({
+        projectId: null,
+        traceId,
+        method: 'POST',
+        path: `/local-auth/${String(operation || 'mutation')}`,
+        statusCode: 200,
+        outcome: String(outcome || 'committed'),
+        now,
+        decision: {
+          allowed: true,
+          enforced: true,
+          mode: 'local-auth',
+          status: 'allowed',
+          reason: recovered ? 'local-auth-audit-recovered-after-restart' : 'local-auth-mutation-committed',
+          actor: { role: 'local-user', agentId: null, userId: actorUserId },
+          route: {
+            routeKey: 'local-auth-mutation-result',
+            capability: 'record committed local auth mutation result',
+            sensitivity: 'local-user-authentication',
+            projectId: null,
+            agentId: null,
+            allowedRoles: ['security-admin', 'manager', 'observer'],
+          },
+          authentication: {
+            eventType: 'local-auth-mutation-result',
+            outcome: String(outcome || 'committed'),
+            subjectHash: String(subjectHash || '').slice(0, 64) || null,
+            sessionId,
+            retryAt: null,
+            transactionId: normalizedTransactionId,
+            operation: String(operation || 'mutation'),
+            targetUserId,
+            recovered,
+          },
+        },
+      });
+    },
+    getLocalAuditIntegrity(options = {}) {
+      const stream = this.getRuntimeSecurityAuditStream();
+      const activeLog = typeof store.securityAuditLogIntegrity === 'function'
+        ? store.securityAuditLogIntegrity()
+        : { status: 'not-configured', malformedLineCount: 0, malformedLineNumbers: [] };
+      const latestCheckpoint = typeof store.latestSecurityAuditCheckpoint === 'function' ? store.latestSecurityAuditCheckpoint() : null;
+      const recoveries = typeof store.listSecurityAuditRecoveryReceipts === 'function' ? store.listSecurityAuditRecoveryReceipts() : [];
+      return {
+        schemaVersion: 'local-audit-integrity/v1',
+        generatedAt: options.now || nowIso(),
+        status: stream.hashChainReady ? 'ready' : latestCheckpoint ? 'recovery-available' : 'degraded-no-checkpoint',
+        activeLog,
+        runtimeStream: {
+          count: stream.count,
+          hashChainReady: stream.hashChainReady,
+          sequenceGapCount: stream.sequenceGapCount,
+          chainBreakCount: stream.chainBreakCount,
+          hashMismatchCount: stream.hashMismatchCount,
+        },
+        latestCheckpoint,
+        lastRecovery: recoveries.at(-1) || null,
+        checkpointReady: Boolean(latestCheckpoint),
+        recoveryReady: Boolean(latestCheckpoint && !stream.hashChainReady),
+        localOnly: true,
+        externalWormStorage: false,
+      };
+    },
+    createLocalSecurityAuditCheckpoint(input = {}) {
+      if (typeof store.createSecurityAuditCheckpoint !== 'function') throw new Error('local-security-audit-checkpoint-store-required');
+      const securityAuditCheckpoint = store.createSecurityAuditCheckpoint(input);
+      return { route: 'local-security-audit-checkpoint-created', securityAuditCheckpoint, localAuditIntegrity: this.getLocalAuditIntegrity({ now: input.now }) };
+    },
+    recoverLocalSecurityAudit(input = {}) {
+      if (typeof store.recoverSecurityAuditLog !== 'function') throw new Error('local-security-audit-recovery-store-required');
+      const securityAuditRecovery = store.recoverSecurityAuditLog(input);
+      let recoveryAuditRecord = listRuntimeSecurityAuditStreamRecords().find((row) => row.auditRecovery?.operationId === securityAuditRecovery.operationId) || null;
+      if (input.execute === true && !recoveryAuditRecord) {
+        recoveryAuditRecord = this.recordAccessDecision({
+          projectId: null,
+          traceId: input.traceId || null,
+          method: 'POST',
+          path: '/security-audit-recovery',
+          statusCode: 200,
+          outcome: 'local-security-audit-recovered',
+          now: input.now || nowIso(),
+          decision: {
+            allowed: true,
+            enforced: true,
+            mode: 'local-auth',
+            status: 'allowed',
+            reason: 'local-security-audit-recovery-verified',
+            actor: { role: 'security-admin', agentId: null, userId: input.actorId || null },
+            route: {
+              routeKey: 'security-audit-recovery',
+              capability: 'recover local security audit from verified checkpoint',
+              sensitivity: 'cross-project-security-audit-recovery',
+              projectId: null,
+              agentId: null,
+              allowedRoles: ['security-admin'],
+            },
+            auditRecovery: {
+              checkpointId: securityAuditRecovery.checkpointId,
+              operationId: securityAuditRecovery.operationId,
+              quarantineChecksum: securityAuditRecovery.quarantineChecksum,
+              rebuiltChecksum: securityAuditRecovery.rebuiltChecksum,
+              rebuiltRecordCount: securityAuditRecovery.rebuiltRecordCount,
+              actorId: input.actorId || null,
+            },
+          },
+        });
+      }
+      return {
+        route: input.execute === true ? 'local-security-audit-recovered' : 'local-security-audit-recovery-dry-run',
+        securityAuditRecovery,
+        recoveryAuditRecordId: recoveryAuditRecord?.id || null,
+        localAuditIntegrity: this.getLocalAuditIntegrity({ now: input.now }),
+      };
+    },
+    recordAccessDecision({ projectId, decision = {}, method = 'GET', path = '/', statusCode = null, outcome = '', traceId = null, now = nowIso() } = {}) {
+      const project = projectId ? store.getProject(projectId) : null;
+      const auditRecord = buildSecurityAccessAuditRecord({
+        projectId: projectId || null,
         decision,
+        traceId,
         method,
         path,
         statusCode,
         outcome,
         now,
       });
-      const existingStreamRecords = listSecurityAuditStreamRecords(projectId);
+      const existingStreamRecords = projectId
+        ? listSecurityAuditStreamRecords(projectId)
+        : listRuntimeSecurityAuditStreamRecords();
       const streamSequence = existingStreamRecords.reduce((max, record) => {
         const sequence = Number(record.streamSequence);
         return Number.isFinite(sequence) && sequence > max ? sequence : max;
@@ -60927,6 +66518,17 @@ export function createAgentProjectService({
         sequence: streamSequence,
         previousStreamHash: previousStreamRecord?.streamHash || SECURITY_AUDIT_STREAM_GENESIS_HASH,
       });
+      if (!project) {
+        if (typeof store.appendSecurityAuditRecords !== 'function') return null;
+        const appended = store.appendSecurityAuditRecords([streamRecord]);
+        return appended.some((record) => record.id === streamRecord.id) ? streamRecord : null;
+      }
+      const projectEventIntegrity = verifyProjectEventLedger(project);
+      if (!projectEventIntegrity.valid && ['event-recovery-read', 'event-recovery-write'].includes(decision.route?.routeKey)) {
+        if (typeof store.appendSecurityAuditRecords !== 'function') return null;
+        const appended = store.appendSecurityAuditRecords([streamRecord]);
+        return appended.some((record) => record.id === streamRecord.id) ? streamRecord : null;
+      }
       const updatedProject = appendProjectEvents({
         ...project,
         securityAccessAudit: [
@@ -60957,6 +66559,9 @@ export function createAgentProjectService({
             agentId: auditRecord.actor.agentId || auditRecord.route.agentId || null,
           },
           payload: {
+            auditScope: auditRecord.auditScope,
+            scopeId: auditRecord.scopeId,
+            traceId: auditRecord.traceId || null,
             status: auditRecord.status,
             allowed: auditRecord.allowed,
             enforced: auditRecord.enforced,
@@ -60987,6 +66592,217 @@ export function createAgentProjectService({
         ...task,
         projectId,
       }));
+    },
+    getDelegationGovernance(projectId, { now = nowIso() } = {}) {
+      const project = store.getProject(projectId);
+      if (!project?.id) throw new Error(`Project not found: ${projectId}`);
+      return buildLocalDelegationGovernance({ project, now });
+    },
+    changeTaskDelegation({
+      projectId,
+      taskId,
+      assignee,
+      reviewerId,
+      dueAt = null,
+      reasonCode = 'manager-reassignment',
+      idempotencyKey,
+      actorId = 'local-manager',
+      now = nowIso(),
+    } = {}) {
+      const project = store.getProject(projectId);
+      if (!project?.id) throw new Error(`Project not found: ${projectId}`);
+      const task = (project.tasks || []).find((item) => String(item.id) === String(taskId));
+      if (!task) throw new Error(`Task not found: ${taskId}`);
+      const existing = (project.localTaskDelegationChanges || [])
+        .find((receipt) => receipt.idempotencyKey === idempotencyKey);
+      if (existing) {
+        if (!verifyLocalTaskDelegationChange(existing).valid) throw new Error('delegation-change-integrity-invalid');
+        const requestedDueAt = dueAt ? new Date(dueAt).toISOString() : null;
+        if (existing.taskId !== String(taskId)
+          || existing.toAssignee !== String(assignee || '')
+          || existing.toReviewerId !== String(reviewerId || '')
+          || existing.toDueAt !== requestedDueAt
+          || existing.reasonCode !== String(reasonCode || 'manager-reassignment')) {
+          throw new Error('delegation-idempotency-conflict');
+        }
+        const notification = (project.localTaskDelegationNotifications || [])
+          .find((receipt) => receipt.delegationChangeId === existing.id) || null;
+        return {
+          project,
+          delegationChange: existing,
+          notification,
+          delegationGovernance: buildLocalDelegationGovernance({ project, now }),
+          idempotent: true,
+          log: null,
+        };
+      }
+      const memberIds = new Set((project.team || []).map((member) => String(member?.id || '')).filter(Boolean));
+      if (!memberIds.has(String(assignee || ''))) throw new Error('delegation-assignee-not-on-team');
+      if (!memberIds.has(String(reviewerId || ''))) throw new Error('delegation-reviewer-not-on-team');
+      if (String(assignee) === String(reviewerId)) throw new Error('delegation-reviewer-independence-required');
+      const delegationChange = createLocalTaskDelegationChange({
+        projectId,
+        taskId,
+        fromAssignee: task.assignee || task.ownerId || null,
+        toAssignee: assignee,
+        fromReviewerId: task.reviewerId || null,
+        toReviewerId: reviewerId,
+        fromDueAt: task.dueAt || null,
+        toDueAt: dueAt,
+        actorId,
+        idempotencyKey,
+        reasonCode,
+        now,
+      });
+      const updatedTasks = (project.tasks || []).map((item) => (
+        String(item.id) === String(taskId)
+          ? { ...item, assignee: delegationChange.toAssignee, reviewerId: delegationChange.toReviewerId, dueAt: delegationChange.toDueAt }
+          : item
+      ));
+      const notification = delegationChange.fromAssignee !== delegationChange.toAssignee
+        ? createLocalDelegationNotification({
+            projectId,
+            taskId,
+            type: 'owner-changed',
+            assignee: delegationChange.toAssignee,
+            reviewerId: delegationChange.toReviewerId,
+            dueAt: delegationChange.toDueAt,
+            delegationChangeId: delegationChange.id,
+            now,
+          })
+        : null;
+      const log = {
+        id: `log_${delegationChange.id}`,
+        time: now,
+        agent: 'Delegation Governance',
+        actor: delegationChange.actorId,
+        eventType: 'task-delegation-changed',
+        source: 'local-delegation-governance',
+        channelId: 'management',
+        taskId: delegationChange.taskId,
+        log: `Task ${delegationChange.taskId} delegation changed from ${delegationChange.fromAssignee || 'unassigned'} to ${delegationChange.toAssignee}.`,
+        evidence: [delegationChange.id, delegationChange.checksum, notification?.id].filter(Boolean),
+      };
+      const savedProject = saveProject(appendProjectEvents({
+        ...project,
+        tasks: updatedTasks,
+        localTaskDelegationChanges: [
+          delegationChange,
+          ...(project.localTaskDelegationChanges || []).filter((receipt) => receipt.id !== delegationChange.id),
+        ].slice(0, 240),
+        localTaskDelegationNotifications: notification
+          ? [notification, ...(project.localTaskDelegationNotifications || []).filter((receipt) => receipt.fingerprint !== notification.fingerprint)].slice(0, 240)
+          : (project.localTaskDelegationNotifications || []),
+        logs: [log, ...(project.logs || [])],
+      }, [createProjectLedgerEvent({
+        id: `evt_${delegationChange.id}`,
+        type: log.eventType,
+        time: now,
+        actor: `Delegation Governance:${delegationChange.actorId}`,
+        summary: log.log,
+        source: log.source,
+        channelId: log.channelId,
+        evidenceIds: log.evidence,
+        entityIds: { projectId, taskId: delegationChange.taskId, delegationChangeId: delegationChange.id },
+        payload: {
+          schemaVersion: delegationChange.schemaVersion,
+          fromAssignee: delegationChange.fromAssignee,
+          toAssignee: delegationChange.toAssignee,
+          reviewerId: delegationChange.toReviewerId,
+          dueAt: delegationChange.toDueAt,
+          reasonCode: delegationChange.reasonCode,
+          checksum: delegationChange.checksum,
+        },
+      })]));
+      return {
+        project: savedProject,
+        delegationChange,
+        notification,
+        delegationGovernance: buildLocalDelegationGovernance({ project: savedProject, now }),
+        idempotent: false,
+        log,
+      };
+    },
+    scanDelegationGovernance({ projectId, idempotencyKey, now = nowIso() } = {}) {
+      const project = store.getProject(projectId);
+      if (!project?.id) throw new Error(`Project not found: ${projectId}`);
+      const normalizedIdempotencyKey = String(idempotencyKey || '').trim();
+      if (!normalizedIdempotencyKey) throw new Error('delegation-scan-idempotency-key-required');
+      if (normalizedIdempotencyKey.length > 160 || !/^[a-zA-Z0-9][a-zA-Z0-9._:/@+\-]*$/.test(normalizedIdempotencyKey)) {
+        throw new Error('delegation-scan-idempotency-key-invalid');
+      }
+      const before = buildLocalDelegationGovernance({ project, now });
+      if (!before.integrity.valid) throw new Error('delegation-governance-integrity-invalid');
+      const candidates = before.rows.flatMap((row) => [
+        ...(row.overdue ? [createLocalDelegationNotification({
+          projectId, taskId: row.taskId, type: 'task-overdue', assignee: row.assignee,
+          reviewerId: row.reviewerId, dueAt: row.dueAt, blockedByTaskIds: row.blockedByTaskIds, now,
+        })] : []),
+        ...(row.blocked ? [createLocalDelegationNotification({
+          projectId, taskId: row.taskId, type: 'dependency-blocked', assignee: row.assignee,
+          reviewerId: row.reviewerId, dueAt: row.dueAt, blockedByTaskIds: row.blockedByTaskIds, now,
+        })] : []),
+      ]);
+      const existingFingerprints = new Set((project.localTaskDelegationNotifications || []).map((receipt) => receipt.fingerprint));
+      const created = candidates.filter((receipt) => !existingFingerprints.has(receipt.fingerprint));
+      if (!created.length) {
+        return {
+          project,
+          notificationBatch: { idempotencyKey: normalizedIdempotencyKey, createdCount: 0, createdTypes: [], notificationIds: [] },
+          delegationGovernance: before,
+          idempotent: true,
+          log: null,
+        };
+      }
+      if (!created.every((receipt) => verifyLocalDelegationNotification(receipt).valid)) {
+        throw new Error('delegation-notification-integrity-invalid');
+      }
+      const log = {
+        id: `log_delegation_scan_${Date.parse(now) || Date.now()}`,
+        time: now,
+        agent: 'Delegation Governance',
+        eventType: 'delegation-governance-notifications-created',
+        source: 'local-delegation-governance',
+        channelId: 'management',
+        log: `Delegation governance created ${created.length} local notification(s).`,
+        evidence: created.flatMap((receipt) => [receipt.id, receipt.checksum]),
+      };
+      const savedProject = saveProject(appendProjectEvents({
+        ...project,
+        localTaskDelegationNotifications: [
+          ...created,
+          ...(project.localTaskDelegationNotifications || []),
+        ].slice(0, 240),
+        logs: [log, ...(project.logs || [])],
+      }, [createProjectLedgerEvent({
+        id: `evt_${log.id}`,
+        type: log.eventType,
+        time: now,
+        actor: 'Delegation Governance:local-scanner',
+        summary: log.log,
+        source: log.source,
+        channelId: log.channelId,
+        evidenceIds: log.evidence,
+        entityIds: { projectId },
+        payload: {
+          schemaVersion: 'local-delegation-notification-batch/v1',
+          idempotencyKey: normalizedIdempotencyKey,
+          createdCount: created.length,
+          notificationIds: created.map((receipt) => receipt.id),
+        },
+      })]));
+      return {
+        project: savedProject,
+        notificationBatch: {
+          idempotencyKey: normalizedIdempotencyKey,
+          createdCount: created.length,
+          createdTypes: created.map((receipt) => receipt.type),
+          notificationIds: created.map((receipt) => receipt.id),
+        },
+        delegationGovernance: buildLocalDelegationGovernance({ project: savedProject, now }),
+        idempotent: false,
+        log,
+      };
     },
     getTask(projectId, taskId) {
       const task = (store.getProject(projectId).tasks || []).find((item) => String(item.id) === String(taskId));
@@ -61081,12 +66897,1100 @@ export function createAgentProjectService({
       if (!projectRuntime?.executeWorkspaceCommand) throw new Error('Local project runtime is not configured.');
       return projectRuntime.executeWorkspaceCommand(store.getProject(projectId), input);
     },
+    async executeWorkspaceCommandAsync({ projectId, durableTaskJobId = null, durableTaskFenceToken = null, ...input } = {}) {
+      if (!projectRuntime?.executeWorkspaceCommandAsync) throw new Error('Local async project runtime is not configured.');
+      const project = store.getProject(projectId);
+      if (!project?.id) throw new Error(`Project not found: ${projectId}`);
+      let activeDurableTask = null;
+      if (durableTaskJobId || durableTaskFenceToken) {
+        const job = (project.localDurableTaskQueue || []).find((row) => row.id === durableTaskJobId);
+        if (!job || job.status !== 'leased' || job.fenceToken !== durableTaskFenceToken) throw new Error('local-durable-task-stale-fence');
+        activeDurableTask = registerActiveDurableTask(job);
+      }
+      const controller = activeDurableTask?.controller || new AbortController();
+      const relayAbort = () => controller.abort(input.signal?.reason);
+      if (input.signal?.aborted) relayAbort();
+      else input.signal?.addEventListener('abort', relayAbort, { once: true });
+      try {
+        return await projectRuntime.executeWorkspaceCommandAsync(project, { ...input, signal: controller.signal });
+      } finally {
+        input.signal?.removeEventListener('abort', relayAbort);
+        releaseActiveDurableTask(activeDurableTask);
+      }
+    },
     archiveProject({ projectId, reason, now = nowIso() } = {}) {
       if (!projectRuntime?.archiveProject) throw new Error('Local project runtime is not configured.');
       const project = projectRuntime.archiveProject(store.getProject(projectId), { reason, now });
       return {
         project: saveProject(project),
         localRuntime: project.localRuntime,
+      };
+    },
+    exportProjectPrivacyData({
+      projectId,
+      actor = 'Local owner',
+      reason = 'local-privacy-export',
+      approval = {},
+      now = nowIso(),
+    } = {}) {
+      if (!projectRuntime?.writePrivacyExport) throw new Error('local-privacy-export-runtime-not-configured');
+      const project = store.getProject(projectId);
+      if (!project?.id) throw new Error(`Project not found: ${projectId}`);
+      const privacyPolicy = buildProjectSettingsReadModel(project).privacyPolicy;
+      const approvedBy = String(approval?.approvedBy || '').trim();
+      if (privacyPolicy.evidenceExportRequiresApproval && !approvedBy) {
+        throw new Error('privacy-export-approval-required');
+      }
+      const timestamp = Date.parse(now) || Date.now();
+      const exportId = `privacy_export_${projectId}_${timestamp}`;
+      const payloadBase = {
+        privacyExport: {
+          schemaVersion: 'local-project-privacy-export/v1',
+          id: exportId,
+          projectId,
+          exportedAt: now,
+          actor: redactSensitiveText(actor),
+          reason: redactSensitiveText(reason),
+          approval: approvedBy ? { approvedBy: redactSensitiveText(approvedBy) } : null,
+          privacyPolicy: redactSensitiveObject(privacyPolicy),
+        },
+        project: redactSensitiveObject(project),
+        messages: redactSensitiveObject(store.getMessages(projectId)),
+        securityAccessAudit: redactSensitiveObject(store.listSecurityAuditRecords?.(projectId) || []),
+      };
+      const checksum = persistenceChecksum(payloadBase);
+      const payload = {
+        ...payloadBase,
+        privacyExport: {
+          ...payloadBase.privacyExport,
+          checksum,
+        },
+      };
+      const written = projectRuntime.writePrivacyExport(project, { exportId, payload, now });
+      const privacyExport = {
+        schemaVersion: 'local-project-privacy-export/v1',
+        id: exportId,
+        projectId,
+        actor: payload.privacyExport.actor,
+        reason: payload.privacyExport.reason,
+        approval: payload.privacyExport.approval,
+        exportedAt: now,
+        exportPath: written.exportPath,
+        relativePath: written.file?.path || null,
+        bytes: written.bytes,
+        checksum,
+        privacyPolicy: payload.privacyExport.privacyPolicy,
+      };
+      const log = {
+        id: `log_${exportId}`,
+        time: now,
+        agent: 'Privacy Export Control',
+        actor: privacyExport.actor,
+        eventType: 'project-privacy-exported',
+        source: 'local-privacy-export',
+        channelId: 'security',
+        privacyExportId: exportId,
+        log: `${privacyExport.actor} exported local project privacy data for ${project.name || project.id}.`,
+      };
+      const event = createProjectLedgerEvent({
+        id: `evt_${exportId}`,
+        type: 'project-privacy-exported',
+        time: now,
+        actor: `Privacy Export:${privacyExport.actor}`,
+        summary: log.log,
+        source: 'local-privacy-export',
+        channelId: 'security',
+        evidenceIds: [privacyExport.id, privacyExport.checksum, log.id],
+        entityIds: { projectId, privacyExportId: exportId, logId: log.id },
+        payload: {
+          schemaVersion: privacyExport.schemaVersion,
+          relativePath: privacyExport.relativePath,
+          bytes: privacyExport.bytes,
+          checksum: privacyExport.checksum,
+          approvedBy: privacyExport.approval?.approvedBy || null,
+        },
+      });
+      const savedProject = saveProject(appendProjectEvents({
+        ...project,
+        privacyExports: [privacyExport, ...(project.privacyExports || [])].slice(0, 50),
+        logs: [log, ...(project.logs || [])],
+      }, [event]));
+      return {
+        route: 'project-privacy-exported',
+        project: savedProject,
+        privacyExport,
+        log,
+      };
+    },
+    getProjectPrivacyRetentionPreview(projectId, { now = nowIso() } = {}) {
+      const project = store.getProject(projectId);
+      if (!project?.id) throw new Error(`Project not found: ${projectId}`);
+      const nowMs = Date.parse(now) || Date.now();
+      const privacyPolicy = buildProjectSettingsReadModel(project).privacyPolicy;
+      const rows = (project.privacyDeletionRequests || []).map((request) => {
+        const expired = request.status === 'pending-confirmation'
+          && (Date.parse(request.expiresAt || '') || 0) <= nowMs;
+        const status = expired ? 'expired' : request.status;
+        return {
+          id: request.id,
+          status,
+          requestedAt: request.requestedAt,
+          requestedBy: request.requestedBy,
+          confirmedAt: request.confirmedAt || null,
+          confirmedBy: request.confirmedBy || null,
+          expiresAt: request.expiresAt,
+          automaticPurgeAllowed: false,
+          executionAllowed: status === 'confirmed' && (Date.parse(request.expiresAt || '') || 0) > nowMs,
+        };
+      });
+      const summary = {
+        requestCount: rows.length,
+        pendingRequestCount: rows.filter((row) => row.status === 'pending-confirmation').length,
+        confirmedRequestCount: rows.filter((row) => row.status === 'confirmed').length,
+        expiredRequestCount: rows.filter((row) => row.status === 'expired').length,
+        executableRequestCount: rows.filter((row) => row.executionAllowed).length,
+      };
+      return {
+        schemaVersion: 'local-project-privacy-retention-preview/v1',
+        projectId,
+        generatedAt: now,
+        status: summary.expiredRequestCount || summary.pendingRequestCount || summary.confirmedRequestCount
+          ? 'privacy-deletion-action-required'
+          : 'privacy-retention-manual',
+        privacyPolicy,
+        automaticPurgeEnabled: false,
+        automaticPurgeReason: 'local retention policy has no automatic deletion schedule',
+        rows,
+        summary,
+        backendRoutes: {
+          privacyExport: `/projects/${projectId}/privacy/export`,
+          deletionRequests: `/projects/${projectId}/privacy/deletion-requests`,
+        },
+      };
+    },
+    getProjectPrivacyLifecycle(projectId, { now = nowIso() } = {}) {
+      if (!projectRuntime?.auditArtifactStore) throw new Error('local-privacy-lifecycle-runtime-not-configured');
+      const project = store.getProject(projectId);
+      const privacyPolicy = buildProjectSettingsReadModel(project).privacyPolicy;
+      const nowMs = Date.parse(now) || Date.now();
+      const generatedAt = new Date(nowMs).toISOString();
+      const inventory = projectRuntime.auditArtifactStore(project, { now: generatedAt });
+      const eligible = inventory.canonicalEntries.filter((row) => row.deletionEligible);
+      const blocked = inventory.canonicalEntries.filter((row) => row.expired && row.legalHoldActive);
+      const contentSha256 = eligible.map((row) => row.contentSha256).sort();
+      const deletionManifest = {
+        schemaVersion: 'local-privacy-artifact-deletion-manifest/v1',
+        projectId,
+        contentSha256,
+        canonicalContentCount: contentSha256.length,
+      };
+      deletionManifest.checksum = createHash('sha256').update(stableJson(deletionManifest)).digest('hex');
+      const planExpiresAt = new Date(nowMs + 60 * 60 * 1000).toISOString();
+      const nextScanAt = new Date(nowMs + 24 * 60 * 60 * 1000).toISOString();
+      const automaticScanEnabled = privacyPolicy.lifecycleScanMode === 'automatic-review';
+      const status = !inventory.integrity.valid
+        ? 'blocked-integrity-invalid'
+        : eligible.length
+          ? 'due-approval-required'
+          : blocked.length
+            ? 'blocked-legal-hold'
+            : automaticScanEnabled ? 'not-due' : 'manual-scan';
+      const planBase = {
+        schemaVersion: 'local-project-privacy-lifecycle/v1',
+        projectId,
+        generatedAt,
+        planExpiresAt,
+        nextScanAt,
+        policyChecksum: project.projectSettings?.checksum || null,
+        inventoryChecksum: inventory.checksum,
+        deletionManifestChecksum: deletionManifest.checksum,
+      };
+      return {
+        ...planBase,
+        planChecksum: createHash('sha256').update(stableJson(planBase)).digest('hex'),
+        status,
+        localOnly: true,
+        automaticScanEnabled,
+        privacyPolicy,
+        inventoryChecksum: inventory.checksum,
+        deletionManifest,
+        blockedContentSha256: blocked.map((row) => row.contentSha256).sort(),
+        deletionExecuted: false,
+        residualDataBoundaries: {
+          externalWorkspacePreserved: true,
+          userBackupsPreserved: true,
+          recoveryArchivesPreserved: true,
+          auditAndCheckpointsPreserved: true,
+        },
+        readyForProduction: false,
+      };
+    },
+    scanProjectPrivacyLifecycle(projectId, { actor = 'Local privacy scanner', now = nowIso() } = {}) {
+      const privacyLifecyclePlan = this.getProjectPrivacyLifecycle(projectId, { now });
+      const project = store.getProject(projectId);
+      const scanLog = {
+        id: `log_privacy_scan_${privacyLifecyclePlan.planChecksum.slice(0, 24)}`,
+        time: now,
+        agent: 'Privacy Lifecycle Scanner',
+        actor: redactSensitiveText(actor),
+        eventType: 'privacy-lifecycle-scanned',
+        source: 'local-privacy-lifecycle',
+        channelId: 'security',
+        log: `Privacy lifecycle scan produced ${privacyLifecyclePlan.status} plan ${privacyLifecyclePlan.planChecksum}.`,
+        evidence: [privacyLifecyclePlan.planChecksum, privacyLifecyclePlan.inventoryChecksum],
+      };
+      const savedProject = saveProject(appendProjectEvents({
+        ...project,
+        privacyLifecyclePlans: [
+          privacyLifecyclePlan,
+          ...(project.privacyLifecyclePlans || []).filter((item) => item.planChecksum !== privacyLifecyclePlan.planChecksum),
+        ].slice(0, 50),
+        logs: [scanLog, ...(project.logs || [])],
+      }, [createProjectLedgerEvent({
+        id: `evt_privacy_scan_${privacyLifecyclePlan.planChecksum.slice(0, 24)}`,
+        type: scanLog.eventType,
+        time: now,
+        actor: `Privacy Lifecycle:${scanLog.actor}`,
+        summary: scanLog.log,
+        source: scanLog.source,
+        channelId: scanLog.channelId,
+        evidenceIds: scanLog.evidence,
+        entityIds: { projectId, privacyLifecyclePlanChecksum: privacyLifecyclePlan.planChecksum },
+        payload: {
+          schemaVersion: privacyLifecyclePlan.schemaVersion,
+          status: privacyLifecyclePlan.status,
+          planChecksum: privacyLifecyclePlan.planChecksum,
+          inventoryChecksum: privacyLifecyclePlan.inventoryChecksum,
+          planExpiresAt: privacyLifecyclePlan.planExpiresAt,
+        },
+      })]));
+      return { route: 'project-privacy-lifecycle-scanned', project: savedProject, privacyLifecyclePlan, log: scanLog };
+    },
+    executeProjectPrivacyLifecycle({
+      projectId,
+      planChecksum,
+      actionApprovalId,
+      operationId,
+      execute = false,
+      actor = 'Local privacy executor',
+      now = nowIso(),
+    } = {}) {
+      if (!projectRuntime?.executeArtifactRetention || !projectRuntime?.getArtifactRetentionExecution) {
+        throw new Error('local-privacy-lifecycle-runtime-not-configured');
+      }
+      let project = store.getProject(projectId);
+      if (!project?.id) throw new Error(`Project not found: ${projectId}`);
+      if (execute !== true) throw new Error('privacy-lifecycle-explicit-execute-required');
+      const committed = operationId ? projectRuntime.getArtifactRetentionExecution(project, operationId) : null;
+      if (committed) {
+        if (committed.planChecksum !== planChecksum || committed.actionApprovalId !== actionApprovalId) {
+          throw new Error('artifact-retention-operation-conflict');
+        }
+        return {
+          route: 'project-privacy-lifecycle-executed',
+          project,
+          privacyLifecycleReceipt: committed,
+          idempotent: true,
+        };
+      }
+      const approval = (project.actionApprovals || []).find((item) => item.id === actionApprovalId);
+      if (!approval) throw new Error('action-approval-required');
+      const lifecycle = (project.privacyLifecyclePlans || []).find((item) => item.planChecksum === planChecksum);
+      if (!lifecycle) throw new Error('privacy-lifecycle-plan-stale');
+      if ((Date.parse(lifecycle.planExpiresAt || '') || 0) <= (Date.parse(now) || Date.now())) throw new Error('privacy-lifecycle-plan-expired');
+      if (lifecycle.policyChecksum !== project.projectSettings?.checksum) throw new Error('privacy-lifecycle-policy-stale');
+      if (lifecycle.status !== 'due-approval-required') throw new Error(`privacy-lifecycle-not-executable:${lifecycle.status}`);
+      const claimed = claimActionApprovalExecution(approval, {
+        projectId,
+        actionType: 'privacy:artifact-retention-delete',
+        actionKey: lifecycle.planChecksum,
+        executionKey: operationId,
+        now,
+      });
+      if (!claimed.resumed) {
+        const claimLog = {
+          id: `log_${claimed.executionClaim.checksum.slice(0, 24)}`,
+          time: now,
+          agent: 'Privacy Lifecycle Control',
+          actor: redactSensitiveText(actor),
+          eventType: 'privacy-lifecycle-execution-claimed',
+          source: 'local-privacy-lifecycle',
+          channelId: 'security',
+          actionApprovalId: approval.id,
+          log: `Execution claimed for exact privacy lifecycle plan ${lifecycle.planChecksum}.`,
+          evidence: [approval.id, claimed.actionApproval.checksum, claimed.executionClaim.checksum, lifecycle.planChecksum],
+        };
+        project = saveProject(appendProjectEvents({
+          ...project,
+          actionApprovals: (project.actionApprovals || []).map((item) => item.id === approval.id ? claimed.actionApproval : item),
+          logs: [claimLog, ...(project.logs || [])],
+        }, [createProjectLedgerEvent({
+          id: `evt_${claimed.executionClaim.checksum.slice(0, 24)}`,
+          type: claimLog.eventType,
+          time: now,
+          actor: `Privacy Lifecycle:${claimLog.actor}`,
+          summary: claimLog.log,
+          source: claimLog.source,
+          channelId: claimLog.channelId,
+          evidenceIds: claimLog.evidence,
+          entityIds: { projectId, actionApprovalId: approval.id, privacyLifecyclePlanChecksum: lifecycle.planChecksum },
+          payload: {
+            schemaVersion: lifecycle.schemaVersion,
+            planChecksum: lifecycle.planChecksum,
+            inventoryChecksum: lifecycle.inventoryChecksum,
+            executionClaimChecksum: claimed.executionClaim.checksum,
+          },
+        })]));
+      }
+      const privacyLifecycleReceipt = projectRuntime.executeArtifactRetention(project, {
+        operationId,
+        plan: lifecycle,
+        actionApprovalId: approval.id,
+        actionApprovalChecksum: claimed.actionApproval.checksum,
+        actionApprovalDecisionChecksums: claimed.executionClaim.decisionChecksums,
+        actionApprovalExecutionClaim: claimed.executionClaim,
+        actorId: redactSensitiveText(actor),
+        now,
+      });
+      const receiptLog = {
+        id: `log_privacy_lifecycle_${privacyLifecycleReceipt.checksum.slice(0, 24)}`,
+        time: now,
+        agent: 'Privacy Lifecycle Control',
+        actor: privacyLifecycleReceipt.executedBy,
+        eventType: 'privacy-lifecycle-retention-deleted',
+        source: 'local-privacy-lifecycle',
+        channelId: 'security',
+        log: `Verified deletion of ${privacyLifecycleReceipt.deletedCanonicalContentCount} expired canonical artifact(s).`,
+        evidence: [privacyLifecycleReceipt.checksum, lifecycle.planChecksum, claimed.executionClaim.checksum],
+      };
+      const savedProject = saveProject(appendProjectEvents({
+        ...project,
+        privacyLifecycleExecutions: [
+          privacyLifecycleReceipt,
+          ...(project.privacyLifecycleExecutions || []).filter((item) => item.operationId !== operationId),
+        ].slice(0, 100),
+        logs: [receiptLog, ...(project.logs || [])],
+      }, [createProjectLedgerEvent({
+        id: `evt_privacy_lifecycle_${privacyLifecycleReceipt.checksum.slice(0, 24)}`,
+        type: receiptLog.eventType,
+        time: now,
+        actor: `Privacy Lifecycle:${receiptLog.actor}`,
+        summary: receiptLog.log,
+        source: receiptLog.source,
+        channelId: receiptLog.channelId,
+        evidenceIds: receiptLog.evidence,
+        entityIds: { projectId, actionApprovalId: approval.id, operationId },
+        payload: {
+          schemaVersion: privacyLifecycleReceipt.schemaVersion,
+          planChecksum: lifecycle.planChecksum,
+          deletedCanonicalContentCount: privacyLifecycleReceipt.deletedCanonicalContentCount,
+          deletionVerified: privacyLifecycleReceipt.deletionVerified,
+          receiptChecksum: privacyLifecycleReceipt.checksum,
+        },
+      })]));
+      return {
+        route: 'project-privacy-lifecycle-executed',
+        project: savedProject,
+        privacyLifecycleReceipt,
+        idempotent: privacyLifecycleReceipt.idempotent,
+        log: receiptLog,
+      };
+    },
+    getActionApprovalGovernance(projectId, { now = nowIso() } = {}) {
+      const project = store.getProject(projectId);
+      if (!project?.id) throw new Error(`Project not found: ${projectId}`);
+      const rows = (project.actionApprovals || []).map((record) => publicActionApproval(record, now));
+      const integrityRows = (project.actionApprovals || []).map((record) => ({
+        id: record.id,
+        ...verifyActionApprovalRecord(record),
+      }));
+      return {
+        schemaVersion: 'local-action-approval-governance/v1',
+        projectId,
+        generatedAt: now,
+        rows,
+        summary: {
+          count: rows.length,
+          pendingCount: rows.filter((row) => row.status === 'pending').length,
+          approvedCount: rows.filter((row) => row.status === 'approved').length,
+          rejectedCount: rows.filter((row) => row.status === 'rejected').length,
+          expiredCount: rows.filter((row) => row.status === 'expired').length,
+          executingCount: rows.filter((row) => row.status === 'executing').length,
+          consumedCount: rows.filter((row) => row.status === 'consumed').length,
+        },
+        integrity: {
+          valid: integrityRows.every((row) => row.valid),
+          rows: integrityRows,
+        },
+        backendRoutes: {
+          actionApprovals: `/projects/${projectId}/action-approvals`,
+        },
+      };
+    },
+    getQualityEvaluationSuite() {
+      return getLocalQualityEvaluationSuite();
+    },
+    getTeamFormationReadiness(projectId, { now = nowIso() } = {}) {
+      const project = store.getProject(projectId);
+      if (!project?.id) throw new Error(`Project not found: ${projectId}`);
+      if (project.workModeContract?.schemaVersion !== 'super-agent-work-mode-team/v1') {
+        throw new Error('team-formation-work-mode-contract-required');
+      }
+      return publicLocalTeamFormationBrief(buildLocalTeamFormationBrief({
+        workModeTeam: project.workModeContract,
+        now,
+      }));
+    },
+    getModelDegradationReadiness(projectId, { now = nowIso() } = {}) {
+      const project = store.getProject(projectId);
+      if (!project?.id) throw new Error(`Project not found: ${projectId}`);
+      const rows = (project.modelGenerationProvenanceReceipts || []).map(publicModelGenerationProvenance);
+      const integrityRows = (project.modelGenerationProvenanceReceipts || []).map((receipt) => ({
+        id: receipt.id,
+        ...verifyModelGenerationProvenance(receipt),
+      }));
+      const integrityValid = integrityRows.every((row) => row.valid);
+      return {
+        schemaVersion: 'local-model-degradation-readiness/v1',
+        projectId,
+        generatedAt: now,
+        status: !integrityValid
+          ? 'degraded-integrity-invalid'
+          : rows.some((row) => row.generationMode === 'requested-model-fallback')
+            ? 'fallback-review-required'
+            : rows.length
+              ? 'generation-provenance-ready'
+              : 'generation-proof-needed',
+        rows,
+        summary: {
+          receiptCount: rows.length,
+          modelOutputCount: rows.filter((row) => row.generationMode === 'model-provider-output').length,
+          requestedFallbackCount: rows.filter((row) => row.generationMode === 'requested-model-fallback').length,
+          explicitTemplateCount: rows.filter((row) => row.generationMode === 'explicit-local-template').length,
+          humanReviewRequiredCount: rows.filter((row) => row.humanReviewRequired).length,
+          integrityInvalidCount: rows.filter((row) => row.status === 'integrity-invalid').length,
+          degradationReasonCounts: rows.reduce((counts, row) => {
+            if (row.degradationReason) counts[row.degradationReason] = (counts[row.degradationReason] || 0) + 1;
+            return counts;
+          }, {}),
+        },
+        integrity: { valid: integrityValid, rows: integrityRows },
+        backendRoutes: {
+          modelDegradationReadiness: `/projects/${projectId}/model-degradation-readiness`,
+          artifactDrafts: `/projects/${projectId}/agents/:agentId/artifact-drafts`,
+          submissions: `/projects/${projectId}/submissions`,
+        },
+        readyForLocalDrafting: integrityValid,
+        readyForProduction: false,
+        limitations: [
+          'generation provenance does not prove semantic quality equivalence',
+          'fallback and template drafts require the normal independent Reviewer workflow',
+          'no prompt, output, Provider error body, credential, or project content is stored in provenance receipts',
+        ],
+      };
+    },
+    getQualityEvaluationGovernance(projectId, { now = nowIso() } = {}) {
+      const project = store.getProject(projectId);
+      if (!project?.id) throw new Error(`Project not found: ${projectId}`);
+      const rows = (project.qualityEvaluationRuns || []).map(publicLocalQualityEvaluationRun);
+      const integrityRows = (project.qualityEvaluationRuns || []).map((run) => ({
+        id: run.id,
+        ...verifyLocalQualityEvaluationRun(run),
+      }));
+      const baseline = project.qualityEvaluationBaseline || null;
+      const baselineRun = baseline
+        ? (project.qualityEvaluationRuns || []).find((run) => run.id === baseline.runId) || null
+        : null;
+      const baselineBase = baseline ? { ...baseline } : null;
+      if (baselineBase) delete baselineBase.checksum;
+      const baselineIntegrity = !baseline || Boolean(
+        baseline.checksum
+        && baseline.checksum === localQualityEvaluationChecksum(baselineBase)
+        && baselineRun
+        && baseline.runChecksum === baselineRun.checksum
+        && verifyLocalQualityEvaluationRun(baselineRun).valid,
+      );
+      return {
+        schemaVersion: 'local-quality-evaluation-governance/v1',
+        projectId,
+        generatedAt: now,
+        suite: getLocalQualityEvaluationSuite(),
+        rows,
+        baseline: baseline ? { ...baseline, integrityValid: baselineIntegrity } : null,
+        integrity: {
+          valid: baselineIntegrity && integrityRows.every((row) => row.valid),
+          baselineValid: baselineIntegrity,
+          rows: integrityRows,
+        },
+        summary: {
+          runCount: rows.length,
+          passedRunCount: rows.filter((run) => run.status === 'passed').length,
+          regressionRunCount: rows.filter((run) => run.status === 'regression-detected').length,
+          releaseBlockedRunCount: rows.filter((run) => run.releaseBlocked).length,
+          integrityInvalidRunCount: rows.filter((run) => run.status === 'integrity-invalid').length,
+          baselineRunId: baseline?.runId || null,
+          workModeCount: getLocalQualityEvaluationSuite().scenarioCount,
+        },
+        backendRoutes: {
+          suite: `/projects/${projectId}/quality-evaluation-suite`,
+          runs: `/projects/${projectId}/quality-evaluation-runs`,
+          baseline: baseline?.runId
+            ? `/projects/${projectId}/quality-evaluation-runs/${encodeURIComponent(baseline.runId)}/baseline`
+            : null,
+        },
+        readyForLocalRelease: Boolean(baseline && baselineIntegrity && baselineRun?.readyForLocalRelease),
+        readyForProduction: false,
+      };
+    },
+    recordQualityEvaluationRun({ projectId, actorId = '', now = nowIso(), ...input } = {}) {
+      const project = store.getProject(projectId);
+      if (!project?.id) throw new Error(`Project not found: ${projectId}`);
+      const baseline = project.qualityEvaluationBaseline || null;
+      const baselineRun = baseline
+        ? (project.qualityEvaluationRuns || []).find((run) => run.id === baseline.runId) || null
+        : null;
+      const baselineBase = baseline ? { ...baseline } : null;
+      if (baselineBase) delete baselineBase.checksum;
+      if (baseline && (
+        !baselineRun
+        || !verifyLocalQualityEvaluationRun(baselineRun).valid
+        || baseline.runChecksum !== baselineRun.checksum
+        || baseline.checksum !== localQualityEvaluationChecksum(baselineBase)
+      )) {
+        throw new Error('quality-evaluation-baseline-integrity-invalid');
+      }
+      const candidate = createLocalQualityEvaluationRun({ projectId, input, baselineRun, now });
+      const existing = (project.qualityEvaluationRuns || []).find((run) => run.idempotencyKey === candidate.idempotencyKey);
+      if (existing) {
+        if (existing.intentChecksum !== candidate.intentChecksum) throw new Error('quality-evaluation-idempotency-conflict');
+        if (!verifyLocalQualityEvaluationRun(existing).valid) throw new Error('quality-evaluation-integrity-invalid');
+        return {
+          project,
+          qualityEvaluationRun: publicLocalQualityEvaluationRun(existing),
+          qualityEvaluationGovernance: this.getQualityEvaluationGovernance(projectId, { now }),
+          idempotent: true,
+          log: null,
+        };
+      }
+      const actor = redactSensitiveText(actorId || 'local-evaluation-worker');
+      const log = {
+        id: `log_${candidate.id}`,
+        time: now,
+        agent: 'Quality Evaluation',
+        actor,
+        eventType: 'quality-evaluation-run-recorded',
+        source: 'local-quality-evaluation',
+        channelId: 'quality',
+        qualityEvaluationRunId: candidate.id,
+        log: `${actor} recorded ${candidate.candidateVersion}: ${candidate.status} (${candidate.score}).`,
+        evidence: [candidate.id, candidate.checksum, candidate.suiteChecksum],
+      };
+      let qualityEvaluationRuns = [candidate, ...(project.qualityEvaluationRuns || []).filter((run) => run.id !== candidate.id)];
+      if (baselineRun && !qualityEvaluationRuns.slice(0, 100).some((run) => run.id === baselineRun.id)) {
+        qualityEvaluationRuns = [...qualityEvaluationRuns.slice(0, 99), baselineRun];
+      } else {
+        qualityEvaluationRuns = qualityEvaluationRuns.slice(0, 100);
+      }
+      const savedProject = saveProject(appendProjectEvents({
+        ...project,
+        qualityEvaluationRuns,
+        logs: [log, ...(project.logs || [])],
+      }, [createProjectLedgerEvent({
+        id: `evt_${candidate.id}`,
+        type: log.eventType,
+        time: now,
+        actor: `Quality Evaluation:${actor}`,
+        summary: log.log,
+        source: 'local-quality-evaluation',
+        channelId: 'quality',
+        evidenceIds: [candidate.id, candidate.checksum, candidate.suiteChecksum, log.id],
+        entityIds: { projectId, qualityEvaluationRunId: candidate.id },
+        payload: {
+          schemaVersion: candidate.schemaVersion,
+          candidateVersion: candidate.candidateVersion,
+          status: candidate.status,
+          score: candidate.score,
+          releaseBlocked: candidate.releaseBlocked,
+          regressionCriterionIds: candidate.regressionCriterionIds,
+          checksum: candidate.checksum,
+        },
+      })]));
+      return {
+        project: savedProject,
+        qualityEvaluationRun: publicLocalQualityEvaluationRun(candidate),
+        qualityEvaluationGovernance: this.getQualityEvaluationGovernance(projectId, { now }),
+        idempotent: false,
+        log,
+      };
+    },
+    setQualityEvaluationBaseline({ projectId, runId, actorId = '', now = nowIso() } = {}) {
+      const project = store.getProject(projectId);
+      if (!project?.id) throw new Error(`Project not found: ${projectId}`);
+      const run = (project.qualityEvaluationRuns || []).find((item) => item.id === runId);
+      if (!run) throw new Error(`quality-evaluation-run-not-found:${runId || 'missing'}`);
+      if (!verifyLocalQualityEvaluationRun(run).valid) throw new Error('quality-evaluation-integrity-invalid');
+      if (run.status !== 'passed' || run.releaseBlocked || !run.readyForLocalRelease) {
+        throw new Error('passing-quality-evaluation-required');
+      }
+      const existing = project.qualityEvaluationBaseline || null;
+      const existingBase = existing ? { ...existing } : null;
+      if (existingBase) delete existingBase.checksum;
+      const existingValid = Boolean(existing?.checksum && existing.checksum === localQualityEvaluationChecksum(existingBase));
+      if (existingValid && existing.runId === run.id && existing.runChecksum === run.checksum) {
+        return {
+          project,
+          qualityEvaluationBaseline: existing,
+          qualityEvaluationGovernance: this.getQualityEvaluationGovernance(projectId, { now }),
+          idempotent: true,
+          log: null,
+        };
+      }
+      const actor = redactSensitiveText(actorId || 'local-quality-owner');
+      const baselineBase = {
+        schemaVersion: 'local-quality-evaluation-baseline/v1',
+        projectId,
+        runId: run.id,
+        runChecksum: run.checksum,
+        candidateVersion: run.candidateVersion,
+        suiteVersion: run.suiteVersion,
+        setBy: actor,
+        setAt: now,
+      };
+      const qualityEvaluationBaseline = {
+        ...baselineBase,
+        checksum: localQualityEvaluationChecksum(baselineBase),
+      };
+      const log = {
+        id: `log_quality_baseline_${run.id}_${Date.parse(now) || Date.now()}`,
+        time: now,
+        agent: 'Quality Evaluation',
+        actor,
+        eventType: 'quality-evaluation-baseline-set',
+        source: 'local-quality-evaluation',
+        channelId: 'quality',
+        qualityEvaluationRunId: run.id,
+        log: `${actor} set ${run.candidateVersion} as the local quality baseline.`,
+        evidence: [run.id, run.checksum, qualityEvaluationBaseline.checksum],
+      };
+      const savedProject = saveProject(appendProjectEvents({
+        ...project,
+        qualityEvaluationBaseline,
+        logs: [log, ...(project.logs || [])],
+      }, [createProjectLedgerEvent({
+        id: `evt_${log.id}`,
+        type: log.eventType,
+        time: now,
+        actor: `Quality Evaluation:${actor}`,
+        summary: log.log,
+        source: 'local-quality-evaluation',
+        channelId: 'quality',
+        evidenceIds: [run.id, run.checksum, qualityEvaluationBaseline.checksum, log.id],
+        entityIds: { projectId, qualityEvaluationRunId: run.id },
+        payload: {
+          schemaVersion: qualityEvaluationBaseline.schemaVersion,
+          candidateVersion: run.candidateVersion,
+          suiteVersion: run.suiteVersion,
+          baselineChecksum: qualityEvaluationBaseline.checksum,
+        },
+      })]));
+      return {
+        project: savedProject,
+        qualityEvaluationBaseline,
+        qualityEvaluationGovernance: this.getQualityEvaluationGovernance(projectId, { now }),
+        idempotent: false,
+        log,
+      };
+    },
+    requestActionApproval({
+      projectId,
+      actionType,
+      actionKey,
+      requestedBy,
+      reason,
+      idempotencyKey,
+      ttlMs,
+      now = nowIso(),
+    } = {}) {
+      const project = store.getProject(projectId);
+      if (!project?.id) throw new Error(`Project not found: ${projectId}`);
+      const candidate = createActionApprovalRecord({
+        projectId,
+        actionType,
+        actionKey,
+        requestedBy: redactSensitiveText(requestedBy),
+        reason: redactSensitiveText(reason),
+        idempotencyKey: redactSensitiveText(idempotencyKey),
+        ttlMs,
+        now,
+      });
+      const existing = (project.actionApprovals || []).find((record) => record.idempotencyKey === candidate.idempotencyKey);
+      if (existing) {
+        if (existing.intentChecksum !== candidate.intentChecksum) throw new Error('action-approval-idempotency-conflict');
+        if (!verifyActionApprovalRecord(existing).valid) throw new Error('action-approval-integrity-invalid');
+        return {
+          project,
+          actionApproval: publicActionApproval(existing, now),
+          actionApprovalGovernance: this.getActionApprovalGovernance(projectId, { now }),
+          idempotent: true,
+          log: null,
+        };
+      }
+      const log = {
+        id: `log_${candidate.id}`,
+        time: now,
+        agent: 'Action Approval Broker',
+        actor: candidate.requestedBy,
+        eventType: 'action-approval-requested',
+        source: 'local-action-approval',
+        channelId: 'security',
+        actionApprovalId: candidate.id,
+        log: `${candidate.requestedBy} requested ${candidate.riskClass} approval for ${candidate.actionType}.`,
+        evidence: [candidate.id, candidate.intentChecksum, candidate.checksum],
+      };
+      const savedProject = saveProject(appendProjectEvents({
+        ...project,
+        actionApprovals: [candidate, ...(project.actionApprovals || [])].slice(0, 160),
+        logs: [log, ...(project.logs || [])],
+      }, [createProjectLedgerEvent({
+        id: `evt_${candidate.id}`,
+        type: 'action-approval-requested',
+        time: now,
+        actor: `Action Approval:${candidate.requestedBy}`,
+        summary: log.log,
+        source: 'local-action-approval',
+        channelId: 'security',
+        evidenceIds: [candidate.id, candidate.intentChecksum, candidate.checksum, log.id],
+        entityIds: { projectId, actionApprovalId: candidate.id },
+        payload: {
+          schemaVersion: candidate.schemaVersion,
+          actionType: candidate.actionType,
+          actionKey: candidate.actionKey,
+          riskClass: candidate.riskClass,
+          irreversible: candidate.irreversible,
+          expiresAt: candidate.expiresAt,
+          checksum: candidate.checksum,
+        },
+      })]));
+      return {
+        project: savedProject,
+        actionApproval: publicActionApproval(candidate, now),
+        actionApprovalGovernance: this.getActionApprovalGovernance(projectId, { now }),
+        idempotent: false,
+        log,
+      };
+    },
+    recordActionApprovalDecision({
+      projectId,
+      approvalId,
+      decision,
+      approverRole,
+      approverId,
+      reason,
+      now = nowIso(),
+    } = {}) {
+      const project = store.getProject(projectId);
+      if (!project?.id) throw new Error(`Project not found: ${projectId}`);
+      const existing = (project.actionApprovals || []).find((record) => record.id === approvalId);
+      if (!existing) throw new Error(`action-approval-not-found:${approvalId || 'missing'}`);
+      if (!verifyActionApprovalRecord(existing).valid) throw new Error('action-approval-integrity-invalid');
+      const currentState = actionApprovalState(existing, now);
+      if (!['pending', 'approved'].includes(currentState.status)) throw new Error(`action-approval-terminal:${currentState.status}`);
+      const candidate = createActionApprovalDecision(existing, {
+        decision,
+        approverRole,
+        approverId,
+        reason: redactSensitiveText(reason),
+        now,
+      });
+      const prior = (existing.decisions || []).find((item) => item.approverId === candidate.approverId);
+      if (prior) {
+        if (prior.approverRole !== candidate.approverRole) throw new Error('action-approval-approver-must-be-distinct');
+        if (prior.decision !== candidate.decision) throw new Error('action-approval-decision-conflict');
+        return {
+          project,
+          actionApproval: publicActionApproval(existing, now),
+          actionApprovalGovernance: this.getActionApprovalGovernance(projectId, { now }),
+          idempotent: true,
+          log: null,
+        };
+      }
+      const updated = withActionApprovalDecisions(existing, [...(existing.decisions || []), candidate], now);
+      const log = {
+        id: `log_${candidate.id}`,
+        time: now,
+        agent: 'Action Approval Broker',
+        actor: `${candidate.approverRole}:${candidate.approverId}`,
+        eventType: `action-approval-${candidate.decision}`,
+        source: 'local-action-approval',
+        channelId: 'security',
+        actionApprovalId: existing.id,
+        actionApprovalDecisionId: candidate.id,
+        log: `${candidate.approverRole}:${candidate.approverId} ${candidate.decision} ${existing.actionType}.`,
+        evidence: [existing.id, updated.checksum, candidate.id, candidate.checksum],
+      };
+      const savedProject = saveProject(appendProjectEvents({
+        ...project,
+        actionApprovals: (project.actionApprovals || []).map((record) => (record.id === existing.id ? updated : record)),
+        logs: [log, ...(project.logs || [])],
+      }, [createProjectLedgerEvent({
+        id: `evt_${candidate.id}`,
+        type: log.eventType,
+        time: now,
+        actor: log.actor,
+        summary: log.log,
+        source: 'local-action-approval',
+        channelId: 'security',
+        evidenceIds: [existing.id, updated.checksum, candidate.id, candidate.checksum, log.id],
+        entityIds: { projectId, actionApprovalId: existing.id, actionApprovalDecisionId: candidate.id },
+        payload: {
+          schemaVersion: candidate.schemaVersion,
+          decision: candidate.decision,
+          approverRole: candidate.approverRole,
+          approvalStatus: updated.status,
+          decisionChecksum: candidate.checksum,
+          approvalChecksum: updated.checksum,
+        },
+      })]));
+      return {
+        project: savedProject,
+        actionApproval: publicActionApproval(updated, now),
+        actionApprovalGovernance: this.getActionApprovalGovernance(projectId, { now }),
+        idempotent: false,
+        log,
+      };
+    },
+    requestProjectPrivacyDeletion({
+      projectId,
+      actor = 'Local owner',
+      reason = 'local-privacy-deletion-request',
+      now = nowIso(),
+      expiresInMs = 15 * 60 * 1000,
+    } = {}) {
+      const project = store.getProject(projectId);
+      if (!project?.id) throw new Error(`Project not found: ${projectId}`);
+      const nowMs = Date.parse(now) || Date.now();
+      const activeRequest = (project.privacyDeletionRequests || []).find((request) => (
+        request.status === 'pending-confirmation'
+        && (Date.parse(request.expiresAt || '') || 0) > nowMs
+      ));
+      if (activeRequest) throw new Error('privacy-deletion-confirmation-pending');
+      const confirmationToken = randomUUID();
+      const durationMs = Math.max(60_000, Math.min(Number(expiresInMs) || 15 * 60 * 1000, 24 * 60 * 60 * 1000));
+      const requestId = `privacy_deletion_request_${projectId}_${nowMs}`;
+      const privacyDeletionRequest = {
+        schemaVersion: 'local-project-privacy-deletion-request/v1',
+        id: requestId,
+        projectId,
+        status: 'pending-confirmation',
+        requestedAt: now,
+        requestedBy: redactSensitiveText(actor),
+        reason: redactSensitiveText(reason),
+        expiresAt: new Date(nowMs + durationMs).toISOString(),
+        confirmationTokenHash: createHash('sha256').update(confirmationToken).digest('hex'),
+      };
+      const log = {
+        id: `log_${requestId}`,
+        time: now,
+        agent: 'Privacy Deletion Control',
+        actor: privacyDeletionRequest.requestedBy,
+        eventType: 'project-privacy-deletion-requested',
+        source: 'local-privacy-deletion',
+        channelId: 'security',
+        privacyDeletionRequestId: requestId,
+        log: `${privacyDeletionRequest.requestedBy} requested local project deletion confirmation for ${project.name || project.id}.`,
+      };
+      const event = createProjectLedgerEvent({
+        id: `evt_${requestId}`,
+        type: 'project-privacy-deletion-requested',
+        time: now,
+        actor: `Privacy Deletion:${privacyDeletionRequest.requestedBy}`,
+        summary: log.log,
+        source: 'local-privacy-deletion',
+        channelId: 'security',
+        evidenceIds: [requestId, log.id],
+        entityIds: { projectId, privacyDeletionRequestId: requestId, logId: log.id },
+        payload: {
+          schemaVersion: privacyDeletionRequest.schemaVersion,
+          status: privacyDeletionRequest.status,
+          expiresAt: privacyDeletionRequest.expiresAt,
+        },
+      });
+      const savedProject = saveProject(appendProjectEvents({
+        ...project,
+        privacyDeletionRequests: [privacyDeletionRequest, ...(project.privacyDeletionRequests || [])].slice(0, 20),
+        logs: [log, ...(project.logs || [])],
+      }, [event]));
+      return {
+        route: 'project-privacy-deletion-requested',
+        project: savedProject,
+        privacyDeletionRequest,
+        confirmationToken,
+        log,
+      };
+    },
+    confirmProjectPrivacyDeletion({
+      projectId,
+      requestId,
+      confirmationToken,
+      actor = 'Local owner',
+      now = nowIso(),
+    } = {}) {
+      const project = store.getProject(projectId);
+      if (!project?.id) throw new Error(`Project not found: ${projectId}`);
+      const request = (project.privacyDeletionRequests || []).find((item) => item.id === requestId);
+      if (!request || request.status !== 'pending-confirmation') throw new Error('privacy-deletion-confirmation-invalid');
+      const nowMs = Date.parse(now) || Date.now();
+      if ((Date.parse(request.expiresAt || '') || 0) <= nowMs) throw new Error('privacy-deletion-confirmation-expired');
+      const suppliedHash = createHash('sha256').update(String(confirmationToken || '')).digest('hex');
+      if (suppliedHash !== request.confirmationTokenHash) throw new Error('privacy-deletion-confirmation-invalid');
+      const confirmedRequest = {
+        ...request,
+        status: 'confirmed',
+        confirmedAt: now,
+        confirmedBy: redactSensitiveText(actor),
+        confirmationTokenHash: null,
+      };
+      const log = {
+        id: `log_${request.id}_confirmed`,
+        time: now,
+        agent: 'Privacy Deletion Control',
+        actor: confirmedRequest.confirmedBy,
+        eventType: 'project-privacy-deletion-confirmed',
+        source: 'local-privacy-deletion',
+        channelId: 'security',
+        privacyDeletionRequestId: request.id,
+        log: `${confirmedRequest.confirmedBy} confirmed local project deletion request ${request.id}.`,
+      };
+      const event = createProjectLedgerEvent({
+        id: `evt_${request.id}_confirmed`,
+        type: 'project-privacy-deletion-confirmed',
+        time: now,
+        actor: `Privacy Deletion:${confirmedRequest.confirmedBy}`,
+        summary: log.log,
+        source: 'local-privacy-deletion',
+        channelId: 'security',
+        evidenceIds: [request.id, log.id],
+        entityIds: { projectId, privacyDeletionRequestId: request.id, logId: log.id },
+        payload: { schemaVersion: request.schemaVersion, status: confirmedRequest.status },
+      });
+      const savedProject = saveProject(appendProjectEvents({
+        ...project,
+        privacyDeletionRequests: [
+          confirmedRequest,
+          ...(project.privacyDeletionRequests || []).filter((item) => item.id !== request.id),
+        ],
+        logs: [log, ...(project.logs || [])],
+      }, [event]));
+      return {
+        route: 'project-privacy-deletion-confirmed',
+        project: savedProject,
+        privacyDeletionRequest: confirmedRequest,
+        log,
+      };
+    },
+    executeProjectPrivacyDeletion({
+      projectId,
+      requestId,
+      actionApprovalId,
+      executionKey,
+      actor = 'Local owner',
+      now = nowIso(),
+    } = {}) {
+      if (!projectRuntime?.purgeProject) throw new Error('local-privacy-deletion-runtime-not-configured');
+      if (typeof store.deleteProject !== 'function') throw new Error('local-privacy-deletion-store-not-configured');
+      const project = store.getProject(projectId);
+      if (!project?.id) throw new Error(`Project not found: ${projectId}`);
+      const request = (project.privacyDeletionRequests || []).find((item) => item.id === requestId);
+      if (!request || request.status !== 'confirmed') throw new Error('privacy-deletion-execution-not-confirmed');
+      const nowMs = Date.parse(now) || Date.now();
+      if ((Date.parse(request.expiresAt || '') || 0) <= nowMs) throw new Error('privacy-deletion-execution-expired');
+      const approval = (project.actionApprovals || []).find((item) => item.id === actionApprovalId);
+      if (!approval) throw new Error('action-approval-required');
+      const claimed = claimActionApprovalExecution(approval, {
+        projectId,
+        actionType: 'privacy:project-delete',
+        actionKey: request.id,
+        executionKey,
+        now,
+      });
+      const claimLog = {
+        id: `log_${claimed.executionClaim.checksum.slice(0, 24)}`,
+        time: now,
+        agent: 'Action Approval Broker',
+        actor: redactSensitiveText(actor),
+        eventType: 'action-approval-execution-claimed',
+        source: 'local-action-approval',
+        channelId: 'security',
+        actionApprovalId: approval.id,
+        log: `Execution claimed for approved ${approval.actionType} action ${approval.id}.`,
+        evidence: [approval.id, claimed.actionApproval.checksum, claimed.executionClaim.checksum],
+      };
+      if (!claimed.resumed) {
+        saveProject(appendProjectEvents({
+          ...project,
+          actionApprovals: (project.actionApprovals || []).map((item) => (
+            item.id === approval.id ? claimed.actionApproval : item
+          )),
+          logs: [claimLog, ...(project.logs || [])],
+        }, [createProjectLedgerEvent({
+          id: `evt_${claimed.executionClaim.checksum.slice(0, 24)}`,
+          type: claimLog.eventType,
+          time: now,
+          actor: `Action Approval:${claimLog.actor}`,
+          summary: claimLog.log,
+          source: 'local-action-approval',
+          channelId: 'security',
+          evidenceIds: [approval.id, claimed.actionApproval.checksum, claimed.executionClaim.checksum, claimLog.id],
+          entityIds: { projectId, actionApprovalId: approval.id, privacyDeletionRequestId: request.id },
+          payload: {
+            schemaVersion: claimed.executionClaim.schemaVersion,
+            actionType: approval.actionType,
+            actionKey: approval.actionKey,
+            executionClaimChecksum: claimed.executionClaim.checksum,
+          },
+        })]));
+      }
+      const deletionId = `privacy_deletion_${projectId}_${claimed.executionClaim.checksum.slice(0, 24)}`;
+      const receiptBase = {
+        schemaVersion: 'local-project-privacy-deletion-receipt/v1',
+        id: deletionId,
+        projectId,
+        requestId: request.id,
+        requestedBy: request.requestedBy,
+        confirmedBy: request.confirmedBy,
+        executedBy: redactSensitiveText(actor),
+        requestedAt: request.requestedAt,
+        confirmedAt: request.confirmedAt,
+        executedAt: now,
+        actionApprovalId: approval.id,
+        actionApprovalChecksum: claimed.actionApproval.checksum,
+        actionApprovalDecisionChecksums: claimed.executionClaim.decisionChecksums,
+        actionApprovalExecutionClaim: claimed.executionClaim,
+        residualDataBoundaries: [
+          'append-only local security audit JSONL may retain access-audit evidence',
+          'user-created recovery bundles or copied backups are not deleted by project purge',
+          ...(project.localRuntime?.workspacePath ? ['externally bound workspace is retained'] : []),
+        ],
+      };
+      const receipt = {
+        ...receiptBase,
+        checksum: persistenceChecksum(receiptBase),
+      };
+      const purged = projectRuntime.purgeProject(project, {
+        deletionId,
+        tombstone: receipt,
+      });
+      const removedProject = store.deleteProject(projectId);
+      return {
+        route: 'project-privacy-deleted',
+        project: null,
+        removedProjectId: removedProject.id,
+        privacyDeletionReceipt: {
+          ...receipt,
+          tombstonePath: purged.tombstonePath,
+          projectRootRemoved: purged.projectRootRemoved,
+          externalWorkspaceRetained: purged.externalWorkspaceRetained,
+        },
       };
     },
     resolveWorkModeEscalation({ projectId, escalationId, actorId, reason = '', now = nowIso() } = {}) {
@@ -61305,14 +68209,18 @@ export function createAgentProjectService({
       }));
     },
     runAgentWorkCycle({ projectId, agentId, ...input }) {
-      return persistResult(runAgentWorkCycle({
+      const result = persistResult(runAgentWorkCycle({
         project: store.getProject(projectId),
         agentId,
         artifactWriter: artifactWriter || (projectRuntime?.writeArtifact ? projectRuntime.writeArtifact.bind(projectRuntime) : null),
         ...input,
       }));
+      const sealed = sealProjectTrace(result.project, result.cycle?.traceId || input.traceId, {
+        reason: 'agent-work-cycle-completed', actorId: agentId, now: input.now,
+      });
+      return { ...result, project: sealed.project, traceGraphReceipt: sealed.receipt };
     },
-    async runAgentWorkCycleWithProviderEvidence({ projectId, agentId, ...input } = {}) {
+    async runAgentWorkCycleWithProviderEvidence({ projectId, agentId, signal = null, ...input } = {}) {
       const now = input.now || nowIso();
       const operation = input.operation || 'search:evidence';
       const query = input.evidenceSearchQuery || input.query || input.purpose || '';
@@ -61330,6 +68238,7 @@ export function createAgentProjectService({
             kind: 'search',
             operation,
             agentId,
+            taskId: input.taskId || '',
             requested: useProviderEvidenceSearch,
             requireProvider,
             targetStageId: input.autopilotTargetStageId || input.autopilotTargetControl?.targetStageId || input.targetControl?.targetStageId || '',
@@ -61348,14 +68257,17 @@ export function createAgentProjectService({
         ...overrides,
       }));
       if (!useProviderEvidenceSearch) {
-        return persistResult(runAgentWorkCycle({
+        const result = persistResult(runAgentWorkCycle({
           project: store.getProject(projectId),
           agentId,
           artifactWriter: artifactWriter || (projectRuntime?.writeArtifact ? projectRuntime.writeArtifact.bind(projectRuntime) : null),
           ...input,
         }));
+        const sealed = sealProjectTrace(result.project, result.cycle?.traceId || input.traceId, { reason: 'agent-work-cycle-completed', actorId: agentId, now });
+        return { ...result, project: sealed.project, traceGraphReceipt: sealed.receipt };
       }
       const runLocalFallback = (projectForCycle, reason) => {
+        if (signal?.aborted) throw new Error('autopilot-session-cancelled');
         const fallbackFindings = [
           ...(Array.isArray(input.evidenceSearchFindings) ? input.evidenceSearchFindings : [input.evidenceSearchFindings]).filter(Boolean),
           `Provider evidence search fell back to local worker proof: ${reason}.`,
@@ -61365,8 +68277,11 @@ export function createAgentProjectService({
           evidenceSearchProvider: 'agent-autonomous-worker',
           evidenceSearchMode: 'worker-local-evidence-search',
         });
+        const traced = sealProjectTrace(result.project, result.cycle?.traceId || input.traceId, { reason: 'agent-work-cycle-provider-fallback', actorId: agentId, now });
         return {
           ...result,
+          project: traced.project,
+          traceGraphReceipt: traced.receipt,
           providerEvidenceSearch: {
             schemaVersion: 'agent-worker-provider-evidence/v1',
             status: 'fallback',
@@ -61399,6 +68314,7 @@ export function createAgentProjectService({
         };
         const usage = appendProviderUsageRecord({
           project: store.getProject(projectId),
+          traceId: input.traceId,
           kind: 'search',
           operation,
           providerStatus: status,
@@ -61407,7 +68323,7 @@ export function createAgentProjectService({
           ok: false,
           status: 'unavailable',
           reason: decision.reason,
-          request: { query, purpose, operation },
+          request: { query, purpose, operation, taskId: input.taskId || null },
           providerVaultBinding,
           autonomousProviderPreflight,
           estimatedCostCents: input.estimatedCostCents,
@@ -61430,6 +68346,7 @@ export function createAgentProjectService({
         };
         const usage = appendProviderUsageRecord({
           project: store.getProject(projectId),
+          traceId: input.traceId,
           kind: 'search',
           operation,
           providerStatus: status,
@@ -61438,7 +68355,7 @@ export function createAgentProjectService({
           ok: false,
           status: autonomousProviderPreflight.shouldPause ? 'preflight-paused' : 'preflight-blocked',
           reason: decision.reason,
-          request: { query, purpose, operation },
+          request: { query, purpose, operation, taskId: input.taskId || null },
           circuitBreaker: autonomousProviderPreflight.circuitBreaker || null,
           providerVaultBinding,
           autonomousProviderPreflight,
@@ -61450,19 +68367,21 @@ export function createAgentProjectService({
         return runLocalFallback(usage.project, decision.reason);
       }
 
-      const policyDecision = evaluateProviderPolicy({
+      let policyDecision = evaluateProviderPolicy({
         project,
         policy: providerPolicyStatus,
         kind: 'search',
         operation,
         providerStatus: status,
         agentId,
+        taskId: input.taskId || '',
         estimatedCostCents: input.estimatedCostCents,
         now,
       });
       if (!policyDecision.allowed) {
         const usage = appendProviderUsageRecord({
           project,
+          traceId: input.traceId,
           kind: 'search',
           operation,
           providerStatus: status,
@@ -61471,7 +68390,7 @@ export function createAgentProjectService({
           ok: false,
           status: 'denied',
           reason: policyDecision.reason,
-          request: { query, purpose, operation },
+          request: { query, purpose, operation, taskId: input.taskId || null },
           providerVaultBinding,
           autonomousProviderPreflight,
           estimatedCostCents: input.estimatedCostCents,
@@ -61499,6 +68418,7 @@ export function createAgentProjectService({
         };
         const usage = appendProviderUsageRecord({
           project,
+          traceId: input.traceId,
           kind: 'search',
           operation,
           providerStatus: status,
@@ -61507,7 +68427,7 @@ export function createAgentProjectService({
           ok: false,
           status: 'circuit-open',
           reason: circuitDecision.reason,
-          request: { query, purpose, operation },
+          request: { query, purpose, operation, taskId: input.taskId || null },
           circuitBreaker: circuitDecision.row,
           providerVaultBinding,
           autonomousProviderPreflight,
@@ -61519,17 +68439,127 @@ export function createAgentProjectService({
         return runLocalFallback(usage.project, circuitDecision.reason);
       }
 
+      const budgetReservation = reserveProviderBudget({
+        projectId,
+        kind: 'search',
+        operation,
+        providerStatus: status,
+        agentId,
+        taskId: input.taskId || '',
+        estimatedCostCents: input.estimatedCostCents ?? providerPolicyStatus.searchCostCentsPerRequest,
+        now,
+      });
+      policyDecision = budgetReservation.decision;
+      if (!budgetReservation.reservation) {
+        const usage = appendProviderUsageRecord({
+          project: budgetReservation.project,
+          traceId: input.traceId,
+          kind: 'search',
+          operation,
+          providerStatus: status,
+          agentId,
+          decision: policyDecision,
+          ok: false,
+          status: 'denied',
+          reason: policyDecision.reason,
+          request: { query, purpose, operation, taskId: input.taskId || null },
+          providerVaultBinding,
+          autonomousProviderPreflight,
+          estimatedCostCents: input.estimatedCostCents,
+          startedAt: now,
+          completedAt: now,
+        });
+        if (requireProvider) throw new Error(`provider-policy-denied:${policyDecision.reason}`);
+        return runLocalFallback(usage.project, policyDecision.reason);
+      }
+      project = budgetReservation.project;
+      const normalizedTraceId = normalizeLocalTraceId(input.traceId);
+      const providerOperationKey = input.idempotencyKey
+        ? `provider:${String(input.idempotencyKey)}`
+        : normalizedTraceId
+          ? `provider:search:${createHash('sha256').update(normalizedTraceId).digest('hex').slice(0, 32)}`
+          : `provider:${budgetReservation.reservation.id}`;
+      const providerOperation = prepareProviderIdempotentOperation({
+        projectId,
+        operationKey: providerOperationKey,
+        operationKind: 'provider-autonomous-evidence-search',
+        requestChecksum: createHash('sha256').update(stableJson({
+          queryHash: createHash('sha256').update(String(query || '')).digest('hex'),
+          purposeHash: createHash('sha256').update(String(purpose || '')).digest('hex'),
+          maxResults: input.maxResults || null,
+          taskId: input.taskId || null,
+          provider: status.provider || null,
+        })).digest('hex'),
+        traceId: normalizedTraceId,
+        now,
+      });
+      project = providerOperation.project;
+      if (providerOperation.action === 'reuse-completed') throw new Error('search-provider-completed-result-readback-required');
+
       const providerAttempt = await runProviderWithRetry({
         policy: providerPolicyStatus,
         now,
+        signal,
         run: () => searchProvider.search({
           query,
           purpose,
           now,
           maxResults: input.maxResults,
           extraBody: input.providerBody || {},
+          signal,
+          idempotencyKey: providerOperationKey,
+          traceId: normalizedTraceId,
         }),
       });
+      const providerOperationResult = signal?.aborted
+        ? {
+            ...(providerAttempt.result || {}),
+            ok: false,
+            error: providerAttempt.result?.error || 'provider-request-aborted-after-dispatch',
+            idempotency: {
+              ...(providerAttempt.result?.idempotency || {}), outcome: 'ambiguous',
+              endpointHonoringAttested: false, safeToRetryAutomatically: false,
+            },
+          }
+        : (providerAttempt.result || {});
+      const providerOperationSettlement = settleProviderIdempotentOperation({
+        projectId, operationId: providerOperation.operation.id, result: providerOperationResult, now: nowIso(),
+      });
+      project = providerOperationSettlement.project;
+      if (signal?.aborted) {
+        const cancellationCode = signal.reason?.message === 'local-durable-task-cancelled'
+          ? 'local-durable-task-cancelled'
+          : 'autopilot-session-cancelled';
+        const usage = appendProviderUsageRecord({
+          project: store.getProject(projectId),
+          traceId: input.traceId,
+          kind: 'search',
+          operation,
+          providerStatus: status,
+          agentId,
+          decision: policyDecision,
+          result: providerAttempt.result || {},
+          ok: false,
+          status: 'cancelled',
+          reason: cancellationCode,
+          request: { query, purpose, operation, taskId: input.taskId || null },
+          retry: providerAttempt.retry,
+          circuitBreaker: circuitDecision.row,
+          providerVaultBinding,
+          autonomousProviderPreflight,
+          estimatedCostCents: input.estimatedCostCents,
+          startedAt: now,
+          completedAt: nowIso(),
+        });
+        resolveProviderBudgetReservation({
+          projectId,
+          reservationId: budgetReservation.reservation.id,
+          status: 'released',
+          providerUsageId: usage.record?.id || null,
+          now: nowIso(),
+        });
+        throw new Error(cancellationCode);
+      }
       const providerResult = {
         ...(providerAttempt.result || {}),
         retry: providerAttempt.retry,
@@ -61538,6 +68568,7 @@ export function createAgentProjectService({
         const reason = providerResult.reason || providerResult.error || 'unknown';
         const usage = appendProviderUsageRecord({
           project,
+          traceId: input.traceId,
           kind: 'search',
           operation,
           providerStatus: status,
@@ -61547,7 +68578,7 @@ export function createAgentProjectService({
           ok: false,
           status: 'failed',
           reason,
-          request: { query, purpose, operation },
+          request: { query, purpose, operation, taskId: input.taskId || null },
           retry: providerAttempt.retry,
           circuitBreaker: circuitDecision.row,
           providerVaultBinding,
@@ -61556,8 +68587,15 @@ export function createAgentProjectService({
           startedAt: now,
           completedAt: nowIso(),
         });
+        const released = resolveProviderBudgetReservation({
+          projectId,
+          reservationId: budgetReservation.reservation.id,
+          status: 'released',
+          providerUsageId: usage.record?.id || null,
+          now: nowIso(),
+        });
         if (requireProvider) throw new Error(`search-provider-unavailable:${reason}`);
-        return runLocalFallback(usage.project, reason);
+        return runLocalFallback(released.project, reason);
       }
 
       const completedAt = nowIso();
@@ -61572,10 +68610,11 @@ export function createAgentProjectService({
           request: {
             query,
             purpose,
-          operation,
-          maxResults: input.maxResults,
-          estimatedCostCents: input.estimatedCostCents,
-        },
+            operation,
+            taskId: input.taskId || null,
+            maxResults: input.maxResults,
+            estimatedCostCents: input.estimatedCostCents,
+          },
         startedAt: now,
         completedAt,
       };
@@ -61593,6 +68632,7 @@ export function createAgentProjectService({
       });
       const usage = appendProviderUsageRecord({
         project: cycle.project,
+        traceId: input.traceId,
         kind: 'search',
         operation,
         providerStatus: status,
@@ -61601,7 +68641,7 @@ export function createAgentProjectService({
         result: providerResult,
         ok: true,
         status: 'completed',
-        request: { query, purpose, operation },
+        request: { query, purpose, operation, taskId: input.taskId || null },
         retry: providerAttempt.retry,
         circuitBreaker: circuitDecision.row,
         providerVaultBinding,
@@ -61618,10 +68658,19 @@ export function createAgentProjectService({
         startedAt: now,
         completedAt,
       });
-      return {
+      const settled = resolveProviderBudgetReservation({
+        projectId,
+        reservationId: budgetReservation.reservation.id,
+        status: 'settled',
+        providerUsageId: usage.record?.id || null,
+        actualCostCents: usage.record?.costCents ?? null,
+        now: completedAt,
+      });
+      const result = {
         ...cycle,
-        project: usage.project,
+        project: settled.project,
         providerUsage: usage.record,
+        providerBudgetReservation: settled.reservation,
         providerEvidenceSearch: {
           schemaVersion: 'agent-worker-provider-evidence/v1',
           status: 'completed',
@@ -61643,36 +68692,143 @@ export function createAgentProjectService({
         autonomousProviderPreflight,
         allMessages: store.getMessages(projectId),
       };
+      const sealed = sealProjectTrace(result.project, result.cycle?.traceId || input.traceId, { reason: 'agent-work-cycle-provider-completed', actorId: agentId, now: completedAt });
+      return { ...result, project: sealed.project, traceGraphReceipt: sealed.receipt };
     },
     runDueAutonomousCycles(input = {}) {
-      const summary = runDueProjectAutonomousCycles({
-        projects: store.listProjects(),
-        getMessages: (projectId) => store.getMessages(projectId),
-        ...input,
+      const now = input.now || nowIso();
+      store.listProjects().forEach((project) => recoverDurableQueueReceiptsForProject(project.id, now));
+      const queue = buildWorkerQueueSnapshot({ projects: store.listProjects(), ...input, now });
+      const summary = { processed: [], skipped: [...queue.projectQueue.filter((row) => !row.due).map((row) => ({ projectId: row.projectId, cadence: row.cadence, reason: row.reason, nextRunAt: row.nextRunAt }))], messages: [] };
+      queue.projectQueue.filter((row) => row.due).forEach((row) => {
+        const acquisition = acquireDurableQueueRow(row, now, 'project-autonomous-due-worker');
+        if (!['acquired', 'recovered-expired-lease'].includes(acquisition.action)) {
+          summary.skipped.push({ projectId: row.projectId, cadence: row.cadence, reason: `durable-queue-${acquisition.action}`, nextRunAt: row.nextRunAt });
+          return;
+        }
+        const activeDurableTask = registerActiveDurableTask(acquisition.job);
+        let executionCompleted = false;
+        try {
+          const result = runProjectAutonomousCycle({
+            project: acquisition.project,
+            cadence: row.cadence,
+            messages: store.getMessages(row.projectId),
+            now,
+            trigger: input.trigger || 'backend-scheduler',
+            schedulerReason: row.reason,
+            dueAt: row.dueAt,
+            source: input.source || 'backend-scheduler-autonomous-chat',
+            language: acquisition.project.language || 'en',
+            traceId: acquisition.job.traceId,
+            workerIdempotencyKey: acquisition.job.idempotencyKey,
+            workerLeaseKey: acquisition.job.fenceToken,
+            signal: activeDurableTask.controller.signal,
+          });
+          const receipt = result.project.autonomousLedger?.[0]?.executionReceipt;
+          const receiptProject = saveProject(result.project);
+          executionCompleted = true;
+          const acknowledged = acknowledgeDurableQueueJob({ project: receiptProject, job: acquisition.job, receipt, now });
+          result.project = acknowledged.project;
+          summary.processed.push({ projectId: row.projectId, cadence: row.cadence, reason: row.reason, dueAt: row.dueAt, nextRunAt: result.project.nextAutonomousRunAt, durableTask: acknowledged.job, result });
+          summary.messages.push(...result.messages);
+        } catch (error) {
+          if (executionCompleted) {
+            summary.skipped.push({ projectId: row.projectId, cadence: row.cadence, reason: 'durable-receipt-persisted-ack-pending', error: error.message, nextRunAt: acquisition.job.leaseExpiresAt });
+            return;
+          }
+          const latestJob = (store.getProject(row.projectId).localDurableTaskQueue || []).find((item) => item.id === acquisition.job.id);
+          if (latestJob?.status === 'cancelled') {
+            summary.skipped.push({ projectId: row.projectId, cadence: row.cadence, reason: 'durable-queue-cancelled', error: error.message, nextRunAt: null });
+            return;
+          }
+          const failed = failDurableQueueJob({ project: store.getProject(row.projectId), job: acquisition.job, error, now });
+          summary.skipped.push({ projectId: row.projectId, cadence: row.cadence, reason: failed.action, error: error.message, nextRunAt: failed.job.retryAt });
+        } finally {
+          releaseActiveDurableTask(activeDurableTask);
+        }
       });
-      summary.processed.forEach((item) => {
-        item.result.project = saveProject(item.result.project);
-      });
-      if (summary.messages.length) {
-        appendMessages(summary.messages);
-      }
+      if (summary.messages.length) appendMessages(summary.messages);
       return {
         ...summary,
         allMessages: store.getMessages(),
       };
     },
     runDueAgentWorkCycles(input = {}) {
-      const summary = runDueAgentWorkCycles({
-        projects: store.listProjects(),
-        artifactWriter: artifactWriter || (projectRuntime?.writeArtifact ? projectRuntime.writeArtifact.bind(projectRuntime) : null),
-        ...input,
+      const now = input.now || nowIso();
+      store.listProjects().forEach((project) => recoverDurableQueueReceiptsForProject(project.id, now));
+      const queue = buildWorkerQueueSnapshot({ projects: store.listProjects(), ...input, now });
+      const summary = {
+        processed: [],
+        skipped: queue.agentQueue.filter((row) => !row.due || !row.willProcess).map((row) => ({ projectId: row.projectId, agentId: row.agentId, reason: row.deferReason || row.reason, nextRunAt: row.nextRunAt, managementPriority: row.managementPriority || 0, managementReasons: row.managementReasons || [] })),
+        projects: [], agentAutonomousActionQueues: [], messages: [], processedProjectCount: 0,
+      };
+      const processedProjectIds = new Set();
+      queue.agentQueue.filter((row) => row.due && row.willProcess).forEach((row) => {
+        const acquisition = acquireDurableQueueRow(row, now, 'agent-due-worker');
+        if (!['acquired', 'recovered-expired-lease'].includes(acquisition.action)) {
+          summary.skipped.push({ projectId: row.projectId, agentId: row.agentId, reason: `durable-queue-${acquisition.action}`, nextRunAt: row.nextRunAt, managementPriority: row.managementPriority || 0, managementReasons: row.managementReasons || [] });
+          return;
+        }
+        const activeDurableTask = registerActiveDurableTask(acquisition.job);
+        let executionCompleted = false;
+        try {
+          const result = runAgentWorkCycle({
+            project: acquisition.project,
+            agentId: row.agentId,
+            traceId: acquisition.job.traceId,
+            workerIdempotencyKey: acquisition.job.idempotencyKey,
+            workerLeaseKey: acquisition.job.fenceToken,
+            signal: activeDurableTask.controller.signal,
+            now,
+            trigger: input.trigger || 'backend-agent-scheduler',
+            dueAt: row.dueAt,
+            intervalMs: row.cadenceMs,
+            managementPriority: row.managementPriority || 0,
+            managementReasons: row.managementReasons || [],
+            queueReason: row.reason,
+            submitWorkArtifact: Boolean(input.submitWorkArtifacts),
+            workArtifactType: input.workArtifactType || 'auto',
+            workArtifactReviewStatus: input.workArtifactReviewStatus || 'pending-review',
+            workArtifactReviewerAgentId: input.workArtifactReviewerAgentId || null,
+            submitWorkArtifactOn: input.submitWorkArtifactOn || 'completion',
+            reviewPendingSubmission: Boolean(input.reviewPendingSubmissions),
+            agentReviewVerdict: input.agentReviewVerdict || 'under-review',
+            agentReviewComments: input.agentReviewComments || '',
+            agentReviewRequestedChanges: input.agentReviewRequestedChanges || [],
+            respondToReviewObligation: Boolean(input.respondToReviewObligations),
+            reviewResponseArtifactType: input.reviewResponseArtifactType || 'revision-note',
+            reviewResponseReviewerAgentId: input.reviewResponseReviewerAgentId || null,
+            useAutonomousStrategy: Boolean(input.useAutonomousStrategy),
+            artifactWriter: artifactWriter || (projectRuntime?.writeArtifact ? projectRuntime.writeArtifact.bind(projectRuntime) : null),
+          });
+          const receipt = result.project.agentWorkerLedger?.[0]?.executionReceipt;
+          const receiptProject = saveProject(result.project);
+          executionCompleted = true;
+          const acknowledged = acknowledgeDurableQueueJob({ project: receiptProject, job: acquisition.job, receipt, now });
+          result.project = acknowledged.project;
+          processedProjectIds.add(row.projectId);
+          summary.processed.push({ projectId: row.projectId, agentId: row.agentId, reason: row.reason, dueAt: row.dueAt, nextRunAt: result.cycle?.nextRunAt || result.agent?.nextAgentRunAt, managementPriority: row.managementPriority || 0, managementReasons: row.managementReasons || [], durableTask: acknowledged.job, result });
+          summary.messages.push(...result.messages);
+        } catch (error) {
+          if (executionCompleted) {
+            summary.skipped.push({ projectId: row.projectId, agentId: row.agentId, reason: 'durable-receipt-persisted-ack-pending', error: error.message, nextRunAt: acquisition.job.leaseExpiresAt, managementPriority: row.managementPriority || 0, managementReasons: row.managementReasons || [] });
+            return;
+          }
+          const latestJob = (store.getProject(row.projectId).localDurableTaskQueue || []).find((item) => item.id === acquisition.job.id);
+          if (latestJob?.status === 'cancelled') {
+            summary.skipped.push({ projectId: row.projectId, agentId: row.agentId, reason: 'durable-queue-cancelled', error: error.message, nextRunAt: null, managementPriority: row.managementPriority || 0, managementReasons: row.managementReasons || [] });
+            return;
+          }
+          const failed = failDurableQueueJob({ project: store.getProject(row.projectId), job: acquisition.job, error, now });
+          summary.skipped.push({ projectId: row.projectId, agentId: row.agentId, reason: failed.action, error: error.message, nextRunAt: failed.job.retryAt, managementPriority: row.managementPriority || 0, managementReasons: row.managementReasons || [] });
+        } finally {
+          releaseActiveDurableTask(activeDurableTask);
+        }
       });
-      summary.projects.forEach((project) => {
-        saveProject(project);
-      });
-      if (summary.messages.length) {
-        appendMessages(summary.messages);
-      }
+      summary.processedProjectCount = processedProjectIds.size;
+      summary.projects = [...processedProjectIds].map((projectId) => store.getProject(projectId));
+      summary.agentAutonomousActionQueues = summary.projects.map((project) => buildAgentAutonomousActionQueue({ project, now, intervalMs: input.intervalMs }));
+      if (summary.messages.length) appendMessages(summary.messages);
       return {
         ...summary,
         allMessages: store.getMessages(),
@@ -61695,6 +68851,7 @@ export function createAgentProjectService({
         requestBodyOverrides = {},
         language,
       } = input;
+      store.listProjects().forEach((project) => recoverDurableQueueReceiptsForProject(project.id, now));
       const forceProjectIdSet = new Set((forceProjectIds || []).map(normalizeProjectIdKey).filter(Boolean));
       const forcedProjectFilterActive = Boolean(forceDue) && forceProjectIdSet.size > 0;
       const summary = {
@@ -61764,15 +68921,40 @@ export function createAgentProjectService({
             });
             return;
           }
-          const result = this.tickAutonomousRunControlSession({
+          const workerReason = projectForceDue ? forceReason : schedule.reason;
+          const leaseAcquisition = acquireAutopilotSessionLease({
+            projectId: project.id,
+            session,
+            schedule,
+            reason: workerReason,
+            now,
+          });
+          if (leaseAcquisition.action === 'lease-active' || leaseAcquisition.action === 'already-acked') {
+            summary.skipped.push({
+              projectId: project.id,
+              sessionId: session.id,
+              reason: leaseAcquisition.action === 'lease-active' ? 'autopilot-lease-active' : 'autopilot-already-acked',
+              idempotencyKey: leaseAcquisition.idempotencyKey,
+              leaseKey: leaseAcquisition.leaseKey,
+              fenceToken: leaseAcquisition.lease?.fenceToken || null,
+              nextRunAt: schedule.nextRunAt,
+              schedule,
+            });
+            return;
+          }
+          let result = this.tickAutonomousRunControlSession({
             projectId: project.id,
             sessionId: session.id,
             now,
             actor,
-            reason: projectForceDue ? forceReason : reason,
+            reason: workerReason,
             loopCount,
             force,
             targetKind,
+            workerIdempotencyKey: leaseAcquisition.idempotencyKey,
+            workerLeaseKey: leaseAcquisition.leaseKey,
+            workerFenceToken: leaseAcquisition.lease?.fenceToken || null,
+            workerDueAt: schedule.dueAt,
             requestBodyOverrides: {
               ...requestBodyOverrides,
               includeReadModels: false,
@@ -61780,12 +68962,35 @@ export function createAgentProjectService({
             },
             language: language || project.language || 'en',
           });
+          const tickReceipt = result.autonomousRunControlSessionTick || null;
+          const executionReceipt = tickReceipt?.executionReceipt || null;
+          const leaseAcknowledgement = executionReceipt?.acked
+            ? acknowledgeAutopilotSessionLease({
+                project: result.project,
+                lease: leaseAcquisition.lease,
+                receipt: {
+                  ...executionReceipt,
+                  tickId: tickReceipt.id,
+                  receiptChecksum: executionReceipt.receiptChecksum || tickReceipt.checksum || null,
+                },
+                now: tickReceipt.completedAt || now,
+              })
+            : null;
+          if (leaseAcknowledgement?.acknowledged) {
+            result = { ...result, project: leaseAcknowledgement.project };
+          }
           processedSessionCount += 1;
           summary.processed.push({
             projectId: project.id,
             sessionId: session.id,
-            reason: projectForceDue ? forceReason : schedule.reason,
+            reason: workerReason,
             dueAt: schedule.dueAt,
+            idempotencyKey: leaseAcquisition.idempotencyKey,
+            leaseKey: leaseAcquisition.leaseKey,
+            fenceToken: leaseAcquisition.lease?.fenceToken || null,
+            leaseAction: leaseAcquisition.action,
+            durableTask: result.project.localDurableTaskQueue?.find((row) => row.idempotencyKey === leaseAcquisition.idempotencyKey) || null,
+            executionReceipt,
             nextRunAt: result.autonomousRunControlSession?.status === 'completed'
               ? null
               : new Date(safeDateMs(now) + (Number(intervalMs) || 60_000)).toISOString(),
@@ -61824,6 +69029,7 @@ export function createAgentProjectService({
         requestBodyOverrides = {},
         language,
       } = input;
+      store.listProjects().forEach((project) => recoverDurableQueueReceiptsForProject(project.id, now));
       const shouldAttemptProviderEvidence = input.providerEvidenceSearchEnabled !== false && Boolean(
         input.useProviderEvidenceSearch
         || input.providerEvidenceSearchEnabled
@@ -61906,15 +69112,42 @@ export function createAgentProjectService({
             });
             continue;
           }
-          const result = await this.tickAutonomousRunControlSessionWithProviderEvidence({
+          const workerReason = projectForceDue ? forceReason : schedule.reason;
+          const leaseAcquisition = acquireAutopilotSessionLease({
+            projectId: project.id,
+            session,
+            schedule,
+            reason: workerReason,
+            now,
+          });
+          if (leaseAcquisition.action === 'lease-active' || leaseAcquisition.action === 'already-acked') {
+            summary.skipped.push({
+              projectId: project.id,
+              sessionId: session.id,
+              reason: leaseAcquisition.action === 'lease-active' ? 'autopilot-lease-active' : 'autopilot-already-acked',
+              idempotencyKey: leaseAcquisition.idempotencyKey,
+              leaseKey: leaseAcquisition.leaseKey,
+              fenceToken: leaseAcquisition.lease?.fenceToken || null,
+              nextRunAt: schedule.nextRunAt,
+              schedule,
+            });
+            continue;
+          }
+          let result = await this.tickAutonomousRunControlSessionWithProviderEvidence({
             projectId: project.id,
             sessionId: session.id,
             now,
             actor,
-            reason: projectForceDue ? forceReason : reason,
+            reason: workerReason,
             loopCount,
             force,
             targetKind,
+            workerIdempotencyKey: leaseAcquisition.idempotencyKey,
+            workerLeaseKey: leaseAcquisition.leaseKey,
+            workerFenceToken: leaseAcquisition.lease?.fenceToken || null,
+            workerDueAt: schedule.dueAt,
+            durableTaskJobId: leaseAcquisition.job?.id || null,
+            durableTaskFenceToken: leaseAcquisition.job?.fenceToken || leaseAcquisition.lease?.fenceToken || null,
             requestBodyOverrides: {
               ...requestBodyOverrides,
               includeReadModels: false,
@@ -61923,12 +69156,35 @@ export function createAgentProjectService({
             },
             language: language || project.language || 'en',
           });
+          const tickReceipt = result.autonomousRunControlSessionTick || null;
+          const executionReceipt = tickReceipt?.executionReceipt || null;
+          const leaseAcknowledgement = executionReceipt?.acked
+            ? acknowledgeAutopilotSessionLease({
+                project: result.project,
+                lease: leaseAcquisition.lease,
+                receipt: {
+                  ...executionReceipt,
+                  tickId: tickReceipt.id,
+                  receiptChecksum: executionReceipt.receiptChecksum || tickReceipt.checksum || null,
+                },
+                now: tickReceipt.completedAt || now,
+              })
+            : null;
+          if (leaseAcknowledgement?.acknowledged) {
+            result = { ...result, project: leaseAcknowledgement.project };
+          }
           processedSessionCount += 1;
           summary.processed.push({
             projectId: project.id,
             sessionId: session.id,
-            reason: projectForceDue ? forceReason : schedule.reason,
+            reason: workerReason,
             dueAt: schedule.dueAt,
+            idempotencyKey: leaseAcquisition.idempotencyKey,
+            leaseKey: leaseAcquisition.leaseKey,
+            fenceToken: leaseAcquisition.lease?.fenceToken || null,
+            leaseAction: leaseAcquisition.action,
+            durableTask: result.project.localDurableTaskQueue?.find((row) => row.idempotencyKey === leaseAcquisition.idempotencyKey) || null,
+            executionReceipt,
             nextRunAt: result.autonomousRunControlSession?.status === 'completed'
               ? null
               : new Date(safeDateMs(now) + (Number(intervalMs) || 60_000)).toISOString(),
