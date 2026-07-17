@@ -28,11 +28,19 @@ const PROJECT_ID = 'product_team_acceptance_project';
 const PROJECT_NAME = 'General Product Team Acceptance Project';
 const VIEWPORT = { width: 1440, height: 1100 };
 const RUN_PRODUCTION_CONTROLS = process.env.HOFS_MANAGER_PRIVATE_PILOT_RUN_PRODUCTION_CONTROLS === '1';
+const LOCAL_AUTH_STORAGE_KEY = 'hall_of_fame_studio.local_auth_session.v1';
 const FAKE_SEARCH_SECRET = 'SEARCH_SECRET_SHOULD_NOT_LEAK_12345';
 const FAKE_MODEL_SECRET = 'MODEL_SECRET_SHOULD_NOT_LEAK_12345';
 const FAKE_VAULT_MASTER_KEY = 'VAULT_MASTER_KEY_SHOULD_NOT_LEAK_12345';
 const FAKE_VAULT_ROTATED_MASTER_KEY = 'VAULT_ROTATED_MASTER_KEY_SHOULD_NOT_LEAK_12345';
 const nativeFetch = globalThis.fetch.bind(globalThis);
+let backendAuthContext = null;
+const validationStartedAt = Date.now();
+
+function validationProgress(label) {
+  const elapsedSeconds = ((Date.now() - validationStartedAt) / 1000).toFixed(1);
+  console.log(`[manager-private-pilot +${elapsedSeconds}s] ${label}`);
+}
 
 function readCliArg(name) {
   const inlinePrefix = `${name}=`;
@@ -75,9 +83,16 @@ function localUiBaseUrlCandidates(value = '') {
 
 globalThis.fetch = async (...args) => {
   let lastError = null;
+  const [input, init = {}] = args;
+  let requestArgs = args;
+  if (backendAuthContext?.token && String(input).startsWith(backendAuthContext.baseUrl)) {
+    const headers = new Headers(init.headers || {});
+    headers.set('x-hofs-local-auth-token', backendAuthContext.token);
+    requestArgs = [input, { ...init, headers }];
+  }
   for (let attempt = 0; attempt < 4; attempt += 1) {
     try {
-      return await nativeFetch(...args);
+      return await nativeFetch(...requestArgs);
     } catch (error) {
       lastError = error;
       const code = error?.cause?.code || error?.code || '';
@@ -178,6 +193,7 @@ async function createAcceptanceRuntimeDependencies() {
   let modelFetchCount = 0;
   const modelProvider = createModelProvider({
     provider: 'openai-compatible',
+    model: 'gpt-4o-mini',
     enabled: true,
     apiKey: modelApiKey,
     apiKeySource: 'local-secret-vault',
@@ -352,7 +368,12 @@ async function waitForBackendJson(backendUrl, route, predicate, message, { timeo
     if (predicate(lastBody)) return lastBody;
     await new Promise((resolve) => setTimeout(resolve, 300));
   }
-  assert(false, `${message}. Last body: ${JSON.stringify(lastBody).slice(0, 1200)}`);
+  const workflow = Object.values(lastBody || {}).find((value) => value && typeof value === 'object') || {};
+  const failedGates = [
+    ...(workflow.failedPrerequisiteGates || []),
+    ...(workflow.prerequisiteGates || []).filter((gate) => !gate.passed),
+  ].filter((gate, index, rows) => gate?.id && rows.findIndex((row) => row?.id === gate.id) === index);
+  assert(false, `${message}. Failed gates: ${JSON.stringify(failedGates)}. Last body: ${JSON.stringify(lastBody).slice(0, 1200)}`);
   return lastBody;
 }
 
@@ -371,12 +392,34 @@ async function waitForButtonEnabled(page, testId, message, { timeoutMs = 15000 }
   return locator;
 }
 
+async function waitForButtonDisabled(page, testId, message, { timeoutMs = 30000 } = {}) {
+  const selector = `[data-testid="${testId}"]`;
+  const locator = page.locator(selector).first();
+  await locator.waitFor({ state: 'visible', timeout: timeoutMs });
+  await page.waitForFunction((targetSelector) => {
+    const button = document.querySelector(targetSelector);
+    return Boolean(button?.disabled);
+  }, selector, { timeout: timeoutMs }).catch(async () => {
+    const disabled = await locator.isDisabled().catch(() => 'missing');
+    if (disabled === true) return;
+    throw new Error(`${message} Disabled state: ${disabled}`);
+  });
+  return locator;
+}
+
 async function syncReadyPackageModels(page) {
   const packageButton = await waitForButtonEnabled(page, 'backend-sync-ready-package', 'Sync Package must be enabled before refreshing private-pilot controls.');
+  const readyPackageResponsePromise = page.waitForResponse((response) => (
+    response.request().method() === 'GET'
+    && new URL(response.url()).pathname.endsWith('/manager-ready-package')
+  ), { timeout: 60000 });
   await packageButton.click();
-  const proofButton = await waitForButtonEnabled(page, 'backend-sync-proof-models', 'Sync Proof Models must be enabled before refreshing private-pilot controls.');
-  await proofButton.click();
-  await page.waitForTimeout(600);
+  const readyPackageResponse = await readyPackageResponsePromise;
+  assert(
+    readyPackageResponse.ok(),
+    `Ready Package sync failed with HTTP ${readyPackageResponse.status()}.`,
+  );
+  await page.waitForTimeout(250);
 }
 
 async function recordPrivatePilotReceipt({
@@ -389,7 +432,8 @@ async function recordPrivatePilotReceipt({
   beforePredicate,
   label,
 }) {
-  await syncReadyPackageModels(page);
+  validationProgress(`${label}: using refreshed prerequisites`);
+  validationProgress(`${label}: checking backend readiness`);
   await waitForBackendJson(
     backendUrl,
     route,
@@ -398,7 +442,19 @@ async function recordPrivatePilotReceipt({
   );
 
   const button = await waitForButtonEnabled(page, testId, `${label} receipt button must be enabled by backend readiness gates.`);
-  await button.click();
+  const [receiptResponse] = await Promise.all([
+    page.waitForResponse((response) => (
+      response.request().method() === 'POST'
+      && new URL(response.url()).pathname === route
+    ), { timeout: 60000 }),
+    button.click(),
+  ]);
+  validationProgress(`${label}: button clicked`);
+  const receiptPayload = await receiptResponse.json();
+  assert(
+    receiptResponse.ok(),
+    `${label} receipt request failed with HTTP ${receiptResponse.status()}: ${receiptPayload.error || receiptPayload.message || 'unknown backend error'}.`,
+  );
 
   const body = await waitForBackendJson(
     backendUrl,
@@ -407,8 +463,9 @@ async function recordPrivatePilotReceipt({
     `${label} receipt must be persisted through the backend route`,
     { timeoutMs: 30000 },
   );
-  await syncReadyPackageModels(page);
-  assert(await page.getByTestId(testId).isDisabled(), `${label} receipt button must disable after the backend receipt is recorded.`);
+  validationProgress(`${label}: receipt persisted`);
+  await waitForButtonDisabled(page, testId, `${label} receipt button must disable after the backend receipt is recorded.`);
+  validationProgress(`${label}: UI refreshed`);
   return body;
 }
 
@@ -421,14 +478,27 @@ if (process.env.HOFS_SKIP_PRIVATE_PILOT_HANDOFF_PREP === '1') {
 } else {
   preparePrivatePilotHandoffStore();
 }
+validationProgress('private-pilot handoff store ready');
 
 const acceptanceDependencies = await createAcceptanceRuntimeDependencies();
 const backendServer = createAgentProjectHttpServer({
   filePath: ACCEPTANCE_STORE,
+  localAuthFilePath: join(ACCEPTANCE_ROOT, 'auth.json'),
+  localAuthRequired: true,
   replaceWithSeed: false,
   ...acceptanceDependencies,
 });
 const backendRuntime = await backendServer.listen();
+const bootstrapResponse = await fetch(`${backendRuntime.url}/local-auth/bootstrap`, {
+  method: 'POST',
+  headers: { 'content-type': 'application/json' },
+  body: JSON.stringify({ username: 'manager-private-pilot-validator', password: 'pilot1' }),
+});
+const bootstrapPayload = await bootstrapResponse.json();
+assert(bootstrapResponse.status === 201, `Could not create isolated local validation account: ${bootstrapPayload.error || bootstrapResponse.status}.`);
+const localAuthSession = { ...bootstrapPayload.localAuth, baseUrl: backendRuntime.url };
+backendAuthContext = { baseUrl: backendRuntime.url, token: localAuthSession.token };
+validationProgress('isolated local account ready');
 const staticRuntime = configuredUiBaseUrl
   ? preResolvedUiRuntime
   : await startStaticServer();
@@ -459,11 +529,14 @@ try {
 
   browser = await launchBrowserWithRetry();
   const context = await browser.newContext({ viewport: VIEWPORT });
-  await context.addInitScript(({ backendUrl, storageKey, languageStorageKey }) => {
+  await context.addInitScript(({ authSession, authStorageKey, backendUrl, storageKey, languageStorageKey }) => {
     window.__AGENT_BACKEND_URL__ = backendUrl;
     window.localStorage.setItem(storageKey, JSON.stringify(backendUrl));
     window.localStorage.setItem(languageStorageKey, 'en');
+    window.sessionStorage.setItem(authStorageKey, JSON.stringify(authSession));
   }, {
+    authSession: localAuthSession,
+    authStorageKey: LOCAL_AUTH_STORAGE_KEY,
     backendUrl: backendRuntime.url,
     storageKey: BACKEND_STORAGE_KEY,
     languageStorageKey: LANGUAGE_STORAGE_KEY,
@@ -485,15 +558,28 @@ try {
 
   await page.goto(staticRuntime.url, { waitUntil: 'domcontentloaded' });
   await page.waitForLoadState('networkidle');
-  await page.getByTestId('backend-sync-project-catalog').click();
+  validationProgress('workspace loaded');
+  const syncCatalogButton = page.getByTestId('backend-sync-project-catalog');
+  if (await syncCatalogButton.count() > 0 && await syncCatalogButton.isVisible()) {
+    await syncCatalogButton.click();
+  }
   await assertPageContains(page, PROJECT_NAME, 'Backend project catalog sync must expose the prepared product-team acceptance project.');
   await page.getByText(PROJECT_NAME, { exact: true }).first().click();
-  await assertPageContains(page, PROJECT_ID.toUpperCase(), 'Prepared backend project id must be visible after loading the real backend project.');
+  await page.getByTestId('project-overview').waitFor({ state: 'visible', timeout: 10000 });
+  await page.getByTestId('project-overview-open-advanced').waitFor({ state: 'visible', timeout: 10000 });
+  await assertPageContains(
+    page,
+    'Validate private-pilot handoff for a generic AI product-team project.',
+    'Prepared backend project goal must be visible after loading the real backend project.',
+  );
+  await page.getByTestId('project-overview-open-advanced').click();
   await scrollDashboardToStation(page);
   await page.getByTestId('backend-worker-station').waitFor({ state: 'visible', timeout: 10000 });
+  validationProgress('complete Dashboard loaded');
 
   await syncReadyPackageModels(page);
-  await page.getByTestId('backend-launch-approval-workflow-snapshot').waitFor({ state: 'visible', timeout: 10000 });
+  validationProgress('initial Ready Package sync requested');
+  await page.getByTestId('backend-launch-approval-workflow-snapshot').waitFor({ state: 'visible', timeout: 30000 });
   await recordPrivatePilotReceipt({
     page,
     backendUrl: backendRuntime.url,

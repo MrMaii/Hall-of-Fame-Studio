@@ -14,7 +14,7 @@ test('atomically retains content-minimized pending audit receipts for committed 
   const filePath = join(directory, 'local-auth.json');
   try {
     const auth = createLocalAuthStore({ filePath });
-    const bootstrap = auth.bootstrap({ username: 'owner', password: 'correct horse battery staple', now: '2026-07-11T19:00:00.000Z' });
+    const bootstrap = auth.bootstrap({ username: 'owner', password: 'correct horse battery staple1', now: '2026-07-11T19:00:00.000Z' });
     assert.equal(auth.status().pendingAuditTransactionCount, 1);
     const pending = auth.pendingAuditTransactions();
     assert.equal(pending.length, 1);
@@ -22,7 +22,7 @@ test('atomically retains content-minimized pending audit receipts for committed 
     assert.equal(pending[0].status, 'audit-pending');
     assert.match(pending[0].subjectHash, /^[a-f0-9]{64}$/);
     const persisted = readFileSync(filePath, 'utf8');
-    assert.equal(persisted.includes('correct horse battery staple'), false);
+    assert.equal(persisted.includes('correct horse battery staple1'), false);
     assert.equal(persisted.includes(bootstrap.token), false);
     assert.equal(JSON.stringify(pending).includes('owner'), false);
     auth.acknowledgeAuditTransaction({ transactionId: pending[0].id, auditRecordId: 'runtime-audit-1', auditRecordChecksum: 'a'.repeat(64), now: '2026-07-11T19:01:00.000Z' });
@@ -40,11 +40,11 @@ test('covers every local identity mutation and rejects a tampered pending transa
   const filePath = join(directory, 'local-auth.json');
   try {
     const auth = createLocalAuthStore({ filePath });
-    const owner = auth.bootstrap({ username: 'owner', password: 'correct horse battery staple', now: '2026-07-11T19:20:00.000Z' });
-    const manager = auth.createUser({ username: 'manager', password: 'another correct horse battery staple', role: 'manager', actorUserId: owner.user.id, now: '2026-07-11T19:21:00.000Z' });
-    const login = auth.login({ username: 'manager', password: 'another correct horse battery staple', now: '2026-07-11T19:22:00.000Z' });
+    const owner = auth.bootstrap({ username: 'owner', password: 'correct horse battery staple1', now: '2026-07-11T19:20:00.000Z' });
+    const manager = auth.createUser({ username: 'manager', password: 'another correct horse battery staple1', role: 'manager', actorUserId: owner.user.id, now: '2026-07-11T19:21:00.000Z' });
+    const login = auth.login({ username: 'manager', password: 'another correct horse battery staple1', now: '2026-07-11T19:22:00.000Z' });
     auth.logout({ token: login.token, now: '2026-07-11T19:23:00.000Z' });
-    auth.changePassword({ userId: owner.user.id, currentPassword: 'correct horse battery staple', newPassword: 'correct horse battery staple changed', now: '2026-07-11T19:24:00.000Z' });
+    auth.changePassword({ userId: owner.user.id, currentPassword: 'correct horse battery staple1', newPassword: 'correct horse battery staple changed2', now: '2026-07-11T19:24:00.000Z' });
     auth.disableUser({ userId: manager.user.id, actorUserId: owner.user.id, now: '2026-07-11T19:25:00.000Z' });
     assert.deepEqual(new Set(auth.pendingAuditTransactions().map((row) => row.operation)), new Set(['bootstrap', 'create-user', 'login', 'logout', 'change-password', 'disable-user']));
     const snapshot = JSON.parse(readFileSync(filePath, 'utf8'));
@@ -74,7 +74,7 @@ test('recovers a committed auth mutation whose runtime audit append failed befor
     });
     const auth = createLocalAuthStore({ filePath: authPath });
     const api = createAgentProjectApi({ service: failingService, localAuth: auth, localAuthRequired: true });
-    const response = api.handle({ method: 'POST', path: '/local-auth/bootstrap', body: { username: 'owner', password: 'correct horse battery staple', now: '2026-07-11T19:10:00.000Z' } });
+    const response = api.handle({ method: 'POST', path: '/local-auth/bootstrap', body: { username: 'owner', password: 'correct horse battery staple1', now: '2026-07-11T19:10:00.000Z' } });
     assert.equal(response.status, 503);
     assert.equal(auth.status().pendingAuditTransactionCount, 1);
 

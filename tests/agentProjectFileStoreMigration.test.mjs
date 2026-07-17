@@ -55,6 +55,81 @@ test('migrates a version-one snapshot to the current local store version without
   }
 });
 
+test('commits the exact hydrated snapshot written during a version-one migration', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'hofs-project-store-migration-hydrated-'));
+  const filePath = join(directory, 'projects.json');
+  try {
+    writeFileSync(filePath, JSON.stringify({
+      version: 1,
+      projects: [{ id: 'hydrated-project', name: 'Hydrated project' }],
+      messages: [],
+      kickoffMeetings: [],
+      securityAccessAuditRecords: [],
+      accessReplayRecords: [],
+    }, null, 2));
+
+    const store = createAgentProjectFileStore({
+      filePath,
+      hydrateProject: (project) => ({
+        ...project,
+        runtimeState: project.runtimeState || { status: 'idle' },
+      }),
+    });
+
+    assert.equal(store.integrity.migrationTransaction.status, 'committed');
+    assert.equal(store.integrity.migrationTransaction.targetVerified, true);
+    assert.equal(store.getProject('hydrated-project').runtimeState.status, 'idle');
+    assert.equal(JSON.parse(readFileSync(filePath, 'utf8')).projects[0].runtimeState.status, 'idle');
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('recovers a prepared legacy migration whose target was hydrated after its checksum was recorded', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'hofs-project-store-migration-legacy-hydration-'));
+  const filePath = join(directory, 'projects.json');
+  try {
+    writeFileSync(filePath, JSON.stringify({
+      version: 1,
+      projects: [{ id: 'legacy-hydrated-project', name: 'Legacy hydrated project' }],
+      messages: [],
+      kickoffMeetings: [],
+      securityAccessAuditRecords: [],
+      accessReplayRecords: [],
+    }, null, 2));
+    const initial = createAgentProjectFileStore({ filePath });
+    const journalPath = `${filePath}.migration.json`;
+    const committed = JSON.parse(readFileSync(journalPath, 'utf8'));
+    writeJournal(journalPath, {
+      ...committed,
+      status: 'prepared',
+      targetVerified: false,
+      committedAt: null,
+    });
+
+    const recovered = createAgentProjectFileStore({
+      filePath,
+      hydrateProject: (project) => ({
+        ...project,
+        runtimeState: project.runtimeState || { status: 'idle' },
+      }),
+    });
+
+    assert.equal(recovered.integrity.migrationTransaction.id, initial.integrity.migrationTransaction.id);
+    assert.equal(recovered.integrity.migrationTransaction.status, 'committed');
+    assert.equal(recovered.integrity.migrationTransaction.targetVerified, true);
+    assert.equal(recovered.integrity.migrationTransaction.recoveryReason, 'hydrated-target-checksum-reconciled');
+    assert.equal(existsSync(recovered.integrity.migrationTransaction.targetRecoveryArchivePath), true);
+    assert.notEqual(
+      recovered.integrity.migrationTransaction.originalTargetChecksum,
+      recovered.integrity.migrationTransaction.targetChecksum,
+    );
+    assert.equal(recovered.getProject('legacy-hydrated-project').runtimeState.status, 'idle');
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('fails closed on a snapshot newer than the local migration registry', () => {
   const directory = mkdtempSync(join(tmpdir(), 'hofs-project-store-future-version-'));
   const filePath = join(directory, 'projects.json');

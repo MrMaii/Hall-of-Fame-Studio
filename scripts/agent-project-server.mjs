@@ -138,12 +138,19 @@ const openVaultProviderModel = async (kind = '') => {
   if (!record || typeof secretVault.open !== 'function') return '';
   return secretVault.open(record);
 };
+const openVaultProviderIdentity = async (kind = '') => {
+  const record = findVaultProviderRecord(kind, 'provider');
+  if (!record || typeof secretVault.open !== 'function') return '';
+  return secretVault.open(record);
+};
 const modelApiKeyFromVault = secretVaultStatus.ready ? await openVaultProviderKey('model') : '';
 const modelBaseUrlFromVault = secretVaultStatus.ready ? await openVaultProviderEndpoint('model') : '';
 const modelNameFromVault = secretVaultStatus.ready ? await openVaultProviderModel('model') : '';
+const modelProviderFromVault = secretVaultStatus.ready ? await openVaultProviderIdentity('model') : '';
 const searchApiKeyFromVault = secretVaultStatus.ready ? await openVaultProviderKey('search') : '';
 const searchEndpointFromVault = secretVaultStatus.ready ? await openVaultProviderEndpoint('search') : '';
 const llmProvider = createModelProviderFromEnv(process.env, {
+  provider: modelProviderFromVault || undefined,
   secretVaultStatus,
   apiKey: modelApiKeyFromVault,
   apiKeySource: modelApiKeyFromVault ? 'local-secret-vault' : undefined,

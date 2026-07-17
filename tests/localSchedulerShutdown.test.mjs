@@ -68,6 +68,19 @@ test('explicit local scheduler recovery starts the existing Autopilot due-worker
   });
 });
 
+test('scheduler start returns before the immediate worker sweep begins', async () => {
+  const recording = createRecordingSchedulerApi();
+  const scheduler = createAutonomousSchedulerController({ api: recording.api, intervalMs: 60_000 });
+
+  const status = scheduler.start({ runImmediately: true });
+
+  assert.equal(status.lastStartedRunImmediately, true);
+  assert.deepEqual(recording.calls, []);
+  await waitFor(() => recording.calls.includes('/workers/autonomous/due'));
+  scheduler.stop();
+  await scheduler.waitForIdle({ timeoutMs: 100, pollIntervalMs: 1 });
+});
+
 test('waits for an active local scheduler tick to become idle and reports a bounded timeout', async () => {
   const blocking = createBlockingSchedulerApi();
   const scheduler = createAutonomousSchedulerController({ api: blocking.api });

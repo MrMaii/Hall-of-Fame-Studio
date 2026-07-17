@@ -3,6 +3,9 @@
   "private": true,
   "version": "0.0.1",
   "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "test": "node --test \"tests/**/*.test.mjs\"",
     "dev": "node scripts/local-dev.mjs",
@@ -12,6 +15,8 @@
     "local:recovery:drill": "node scripts/validate-local-recovery-drill.mjs",
     "build": "vite build",
     "ui:bundle:check": "node scripts/validate-frontend-bundle.mjs",
+    "ui:dashboard-upgrade:check": "node scripts/validate-dashboard-upgrade-completion.mjs",
+    "local:performance": "node scripts/measure-local-performance.mjs",
     "build:single": "vite build && node scripts/build-single-html.cjs",
     "agents:scenario": "node scripts/validate-agent-manager-scenario.mjs",
     "agents:scenario:contract": "node scripts/validate-manager-scenario-contract.mjs",
@@ -141,7 +146,7 @@
     "agents:project-settings:integrations": "node scripts/validate-project-settings-integration-capabilities.mjs",
     "agents:project-settings:workspace": "node scripts/validate-project-settings-workspace-capabilities.mjs",
     "launch:gates": "node scripts/validate-launch-readiness-gates.mjs",
-    "launch:local-mvp:check": "node scripts/validate-local-mvp-release-checklist.mjs",
+    "launch:local-mvp:check": "node scripts/validate-current-local-product-release.mjs",
     "launch:private-pilot:check": "npm run agents:product-team:private-pilot && npm run ui:manager-private-pilot",
     "launch:infra": "node scripts/validate-production-infrastructure-gates.mjs",
     "launch:public-production:no-go": "node scripts/validate-public-production-no-go.mjs",
@@ -160,7 +165,7 @@
     "ui:settings-agents-server:dev": "node scripts/validate-settings-agents-server-ui.mjs --ui-base-url=http://127.0.0.1:5173",
     "ui:local-auth": "vite build && node scripts/validate-local-auth-ui.mjs",
     "ui:manager-mission-runner": "vite build && node scripts/validate-manager-mission-runner-ui.mjs",
-    "ui:real-user-zero-to-autonomy": "vite build && node scripts/validate-real-user-zero-to-autonomy-agents-server-ui.mjs",
+    "ui:real-user-zero-to-autonomy": "vite build && node scripts/validate-local-auth-ui.mjs && node scripts/validate-primary-user-ui.mjs && node scripts/validate-primary-project-flow-ui.mjs && node scripts/validate-real-user-zero-to-autonomy-agents-server-api.mjs",
     "ui:real-user-zero-to-autonomy:dev": "node scripts/validate-real-user-zero-to-autonomy-agents-server-ui.mjs --ui-base-url=http://127.0.0.1:5173",
     "ui:manager-private-pilot": "vite build && node scripts/validate-manager-private-pilot-ui.mjs",
     "ui:manager-private-pilot:dev": "node scripts/validate-manager-private-pilot-ui.mjs --ui-base-url=http://127.0.0.1:5173",
@@ -181,6 +186,7 @@
     "readme:assets": "npm run readme:capture && npm run readme:gif && npm run readme:export"
   },
   "dependencies": {
+    "@lobehub/icons-static-svg": "^1.91.0",
     "lucide-react": "^0.468.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"

@@ -42,6 +42,21 @@ const MODEL_PROVIDER_ADAPTERS = Object.freeze({
     operations: ['chat-completion', 'json-completion', 'runtime-intent', 'health-test'],
     secretNames: ['model.apiKey', 'MODEL_API_KEY', 'GEMINI_API_KEY'],
   },
+  deepseek: {
+    provider: 'deepseek', apiStyle: 'openai-chat-completions', defaultBaseUrl: DEFAULT_OPENAI_COMPATIBLE_BASE_URL,
+    operations: ['chat-completion', 'json-completion', 'runtime-intent', 'health-test'],
+    secretNames: ['model.apiKey', 'MODEL_API_KEY', 'DEEPSEEK_API_KEY'],
+  },
+  stepfun: {
+    provider: 'stepfun', apiStyle: 'openai-chat-completions', defaultBaseUrl: DEFAULT_OPENAI_COMPATIBLE_BASE_URL,
+    operations: ['chat-completion', 'json-completion', 'runtime-intent', 'health-test'],
+    secretNames: ['model.apiKey', 'MODEL_API_KEY', 'STEPFUN_API_KEY'],
+  },
+  qwen: {
+    provider: 'qwen', apiStyle: 'openai-chat-completions', defaultBaseUrl: DEFAULT_OPENAI_COMPATIBLE_BASE_URL,
+    operations: ['chat-completion', 'json-completion', 'runtime-intent', 'health-test'],
+    secretNames: ['model.apiKey', 'MODEL_API_KEY', 'DASHSCOPE_API_KEY'],
+  },
 });
 
 function cleanBaseUrl(value = '') {
@@ -93,6 +108,9 @@ function normalizeProvider(provider = DEFAULT_PROVIDER) {
   const value = String(provider || DEFAULT_PROVIDER).toLowerCase();
   if (['anthropic', 'claude'].includes(value)) return 'anthropic';
   if (['google', 'gemini'].includes(value)) return 'gemini';
+  if (['step', 'stepfun'].includes(value)) return 'stepfun';
+  if (['qwen', 'dashscope', 'alibaba'].includes(value)) return 'qwen';
+  if (value === 'deepseek') return 'deepseek';
   if (value === 'openai') return 'openai';
   return 'openai-compatible';
 }
@@ -121,9 +139,7 @@ function idempotencyMetadata(key, outcome, extra = {}) {
 }
 
 function defaultBaseUrlFor(provider) {
-  if (provider === 'anthropic') return DEFAULT_ANTHROPIC_BASE_URL;
-  if (provider === 'gemini') return DEFAULT_GEMINI_BASE_URL;
-  return DEFAULT_OPENAI_COMPATIBLE_BASE_URL;
+  return adapterConfigFor(provider).defaultBaseUrl;
 }
 
 function adapterConfigFor(provider) {
@@ -374,10 +390,9 @@ export function createModelProvider({
   fetchImpl = globalThis.fetch,
   localOnly = false,
 } = {}) {
-  const resolvedProvider = normalizeProvider(provider);
-  const adapterConfig = adapterConfigFor(resolvedProvider);
+  let currentProvider = normalizeProvider(provider);
   let currentModel = model || DEFAULT_MODEL;
-  let currentBaseURL = cleanBaseUrl(baseURL || defaultBaseUrlFor(resolvedProvider));
+  let currentBaseURL = cleanBaseUrl(baseURL || defaultBaseUrlFor(currentProvider));
   let currentApiKey = apiKey || '';
   let currentApiKeySource = apiKeySource || 'direct-config';
   let runtimeEnabled = Boolean(enabled);
@@ -399,7 +414,7 @@ export function createModelProvider({
 
   async function performChatCompletion({ messages, json = false, signal, ...overrides } = {}) {
     if (!validIdempotencyKey(overrides.idempotencyKey)) {
-      return { ok: false, skipped: true, reason: 'invalid-idempotency-key', provider: resolvedProvider, model: currentModel };
+      return { ok: false, skipped: true, reason: 'invalid-idempotency-key', provider: currentProvider, model: currentModel };
     }
     if (!providerEnabled()) {
       const policy = endpointPolicy();
@@ -407,7 +422,7 @@ export function createModelProvider({
         ok: false,
         skipped: true,
         reason: !policy.allowed ? 'remote-base-url-blocked' : blockedByPolicy() ? 'model-blocked' : configured() ? 'provider-disabled' : 'missing-api-key',
-        provider: resolvedProvider,
+        provider: currentProvider,
         model: currentModel,
       };
     }
@@ -418,7 +433,7 @@ export function createModelProvider({
     });
     try {
       const spec = requestSpec({
-        provider: resolvedProvider,
+        provider: currentProvider,
         baseURL: currentBaseURL,
         apiKey: currentApiKey,
         model: currentModel,
@@ -443,12 +458,12 @@ export function createModelProvider({
           ok: false,
           status: response.status,
           error: redactSensitiveText(data?.error?.message || data?.message || raw.slice(0, 400)),
-          provider: resolvedProvider,
+          provider: currentProvider,
           model: currentModel,
           idempotency: idempotencyMetadata(overrides.idempotencyKey, 'definitive-failure'),
         };
       }
-      const content = extractContent(resolvedProvider, data);
+      const content = extractContent(currentProvider, data);
       const finishReason = data?.choices?.[0]?.finish_reason || data?.candidates?.[0]?.finishReason || null;
       if (!content.trim()) {
         if (
@@ -471,21 +486,21 @@ export function createModelProvider({
           ok: false,
           status: response.status,
           error: `model returned empty content${finishReason ? ` (finish_reason: ${finishReason})` : ''}`,
-          provider: resolvedProvider,
+          provider: currentProvider,
           model: data?.model || currentModel,
           finishReason,
-          usage: extractUsage(resolvedProvider, data),
+          usage: extractUsage(currentProvider, data),
           id: data?.id || data?.responseId || null,
           idempotency: idempotencyMetadata(overrides.idempotencyKey, 'definitive-failure'),
         };
       }
       return {
         ok: true,
-        provider: resolvedProvider,
+        provider: currentProvider,
         model: data?.model || currentModel,
         content,
         json: json ? extractJsonObject(content) : null,
-        usage: extractUsage(resolvedProvider, data),
+        usage: extractUsage(currentProvider, data),
         finishReason,
         id: data?.id || data?.responseId || null,
         idempotency: idempotencyMetadata(overrides.idempotencyKey, 'completed', { providerResponseId: data?.id || data?.responseId || null }),
@@ -498,7 +513,7 @@ export function createModelProvider({
           : error.name === 'AbortError'
             ? 'model request aborted'
             : redactSensitiveText(error.message || String(error)),
-        provider: resolvedProvider,
+        provider: currentProvider,
         model: currentModel,
         idempotency: idempotencyMetadata(overrides.idempotencyKey, 'ambiguous', { safeToRetryAutomatically: false }),
       };
@@ -508,7 +523,9 @@ export function createModelProvider({
   }
 
   return {
-    provider: resolvedProvider,
+    get provider() {
+      return currentProvider;
+    },
     get enabled() {
       return providerEnabled();
     },
@@ -538,7 +555,8 @@ export function createModelProvider({
       }
       return this.status();
     },
-    setConfig({ baseURL: nextBaseURL, model: nextModel } = {}, source = 'runtime-config') {
+    setConfig({ provider: nextProvider, baseURL: nextBaseURL, model: nextModel } = {}, source = 'runtime-config') {
+      if (nextProvider) currentProvider = normalizeProvider(nextProvider);
       if (nextBaseURL) currentBaseURL = cleanBaseUrl(nextBaseURL);
       if (nextModel) currentModel = String(nextModel || '').trim() || currentModel;
       runtimeEnabledSource = source || runtimeEnabledSource;
@@ -546,7 +564,7 @@ export function createModelProvider({
     },
     status() {
       return {
-        provider: resolvedProvider,
+        provider: currentProvider,
         enabled: providerEnabled(),
         runtimeEnabled,
         enabledSource: runtimeEnabledSource,
@@ -577,10 +595,10 @@ export function createModelProvider({
         transportReliability: transport.status(),
         adapterContract: {
           schemaVersion: 'model-provider-adapter/v1',
-          provider: adapterConfig.provider,
-          apiStyle: adapterConfig.apiStyle,
-          operations: [...adapterConfig.operations],
-          defaultBaseUrl: redactUrl(adapterConfig.defaultBaseUrl),
+          provider: adapterConfigFor(currentProvider).provider,
+          apiStyle: adapterConfigFor(currentProvider).apiStyle,
+          operations: [...adapterConfigFor(currentProvider).operations],
+          defaultBaseUrl: redactUrl(adapterConfigFor(currentProvider).defaultBaseUrl),
           idempotencyTransport: {
             header: 'idempotency-key',
             traceHeader: 'x-hofs-trace-id',
@@ -626,7 +644,7 @@ export function createModelProvider({
 }
 
 export function createModelProviderFromEnv(env = globalThis.process?.env || {}, options = {}) {
-  const provider = normalizeProvider(env.MODEL_PROVIDER || env.AGENT_MODEL_PROVIDER || DEFAULT_PROVIDER);
+  const provider = normalizeProvider(options.provider || env.MODEL_PROVIDER || env.AGENT_MODEL_PROVIDER || DEFAULT_PROVIDER);
   const providerPrefix = provider.toUpperCase().replace(/-/g, '_');
   const providerEnabledDefault = Boolean(options.apiKey);
   return createModelProvider({
@@ -654,7 +672,8 @@ export function createModelProviderFromEnv(env = globalThis.process?.env || {}, 
     jsonResponseFormat: parseBoolean(env.MODEL_JSON_RESPONSE_FORMAT, false),
     blockedModels: parseList(env.MODEL_BLOCKED_MODELS || env.AGENT_LLM_BLOCKED_MODELS || ''),
     extraBody: safeJsonParse(env.MODEL_EXTRA_BODY || '{}') || {},
-    localOnly: options.localOnly ?? parseBoolean(env.MODEL_LOCAL_ONLY || env.AGENT_LOCAL_ONLY, false),
+    fetchImpl: options.fetchImpl || globalThis.fetch,
+    localOnly: options.localOnly ?? parseBoolean(env.MODEL_LOCAL_ONLY, false),
   });
 }
 

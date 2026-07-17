@@ -29,7 +29,7 @@ test('audits local user administration in an independent runtime hash chain', ()
       path: '/local-auth/bootstrap',
       body: {
         username: 'owner',
-        password: 'correct horse battery staple',
+        password: 'correct horse battery staple1',
         now: '2026-07-10T20:00:00.000Z',
       },
     });
@@ -43,7 +43,7 @@ test('audits local user administration in an independent runtime hash chain', ()
       headers,
       body: {
         username: 'manager',
-        password: 'another correct horse battery staple',
+        password: 'another correct horse battery staple1',
         role: 'manager',
         now: '2026-07-10T20:01:00.000Z',
       },

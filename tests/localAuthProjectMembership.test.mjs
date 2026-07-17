@@ -17,7 +17,7 @@ test('local project creators are seeded into membership and can grant a manager 
     const bootstrap = api.handle({
       method: 'POST',
       path: '/local-auth/bootstrap',
-      body: { username: 'owner', password: 'correct horse battery staple' },
+      body: { username: 'owner', password: 'correct horse battery staple1' },
     });
     const ownerHeaders = { 'x-hofs-local-auth-token': bootstrap.body.localAuth.token };
     const created = api.handle({
@@ -45,12 +45,12 @@ test('local project creators are seeded into membership and can grant a manager 
       method: 'POST',
       path: '/local-auth/users',
       headers: ownerHeaders,
-      body: { username: 'manager', password: 'another correct horse battery staple', role: 'manager' },
+      body: { username: 'manager', password: 'another correct horse battery staple1', role: 'manager' },
     });
     const managerLogin = api.handle({
       method: 'POST',
       path: '/local-auth/login',
-      body: { username: 'manager', password: 'another correct horse battery staple' },
+      body: { username: 'manager', password: 'another correct horse battery staple1' },
     });
     const managerHeaders = { 'x-hofs-local-auth-token': managerLogin.body.localAuth.token };
     assert.equal(api.handle({ method: 'GET', path: '/projects/local_membership_project', headers: managerHeaders }).status, 403);
@@ -63,6 +63,44 @@ test('local project creators are seeded into membership and can grant a manager 
     });
     assert.equal(granted.status, 200);
     assert.equal(api.handle({ method: 'GET', path: '/projects/local_membership_project', headers: managerHeaders }).status, 200);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('an authenticated local admin can create a project through the direct project save route', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'hofs-local-project-save-'));
+  try {
+    const api = createFileBackedAgentProjectApi({
+      filePath: join(directory, 'projects.json'),
+      localAuthFilePath: join(directory, 'auth.json'),
+      localAuthRequired: true,
+    });
+    const bootstrap = api.handle({
+      method: 'POST',
+      path: '/local-auth/bootstrap',
+      body: { username: 'owner', password: 'owner1' },
+    });
+    const headers = { 'x-hofs-local-auth-token': bootstrap.body.localAuth.token };
+    const created = api.handle({
+      method: 'PUT',
+      path: '/projects/direct_local_project',
+      headers,
+      body: {
+        project: {
+          id: 'direct_local_project',
+          name: 'Direct Local Project',
+          status: 'planning',
+          team: [],
+          tasks: [],
+          logs: [],
+        },
+      },
+    });
+
+    assert.equal(created.status, 200);
+    assert.equal(created.body.project.id, 'direct_local_project');
+    assert.equal(api.handle({ method: 'GET', path: '/projects/direct_local_project', headers }).status, 200);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

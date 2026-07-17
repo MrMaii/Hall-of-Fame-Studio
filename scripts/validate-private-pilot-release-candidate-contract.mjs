@@ -280,6 +280,7 @@ assert(response.body.privatePilotReleaseCandidate.releaseChecksums?.latestProvid
 assert(response.body.privatePilotReleaseCandidate.proofIds?.length >= 6, 'Release candidate must include proof ids.');
 assert(response.body.privatePilotReleaseCandidate.eventId && response.body.privatePilotReleaseCandidate.timelineLogId, 'Release candidate must include event and timeline proof.');
 assert(response.body.privatePilotReleaseCandidateWorkflow?.readyForPrivatePilotRelease === true, 'Release candidate workflow must become private-pilot ready after freeze.');
+assert(response.body.privatePilotLaunchRunWorkflow?.readyToLaunch === true, 'Release candidate receipt must immediately return the now-runnable launch workflow.');
 assert(response.body.readModels?.included === false && response.body.readModels.privatePilotReleaseCandidateWorkflowRoute?.endsWith('/private-pilot-release-candidates'), 'Release candidate receipt must return lightweight read-model routes.');
 
 response = request({ method: 'GET', path: privatePilotReleaseCandidatePath });

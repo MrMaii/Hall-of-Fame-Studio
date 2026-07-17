@@ -8,11 +8,21 @@ import { createAgentProjectHttpServer } from '../src/agents/agentProjectHttpServ
 
 const ROOT_DIR = fileURLToPath(new URL('..', import.meta.url));
 const DIST_DIR = join(ROOT_DIR, 'dist');
-const BACKEND_STORE = new URL(`../.tmp/agent-manager-backend-core-ui-store-${process.pid}.json`, import.meta.url);
+const RUN_ID = `${process.pid}-${Date.now()}`;
+const BACKEND_STORE = new URL(`../.tmp/agent-manager-backend-core-ui-store-${RUN_ID}.json`, import.meta.url);
+const LOCAL_AUTH_STORE = new URL(`../.tmp/agent-manager-backend-core-ui-auth-${RUN_ID}.json`, import.meta.url);
 const BACKEND_STORAGE_KEY = 'hall_of_fame_studio.agent_backend_url.v1';
+const LOCAL_AUTH_STORAGE_KEY = 'hall_of_fame_studio.local_auth_session.v1';
 const LANGUAGE_STORAGE_KEY = 'hall_of_fame_studio.language.v1';
 const VIEWPORT = { width: 1440, height: 1100 };
+const DASHBOARD_RESPONSIVE_VIEWPORTS = [
+  { width: 1440, height: 1100 },
+  { width: 1280, height: 720 },
+  { width: 1024, height: 768 },
+  { width: 960, height: 540 },
+];
 const nativeFetch = globalThis.fetch.bind(globalThis);
+let backendAuthContext = null;
 
 function readCliArg(name) {
   const index = process.argv.indexOf(name);
@@ -66,9 +76,16 @@ async function resolveExternalUiRuntime(value = '') {
 
 globalThis.fetch = async (...args) => {
   let lastError = null;
+  const [input, init = {}] = args;
+  let requestArgs = args;
+  if (backendAuthContext?.token && String(input).startsWith(backendAuthContext.baseUrl)) {
+    const headers = new Headers(init.headers || {});
+    headers.set('x-hofs-local-auth-token', backendAuthContext.token);
+    requestArgs = [input, { ...init, headers }];
+  }
   for (let attempt = 0; attempt < 4; attempt += 1) {
     try {
-      return await nativeFetch(...args);
+      return await nativeFetch(...requestArgs);
     } catch (error) {
       lastError = error;
       const code = error?.cause?.code || error?.code || '';
@@ -92,6 +109,61 @@ const MIME_TYPES = {
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
+}
+
+async function assertDashboardResponsive(page) {
+  await page.getByTestId('project-dashboard-view').waitFor({ state: 'visible', timeout: 10000 });
+  await page.getByTestId('project-overview').waitFor({ state: 'visible', timeout: 10000 });
+
+  for (const viewport of DASHBOARD_RESPONSIVE_VIEWPORTS) {
+    await page.setViewportSize(viewport);
+    await page.waitForTimeout(150);
+    const metrics = await page.evaluate(() => {
+      const root = document.querySelector('[data-testid="project-dashboard-view"]');
+      const overview = document.querySelector('[data-testid="project-overview"]');
+      const paper = overview?.querySelector('.project-paper');
+      if (!root || !overview || !paper) return null;
+      const rootRect = root.getBoundingClientRect();
+      const overviewRect = overview.getBoundingClientRect();
+      const paperRect = paper.getBoundingClientRect();
+      const overflowElements = Array.from(paper.querySelectorAll('*'))
+        .filter((element) => element.offsetParent !== null && element.getClientRects().length > 0)
+        .map((element) => {
+          const rect = element.getBoundingClientRect();
+          return {
+            name: element.getAttribute('data-testid') || element.tagName.toLowerCase(),
+            left: Math.max(0, Math.round(overviewRect.left - rect.left)),
+            right: Math.max(0, Math.round(rect.right - overviewRect.right)),
+          };
+        })
+        .filter((row) => row.left > 1 || row.right > 1)
+        .sort((left, right) => Math.max(right.left, right.right) - Math.max(left.left, left.right))
+        .slice(0, 5);
+      return {
+        bodyOverflow: Math.max(
+          document.body.scrollWidth - document.body.clientWidth,
+          document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        ),
+        overviewOverflow: overview.scrollWidth - overview.clientWidth,
+        overviewOverflowMode: getComputedStyle(overview).overflowX,
+        paperLeftOverflow: Math.max(0, overviewRect.left - paperRect.left),
+        paperRightOverflow: Math.max(0, paperRect.right - overviewRect.right),
+        rootRightOverflow: Math.max(0, rootRect.right - window.innerWidth),
+        rootWidth: rootRect.width,
+        overflowElements,
+      };
+    });
+    assert(metrics, `Complete Dashboard did not render at ${viewport.width}x${viewport.height}.`);
+    assert(metrics.bodyOverflow <= 1, `Complete Dashboard body has ${metrics.bodyOverflow}px horizontal overflow at ${viewport.width}x${viewport.height}.`);
+    const contentContained = metrics.overviewOverflow <= 1 || ['hidden', 'clip'].includes(metrics.overviewOverflowMode);
+    assert(contentContained, `Complete Dashboard content has ${metrics.overviewOverflow}px horizontal overflow at ${viewport.width}x${viewport.height}. Elements: ${JSON.stringify(metrics.overflowElements)}.`);
+    assert(metrics.paperLeftOverflow <= 1 && metrics.paperRightOverflow <= 1, `Complete Dashboard paper is clipped horizontally at ${viewport.width}x${viewport.height}.`);
+    assert(metrics.rootRightOverflow <= 1 && metrics.rootWidth > 0, `Complete Dashboard root is outside the viewport at ${viewport.width}x${viewport.height}.`);
+    await page.getByTestId('project-sample-fixture-banner').waitFor({ state: 'visible', timeout: 5000 });
+  }
+
+  await page.setViewportSize(VIEWPORT);
+  await page.waitForTimeout(150);
 }
 
 function createStaticServer() {
@@ -185,6 +257,7 @@ async function launchBrowserWithRetry(attempts = 3) {
   const optionSets = [
     { headless: true },
     ...playwrightChromiumExecutableCandidates().map((executablePath) => ({ headless: true, executablePath })),
+    { channel: 'msedge', headless: true },
   ];
   for (const options of optionSets) {
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
@@ -216,14 +289,26 @@ async function waitForButtonEnabled(page, testId, message, { timeoutMs = 15000 }
 
 const backendServer = createAgentProjectHttpServer({
   filePath: BACKEND_STORE,
+  localAuthFilePath: LOCAL_AUTH_STORE,
+  localAuthRequired: true,
   replaceWithSeed: true,
 });
 const backendRuntime = await backendServer.listen();
+const bootstrapResponse = await fetch(`${backendRuntime.url}/local-auth/bootstrap`, {
+  method: 'POST',
+  headers: { 'content-type': 'application/json' },
+  body: JSON.stringify({ username: 'manager-core-validator', password: 'core1' }),
+});
+const bootstrapPayload = await bootstrapResponse.json();
+assert(bootstrapResponse.status === 201, `Could not create isolated local validation account: ${bootstrapPayload.error || bootstrapResponse.status}.`);
+const localAuthSession = { ...bootstrapPayload.localAuth, baseUrl: backendRuntime.url };
+backendAuthContext = { baseUrl: backendRuntime.url, token: localAuthSession.token };
 const staticRuntime = configuredUiBaseUrl
   ? await resolveExternalUiRuntime(configuredUiBaseUrl)
   : await listen(createStaticServer());
 let browser = null;
 const backendResponses = [];
+const backendRequests = [];
 const consoleDiagnostics = [];
 
 const managerDemoProjectPutCount = () => backendResponses.filter((entry) => (
@@ -234,14 +319,17 @@ const managerDemoProjectPutCount = () => backendResponses.filter((entry) => (
 try {
   browser = await launchBrowserWithRetry();
   const context = await browser.newContext({ viewport: VIEWPORT });
-  await context.addInitScript(({ backendUrl, storageKey, languageStorageKey }) => {
+  await context.addInitScript(({ backendUrl, storageKey, authStorageKey, languageStorageKey, authSession }) => {
     window.__AGENT_BACKEND_URL__ = backendUrl;
     window.localStorage.setItem(storageKey, JSON.stringify(backendUrl));
     window.localStorage.setItem(languageStorageKey, 'en');
+    window.sessionStorage.setItem(authStorageKey, JSON.stringify(authSession));
   }, {
     backendUrl: backendRuntime.url,
     storageKey: BACKEND_STORAGE_KEY,
+    authStorageKey: LOCAL_AUTH_STORAGE_KEY,
     languageStorageKey: LANGUAGE_STORAGE_KEY,
+    authSession: localAuthSession,
   });
 
   const page = await context.newPage();
@@ -250,16 +338,29 @@ try {
       consoleDiagnostics.push(`${message.type()}: ${message.text()}`);
     }
   });
-  page.on('response', (response) => {
+  page.on('pageerror', (error) => {
+    consoleDiagnostics.push(`pageerror: ${error.stack || error.message}`);
+  });
+  page.on('response', async (response) => {
     if (/\/(projects|workers)\//.test(response.url())) {
-      backendResponses.push(`${response.status()} ${response.request().method()} ${response.url()}`);
+      const detail = response.status() >= 400 ? await response.text().catch(() => '') : '';
+      backendResponses.push(`${response.status()} ${response.request().method()} ${response.url()}${detail ? ` ${detail}` : ''}`);
+    }
+  });
+  page.on('request', (request) => {
+    if (/\/(projects|workers)\//.test(request.url())) {
+      backendRequests.push(`${new Date().toISOString()} ${request.method()} ${request.url()}`);
     }
   });
 
   await page.goto(staticRuntime.url, { waitUntil: 'networkidle' });
+  await page.getByRole('button', { name: /Workspace Hub/i }).click();
+  await page.getByTestId('workspace-open-advanced').click();
+  await page.getByTestId('manager-demo-tools').click();
   await page.getByRole('button', { name: /Load Sample Fixture.*Manager demo data/i }).click();
   await page.waitForFunction(() => document.body.innerText.includes('Manager Demo: Autonomous Agent Studio'), null, { timeout: 10000 });
   await page.getByTestId('project-sample-fixture-banner').waitFor({ state: 'visible', timeout: 5000 });
+  await assertDashboardResponsive(page);
 
   await scrollDashboardToStation(page);
   const station = page.getByTestId('backend-worker-station');
@@ -267,6 +368,81 @@ try {
   await station.getByText('Online', { exact: true }).waitFor({ state: 'visible', timeout: 8000 });
   await page.getByTestId('backend-sync-ready-package').click();
   await page.getByTestId('backend-manager-ready-package-snapshot').waitFor({ state: 'visible', timeout: 15000 });
+  const managerReadyPackageSummary = page.getByTestId('backend-manager-ready-package-summary');
+  await managerReadyPackageSummary.waitFor({ state: 'visible', timeout: 15000 });
+  const managerReadyPackageText = await managerReadyPackageSummary.innerText();
+  for (const summaryLabel of ['Pilot Launch', 'Evidence Archive', 'Intent Queue', 'Runtime Contracts', 'Transcript Channels']) {
+    assert(managerReadyPackageText.toLowerCase().includes(summaryLabel.toLowerCase()), `Manager Ready Package summary must render ${summaryLabel}.`);
+  }
+  for (const sourceTestId of [
+    'backend-product-team-operating-loop-source',
+    'backend-planner-executor-reviewer-state-machine-source',
+    'backend-team-collaboration-diagnostics-source',
+    'backend-runtime-contracts-source',
+    'backend-autonomous-cycle-consistency-source',
+    'backend-runtime-autonomy-status-source',
+    'backend-zero-to-autonomy-report-source',
+    'backend-product-team-delivery-trace-source',
+    'backend-project-evidence-archive-source',
+    'backend-brainstorm-layer-source',
+    'backend-artifact-quality-audit-source',
+    'backend-submission-review-workflow-source',
+    'backend-evidence-quality-audit-source',
+    'backend-evidence-index-readiness-source',
+    'backend-evidence-source-review-workflow-source',
+    'backend-private-pilot-go-live-readiness-source',
+    'backend-production-infrastructure-rehearsal-source',
+    'backend-public-production-startup-readiness-source',
+    'backend-production-launch-gap-register-source',
+    'backend-production-launch-control-center-source',
+    'backend-production-launch-evidence-dossier-source',
+    'backend-production-evidence-integrity-audit-source',
+    'backend-private-pilot-release-candidate-workflow-source',
+    'backend-private-pilot-launch-run-workflow-source',
+    'backend-private-pilot-launch-health-check-workflow-source',
+    'backend-private-pilot-acceptance-report-workflow-source',
+    'backend-launch-approval-workflow-source',
+    'backend-operations-readiness-source',
+    'backend-provider-readiness-source',
+    'backend-provider-controlled-run-source',
+    'backend-provider-eval-run-workflow-source',
+    'backend-evidence-custody-readiness-source',
+    'backend-security-boundary-source',
+  ]) {
+    const sourceBadge = page.getByTestId(sourceTestId);
+    await sourceBadge.waitFor({ state: 'visible', timeout: 15000 });
+    assert((await sourceBadge.innerText()).trim().length > 0, `${sourceTestId} must render its backend source label.`);
+  }
+  for (const panelTestId of [
+    'backend-manager-dashboard-snapshot',
+    'backend-transcript-proof-coverage-snapshot',
+    'backend-manager-submissions-route',
+    'backend-manager-command-center-route',
+    'backend-manager-command-center-snapshot',
+    'backend-manager-action-queue-snapshot',
+    'backend-private-pilot-release-candidate-workflow-snapshot',
+    'backend-private-pilot-launch-run-workflow-snapshot',
+    'backend-private-pilot-launch-health-check-workflow-snapshot',
+    'backend-private-pilot-acceptance-report-workflow-snapshot',
+    'backend-production-operations-readiness-snapshot',
+    'backend-production-operations-control-receipts-snapshot',
+    'backend-production-deployment-control-receipts-snapshot',
+    'backend-production-security-control-receipts-snapshot',
+    'backend-production-provider-control-receipts-snapshot',
+    'backend-production-launch-audit-snapshot',
+    'backend-launch-approval-workflow-snapshot',
+    'backend-pilot-launch-readiness-snapshot',
+    'backend-deployment-preflight-snapshot',
+    'backend-mvp-readiness-snapshot',
+    'backend-operations-readiness-snapshot',
+    'backend-provider-readiness-snapshot',
+    'backend-provider-controlled-run-snapshot',
+    'backend-provider-eval-run-workflow-snapshot',
+    'backend-evidence-custody-readiness-snapshot',
+    'backend-security-boundary-snapshot',
+  ]) {
+    await page.getByTestId(panelTestId).waitFor({ state: 'visible', timeout: 15000 });
+  }
   const publicStartupReadinessCard = page.getByTestId('backend-public-production-startup-readiness-snapshot');
   await publicStartupReadinessCard.waitFor({ state: 'visible', timeout: 10000 });
   const publicStartupReadinessText = await publicStartupReadinessCard.innerText();
@@ -333,6 +509,12 @@ try {
     },
     'Manager walkthrough action must persist a Manager Action Queue receipt with message and timeline proof.',
   );
+  await page.getByTestId('manager-scenario-trail').waitFor({ state: 'visible', timeout: 10000 });
+  await page.getByTestId('manager-scenario-trail-row-kickoff-brief').waitFor({ state: 'visible', timeout: 10000 });
+  await page.getByTestId('manager-scenario-trail-proof-kickoff-brief').click();
+  await page.waitForFunction(() => document.body.innerText.includes('PROOF FOCUS:'), null, { timeout: 10000 });
+  await page.getByTestId('project-scene-back').click();
+  await scrollDashboardToStation(page);
   const projectPutCountAfterSeed = managerDemoProjectPutCount();
   assert(projectPutCountAfterSeed <= 1, 'Manager Demo compatibility seed may write the sample snapshot at most once.');
   await scrollDashboardToStation(page);
@@ -397,11 +579,16 @@ try {
   assert(managerDemoProjectPutCount() === projectPutCountAfterSeed, 'Autonomous Run Control must not reseed the browser snapshot after backend proof is written.');
 
   await page.getByTestId('backend-agent-autonomous-action-queue-snapshot').waitFor({ state: 'visible', timeout: 10000 });
-  await page.locator('button[data-testid^="backend-agent-autonomous-action-run-"]:not([disabled])').first().waitFor({ state: 'visible', timeout: 15000 });
-  await page.locator('button[data-testid^="backend-agent-autonomous-action-run-"]:not([disabled])').first().click();
-  await page.getByTestId('backend-agent-autonomous-action-run-receipt').waitFor({ state: 'visible', timeout: 15000 });
-  await page.getByTestId('backend-agent-autonomous-action-run-output').waitFor({ state: 'visible', timeout: 15000 });
-  await page.getByTestId('backend-agent-autonomous-action-run-output-rows').waitFor({ state: 'visible', timeout: 15000 });
+  const agentActionButton = page.locator('button[data-testid^="backend-agent-autonomous-action-run-"]:not([disabled])').first();
+  await agentActionButton.waitFor({ state: 'visible', timeout: 15000 });
+  await agentActionButton.click();
+  await page.waitForFunction(() => Boolean(
+    document.querySelector('[data-testid="backend-agent-autonomous-action-running"]')
+    || document.querySelector('[data-testid="backend-agent-autonomous-action-run-output"]')
+  ), null, { timeout: 5000 });
+  await page.getByTestId('backend-agent-autonomous-action-run-receipt').waitFor({ state: 'visible', timeout: 65000 });
+  await page.getByTestId('backend-agent-autonomous-action-run-output').waitFor({ state: 'visible', timeout: 65000 });
+  await page.getByTestId('backend-agent-autonomous-action-run-output-rows').waitFor({ state: 'visible', timeout: 65000 });
   const agentActionOutputText = await page.getByTestId('backend-agent-autonomous-action-run-output').innerText();
   assert(/Agent Action Output Nodes/i.test(agentActionOutputText), 'Agent Autonomous Queue must render delegated output nodes in the UI.');
   assert(/Agent Submission|Evidence Search|Submission Review|Review Response|Result Messages/i.test(agentActionOutputText), 'Agent Autonomous Queue output must expose a delegated product or transcript node.');
@@ -428,8 +615,10 @@ try {
     const button = document.querySelector('[data-testid="backend-autonomous-run-control-session-scheduler-tick"]');
     return button && !button.disabled;
   }, null, { timeout: 15000 });
+  const schedulerTickStartedAt = Date.now();
   await page.getByTestId('backend-autonomous-run-control-session-scheduler-tick').click();
-  await page.getByTestId('backend-autonomous-run-control-session-worker-receipt').waitFor({ state: 'visible', timeout: 20000 });
+  await page.getByTestId('backend-autonomous-run-control-session-worker-receipt').waitFor({ state: 'visible', timeout: 65000 });
+  console.log(`Autopilot scheduler UI receipt latency: ${Date.now() - schedulerTickStartedAt}ms.`);
   await waitForBackendSnapshot(
     backendRuntime.url,
     (snapshot) => {
@@ -461,8 +650,9 @@ try {
     const stationText = await page.getByTestId('backend-worker-station').innerText({ timeout: 1000 }).catch(() => '');
     if (stationText) console.error(`Backend Worker Station excerpt:\n${stationText.slice(-2400)}`);
   }
-  if (backendResponses.length) console.error(`Backend traffic tail:\n${backendResponses.slice(-40).join('\n')}`);
   if (consoleDiagnostics.length) console.error(`Console diagnostics:\n${consoleDiagnostics.join('\n')}`);
+  if (backendResponses.length) console.error(`Backend traffic tail:\n${backendResponses.slice(-40).join('\n')}`);
+  if (backendRequests.length) console.error(`Backend request tail:\n${backendRequests.slice(-40).join('\n')}`);
   throw error;
 } finally {
   await browser?.close().catch(() => {});

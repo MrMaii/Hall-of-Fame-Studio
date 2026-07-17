@@ -177,11 +177,12 @@ export function createAutonomousSchedulerController({
     check();
   });
 
-  const runtimeHeaders = ({ method = 'POST', path = '/' } = {}) => {
+  const runtimeHeaders = ({ method = 'POST', path = '/', localAuthToken = '' } = {}) => {
     const baseHeaders = {
       'x-hofs-access-mode': 'enforced',
       'x-hofs-role': 'runtime-platform',
       'x-hofs-user-id': 'http-autonomous-scheduler',
+      ...(localAuthToken ? { 'x-hofs-local-auth-token': localAuthToken } : {}),
     };
     if (!accessControl.signingSecret) return baseHeaders;
     const signedAt = now();
@@ -219,7 +220,7 @@ export function createAutonomousSchedulerController({
       const projectResult = api.handle({
         method: 'POST',
         path: '/workers/autonomous/due',
-        headers: runtimeHeaders({ method: 'POST', path: '/workers/autonomous/due' }),
+        headers: runtimeHeaders({ method: 'POST', path: '/workers/autonomous/due', localAuthToken: input.localAuthToken }),
         body: {
           now: tickAt,
           trigger: input.trigger || state.trigger,
@@ -237,7 +238,7 @@ export function createAutonomousSchedulerController({
       const agentResult = api.handle({
         method: 'POST',
         path: '/workers/agents/due',
-        headers: runtimeHeaders({ method: 'POST', path: '/workers/agents/due' }),
+        headers: runtimeHeaders({ method: 'POST', path: '/workers/agents/due', localAuthToken: input.localAuthToken }),
         body: {
           now: tickAt,
           trigger: input.agentTrigger || `${input.trigger || state.trigger}-agents`,
@@ -271,7 +272,7 @@ export function createAutonomousSchedulerController({
         ? await (api.handleAsync || api.handle).call(api, {
             method: 'POST',
             path: '/workers/autopilot/due',
-            headers: runtimeHeaders({ method: 'POST', path: '/workers/autopilot/due' }),
+            headers: runtimeHeaders({ method: 'POST', path: '/workers/autopilot/due', localAuthToken: input.localAuthToken }),
             body: {
               now: tickAt,
               actor: input.autopilotActor || 'HTTP Autonomous Scheduler',
@@ -384,12 +385,13 @@ export function createAutonomousSchedulerController({
       autopilotTargetKind: input.autopilotTargetKind || input.targetKind,
       autopilotRequestBodyOverrides: input.autopilotRequestBodyOverrides,
       includeReadModels,
+      localAuthToken: input.localAuthToken,
     }).catch(() => {});
     if (timer) {
       state.lastStartedRunImmediately = Boolean(runImmediately);
       state.startupAgentControlSummary = summarizeSchedulerAgentControls(input);
       state.startupAutopilotControlSummary = summarizeSchedulerAutopilotControls(input);
-      if (runImmediately) runImmediateStartupTick();
+      if (runImmediately) setTimeout(runImmediateStartupTick, 25);
       return status();
     }
     scheduledTickInput = { ...tickInput };
@@ -406,7 +408,7 @@ export function createAutonomousSchedulerController({
     }, state.intervalMs);
     if (typeof timer.unref === 'function') timer.unref();
     if (runImmediately) {
-      runImmediateStartupTick();
+      setTimeout(runImmediateStartupTick, 25);
     }
     return status();
   };
@@ -445,7 +447,7 @@ export function createAgentProjectHttpServer({
   projects = [],
   messages = [],
   kickoffMeetings = [],
-  messageLimit = 240,
+  messageLimit = 0,
   replaceWithSeed = false,
   autonomousScheduler = {},
   artifactWriter = null,
@@ -619,7 +621,7 @@ export function createAgentProjectHttpServer({
       writeJson(response, status, body, { 'x-hofs-trace-id': traceId, 'x-hofs-span-id': requestSpanId });
     };
     const requestPath = String(request.url || '/').split('?')[0];
-    const lifecycleReadAllowed = request.method === 'GET' && ['/local-runtime-health', '/local-runtime-lifecycle'].includes(requestPath);
+    const lifecycleReadAllowed = request.method === 'GET' && ['/health', '/local-runtime-health', '/local-runtime-lifecycle'].includes(requestPath);
     if (lifecycle !== 'accepting' && !lifecycleReadAllowed) {
       send(503, { error: 'local-runtime-quiescing', lifecycle: runtimeLifecycleStatus() });
       return;
@@ -640,6 +642,15 @@ export function createAgentProjectHttpServer({
       const url = new URL(request.url || '/', 'http://127.0.0.1');
       const needsBody = ['POST', 'PUT', 'PATCH'].includes(request.method || '');
       const body = needsBody ? await readJsonBody(request) : {};
+      if (url.pathname === '/health' && request.method === 'GET') {
+        send(200, {
+          schemaVersion: 'local-health/v1',
+          status: lifecycle === 'accepting' ? 'ok' : 'stopping',
+          localOnly: true,
+          lifecycle,
+        });
+        return;
+      }
       const requireLocalSchedulerAdmin = () => {
         if (!localAuthRequired) return true;
         const token = String(request.headers['x-hofs-local-auth-token'] || '').trim();
@@ -697,6 +708,7 @@ export function createAgentProjectHttpServer({
         send(200, {
           scheduler: scheduler.start({
             ...body,
+            localAuthToken: String(request.headers['x-hofs-local-auth-token'] || '').trim(),
             runImmediately: Boolean(body.runImmediately),
             projectId: body.projectId || null,
             includeReadModels: body.includeReadModels,
@@ -711,7 +723,10 @@ export function createAgentProjectHttpServer({
       }
       if (url.pathname === '/workers/autonomous/tick' && request.method === 'POST') {
         if (!requireLocalSchedulerAdmin()) return;
-        const tickResult = await scheduler.tick(body);
+        const tickResult = await scheduler.tick({
+          ...body,
+          localAuthToken: String(request.headers['x-hofs-local-auth-token'] || '').trim(),
+        });
         send(200, tickResult);
         return;
       }
@@ -829,7 +844,10 @@ export function createAgentProjectHttpServer({
         closeIdleTimer = setTimeout(() => {
           if (typeof server.closeIdleConnections === 'function') server.closeIdleConnections();
         }, 50);
-        const forceAfterMs = Math.max(1, Number(forceCloseTimeoutMs) || timeoutMs);
+        const forceGraceMs = forceCloseTimeoutMs === null
+          ? 0
+          : Math.max(1, Number(forceCloseTimeoutMs) || 1);
+        const forceAfterMs = timeoutMs + forceGraceMs;
         forceCloseTimer = setTimeout(() => {
           forcedConnectionCount = sockets.size;
           if (typeof server.closeAllConnections === 'function') server.closeAllConnections();

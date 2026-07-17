@@ -309,6 +309,7 @@ function run() {
   assert(response.body[group.receiptKey][group.controlsReadyField] === true, `Focused ${group.domain} receipt must verify every required control.`);
   assert(response.body[group.receiptKey].verifiedControlIds?.length === group.controlIds.length, `Focused ${group.domain} receipt must preserve every verified control id.`);
   assert(response.body[group.receiptKey].eventId && response.body[group.receiptKey].timelineLogId, `Focused ${group.domain} receipt must write timeline and event proof.`);
+  assert(response.body[group.workflowKey]?.[group.controlsReadyField] === true, `Focused ${group.domain} write must immediately return the updated workflow when detailed read models are omitted.`);
   assert(response.body.readModels?.included === false && response.body.readModels?.managerReadyPackageRoute?.endsWith('/manager-ready-package'), `Focused ${group.domain} writes must stay lightweight and return refresh routes.`);
   assert(!response.body.managerReadyPackage && !response.body.managerDashboard, `Focused ${group.domain} writes must not embed large Manager read models when includeReadModels is false.`);
 

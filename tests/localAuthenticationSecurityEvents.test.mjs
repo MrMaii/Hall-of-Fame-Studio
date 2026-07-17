@@ -34,7 +34,7 @@ test('records privacy-preserving bootstrap, login failure, lockout and recovery 
       traceId: 'trace_auth_bootstrap_001',
       body: {
         username: 'owner',
-        password: 'correct horse battery staple',
+        password: 'correct horse battery staple1',
         now: '2026-07-10T21:00:00.000Z',
       },
     });
@@ -70,7 +70,7 @@ test('records privacy-preserving bootstrap, login failure, lockout and recovery 
       traceId: 'trace_auth_login_success_001',
       body: {
         username: 'owner',
-        password: 'correct horse battery staple',
+        password: 'correct horse battery staple1',
         now: '2026-07-10T21:01:03.000Z',
       },
     });

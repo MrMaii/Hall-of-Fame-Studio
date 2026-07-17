@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -34,6 +34,45 @@ test('fails closed when both the primary project snapshot and its backup are cor
     assert.throws(() => createAgentProjectFileStore({ filePath }), /agent-project-store-corrupt-no-backup/);
     assert.equal(readFileSync(filePath, 'utf8'), '{bad primary');
     assert.equal(readFileSync(`${filePath}.bak`, 'utf8'), '{bad backup');
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('quarantines one project that cannot be hydrated while keeping other projects available', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'hofs-project-store-project-quarantine-'));
+  const filePath = join(directory, 'projects.json');
+  try {
+    writeFileSync(filePath, JSON.stringify({
+      version: 2,
+      projects: [
+        { id: 'healthy-project', name: 'Healthy project' },
+        { id: 'damaged-project', name: 'Damaged project' },
+      ],
+      messages: [],
+      kickoffMeetings: [],
+      securityAccessAuditRecords: [],
+      accessReplayRecords: [],
+    }, null, 2));
+
+    const store = createAgentProjectFileStore({
+      filePath,
+      hydrateProject: (project) => {
+        if (project.id === 'damaged-project') throw new Error('invalid-project-shape');
+        return { ...project, runtimeState: { status: 'idle' } };
+      },
+    });
+
+    assert.deepEqual(store.listProjects().map((project) => project.id), ['healthy-project']);
+    assert.equal(store.getProject('healthy-project').runtimeState.status, 'idle');
+    assert.equal(store.integrity.projectQuarantine.projectCount, 1);
+    assert.deepEqual(store.integrity.projectQuarantine.projectIds, ['damaged-project']);
+    assert.equal(existsSync(store.integrity.projectQuarantine.path), true);
+    const quarantine = JSON.parse(readFileSync(store.integrity.projectQuarantine.path, 'utf8'));
+    assert.equal(quarantine.schemaVersion, 'agent-project-store-project-quarantine/v1');
+    assert.equal(quarantine.projects[0].project.id, 'damaged-project');
+    assert.equal(quarantine.projects[0].error, 'invalid-project-shape');
+    assert.deepEqual(JSON.parse(readFileSync(filePath, 'utf8')).projects.map((project) => project.id), ['healthy-project']);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

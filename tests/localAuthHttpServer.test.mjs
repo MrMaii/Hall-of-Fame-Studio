@@ -20,7 +20,7 @@ test('local auth protects HTTP API and scheduler controls without blocking boots
     response = await fetch(`${runtime.url}/local-auth/bootstrap`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ username: 'owner', password: 'correct horse battery staple' }),
+      body: JSON.stringify({ username: 'owner', password: 'correct horse battery staple1' }),
     });
     const bootstrap = await response.json();
     assert.equal(response.status, 201);
@@ -33,6 +33,13 @@ test('local auth protects HTTP API and scheduler controls without blocking boots
     response = await fetch(`${runtime.url}/workers/autonomous/status`);
     assert.equal(response.status, 401);
     response = await fetch(`${runtime.url}/workers/autonomous/status`, { headers });
+    assert.equal(response.status, 200);
+
+    response = await fetch(`${runtime.url}/workers/autonomous/tick`, {
+      method: 'POST',
+      headers: { ...headers, 'content-type': 'application/json' },
+      body: JSON.stringify({ forceProjectRun: true }),
+    });
     assert.equal(response.status, 200);
   } finally {
     await server.close();

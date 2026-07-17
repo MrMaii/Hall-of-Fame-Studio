@@ -28,8 +28,8 @@ const exchange = runRoundtableExchange(team, 'We need to decide how the onboardi
 
 assert(exchange.intentions.length === team.length, 'Every Agent must produce a speaking intention for a meeting turn.');
 assert(exchange.responses.length === team.length, 'Every queued Agent must eventually receive a meeting response turn.');
-assert(exchange.responses.every((turn, index) => turn.delayMs === meetingTurnDelayMs(index)), 'Meeting response delays must follow the shared 5-second queue grace protocol.');
-assert(exchange.responses[0].delayMs >= MEETING_TURN_GRACE_PERIOD_MS, 'The first Agent must wait at least 5 seconds before speaking.');
+assert(exchange.responses.every((turn, index) => turn.delayMs === meetingTurnDelayMs(index)), 'Meeting response delays must follow the shared queue grace protocol.');
+assert(exchange.responses[0].delayMs >= MEETING_TURN_GRACE_PERIOD_MS, 'The first Agent must wait for the configured grace period before speaking.');
 
 const meetingResult = submitProjectMeetingMessage({
   project: {
@@ -41,7 +41,7 @@ const meetingResult = submitProjectMeetingMessage({
     agentStates: {},
     eventLedger: [],
   },
-  text: 'Please queue your responses before speaking.',
+  text: '@all Please queue your responses before speaking.',
   now: '2026-07-08T12:00:00.000Z',
   messageId: 'smart_meeting_user_message',
   language: 'en',
@@ -49,18 +49,18 @@ const meetingResult = submitProjectMeetingMessage({
 
 assert(meetingResult.messages[0]?.id === 'smart_meeting_user_message', 'The Director meeting message must be the first persisted message.');
 assert(meetingResult.meetingAgentTurns.length === team.length, 'Backend meeting service must persist every queued Agent turn.');
-assert(meetingResult.meetingAgentTurns.every((turn, index) => turn.delayMs === meetingTurnDelayMs(index)), 'Backend meeting turns must expose the same 5-second queue grace delays as the runtime.');
+assert(meetingResult.meetingAgentTurns.every((turn, index) => turn.delayMs === meetingTurnDelayMs(index)), 'Backend meeting turns must expose the same queue grace delays as the runtime.');
 assert(meetingResult.meetingAgentTurns.every((turn) => turn.timelineLogIds?.length >= 1), 'Backend meeting turns must retain timeline proof ids.');
 
 const loadInitialProjectsStart = appSource.indexOf('const loadInitialProjects = () =>');
 const loadInitialProjectsEnd = appSource.indexOf('const INITIATION_MEMBERS', loadInitialProjectsStart);
 const loadInitialProjectsSource = appSource.slice(loadInitialProjectsStart, loadInitialProjectsEnd);
-assert(!loadInitialProjectsSource.includes('isBackendManagedBrowserCacheProject'), 'Browser project restore must not filter backend-managed real projects out after refresh.');
+assert(loadInitialProjectsSource.includes('isBackendManagedBrowserCacheProject'), 'The restored Dashboard must keep backend-managed projects authoritative in the local backend instead of duplicating them in browser cache.');
 
 const canPersistProjectStart = appSource.indexOf('const canPersistProjectToBrowserCache =');
 const canPersistProjectEnd = appSource.indexOf('const isUnscopedProofLikeChatMessage', canPersistProjectStart);
 const canPersistProjectSource = appSource.slice(canPersistProjectStart, canPersistProjectEnd);
-assert(!canPersistProjectSource.includes('isBackendManagedRealProject'), 'Browser project cache must preserve backend-managed project shells for refresh recovery.');
+assert(canPersistProjectSource.includes('isBackendManagedRealProject'), 'The restored Dashboard must not write backend-managed project state into the browser-only cache.');
 
 const submitRoomInputStart = appSource.indexOf('const submitRoomInput = async');
 const submitRoomInputEnd = appSource.indexOf('const insertMention =', submitRoomInputStart);

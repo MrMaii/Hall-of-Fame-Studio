@@ -70,6 +70,8 @@ async function main() {
     // Manager Demo
     await page.goto(BASE, { waitUntil: 'networkidle' });
     await wait(1000);
+    await page.getByTestId('workspace-open-advanced').click();
+    await page.getByTestId('manager-demo-tools').click();
     await page.getByRole('button', { name: /Load Sample Fixture/i }).click();
     await wait(3500);
     await shot(page, 'demo-manager');

@@ -495,6 +495,7 @@ function accessRoute({
   agentId = null,
   allowedRoles = ['manager', 'security-admin'],
   selfAgent = false,
+  requireAgentIdentity = false,
   reviewerMatch = false,
   runtimeOnly = false,
 }) {
@@ -506,6 +507,7 @@ function accessRoute({
     agentId,
     allowedRoles,
     selfAgent,
+    requireAgentIdentity,
     reviewerMatch,
     runtimeOnly,
   };
@@ -1475,6 +1477,18 @@ export function classifyAccessRequest({ method = 'GET', path = '/', body = {} } 
       allowedRoles: ['manager', 'security-admin'],
     });
   }
+  if (action === 'transcripts' && resolvedMethod === 'POST' && projectRoute.tail.length === 0) {
+    return accessRoute({
+      routeKey: 'transcript-channel-create',
+      capability: 'create Group Chat channel',
+      sensitivity: 'project-command',
+      projectId,
+      agentId: String(body.actorId || body.agentId || '').trim() || null,
+      allowedRoles: ['manager', 'security-admin', 'agent'],
+      selfAgent: true,
+      requireAgentIdentity: true,
+    });
+  }
   if ([
     'chat',
     'meeting',
@@ -1547,6 +1561,12 @@ function evaluateAccess({ context, route, body = {} } = {}) {
     return {
       allowed: false,
       reason: `Agent ${context.agentId || 'unknown'} cannot access Agent ${route.agentId}`,
+    };
+  }
+  if (route.requireAgentIdentity && context.role === 'agent' && !context.agentId) {
+    return {
+      allowed: false,
+      reason: `${route.routeKey} requires an authenticated Agent identity`,
     };
   }
   if (route.reviewerMatch && context.role === 'reviewer-agent') {

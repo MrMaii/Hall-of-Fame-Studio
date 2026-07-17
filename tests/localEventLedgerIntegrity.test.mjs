@@ -3,7 +3,9 @@ import test from 'node:test';
 
 import {
   appendProjectEvents,
+  backfillProjectEventLedger,
   createProjectLedgerEvent,
+  EVENT_LEDGER_GENESIS_HASH,
   EVENT_LEDGER_RETAINED_LIMIT,
   sealLegacyProjectEventLedger,
   summarizeProjectEventLedger,
@@ -54,6 +56,30 @@ test('legacy ledgers migrate once and chain-versioned corruption is never reseal
   corrupted.eventLedger[0].payload = { changed: true };
   assert.equal(sealLegacyProjectEventLedger(corrupted), corrupted);
   assert.equal(verifyProjectEventLedger(corrupted).valid, false);
+});
+
+test('legacy projects with an empty ledger ignore stale chain metadata during durable evidence backfill', () => {
+  const project = backfillProjectEventLedger({
+    id: 'project_empty_legacy_event_integrity',
+    eventLedger: [],
+    eventLedgerChainVersion: 1,
+    eventLedgerPreviousHash: EVENT_LEDGER_GENESIS_HASH,
+    eventLedgerRootHash: 'f'.repeat(64),
+    eventLedgerFirstSequence: 0,
+    eventLedgerLastSequence: 0,
+    eventLedgerEventCount: 0,
+    logs: [{
+      id: 'log_durable_1',
+      eventType: 'task-progress',
+      time: '2026-07-11T12:00:00.000Z',
+      agent: 'Test Agent',
+      log: 'Durable task progress evidence',
+    }],
+  });
+
+  assert.equal(project.eventLedger.length, 1);
+  assert.equal(project.eventLedger[0].id, 'evt_log_durable_1');
+  assert.equal(verifyProjectEventLedger(project).valid, true);
 });
 
 test('sealed events detach nested payloads from mutable business objects', () => {

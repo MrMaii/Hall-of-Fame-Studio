@@ -5,24 +5,37 @@ import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 import { createAgentProjectHttpServer } from '../src/agents/agentProjectHttpServer.js';
+import { createLocalProjectRuntime } from '../src/agents/localProjectRuntime.js';
 import { createModelProvider } from '../src/agents/modelProvider.js';
 import { createSearchProvider } from '../src/agents/searchProvider.js';
 import { createSecretVaultFromEnv } from '../src/agents/secretVault.js';
 
 const ROOT_DIR = fileURLToPath(new URL('..', import.meta.url));
 const DIST_DIR = join(ROOT_DIR, 'dist');
-const BACKEND_STORE = new URL(`../.tmp/agent-manager-mission-runner-ui-store-${process.pid}.json`, import.meta.url);
+const RUN_ID = `${process.pid}-${Date.now()}`;
+const BACKEND_STORE = new URL(`../.tmp/agent-manager-mission-runner-ui-store-${RUN_ID}.json`, import.meta.url);
+const PROJECT_RUNTIME_ROOT = fileURLToPath(new URL(`../.tmp/agent-manager-mission-runner-ui-workspace-${RUN_ID}`, import.meta.url));
 const BACKEND_STORAGE_KEY = 'hall_of_fame_studio.agent_backend_url.v1';
+const LOCAL_AUTH_STORE = new URL(`../.tmp/agent-manager-mission-runner-ui-auth-${RUN_ID}.json`, import.meta.url);
+const LOCAL_AUTH_STORAGE_KEY = 'hall_of_fame_studio.local_auth_session.v1';
 const LANGUAGE_STORAGE_KEY = 'hall_of_fame_studio.language.v1';
 const VIEWPORT = { width: 1440, height: 1100 };
 const nativeFetch = globalThis.fetch.bind(globalThis);
-const SECRET_VAULT_RECORDS_FILE = new URL(`../.tmp/agent-manager-mission-runner-ui-vault-records-${process.pid}.json`, import.meta.url);
+let backendAuthContext = null;
+const SECRET_VAULT_RECORDS_FILE = new URL(`../.tmp/agent-manager-mission-runner-ui-vault-records-${RUN_ID}.json`, import.meta.url);
 
 globalThis.fetch = async (...args) => {
   let lastError = null;
+  const [input, init = {}] = args;
+  let requestArgs = args;
+  if (backendAuthContext?.token && String(input).startsWith(backendAuthContext.baseUrl)) {
+    const headers = new Headers(init.headers || {});
+    headers.set('x-hofs-local-auth-token', backendAuthContext.token);
+    requestArgs = [input, { ...init, headers }];
+  }
   for (let attempt = 0; attempt < 4; attempt += 1) {
     try {
-      return await nativeFetch(...args);
+      return await nativeFetch(...requestArgs);
     } catch (error) {
       lastError = error;
       const code = error?.cause?.code || error?.code || '';
@@ -158,6 +171,7 @@ async function launchBrowserWithRetry(attempts = 3) {
   const optionSets = [
     { headless: true },
     ...playwrightChromiumExecutableCandidates().map((executablePath) => ({ headless: true, executablePath })),
+    { channel: 'msedge', headless: true },
   ];
   for (const options of optionSets) {
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
@@ -216,9 +230,56 @@ const llmProvider = createModelProvider({
       message: {
         role: 'assistant',
         content: JSON.stringify({
-          ok: true,
-          message: 'Local model fixture confirmed the Mission Runner UI backend provider path.',
-          intent: 'continue generic product-team mission startup',
+          roleTurns: [
+            {
+              agentId: 'turing',
+              type: 'role-question',
+              text: 'For Roundtable Initiation System, may I own backend proof and the local runtime gate?',
+              hears: ['curie', 'confucius', 'musk'],
+            },
+            {
+              agentId: 'curie',
+              type: 'role-volunteer',
+              text: 'For Roundtable Initiation System, I will review evidence before approval.',
+              hears: ['turing', 'confucius', 'musk'],
+            },
+          ],
+          agentTurns: [
+            {
+              agentId: 'turing',
+              type: 'next-action',
+              text: 'For Roundtable Initiation System, I will turn the Director clarification into backend proof work.',
+              score: 9,
+            },
+            {
+              agentId: 'curie',
+              type: 'role-volunteer',
+              text: 'For Roundtable Initiation System, I will review the clarified evidence before approval.',
+              score: 8,
+            },
+          ],
+          leaderCampaigns: [
+            {
+              agentId: 'turing',
+              claim: 'For Roundtable Initiation System, I will lead the backend proof plan and report its local evidence.',
+              hears: ['curie', 'confucius', 'musk'],
+              score: 9,
+            },
+            {
+              agentId: 'curie',
+              claim: 'For Roundtable Initiation System, I will lead the evidence review and escalation plan.',
+              hears: ['turing', 'confucius', 'musk'],
+              score: 8,
+            },
+          ],
+          recommendedLeaderId: 'turing',
+          reviewerId: 'curie',
+          nextActions: [
+            { ownerId: 'turing', text: 'Create the Roundtable Initiation System backend proof plan.' },
+            { ownerId: 'curie', text: 'Review Roundtable Initiation System evidence before approval.' },
+          ],
+          decisionSummary: 'Roundtable Initiation System can proceed after local backend proof and evidence review.',
+          risks: ['Roundtable Initiation System must keep every proof local and durable.'],
         }),
       },
     }],
@@ -235,31 +296,65 @@ const searchProvider = createSearchProvider({
   secretVaultStatus,
   enabled: true,
 });
+const projectRuntime = createLocalProjectRuntime({ rootPath: PROJECT_RUNTIME_ROOT });
 
 const backendServer = createAgentProjectHttpServer({
   filePath: BACKEND_STORE,
+  localAuthFilePath: LOCAL_AUTH_STORE,
+  localAuthRequired: true,
   replaceWithSeed: true,
   secretVault,
   llmProvider,
   searchProvider,
+  projectRuntime,
 });
 const backendRuntime = await backendServer.listen();
+const bootstrapResponse = await fetch(`${backendRuntime.url}/local-auth/bootstrap`, {
+  method: 'POST',
+  headers: { 'content-type': 'application/json' },
+  body: JSON.stringify({ username: 'mission-runner-validator', password: 'demo1' }),
+});
+const bootstrapPayload = await bootstrapResponse.json();
+assert(bootstrapResponse.status === 201, `Could not create isolated local validation account: ${bootstrapPayload.error || bootstrapResponse.status}.`);
+const localAuthSession = {
+  ...bootstrapPayload.localAuth,
+  baseUrl: backendRuntime.url,
+};
+backendAuthContext = { baseUrl: backendRuntime.url, token: localAuthSession.token };
+const startupReadinessResponse = await fetch(`${backendRuntime.url}/local-mvp-startup-readiness`);
+const startupReadinessPayload = await startupReadinessResponse.json();
+const startupReadiness = startupReadinessPayload.localMvpStartupReadiness || {};
+assert(
+  startupReadinessResponse.status === 200
+    && startupReadiness.schemaVersion === 'local-mvp-startup-readiness/v1'
+    && startupReadiness.readyForFirstProjectRun === true,
+  'Vault/provider-ready Mission Runner backend must pass local MVP startup readiness before the browser starts.',
+);
+assert(
+  startupReadiness.summary?.modelRuntimeReady === true
+    && startupReadiness.summary?.searchRuntimeReady === true,
+  'Local model fixture confirmed the Mission Runner UI backend provider path.',
+);
 const staticServer = createStaticServer();
 const staticRuntime = await listen(staticServer);
 let browser = null;
 const backendResponses = [];
 const consoleDiagnostics = [];
+const failedResponses = [];
 
 try {
   browser = await launchBrowserWithRetry();
   const context = await browser.newContext({ viewport: VIEWPORT });
-  await context.addInitScript(({ backendUrl, storageKey, languageStorageKey }) => {
+  await context.addInitScript(({ backendUrl, storageKey, localAuthStorageKey, localAuthSessionValue, languageStorageKey }) => {
     window.__AGENT_BACKEND_URL__ = backendUrl;
     window.localStorage.setItem(storageKey, JSON.stringify(backendUrl));
+    window.sessionStorage.setItem(localAuthStorageKey, JSON.stringify(localAuthSessionValue));
     window.localStorage.setItem(languageStorageKey, 'en');
   }, {
     backendUrl: backendRuntime.url,
     storageKey: BACKEND_STORAGE_KEY,
+    localAuthStorageKey: LOCAL_AUTH_STORAGE_KEY,
+    localAuthSessionValue: localAuthSession,
     languageStorageKey: LANGUAGE_STORAGE_KEY,
   });
 
@@ -270,6 +365,7 @@ try {
     }
   });
   page.on('response', (response) => {
+    if (response.status() >= 400) failedResponses.push(`${response.status()} ${response.request().method()} ${response.url()}`);
     if (/\/(projects|product-team-missions|workers|kickoff-meetings)\b/.test(response.url())) {
       backendResponses.push(`${response.status()} ${response.request().method()} ${response.url()}`);
     }
@@ -278,28 +374,39 @@ try {
   await page.goto(staticRuntime.url, { waitUntil: 'networkidle' });
   await page.getByText('Workspace Hub', { exact: false }).click();
   await assertPageContains(page, 'ACTIVE PROJECTS', 'Workspace dashboard must be reachable before starting a real initiation.');
+  await page.getByTestId('workspace-open-advanced').click();
+  await page.getByTestId('start-initiation-button').waitFor({ state: 'visible', timeout: 10000 });
   await page.getByTestId('start-initiation-button').click();
   await assertPageContains(page, 'Project Initiation Flow', 'Manager must be able to open the real initiation flow.');
-  await page.getByTestId('initiation-next-invite').click();
+  await page.getByTestId('initiation-next-workspace').click();
+  await page.getByTestId('initiation-workspace-base-path').fill(PROJECT_RUNTIME_ROOT);
+  await page.getByTestId('initiation-workspace-prepare').click();
+  await page.waitForFunction(() => !document.querySelector('[data-testid="initiation-workspace-next-invite"]')?.disabled, null, { timeout: 15000 });
+  await page.getByTestId('initiation-workspace-next-invite').click();
+  await page.getByTestId('initiation-talent-market').waitFor({ state: 'visible', timeout: 5000 });
+  for (const agentId of ['musk', 'turing', 'curie', 'confucius']) {
+    await page.getByTestId(`market-open-${agentId}`).click();
+    await page.getByTestId(`initiation-contract-${agentId}`).click();
+    await page.getByTestId('initiation-talent-market').waitFor({ state: 'visible', timeout: 5000 });
+  }
   await page.getByTestId('initiation-next-lobby').click();
   await page.getByTestId('initiation-start-meeting').click();
   await assertPageContains(page, 'INITIATION ROUNDTABLE', 'Initiation flow must reach the kickoff meeting step.');
   await page.getByTestId('initiation-meeting-session-proof').waitFor({ state: 'visible', timeout: 8000 });
-  await page.getByTestId('initiation-meeting-leader-candidate-claim-turing').waitFor({ state: 'visible', timeout: 8000 });
-  const turingLeaderClaimText = await page.getByTestId('initiation-meeting-leader-candidate-claim-turing').innerText();
-  assert(turingLeaderClaimText.trim().length >= 30, 'Kickoff meeting must show the Agent self-marketing claim before Leader confirmation.');
-  await page.getByTestId('initiation-meeting-director-clarification').waitFor({ state: 'visible', timeout: 8000 });
-  await page.getByTestId('initiation-meeting-clarification-input').fill('Manager clarified during kickoff: Turing owns backend mission proof and Curie reviews delivery evidence.');
-  await page.getByTestId('initiation-meeting-save-clarification').click();
-  await assertPageContains(page, 'ROLE QUESTIONS ANSWERED', 'Kickoff meeting must persist the Manager clarification before mission approval.');
-  await page.getByTestId('initiation-meeting-leader-candidate-turing').click();
-  await assertPageContains(page, 'MANAGER CONFIRMED IN MEETING', 'Kickoff meeting must persist the selected Leader before mission approval.');
-  await page.getByTestId('initiation-meeting-next-action-0').fill('Manager decided product-team mission startup packet');
-  await page.getByTestId('initiation-meeting-save-next-actions').click();
-  await assertPageContains(page, 'NEXT ACTION RESOLUTION:', 'Kickoff meeting must persist next actions before mission approval.');
-  await page.getByTestId('initiation-finish-meeting').click();
+  await assertPageContains(page, 'may I own backend proof and the local runtime gate', 'Kickoff meeting must show the Agent role claim before Leader confirmation.');
+  await page.getByTestId('project-meeting-input').fill('Manager clarified during kickoff: Turing owns backend mission proof and Curie reviews delivery evidence.');
+  await page.getByTestId('project-meeting-send').click();
+  await assertPageContains(page, 'Turing owns backend mission proof', 'Kickoff meeting must persist the Manager clarification before mission approval.');
+  await page.getByRole('button', { name: 'End Meeting', exact: true }).click();
   await assertPageContains(page, 'Director Decisions', 'Initiation result must expose Director decisions before approval.');
+  await page.getByTestId('initiation-next-action-0').fill('Manager decided product-team mission startup packet');
+  await page.getByTestId('leader-candidate-turing').click();
+  await assertPageContains(page, 'Director selected', 'Initiation result must persist the selected Leader before mission approval.');
   await page.getByTestId('initiation-approve-create').click();
+  await page.getByTestId('initiation-approval-progress').waitFor({ state: 'visible', timeout: 5000 });
+  await page.getByTestId('project-overview-open-advanced').waitFor({ state: 'visible', timeout: 90000 });
+  await page.getByTestId('project-overview-open-advanced').click();
+  await page.getByTestId('project-dashboard-view').waitFor({ state: 'visible', timeout: 15000 });
   await page.waitForFunction(
     () => document.body.innerText.includes('Roundtable Initiation System') && document.body.innerText.includes('PROJECT DASHBOARD'),
     null,
@@ -502,6 +609,7 @@ try {
     if (stationText) console.error(`Backend Worker Station excerpt:\n${stationText.slice(-2400)}`);
   }
   if (backendResponses.length) console.error(`Backend traffic tail:\n${backendResponses.slice(-50).join('\n')}`);
+  if (failedResponses.length) console.error(`Failed response tail:\n${failedResponses.slice(-50).join('\n')}`);
   if (consoleDiagnostics.length) console.error(`Console diagnostics:\n${consoleDiagnostics.join('\n')}`);
   throw error;
 } finally {

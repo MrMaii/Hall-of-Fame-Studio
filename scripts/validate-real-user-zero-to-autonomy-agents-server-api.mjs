@@ -365,6 +365,11 @@ try {
   let response = await fetchJson(`${backendUrl}/secret-vault/status`);
   assert(response.status === 200 && response.body.secretVaultStatus?.ready === true, 'Real-user API gate must start agents:server with a ready Secret Vault.');
 
+  await sealSecret(backendUrl, 'model.provider', 'deepseek', {
+    scope: 'model-provider',
+    providerKind: 'model',
+    secretKind: 'provider',
+  }, { allowRuntimeValueEcho: true });
   await sealSecret(backendUrl, 'model.apiKey', modelPlaintext, {
     scope: 'model-provider',
     providerKind: 'model',
@@ -384,6 +389,7 @@ try {
   });
 
   response = await fetchJson(`${backendUrl}/llm/status`);
+  assert(response.body.modelProvider?.provider === 'deepseek', 'The selected model provider must bind to the running local model adapter.');
   assert(response.body.modelProvider?.apiKeySource === 'local-secret-vault' && response.body.modelProvider?.enabled === true, 'Model provider must be vault-backed and enabled after user key seal.');
   response = await fetchJson(`${backendUrl}/search/status`);
   assert(response.body.searchProvider?.provider === 'http-json' && response.body.searchProvider?.enabled === true, 'Search provider must be vault-backed and enabled after endpoint/key seal.');

@@ -573,6 +573,7 @@ response = request({
 });
 assert(response.status === 200 && response.body.projectEvidenceExport?.action === 'download-audit', 'Manager must record a governed download audit.');
 assert(response.body.projectEvidenceExportWorkflow?.readyForPrivatePilotDownload === true, 'Evidence export workflow must become local package ready after download audit.');
+assert(response.body.privatePilotReleaseCandidateWorkflow?.schemaVersion === 'private-pilot-release-candidate-workflow/v1', 'Download audit must immediately return the dependent release candidate workflow.');
 assert(response.body.projectEvidenceExportPackage?.readyForPrivatePilotDownload === true, 'Evidence export package must be ready for private-pilot download.');
 assert(response.body.projectEvidenceExportPackage.readyForProductionDownload === false, 'Evidence export package must not issue production download readiness.');
 assert(response.body.projectEvidenceExportPackage.downloadUrlIssued === false, 'Evidence export package must not issue a production URL.');

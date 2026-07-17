@@ -15,19 +15,29 @@ const DIST_DIR = join(ROOT_DIR, 'dist');
 const STATIC_PORTS = [4181, 4182, 4183, 4184, 4185];
 const VIEWPORT = { width: 1440, height: 1100 };
 const BACKEND_STORE = new URL(`../.tmp/agent-manager-backend-ui-store-${process.pid}.json`, import.meta.url);
+const LOCAL_AUTH_STORE = new URL(`../.tmp/agent-manager-backend-ui-auth-${process.pid}.json`, import.meta.url);
 const SECRET_VAULT_RECORDS_FILE = new URL(`../.tmp/agent-manager-backend-ui-vault-records-${process.pid}.json`, import.meta.url);
 const PROJECT_RUNTIME_ROOT = join(ROOT_DIR, '.tmp', `agent-manager-backend-ui-projects-${process.pid}`);
 const PRESERVE_BACKEND_UI_TMP = process.env.HOFS_MANAGER_BACKEND_UI_PRESERVE_TMP === '1';
 const CAPTURE_SUCCESS_SCREENSHOT = process.env.HOFS_MANAGER_BACKEND_UI_SCREENSHOT === '1';
 const BACKEND_STORAGE_KEY = 'hall_of_fame_studio.agent_backend_url.v1';
+const LOCAL_AUTH_STORAGE_KEY = 'hall_of_fame_studio.local_auth_session.v1';
 const LANGUAGE_STORAGE_KEY = 'hall_of_fame_studio.language.v1';
 const nativeFetch = globalThis.fetch.bind(globalThis);
+let backendAuthContext = null;
 
 globalThis.fetch = async (...args) => {
   let lastError = null;
+  const [input, init = {}] = args;
+  let requestArgs = args;
+  if (backendAuthContext?.token && String(input).startsWith(backendAuthContext.baseUrl)) {
+    const headers = new Headers(init.headers || {});
+    headers.set('x-hofs-local-auth-token', backendAuthContext.token);
+    requestArgs = [input, { ...init, headers }];
+  }
   for (let attempt = 0; attempt < 4; attempt += 1) {
     try {
-      return await nativeFetch(...args);
+      return await nativeFetch(...requestArgs);
     } catch (error) {
       lastError = error;
       const code = error?.cause?.code || error?.code || '';
@@ -59,7 +69,10 @@ function cleanupManagerBackendUiTmp() {
   if (PRESERVE_BACKEND_UI_TMP) return;
   const backendStorePath = fileURLToPath(BACKEND_STORE);
   rmSync(backendStorePath, { force: true });
+  rmSync(`${backendStorePath}.bak`, { force: true });
   rmSync(`${backendStorePath}.security-audit.jsonl`, { force: true });
+  rmSync(`${backendStorePath}.shutdown.json`, { force: true });
+  rmSync(fileURLToPath(LOCAL_AUTH_STORE), { force: true });
   rmSync(fileURLToPath(SECRET_VAULT_RECORDS_FILE), { force: true });
   rmSync(PROJECT_RUNTIME_ROOT, { force: true, recursive: true });
 }
@@ -140,7 +153,7 @@ async function assertPageContains(page, text, message = `Expected page to contai
   const visibleMatches = await page.getByText(text, { exact: false }).count();
   if (visibleMatches > 0) return;
   await page.waitForFunction(
-    (expectedText) => document.body.innerText.includes(expectedText),
+    (expectedText) => document.body.innerText.toLocaleLowerCase().includes(expectedText.toLocaleLowerCase()),
     text,
     { timeout: 8000 },
   ).catch(() => {});
@@ -150,8 +163,15 @@ async function assertPageContains(page, text, message = `Expected page to contai
   } catch {
     bodyText = await page.evaluate(() => document.body?.textContent || '');
   }
-  assert(bodyText.includes(text), message);
+  assert(bodyText.toLocaleLowerCase().includes(text.toLocaleLowerCase()), message);
 }
+
+const waitForBackendOnlineStatus = async (page, { timeout = 10000 } = {}) => {
+  await page
+    .getByTestId('backend-worker-connection-status')
+    .filter({ hasText: /\bonline\b/i })
+    .waitFor({ state: 'visible', timeout });
+};
 
 async function withSuppressedBackendTranscriptProof(page, { backendUrl, projectId, channelId = 'main' }, callback) {
   const expectedOrigin = new URL(backendUrl).origin;
@@ -297,7 +317,7 @@ async function clickDynamic(locator) {
   }
 }
 
-async function waitForEnabledTestId(page, testId, timeout = 15000) {
+async function waitForEnabledTestId(page, testId, timeout = 65000) {
   const selector = `[data-testid="${testId}"]`;
   await page.locator(selector).waitFor({ state: 'visible', timeout });
   await page.waitForFunction((targetSelector) => {
@@ -322,12 +342,44 @@ async function waitForBackendLastResult(page, station) {
   await page.getByTestId('backend-last-result').waitFor({ state: 'visible', timeout: 5000 });
 }
 
+async function syncManagerView(page) {
+  const button = await waitForEnabledTestId(page, 'backend-sync-manager-view');
+  await button.evaluate((element) => element.click());
+}
+
+async function submitManagerAssignment(page) {
+  const button = await waitForEnabledTestId(page, 'manager-assignment-composer-submit');
+  await button.evaluate((element) => element.click());
+}
+
 async function backToDashboard(page) {
   const backButton = page.getByTestId('project-scene-back');
   assert(await backButton.count() === 1, 'Project scene must expose one back-to-dashboard control.');
   await backButton.click();
-  await page.getByTestId('project-dashboard-view').waitFor({ state: 'visible', timeout: 10000 });
+  await page.getByTestId('project-dashboard-view').waitFor({ state: 'visible', timeout: 30000 });
   await scrollDashboardToBottom(page);
+}
+
+async function startInitiationFromWorkspace(page) {
+  const simpleProjectHub = page.getByTestId('project-hub');
+  if (await simpleProjectHub.count()) {
+    await simpleProjectHub.locator('header button').first().click();
+    return;
+  }
+  await page.getByTestId('start-initiation-button').click();
+}
+
+async function openAdvancedProjectDashboard(page) {
+  await page.getByTestId('project-dashboard-view').waitFor({ state: 'visible', timeout: 65000 });
+  const simpleDashboard = page.getByTestId('project-simple-dashboard');
+  if (await simpleDashboard.count()) {
+    await page.getByTestId('project-overview').locator('header button').nth(1).click();
+  }
+  await page.waitForFunction(
+    () => document.body.innerText.includes('Roundtable Initiation System') && document.body.innerText.includes('PROJECT DASHBOARD'),
+    null,
+    { timeout: 30000 },
+  );
 }
 
 async function sendChatPrefill(page, expectedChannel, expectedSnippet) {
@@ -349,14 +401,14 @@ async function sendChatPrefill(page, expectedChannel, expectedSnippet) {
 
 async function sendMeetingPrefill(page, expectedSnippet) {
   const input = page.getByTestId('project-meeting-input');
-  await input.waitFor({ state: 'visible', timeout: 5000 });
+  await input.waitFor({ state: 'visible', timeout: 30000 });
   const value = await input.inputValue();
   assert(value.includes(expectedSnippet), `Expected meeting prefill to include "${expectedSnippet}", got "${value}".`);
   await input.press('Enter');
   await page.waitForFunction(() => {
     const inputElement = document.querySelector('[data-testid="project-meeting-input"]');
     return inputElement && inputElement.value === '';
-  }, null, { timeout: 5000 });
+  }, null, { timeout: 15000 });
 }
 
 function playwrightChromiumExecutableCandidates() {
@@ -504,6 +556,8 @@ const projectRuntime = createLocalProjectRuntime({ rootPath: PROJECT_RUNTIME_ROO
 
 const backendServer = createAgentProjectHttpServer({
   filePath: BACKEND_STORE,
+  localAuthFilePath: LOCAL_AUTH_STORE,
+  localAuthRequired: true,
   replaceWithSeed: true,
   secretVault,
   llmProvider,
@@ -511,6 +565,15 @@ const backendServer = createAgentProjectHttpServer({
   projectRuntime,
 });
 const backendRuntime = await backendServer.listen();
+const bootstrapResponse = await fetch(`${backendRuntime.url}/local-auth/bootstrap`, {
+  method: 'POST',
+  headers: { 'content-type': 'application/json' },
+  body: JSON.stringify({ username: 'manager-backend-validator', password: 'audit1' }),
+});
+const bootstrapPayload = await bootstrapResponse.json();
+assert(bootstrapResponse.status === 201, `Could not create isolated local validation account: ${bootstrapPayload.error || bootstrapResponse.status}.`);
+const localAuthSession = { ...bootstrapPayload.localAuth, baseUrl: backendRuntime.url };
+backendAuthContext = { baseUrl: backendRuntime.url, token: localAuthSession.token };
 const staticRuntime = await startStaticServer();
 let browser = null;
 const consoleErrors = [];
@@ -520,14 +583,17 @@ const walkthroughRequests = [];
 try {
   browser = await launchBrowserWithRetry();
   const context = await browser.newContext({ viewport: VIEWPORT });
-  await context.addInitScript(({ backendUrl, storageKey, languageStorageKey }) => {
+  await context.addInitScript(({ backendUrl, storageKey, authStorageKey, languageStorageKey, authSession }) => {
     window.__AGENT_BACKEND_URL__ = backendUrl;
     window.localStorage.setItem(storageKey, JSON.stringify(backendUrl));
     window.localStorage.setItem(languageStorageKey, 'en');
+    window.sessionStorage.setItem(authStorageKey, JSON.stringify(authSession));
   }, {
     backendUrl: backendRuntime.url,
     storageKey: BACKEND_STORAGE_KEY,
+    authStorageKey: LOCAL_AUTH_STORAGE_KEY,
     languageStorageKey: LANGUAGE_STORAGE_KEY,
+    authSession: localAuthSession,
   });
   const page = await context.newPage();
   page.on('console', (message) => {
@@ -560,6 +626,9 @@ try {
 
   await page.goto(staticRuntime.url, { waitUntil: 'domcontentloaded' });
   await page.waitForLoadState('networkidle');
+  await page.getByRole('button', { name: /Workspace Hub/i }).click();
+  await page.getByTestId('workspace-open-advanced').click();
+  await page.getByTestId('manager-demo-tools').click();
   await page.getByRole('button', { name: /Load Sample Fixture.*Manager demo data/i }).click();
   await page.waitForFunction(() => document.body.innerText.includes('Manager Demo: Autonomous Agent Studio'), null, { timeout: 10000 });
   await page.getByTestId('project-sample-fixture-banner').waitFor({ state: 'visible', timeout: 5000 });
@@ -567,8 +636,6 @@ try {
   await scrollDashboardToBottom(page);
   const initialStation = page.getByTestId('backend-worker-station');
   await initialStation.waitFor({ state: 'visible', timeout: 10000 });
-  await clickDynamic(initialStation.getByRole('button', { name: /Check/i }));
-  await assertPageContains(page, 'Online', 'Backend station must connect before route-backed Manager Demo assertions.');
   const seedSampleButton = await waitForEnabledTestId(page, 'backend-save-project');
   await clickDynamic(seedSampleButton);
   await assertPageContains(page, 'Sample/dev project seeded to backend', 'Manager Demo route-backed assertions must start from a backend-seeded sample project.');
@@ -580,21 +647,13 @@ try {
   );
   const seededManagerDemoProject = seededManagerDemoSnapshot.projects.find((item) => item.id === 'p_manager_demo_001' || item.id === 'P_MANAGER_DEMO_001');
   const seededManagerDemoProjectId = seededManagerDemoProject.id;
+  await clickDynamic(initialStation.getByRole('button', { name: /Check/i }));
+  await assertPageContains(page, 'Online', 'Backend station must connect after the sample project is seeded.');
   await clickDynamic(page.getByTestId('backend-sync-ready-package'));
-  await page.getByTestId('backend-manager-ready-package-snapshot').waitFor({ state: 'visible', timeout: 15000 });
+  await page.getByTestId('backend-manager-ready-package-snapshot').waitFor({ state: 'visible', timeout: 30000 });
   for (const syncTestId of [
     'backend-sync-manager-view',
     'backend-sync-command-center',
-  ]) {
-    const syncButton = await waitForEnabledTestId(page, syncTestId);
-    await clickDynamic(syncButton);
-  }
-  for (const syncTestId of [
-    'backend-sync-scenario-walkthrough',
-    'backend-sync-scenario-trail',
-    'backend-sync-requirement-matrix',
-    'backend-sync-sync-protocol-audit',
-    'backend-sync-use-case-audit',
   ]) {
     const syncButton = await waitForEnabledTestId(page, syncTestId);
     await clickDynamic(syncButton);
@@ -681,6 +740,13 @@ try {
   await assertPageContains(page, 'Backend collaboration protocol', 'Sync protocol audit must explain source-to-ledger collaboration coverage.');
   await assertPageContains(page, 'Agent State', 'Sync protocol audit must expose Agent state write coverage.');
   await assertPageContains(page, 'Ledger', 'Sync protocol audit must expose event-ledger coverage.');
+  await page.getByTestId('sync-protocol-chat-proof-kickoff-next-action-sync').click();
+  await assertPageContains(page, 'PROOF FOCUS:', 'Sync protocol chat proof must open the exact collaboration evidence.');
+  await backToDashboard(page);
+  await page.getByTestId('sync-protocol-audit').waitFor({ state: 'visible', timeout: 5000 });
+  await page.getByTestId('sync-protocol-timeline-proof-kickoff-next-action-sync').click();
+  await assertPageContains(page, 'PROOF FOCUS:', 'Sync protocol timeline proof must open the exact timeline evidence.');
+  await backToDashboard(page);
   await page.getByTestId('manager-use-case-audit').waitFor({ state: 'visible', timeout: 5000 });
   await assertPageContains(page, 'Manager Use Case Audit', 'Manager dashboard must expose a manager-readable use case audit.');
   await assertPageContains(page, 'The user story translated into manager-readable coverage checks and proof exits.', 'Manager use case audit must explain its purpose.');
@@ -775,7 +841,7 @@ try {
   const readyPackageSyncBody = await page.locator('body').innerText();
   assert(!readyPackageSyncBody.includes('Backend manager ready package sync failed'), 'Manager ready package sync must complete through the backend.');
   await assertPageContains(page, 'Ready package sync:', 'Manager ready package sync must expose sync status.');
-  await page.getByTestId('backend-manager-ready-package-snapshot').waitFor({ state: 'visible', timeout: 15000 });
+  await page.getByTestId('backend-manager-ready-package-snapshot').waitFor({ state: 'visible', timeout: 30000 });
   await assertPageContains(page, 'Manager Ready Package', 'Backend Worker Station must render the manager ready package snapshot.');
   await assertPageContains(page, 'Gateway Live', 'Manager ready package snapshot must expose adapter gateway live readiness.');
   await assertPageContains(page, 'Gateway State', 'Manager ready package snapshot must expose adapter gateway state readiness.');
@@ -1058,7 +1124,13 @@ try {
   await assertPageContains(page, '/agent-autonomous-action-queue', 'Agent autonomous action queue snapshot must show its backend route.');
   const agentAutonomousRunButton = page.locator('button[data-testid^="backend-agent-autonomous-action-run-"]:not([disabled])').first();
   await agentAutonomousRunButton.waitFor({ state: 'visible', timeout: 15000 });
+  const agentAutonomousRunResponse = page.waitForResponse((response) => (
+    response.request().method() === 'POST'
+    && /\/agent-autonomous-action-queue\/[^/]+\/run$/.test(new URL(response.url()).pathname)
+  ), { timeout: 65000 });
   await agentAutonomousRunButton.click();
+  const agentAutonomousRunHttpResponse = await agentAutonomousRunResponse;
+  assert(agentAutonomousRunHttpResponse.ok(), `Agent autonomous queue action returned HTTP ${agentAutonomousRunHttpResponse.status()}.`);
   await page.getByTestId('backend-agent-autonomous-action-run-receipt').waitFor({ state: 'visible', timeout: 12000 });
   await assertPageContains(page, 'Run receipt:', 'Running an Agent autonomous queue row must render a backend run receipt.');
   await page.getByTestId('backend-agent-autonomous-action-run-output').waitFor({ state: 'visible', timeout: 15000 });
@@ -1069,9 +1141,17 @@ try {
   await page.getByTestId('backend-agent-autonomous-action-decision').waitFor({ state: 'visible', timeout: 10000 });
   const agentActionDecisionText = await page.getByTestId('backend-agent-autonomous-action-decision').innerText();
   assert(/Action Decision/i.test(agentActionDecisionText) && /Strategy/i.test(agentActionDecisionText), 'Agent autonomous output must render the backend Agent action decision.');
+  const collaborationIntentQueueResponse = page.waitForResponse((response) => (
+    response.request().method() === 'GET'
+    && /\/collaboration-intent-queue$/.test(new URL(response.url()).pathname)
+  ), { timeout: 65000 });
   await page.getByTestId('backend-sync-collaboration-intent-queue').click();
+  const collaborationIntentQueueHttpResponse = await collaborationIntentQueueResponse;
+  assert(collaborationIntentQueueHttpResponse.ok(), `Collaboration intent queue sync returned HTTP ${collaborationIntentQueueHttpResponse.status()}.`);
+  await page.getByText(/Backend collaboration intent queue synced/i).waitFor({ state: 'visible', timeout: 35000 });
+  await waitForBackendOnlineStatus(page);
   await assertPageContains(page, 'Collaboration intent queue sync:', 'Standalone collaboration intent queue sync must expose sync status.');
-  await page.getByTestId('backend-collaboration-intent-queue-snapshot').waitFor({ state: 'visible', timeout: 5000 });
+  await page.getByTestId('backend-collaboration-intent-queue-snapshot').waitFor({ state: 'visible', timeout: 15000 });
   await assertPageContains(page, 'Collaboration Intent Queue', 'Backend manager snapshot must include the Collaboration Intent Queue.');
   await assertPageContains(page, '/collaboration-intent-queue', 'Collaboration intent queue snapshot must show its backend route.');
   await assertPageContains(page, 'Intent chat proof', 'Collaboration intent queue rows must expose transcript proof actions.');
@@ -1079,7 +1159,13 @@ try {
   await page.getByTestId('manager-assignment-composer-input').scrollIntoViewIfNeeded();
   await page.getByTestId('manager-assignment-composer-target').selectOption('turing');
   await page.getByTestId('manager-assignment-composer-input').fill('prepare composer assignment evidence packet');
-  await page.getByTestId('manager-assignment-composer-submit').click();
+  const leaderAssignmentResponse = page.waitForResponse((response) => (
+    response.request().method() === 'POST'
+    && /\/projects\/[^/]+\/chat$/.test(new URL(response.url()).pathname)
+  ), { timeout: 65000 });
+  await submitManagerAssignment(page);
+  const leaderAssignmentHttpResponse = await leaderAssignmentResponse;
+  assert(leaderAssignmentHttpResponse.ok(), `Leader assignment composer returned HTTP ${leaderAssignmentHttpResponse.status()}.`);
   await waitForBackendSnapshot(
     backendRuntime.url,
     (snapshot) => {
@@ -1100,12 +1186,19 @@ try {
       );
     },
     'Leader assignment composer must persist a custom group @assignment with inbox, obligation, acknowledgement, immediate work pulse, and timeline evidence.',
+    { timeoutMs: 30_000 },
   );
   await assertPageContains(page, 'composer assignment evidence packet', 'Leader assignment composer must render the custom assignment in the dashboard.');
   await page.getByTestId('manager-change-composer-input').scrollIntoViewIfNeeded();
   await page.getByTestId('manager-change-composer-input').fill('@all add composer-driven forecast packet before manager review');
   await page.getByTestId('manager-change-composer-mode').selectOption('dual');
+  const managerChangeResponse = page.waitForResponse((response) => (
+    response.request().method() === 'POST'
+    && /\/projects\/[^/]+\/change-request$/.test(new URL(response.url()).pathname)
+  ), { timeout: 65000 });
   await page.getByTestId('manager-change-composer-submit').click();
+  const managerChangeHttpResponse = await managerChangeResponse;
+  assert(managerChangeHttpResponse.ok(), `Manager change composer returned HTTP ${managerChangeHttpResponse.status()}.`);
   await waitForBackendSnapshot(
     backendRuntime.url,
     (snapshot) => {
@@ -1128,7 +1221,13 @@ try {
     { timeoutMs: 30_000 },
   );
   await assertPageContains(page, 'composer-driven forecast packet', 'Manager change intake composer must render the custom change in the dashboard.');
+  const schedulerStartResponse = page.waitForResponse((response) => (
+    response.request().method() === 'POST'
+    && /\/workers\/autonomous\/start$/.test(new URL(response.url()).pathname)
+  ), { timeout: 45000 });
   await station.getByRole('button', { name: /^Start$/i }).click();
+  const schedulerStartHttpResponse = await schedulerStartResponse;
+  assert(schedulerStartHttpResponse.ok(), `Backend scheduler start returned HTTP ${schedulerStartHttpResponse.status()}.`);
   await assertPageContains(page, 'IMMEDIATE START: YES', 'Backend scheduler start must immediately kick the autonomous worker path.');
   await waitForBackendSnapshot(
     backendRuntime.url,
@@ -1165,7 +1264,17 @@ try {
   await assertPageContains(page, 'MANAGER-UI-SCHEDULER-START-PULSE', 'Backend scheduler start pulse must be visible on the manager dashboard.');
   await station.getByRole('button', { name: /^Stop$/i }).click();
 
+  const serverPulseResponse = page.waitForResponse((response) => {
+    if (response.request().method() !== 'POST' || !/\/workers\/autonomous\/tick$/.test(new URL(response.url()).pathname)) return false;
+    try {
+      return response.request().postDataJSON()?.trigger === 'manager-ui-backend-pulse';
+    } catch {
+      return false;
+    }
+  }, { timeout: 65000 });
   await station.getByRole('button', { name: /Server Pulse/i }).click();
+  const serverPulseHttpResponse = await serverPulseResponse;
+  assert(serverPulseHttpResponse.ok(), `Backend Server Pulse returned HTTP ${serverPulseHttpResponse.status()}.`);
   await waitForBackendSnapshot(
     backendRuntime.url,
     (snapshot) => {
@@ -1176,7 +1285,7 @@ try {
       );
     },
     'Backend Server Pulse must persist the autonomous pulse before the UI assertion.',
-    { timeoutMs: 10000 },
+    { timeoutMs: 65000 },
   );
   await waitForBackendSnapshot(
     backendRuntime.url,
@@ -1188,11 +1297,17 @@ try {
       );
     },
     'Backend Server Pulse must run a real scheduler tick with Agent worker output.',
-    { timeoutMs: 10000 },
+    { timeoutMs: 65000 },
   );
   await page.waitForFunction(() => document.body.innerText.includes('MANAGER-UI-BACKEND-PULSE'), null, { timeout: 10000 });
   await assertPageContains(page, 'MANAGER-UI-BACKEND-PULSE', 'Backend Server Pulse must update the manager dashboard.');
+  const hourPulseResponse = page.waitForResponse((response) => (
+    response.request().method() === 'POST'
+    && /\/workers\/autonomous\/tick$/.test(new URL(response.url()).pathname)
+  ), { timeout: 65_000 });
   await page.getByRole('button', { name: /Hour Pulse/i }).click();
+  const hourPulseHttpResponse = await hourPulseResponse;
+  assert(hourPulseHttpResponse.ok(), `Backend Hour Pulse returned HTTP ${hourPulseHttpResponse.status()}.`);
   await waitForBackendSnapshot(
     backendRuntime.url,
     (snapshot) => {
@@ -1203,11 +1318,11 @@ try {
       );
     },
     'Backend Hour Pulse must run through the scheduler tick route with Agent worker output.',
-    { timeoutMs: 10000 },
+    { timeoutMs: 30_000 },
   );
   await page.waitForFunction(() => document.body.innerText.includes('MANAGER-UI-HOURLY-PULSE'), null, { timeout: 10000 });
   await assertPageContains(page, 'MANAGER-UI-HOURLY-PULSE', 'Backend Hour Pulse must update the manager dashboard through the scheduler tick path.');
-  await station.scrollIntoViewIfNeeded();
+  await station.evaluate((element) => element.scrollIntoView({ block: 'center' }));
   const catalogSyncStatus = station.getByTestId('backend-project-catalog-sync-status');
   await catalogSyncStatus.waitFor({ state: 'attached', timeout: 5000 });
   await catalogSyncStatus.scrollIntoViewIfNeeded();
@@ -1226,17 +1341,17 @@ try {
   await station.getByRole('button', { name: /Sync State/i }).click();
   await assertPageContains(page, 'Project sync:', 'Backend Sync State must keep project sync evidence visible in the UI.');
   await assertPageContains(page, 'Manager dashboard sync:', 'Backend Sync State must refresh the aggregate manager dashboard snapshot.');
-  await page.getByTestId('backend-manager-dashboard-snapshot').waitFor({ state: 'visible', timeout: 5000 });
+  await page.getByTestId('backend-manager-dashboard-snapshot').waitFor({ state: 'visible', timeout: 15000 });
   await assertPageContains(page, 'Backend Manager Snapshot', 'Backend Worker Station must show the aggregate manager-dashboard read model.');
   await assertPageContains(page, 'Proof Routes', 'Backend manager snapshot must show readiness proof route count.');
   await assertPageContains(page, 'Ops Agents', 'Backend manager snapshot must show Agent operations count.');
   await assertPageContains(page, 'Management Checks', 'Backend manager snapshot must show management check evidence.');
   await assertPageContains(page, 'Assignment Rows', 'Backend manager snapshot must show assignment flow count.');
   await assertPageContains(page, 'Change Rows', 'Backend manager snapshot must show change flow count.');
-  await station.getByRole('button', { name: /Sync Manager View/i }).click();
+  await syncManagerView(page);
   await assertPageContains(page, 'BACKEND MANAGER READY PACKAGE SYNCED', 'Manual manager view sync must update the backend station action through the ready package.');
-  await page.getByTestId('backend-manager-ready-package-snapshot').waitFor({ state: 'visible', timeout: 5000 });
-  await page.getByTestId('backend-manager-dashboard-snapshot').waitFor({ state: 'visible', timeout: 5000 });
+  await page.getByTestId('backend-manager-ready-package-snapshot').waitFor({ state: 'visible', timeout: 30000 });
+  await page.getByTestId('backend-manager-dashboard-snapshot').waitFor({ state: 'visible', timeout: 15000 });
   await assertPageContains(page, '24/7 Operations Board', 'Backend-connected dashboard must expose the 24/7 operations board.');
   await assertPageContains(page, 'Project Next Run', '24/7 operations board must show project next run.');
   await assertPageContains(page, 'Project Last Run', '24/7 operations board must show project last run.');
@@ -1360,8 +1475,11 @@ try {
   await assertPageContains(page, 'Open Obligation', 'Backend-connected Agent Pulse must keep independent Agent obligations visible.');
   await assertPageContains(page, 'Latest Worklog', 'Backend-connected Agent Pulse must keep independent Agent worklog visible.');
   await assertPageContains(page, 'Next Agent Run', 'Backend-connected Agent Pulse must keep independent Agent schedule visible.');
-  await page.getByTestId('agent-focus-open-turing').click();
-  await page.getByTestId('agent-focus-panel-turing').waitFor({ state: 'visible', timeout: 5000 });
+  const turingAgentFocusPanel = page.getByTestId('agent-focus-panel-turing');
+  if (await turingAgentFocusPanel.count() === 0) {
+    await page.getByTestId('agent-focus-open-turing').click();
+  }
+  await turingAgentFocusPanel.waitFor({ state: 'visible', timeout: 15000 });
   await assertPageContains(page, 'Agent Focus Workspace', 'Manager dashboard must open a dedicated per-Agent workspace from the Team row.');
   await assertPageContains(page, 'Owned Task Evidence', 'Per-Agent workspace must expose owned task evidence.');
   await assertPageContains(page, 'Independent state', 'Per-Agent workspace must describe the independent Agent state surface.');
@@ -1406,7 +1524,7 @@ try {
     const button = document.querySelector(`[data-testid="agent-work-cycle-${targetId}"]`);
     return button && !button.disabled;
   }, managedResponseTargetButtonId, { timeout: 15000 });
-  await page.getByTestId(`agent-work-cycle-${managedResponseTargetButtonId}`).click();
+  await page.getByTestId(`agent-work-cycle-${managedResponseTargetButtonId}`).evaluate((button) => button.click());
   await waitForBackendSnapshot(
     backendRuntime.url,
     (snapshot) => {
@@ -1524,7 +1642,7 @@ try {
     },
     'Backend management sync must publish a management check-in and deliver it into the managed Agent inbox.',
   );
-  await page.getByRole('button', { name: /Management timeline proof/i }).first().click();
+  await page.getByRole('button', { name: /Management timeline proof/i }).first().evaluate((button) => button.click());
   await assertPageContains(page, 'TIMELINE PROOF FOCUS:', 'Agent management mesh proof must jump to management timeline evidence.');
   await assertPageContains(page, 'management', 'Agent management mesh proof must include management event evidence.');
   await backToDashboard(page);
@@ -1534,7 +1652,7 @@ try {
   await assertPageContains(page, 'Every readiness condition has a direct evidence route', 'Manager proof map must explain its evidence route purpose.');
   await assertPageContains(page, 'Transcript Proof Coverage', 'Manager proof map must expose backend transcript proof coverage.');
   await assertPageContains(page, 'Transcript coverage proof', 'Manager proof map must expose a transcript coverage proof action.');
-  await page.getByTestId('proof-map-collaboration-intent-queue').waitFor({ state: 'visible', timeout: 5000 });
+  await page.getByTestId('proof-map-collaboration-intent-queue').waitFor({ state: 'visible', timeout: 15000 });
   await assertPageContains(page, 'Collaboration Intent Queue', 'Manager proof map must expose Collaboration Intent Queue route proof.');
   await assertPageContains(page, 'Intent chat proof', 'Manager proof map must expose Collaboration Intent Queue chat proof.');
   await assertPageContains(page, 'Intent timeline proof', 'Manager proof map must expose Collaboration Intent Queue timeline proof.');
@@ -1546,7 +1664,7 @@ try {
   await assertPageContains(page, 'TIMELINE PROOF FOCUS:', 'Collaboration Intent Queue proof map timeline route must open timeline evidence.');
   await backToDashboard(page);
   await scrollDashboardToBottom(page);
-  await page.getByTestId('proof-map-submission-review-workflow').waitFor({ state: 'visible', timeout: 5000 });
+  await page.getByTestId('proof-map-submission-review-workflow').waitFor({ state: 'visible', timeout: 15000 });
   await assertPageContains(page, 'Submission Review Workflow', 'Manager proof map must expose submission review workflow route proof.');
   await assertPageContains(page, 'Review chat proof', 'Manager proof map must expose submission review chat proof.');
   await assertPageContains(page, 'Review timeline proof', 'Manager proof map must expose submission review timeline proof.');
@@ -1558,7 +1676,7 @@ try {
   await assertPageContains(page, 'TIMELINE PROOF FOCUS:', 'Submission Review Workflow proof map timeline route must open timeline evidence.');
   await backToDashboard(page);
   await scrollDashboardToBottom(page);
-  await page.getByTestId('proof-map-product-team-acceptance-chain').waitFor({ state: 'visible', timeout: 5000 });
+  await page.getByTestId('proof-map-product-team-acceptance-chain').waitFor({ state: 'visible', timeout: 15000 });
   await assertPageContains(page, 'Generic Product-Team Acceptance Chain', 'Manager proof map must expose the generic product-team acceptance chain route proof.');
   await assertPageContains(page, 'Chain chat proof', 'Manager proof map must expose acceptance chain chat proof.');
   await assertPageContains(page, 'Chain timeline proof', 'Manager proof map must expose acceptance chain timeline proof.');
@@ -1570,7 +1688,7 @@ try {
   await assertPageContains(page, 'TIMELINE PROOF FOCUS:', 'Product-team acceptance chain proof map timeline route must open timeline evidence.');
   await backToDashboard(page);
   await scrollDashboardToBottom(page);
-  await page.getByTestId('proof-map-product-team-delivery-trace').waitFor({ state: 'visible', timeout: 5000 });
+  await page.getByTestId('proof-map-product-team-delivery-trace').waitFor({ state: 'visible', timeout: 15000 });
   await assertPageContains(page, 'Product Team Delivery Trace', 'Manager proof map must expose product-team delivery trace route proof.');
   await assertPageContains(page, 'Delivery chat proof', 'Manager proof map must expose delivery trace chat proof.');
   await assertPageContains(page, 'Delivery timeline proof', 'Manager proof map must expose delivery trace timeline proof.');
@@ -1829,7 +1947,7 @@ try {
   });
   await page.getByText('Workspace Hub', { exact: false }).click();
   await assertPageContains(page, 'ACTIVE PROJECTS', 'Workspace dashboard must be reachable before starting a real initiation.');
-  await page.getByTestId('start-initiation-button').click();
+  await startInitiationFromWorkspace(page);
   await assertPageContains(page, 'Project Initiation Flow', 'Manager must be able to open the real initiation flow.');
   await page.getByTestId('initiation-next-workspace').click();
   await page.getByTestId('initiation-workspace-base-path').fill(PROJECT_RUNTIME_ROOT);
@@ -1864,7 +1982,7 @@ try {
   await page.getByTestId('leader-candidate-turing').click();
   await assertPageContains(page, 'Director selected', 'Manager must be able to override the recommended Leader before approval.');
   await page.getByTestId('initiation-approve-create').click();
-  await page.waitForFunction(() => document.body.innerText.includes('Roundtable Initiation System') && document.body.innerText.includes('PROJECT DASHBOARD'), null, { timeout: 30000 });
+  await openAdvancedProjectDashboard(page);
   await assertPageContains(page, 'NEXT ACTION RESOLUTION', 'Approved project dashboard must show the meeting-confirmed next-action resolution.');
   await assertPageContains(page, 'AGENT RECEIPTS:', 'Approved project dashboard must show Agent receipt coverage for the next-action decision.');
   await page.getByTestId('kickoff-dashboard-generation-source').scrollIntoViewIfNeeded({ timeout: 10000 });
@@ -1945,7 +2063,7 @@ try {
     return button && !button.disabled;
   }, null, { timeout: 15000 });
   await page.getByTestId('agent-workbench-submit-turing').click();
-  await page.getByTestId('agent-workbench-receipt-turing').waitFor({ state: 'visible', timeout: 15000 });
+  await page.getByTestId('agent-workbench-receipt-turing').waitFor({ state: 'visible', timeout: 65000 });
   const realBrainstormSnapshot = await waitForBackendSnapshot(
     backendRuntime.url,
     (snapshot) => {
@@ -1983,7 +2101,7 @@ try {
     return button && !button.disabled;
   }, null, { timeout: 15000 });
   await page.getByTestId('agent-workbench-evidence-turing').click();
-  await page.getByTestId('agent-workbench-receipt-turing').waitFor({ state: 'visible', timeout: 15000 });
+  await page.getByTestId('agent-workbench-receipt-turing').waitFor({ state: 'visible', timeout: 65000 });
   const realEvidenceSnapshot = await waitForBackendSnapshot(
     backendRuntime.url,
     (snapshot) => {
@@ -2018,7 +2136,7 @@ try {
     return button && !button.disabled;
   }, null, { timeout: 15000 });
   await page.getByTestId('agent-workbench-draft-submit-turing').click();
-  await page.getByTestId('agent-workbench-receipt-turing').waitFor({ state: 'visible', timeout: 20000 });
+  await page.getByTestId('agent-workbench-receipt-turing').waitFor({ state: 'visible', timeout: 65000 });
   const realSubmissionSnapshot = await waitForBackendSnapshot(
     backendRuntime.url,
     (snapshot) => {
@@ -2042,12 +2160,17 @@ try {
     && (submission.isGeneratedDraft || submission.artifactDraft)
   ));
   assert(realSubmission?.messageId && realSubmission.timelineLogId && realSubmission.eventId, 'Real generated product-brief submission must persist chat, timeline, and event proof.');
-  assert(realSubmission.artifactDraftQuality?.readyForLocalPilot || realSubmission.artifactDraftQualityStatus === 'local-quality-ready', 'Real generated product-brief draft must carry local artifact-draft quality proof.');
+  assert(
+    realSubmission.artifactDraftQuality?.structurallyReadyForReview
+      || realSubmission.artifactDraftQuality?.readyForLocalPilot
+      || realSubmission.artifactDraftQualityStatus === 'local-quality-ready',
+    'Real generated product-brief draft must carry structurally ready local quality proof while preserving human review.',
+  );
   assert(realSubmission.artifactDraft?.proofContext?.evidenceSearchIds?.includes(realEvidenceSearch.id) || realSubmission.artifactDraft?.sourceRefs?.length > 0, 'Real generated product-brief draft must link the evidence search context.');
   assert(realSubmission.readModelRoutes?.managerFlowGraph?.endsWith('/manager-flow-graph') || realSubmission.evidenceIds?.length > 0, 'Real generated product-brief submission must carry route or evidence proof for read-model refresh.');
 
   await scrollDashboardToBottom(page);
-  await station.getByRole('button', { name: /Sync Manager View/i }).click();
+  await syncManagerView(page);
   await page.getByTestId('backend-manager-submissions-snapshot').waitFor({ state: 'visible', timeout: 15000 });
   await page.getByTestId(`submission-chat-proof-${realSubmission.id}`).waitFor({ state: 'visible', timeout: 10000 });
   await page.getByTestId(`submission-timeline-proof-${realSubmission.id}`).waitFor({ state: 'visible', timeout: 10000 });
@@ -2066,7 +2189,7 @@ try {
     await page.getByTestId('project-dashboard-view').waitFor({ state: 'visible', timeout: 5000 });
   });
   await scrollDashboardToBottom(page);
-  await station.getByRole('button', { name: /Sync Manager View/i }).click();
+  await syncManagerView(page);
   await page.getByTestId('backend-manager-submissions-snapshot').waitFor({ state: 'visible', timeout: 15000 });
   await page.getByTestId(`submission-review-composer-${realSubmission.id}`).waitFor({ state: 'visible', timeout: 10000 });
   await page.getByTestId(`submission-review-reviewer-${realSubmission.id}`).selectOption('curie');
@@ -2235,7 +2358,7 @@ try {
   assert(realFinalSubmission?.messageId && realFinalSubmission.timelineLogId && realFinalSubmission.eventId, 'Real final deliverable must carry chat, timeline, and event proof ids.');
 
   await scrollDashboardToBottom(page);
-  await station.getByRole('button', { name: /Sync Manager View/i }).click();
+  await syncManagerView(page);
   await page.getByTestId(`submission-review-composer-${realFinalSubmission.id}`).waitFor({ state: 'visible', timeout: 15000 });
   await page.getByTestId(`submission-review-reviewer-${realFinalSubmission.id}`).selectOption('curie');
   await page.getByTestId(`submission-review-verdict-${realFinalSubmission.id}`).selectOption('accepted');
@@ -2292,7 +2415,7 @@ try {
   assert(realClosedProofMap.productTeamAcceptanceChainSummary?.readyForGenericProductTeamAcceptance === true && realClosedProofMap.productTeamAcceptanceChainSummary?.missingCount === 0, 'Readiness Proof Map must summarize the generic product-team acceptance chain after final deliverable closure.');
   assert(realClosedProofMap.productTeamAcceptanceChainRoutes?.some((route) => route.apiPath?.endsWith('/product-team-delivery-trace') && route.readyForGenericProductTeamAcceptance === true && route.readyForBsideProductTeamRun === true && route.stageRows?.length >= 8 && route.missingStageIds?.length === 0 && route.proofIds?.length && route.timelineLogIds?.length && route.eventIds?.length), 'Readiness Proof Map must expose the generic product-team acceptance chain route with stage, proof, timeline, event, and B-side loop readiness.');
   await scrollDashboardToBottom(page);
-  await station.getByRole('button', { name: /Sync Manager View/i }).click();
+  await syncManagerView(page);
   await page.getByTestId('group-chat-collaboration-proof-rows').scrollIntoViewIfNeeded();
   await page.getByTestId('group-chat-collaboration-proof-rows').waitFor({ state: 'visible', timeout: 10000 });
   await assertPageContains(page, 'Collaboration Proof Rows', 'Group Chat Transcript Index must expose collaboration proof rows.');

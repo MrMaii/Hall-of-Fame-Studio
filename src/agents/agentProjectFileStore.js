@@ -684,6 +684,39 @@ function prepareMigrationTransaction(filePath, integrity = {}, migratedSnapshot 
   });
 }
 
+function reconcilePreparedMigrationTarget(filePath, journal = {}, targetSnapshot = {}) {
+  if (!validMigrationJournal(journal) || journal.status !== 'prepared') return journal;
+  const targetChecksum = snapshotSemanticChecksum(journal.targetVersion, targetSnapshot);
+  if (targetChecksum === journal.targetChecksum) return journal;
+  if (!journal.sourceArchivePath || !existsSync(journal.sourceArchivePath)) {
+    throw new Error('agent-project-store-migration-archive-invalid');
+  }
+  const sourceRaw = readFileSync(journal.sourceArchivePath, 'utf8');
+  if (sha256(sourceRaw) !== journal.sourceChecksum) {
+    throw new Error('agent-project-store-migration-archive-invalid');
+  }
+  const currentTarget = readSnapshotCandidate(filePath);
+  const step = SNAPSHOT_MIGRATIONS.get(journal.sourceVersion);
+  if (currentTarget.error
+    || currentTarget.version !== journal.targetVersion
+    || !step?.validate?.(currentTarget.snapshot)) {
+    throw new Error('agent-project-store-migration-target-invalid');
+  }
+  const targetRecoveryArchivePath = `${filePath}.${journal.id}.target-recovery.json`;
+  if (!existsSync(targetRecoveryArchivePath)) {
+    copyFileSync(filePath, targetRecoveryArchivePath);
+  }
+  const { checksum: _checksum, ...base } = journal;
+  return writeMigrationJournal(filePath, {
+    ...base,
+    originalTargetChecksum: journal.originalTargetChecksum || journal.targetChecksum,
+    targetChecksum,
+    targetRecoveryArchivePath,
+    recoveryReason: 'hydrated-target-checksum-reconciled',
+    recoveredAt: new Date().toISOString(),
+  });
+}
+
 function commitMigrationTransaction(filePath, journal = {}) {
   if (!validMigrationJournal(journal) || journal.status !== 'prepared') throw new Error('agent-project-store-migration-journal-invalid');
   const target = readSnapshotCandidate(filePath);
@@ -711,6 +744,10 @@ function publicMigrationTransaction(filePath, journal = null) {
     targetChecksum: journal.targetChecksum,
     sourceArchivePath: journal.sourceArchivePath,
     targetVerified: journal.targetVerified === true,
+    originalTargetChecksum: journal.originalTargetChecksum || null,
+    targetRecoveryArchivePath: journal.targetRecoveryArchivePath || null,
+    recoveryReason: journal.recoveryReason || null,
+    recoveredAt: journal.recoveredAt || null,
     rollbackArchivePath: journal.rollbackArchivePath || null,
     createdAt: journal.createdAt,
     committedAt: journal.committedAt || null,
@@ -808,6 +845,53 @@ function writeSnapshot(filePath, snapshot) {
   replaceFileWithRetry(tempPath, filePath);
 }
 
+function hydrateStartupProjects(filePath, projects = [], hydrateProject = (project) => project) {
+  const hydratedProjects = [];
+  const quarantinedProjects = [];
+  projects.forEach((project, index) => {
+    try {
+      if (!project?.id) throw new Error('project-id-required');
+      const hydrated = hydrateProject(project);
+      if (!hydrated?.id) throw new Error('hydrated-project-id-required');
+      hydratedProjects.push(hydrated);
+    } catch (error) {
+      quarantinedProjects.push({
+        index,
+        projectId: project?.id || null,
+        error: error?.message || String(error),
+        project,
+      });
+    }
+  });
+  if (!quarantinedProjects.length) {
+    return { projects: hydratedProjects, quarantine: null };
+  }
+  const createdAt = new Date().toISOString();
+  const path = `${filePath}.project-quarantine-${createdAt.replace(/[^0-9]/g, '').slice(0, 14)}.json`;
+  const quarantineBase = {
+    schemaVersion: 'agent-project-store-project-quarantine/v1',
+    createdAt,
+    sourceFilePath: filePath,
+    projectCount: quarantinedProjects.length,
+    projectIds: quarantinedProjects.map((entry) => entry.projectId).filter(Boolean),
+    projects: quarantinedProjects,
+  };
+  writeJsonAtomic(path, {
+    ...quarantineBase,
+    checksum: sha256(stableJson(quarantineBase)),
+  });
+  return {
+    projects: hydratedProjects,
+    quarantine: {
+      schemaVersion: quarantineBase.schemaVersion,
+      path,
+      createdAt,
+      projectCount: quarantineBase.projectCount,
+      projectIds: quarantineBase.projectIds,
+    },
+  };
+}
+
 export function createAgentProjectFileStore({
   filePath,
   securityAuditLogPath,
@@ -815,12 +899,20 @@ export function createAgentProjectFileStore({
   messages = [],
   kickoffMeetings = [],
   securityAccessAuditRecords = [],
-  messageLimit = 240,
+  messageLimit = 0,
   hydrateProject = (project) => project,
   replaceWithSeed = false,
 } = {}) {
   const resolvedPath = resolveStorePath(filePath);
   const resolvedSecurityAuditLogPath = resolveSecurityAuditLogPath(resolvedPath, securityAuditLogPath);
+  const hydratedProjectMarker = Symbol('agent-project-file-store-hydrated');
+  const hydrateProjectOnce = (project) => {
+    if (project?.[hydratedProjectMarker] === true) return project;
+    return {
+      ...hydrateProject(project),
+      [hydratedProjectMarker]: true,
+    };
+  };
   const localRateLimitLedger = createLocalRateLimitLedger({ filePath: `${resolvedPath}.provider-rate-limits.json` });
   const loadedSnapshot = replaceWithSeed
     ? {
@@ -838,7 +930,7 @@ export function createAgentProjectFileStore({
     : loadSnapshotWithRecovery(resolvedPath);
   const existingSnapshot = loadedSnapshot.snapshot;
   let migrationTransaction = loadedSnapshot.integrity.migratedFromVersion
-    ? prepareMigrationTransaction(resolvedPath, loadedSnapshot.integrity, existingSnapshot)
+    ? null
     : readMigrationJournal(resolvedPath);
   if (replaceWithSeed && resolvedSecurityAuditLogPath) {
     mkdirSync(dirname(resolvedSecurityAuditLogPath), { recursive: true });
@@ -852,7 +944,9 @@ export function createAgentProjectFileStore({
     initialAuditLog,
   );
   const existingAuditLogRecords = initialAuditLog.records;
-  const seedProjects = projects.length ? projects : existingSnapshot.projects;
+  const sourceSeedProjects = projects.length ? projects : existingSnapshot.projects;
+  const startupProjectHydration = hydrateStartupProjects(resolvedPath, sourceSeedProjects, hydrateProjectOnce);
+  const seedProjects = startupProjectHydration.projects;
   const seedMessages = messages.length ? messages : existingSnapshot.messages;
   const seedKickoffMeetings = kickoffMeetings.length ? kickoffMeetings : existingSnapshot.kickoffMeetings;
   const seedSecurityAccessAuditRecords = securityAuditRecordsForActiveProjects(securityAccessAuditRecords.length
@@ -866,8 +960,22 @@ export function createAgentProjectFileStore({
     securityAccessAuditRecords: seedSecurityAccessAuditRecords,
     accessReplayRecords: seedAccessReplayRecords,
     messageLimit,
-    hydrateProject,
+    hydrateProject: (project) => project,
   });
+  if (loadedSnapshot.integrity.migratedFromVersion) {
+    migrationTransaction = prepareMigrationTransaction(
+      resolvedPath,
+      loadedSnapshot.integrity,
+      memoryStore.snapshot(),
+    );
+  }
+  if (migrationTransaction?.status === 'prepared') {
+    migrationTransaction = reconcilePreparedMigrationTarget(
+      resolvedPath,
+      migrationTransaction,
+      memoryStore.snapshot(),
+    );
+  }
 
   const persist = () => {
     writeSnapshot(resolvedPath, memoryStore.snapshot());
@@ -901,6 +1009,7 @@ export function createAgentProjectFileStore({
   persist();
   if (migrationTransaction?.status === 'prepared') migrationTransaction = commitMigrationTransaction(resolvedPath, migrationTransaction);
   loadedSnapshot.integrity.migrationTransaction = publicMigrationTransaction(resolvedPath, migrationTransaction);
+  loadedSnapshot.integrity.projectQuarantine = startupProjectHydration.quarantine;
   delete loadedSnapshot.integrity.migrationSourceRaw;
 
   return {
@@ -911,9 +1020,17 @@ export function createAgentProjectFileStore({
       return memoryStore.getProject(projectId);
     },
     saveProject(project) {
-      const saved = memoryStore.saveProject(project);
+      const hydrated = hydrateProjectOnce(project);
+      const saved = memoryStore.saveProject(hydrated);
       persist();
       return saved;
+    },
+    saveProjectAndAppendMessages(project, nextMessages = []) {
+      const hydrated = hydrateProjectOnce(project);
+      const saved = memoryStore.saveProject(hydrated);
+      const appended = memoryStore.appendMessages(nextMessages);
+      persist();
+      return { project: saved, messages: appended };
     },
     deleteProject(projectId) {
       const removed = memoryStore.deleteProject(projectId);

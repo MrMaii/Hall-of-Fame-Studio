@@ -40,6 +40,7 @@ assert(response.body.privatePilotLaunchRun.releaseCandidateId && response.body.p
 assert(response.body.privatePilotLaunchRun.releaseChecksums?.deploymentPreflight && response.body.privatePilotLaunchRun.releaseChecksums?.operationsReadiness && response.body.privatePilotLaunchRun.releaseChecksums?.latestProviderEvalRun, 'Launch run must freeze deployment, operations, and provider eval checksums.');
 assert(response.body.privatePilotLaunchRun.eventId && response.body.privatePilotLaunchRun.timelineLogId, 'Launch run must include event and timeline proof.');
 assert(response.body.privatePilotLaunchRunWorkflow?.readyForPrivatePilotLaunch === true, 'Launch run workflow must become ready after receipt.');
+assert(response.body.privatePilotLaunchHealthCheckWorkflow?.readyToCheck === true, 'Launch receipt must immediately return the now-runnable health workflow.');
 assert(response.body.readModels?.included === false && response.body.readModels.privatePilotLaunchRunWorkflowRoute?.endsWith('/private-pilot-launch-runs'), 'Launch run receipt must support lightweight read-model refresh routes.');
 const launchRun = response.body.privatePilotLaunchRun;
 
@@ -67,6 +68,7 @@ assert(response.body.privatePilotLaunchHealthCheck.launchRunId === launchRun.id,
 assert(response.body.privatePilotLaunchHealthCheck.healthChecksums?.operationsReadiness && response.body.privatePilotLaunchHealthCheck.healthChecksums?.securityBoundary && response.body.privatePilotLaunchHealthCheck.healthChecksums?.persistenceAdapterDryRun, 'Launch health check must freeze operations, security, and persistence checksums.');
 assert(response.body.privatePilotLaunchHealthCheck.eventId && response.body.privatePilotLaunchHealthCheck.timelineLogId, 'Launch health check must include event and timeline proof.');
 assert(response.body.privatePilotLaunchHealthCheckWorkflow?.readyForPrivatePilotMonitoring === true, 'Launch health workflow must become ready after receipt.');
+assert(response.body.privatePilotAcceptanceReportWorkflow?.readyToReport === true, 'Launch health receipt must immediately return the now-runnable acceptance workflow.');
 assert(response.body.readModels?.included === false && response.body.readModels.privatePilotLaunchHealthCheckWorkflowRoute?.endsWith('/private-pilot-launch-health-checks'), 'Launch health receipt must support lightweight read-model refresh routes.');
 const launchHealthCheck = response.body.privatePilotLaunchHealthCheck;
 
@@ -95,6 +97,9 @@ assert(response.body.privatePilotAcceptanceReport.launchRunId === launchRun.id &
 assert(response.body.privatePilotAcceptanceReport.acceptanceChecksums?.projectEvidenceArchive && response.body.privatePilotAcceptanceReport.acceptanceChecksums?.projectEvidenceExportWorkflow && response.body.privatePilotAcceptanceReport.acceptanceChecksums?.managerFlowGraph && response.body.privatePilotAcceptanceReport.acceptanceChecksums?.readinessProofMap, 'Acceptance report must freeze evidence archive, export, Flow Graph, and Proof Map checksums.');
 assert(response.body.privatePilotAcceptanceReport.proofIds?.length >= 10 && response.body.privatePilotAcceptanceReport.eventId && response.body.privatePilotAcceptanceReport.timelineLogId, 'Acceptance report must include proof, event, and timeline links.');
 assert(response.body.privatePilotAcceptanceReportWorkflow?.readyForPrivatePilotAcceptance === true, 'Acceptance workflow must become ready after receipt.');
+assert(response.body.launchOperationsOverview?.readyForPrivatePilotAcceptance === true, 'Acceptance receipt must immediately return the updated launch operations overview.');
+assert(response.body.productionOperationsReadiness?.readyForPrivatePilotOperations === true, 'Acceptance receipt must immediately return production operations readiness for the next UI action.');
+assert(response.body.productionOperationsControlReceiptWorkflow?.readyForPrivatePilotOperations === true, 'Acceptance receipt must immediately enable the production operations control receipt workflow.');
 assert(response.body.readModels?.included === false && response.body.readModels.privatePilotAcceptanceReportWorkflowRoute?.endsWith('/private-pilot-acceptance-reports'), 'Acceptance receipt must support lightweight read-model refresh routes.');
 
 const readyPackage = request({ method: 'GET', path: `/projects/${projectId}/manager-ready-package` });

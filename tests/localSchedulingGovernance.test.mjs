@@ -81,3 +81,37 @@ test('applies clock recovery and stable missed slots to project, Agent, and Auto
   assert.equal(first.dueAt, '2026-07-11T10:01:00.000Z');
   assert.equal(later.idempotencyKey, first.idempotencyKey);
 });
+
+test('forced scheduler queues exclude non-target projects before concurrency limits', () => {
+  const now = '2026-07-11T10:00:00.000Z';
+  const team = [{ id: 'leader', name: 'Ada', title: 'Leader', skill: 'planning' }];
+  const target = createKickoffProjectFromMeeting({ projectId: 'forced-queue-target', name: 'Target', brief: 'Target project.', now, team });
+  const other = createKickoffProjectFromMeeting({ projectId: 'forced-queue-other', name: 'Other', brief: 'Other project.', now, team });
+  const makeDue = (project) => ({
+    ...project,
+    autonomy: { ...(project.autonomy || {}), enabled: true, cadence: 'hourly' },
+    nextAutonomousRunAt: '2026-07-11T09:00:00.000Z',
+    agentStates: {
+      ...project.agentStates,
+      leader: { ...(project.agentStates?.leader || {}), nextAgentRunAt: '2026-07-11T09:00:00.000Z' },
+    },
+  });
+  const service = createAgentProjectService({
+    projects: [makeDue(target.project), makeDue(other.project)],
+    messages: [...target.messages, ...other.messages],
+  });
+
+  const queue = service.getWorkerQueueSnapshot({
+    now,
+    forceDue: true,
+    forceProjectIds: [target.project.id],
+    maxProjects: 1,
+    maxAgentsPerProject: 1,
+  });
+
+  assert.equal(queue.projectQueue.find((row) => row.projectId === target.project.id)?.due, true);
+  assert.equal(queue.projectQueue.find((row) => row.projectId === other.project.id)?.reason, 'project-force-project-filter');
+  assert.equal(queue.agentQueue.find((row) => row.projectId === target.project.id)?.willProcess, true);
+  assert.equal(queue.agentQueue.find((row) => row.projectId === other.project.id)?.reason, 'agent-force-project-filter');
+  assert.equal(queue.agentQueue.find((row) => row.projectId === other.project.id)?.willProcess, false);
+});

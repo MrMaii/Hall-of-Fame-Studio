@@ -25,7 +25,7 @@ npm run dev
 
 每条 Director 发言先写入后端 transcript，再为每个 Agent 计算一个说话意图并显示在右上角 Intent Queue。
 
-- 排队顺序来自后端会议结果；第一个 Agent 至少等待 **5 seconds**，其余位置根据 `meetingTurnDelayMs` 依次错开。
+- 排队顺序来自后端会议结果；第一个 Agent 至少等待 **800 ms**，其余位置根据 `meetingTurnDelayMs` 依次错开。
 - Director 说话、输入、中文输入法组合输入或语音识别期间，**Director precedence** 生效：未发言的 Agent 保持 queued，已显示为 speaking 的 Agent 立即标记为 paused，且不再继续显示为当前发言人。
 - Director 提交完新的发言后，系统重新生成后端会议轮次和意图队列；旧队列不会抢占最新 Director 输入。
 - Director 的每一句发言、Agent 的每一个会议轮次均进入 transcript，并带有 timeline/event 证明，便于低延迟显示与会后审计。

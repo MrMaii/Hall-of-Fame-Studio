@@ -343,6 +343,8 @@ try {
   assert(!settingsModalText.includes('Unified API Gateway') && !settingsModalText.includes('GPT-4.1'), 'Settings must not present browser-only deployment/model selectors as real provider configuration.');
   await page.getByRole('button', { name: /Close/i }).last().click();
 
+  await page.getByTestId('workspace-open-advanced').click();
+  await page.getByTestId('manager-demo-tools').click();
   await page.getByRole('button', { name: /Load Sample Fixture.*Manager demo data/i }).click();
   await page.getByTestId('project-sample-fixture-banner').waitFor({ state: 'visible', timeout: 30000 });
   await assertPageContains(page, 'Manager Demo: Autonomous Agent Studio', 'Manager Demo sample fixture must be visible before provider-proof UI validation.');

@@ -231,6 +231,7 @@ function run() {
   assert(response.body.productionOperationsControlReceipt.readyForProductionOperations === false, 'Focused ops receipt must not imply private-pilot operations proof.');
   assert(response.body.productionOperationsControlReceipt.verifiedControlIds?.length === productionOperationsControlIds.length, 'Ops receipt must preserve every verified control id.');
   assert(response.body.productionOperationsControlReceipt.eventId && response.body.productionOperationsControlReceipt.timelineLogId, 'Ops receipt must write timeline and event proof.');
+  assert(response.body.productionOperationsControlReceiptWorkflow?.readyForProductionOperationsControls === true, 'Ops receipt write must immediately return the updated workflow when detailed read models are omitted.');
   assert(response.body.readModels?.included === false && response.body.readModels?.managerReadyPackageRoute?.endsWith('/manager-ready-package'), 'Ops receipt writes must stay lightweight and return refresh routes.');
   assert(response.body.readModels?.productionOperationsControlReceiptWorkflowRoute?.endsWith('/production-operations-control-receipts'), 'Ops receipt writes must return the standalone workflow refresh route.');
   assert(!response.body.managerReadyPackage && !response.body.managerDashboard, 'Ops receipt writes must not embed large Manager read models when includeReadModels is false.');

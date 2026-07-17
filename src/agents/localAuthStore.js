@@ -32,7 +32,9 @@ function normalizeUsername(username = '') {
 
 function requirePassword(password = '') {
   const value = String(password || '');
-  if (value.length < 12) throw new Error('Password must be at least 12 characters.');
+  if (value.length < 4) throw new Error('Password must be at least 4 characters.');
+  if (!/[A-Za-z]/.test(value)) throw new Error('Password must contain at least one letter.');
+  if (!/[0-9]/.test(value)) throw new Error('Password must contain at least one number.');
   if (value.length > 1024) throw new Error('Password is too long.');
   return value;
 }

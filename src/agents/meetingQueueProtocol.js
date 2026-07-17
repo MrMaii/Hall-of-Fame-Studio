@@ -1,5 +1,5 @@
-export const MEETING_TURN_GRACE_PERIOD_MS = 5000;
-export const MEETING_TURN_STAGGER_MS = 1450;
+export const MEETING_TURN_GRACE_PERIOD_MS = 800;
+export const MEETING_TURN_STAGGER_MS = 650;
 export const MEETING_TURN_SPEAK_DURATION_MS = 1200;
 
 export function meetingTurnDelayMs(index = 0, requestedDelayMs = null) {

@@ -10,6 +10,11 @@ import {
 import {
   createAgentProjectApi,
 } from '../src/agents/agentProjectApi.js';
+import { createAgentProjectHttpServer } from '../src/agents/agentProjectHttpServer.js';
+import { createLocalProjectRuntime } from '../src/agents/localProjectRuntime.js';
+import { createModelProvider } from '../src/agents/modelProvider.js';
+import { createSearchProvider } from '../src/agents/searchProvider.js';
+import { createSecretVaultFromEnv } from '../src/agents/secretVault.js';
 import {
   buildAgentChatReplies,
   handleFeatureChangeRequest,
@@ -18,11 +23,18 @@ import {
 
 const ROOT_DIR = fileURLToPath(new URL('..', import.meta.url));
 const DIST_DIR = join(ROOT_DIR, 'dist');
+const TEMP_DIR = join(ROOT_DIR, '.tmp', `language-system-${process.pid}`);
 const PROGRESS_LOG = join(ROOT_DIR, '.tmp', 'language-validation-progress.log');
 const SHOULD_WRITE_PROGRESS_LOG = process.env.HOFS_PROGRESS_LOG === '1';
+const REQUESTED_STEP = String(process.env.HOFS_LANGUAGE_STEP || '').trim();
 const DEFAULT_PORTS = [4191, 4192, 4193, 4194, 4195];
 const LANGUAGE_STORAGE_KEY = 'hall_of_fame_studio.language.v1';
+const BACKEND_STORAGE_KEY = 'hall_of_fame_studio.agent_backend_url.v1';
+const LOCAL_AUTH_STORAGE_KEY = 'hall_of_fame_studio.local_auth_session.v1';
 const VIEWPORT = { width: 1440, height: 1100 };
+let validationBackendUrl = '';
+let validationAuthSession = null;
+let validationBackendStore = null;
 
 const MIME_TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -37,6 +49,24 @@ const MIME_TYPES = {
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
+}
+
+async function launchLocalBrowser() {
+  let lastError = null;
+  const explicitPath = process.env.HOFS_PLAYWRIGHT_CHROMIUM || process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || '';
+  const options = [
+    { headless: true },
+    ...(explicitPath ? [{ headless: true, executablePath: explicitPath }] : []),
+    { channel: 'msedge', headless: true },
+  ];
+  for (const launchOptions of options) {
+    try {
+      return await chromium.launch(launchOptions);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError;
 }
 
 function createStaticServer() {
@@ -217,12 +247,24 @@ function validateManagerReadModelLanguage() {
 }
 
 async function openWithLanguage(browser, url, language) {
+  if (validationBackendStore?.listProjects?.().some((project) => project.id === 'p_manager_demo_001')) {
+    validationBackendStore.deleteProject('p_manager_demo_001');
+  }
   const page = await browser.newPage({ viewport: VIEWPORT });
-  await page.addInitScript(([key, value]) => {
+  await page.addInitScript(([key, value, backendKey, backendUrl, authKey, authSession]) => {
     window.localStorage.removeItem('hall_of_fame_studio.projects.v1');
     window.localStorage.removeItem('hall_of_fame_studio.chat_messages.v1');
     window.localStorage.setItem(key, value);
-  }, [LANGUAGE_STORAGE_KEY, language]);
+    window.localStorage.setItem(backendKey, JSON.stringify(backendUrl));
+    window.sessionStorage.setItem(authKey, JSON.stringify(authSession));
+  }, [
+    LANGUAGE_STORAGE_KEY,
+    language,
+    BACKEND_STORAGE_KEY,
+    validationBackendUrl,
+    LOCAL_AUTH_STORAGE_KEY,
+    validationAuthSession,
+  ]);
   await page.goto(url, { waitUntil: 'domcontentloaded' });
   return page;
 }
@@ -268,7 +310,12 @@ async function validateSettingsTabs(browser, url, language) {
   await page.waitForTimeout(500);
   const tabs = ['deployment', 'keys', 'models', 'privacy', 'workspace', 'integrations'];
   for (const tab of tabs) {
-    await page.getByTestId(`settings-tab-${tab}`).click({ timeout: 5000 });
+    if (tab === 'models') {
+      await page.getByTestId('settings-tab-keys').click({ timeout: 5000 });
+      await page.getByTestId('settings-open-model-technical-status').click({ timeout: 5000 });
+    } else {
+      await page.getByTestId(`settings-tab-${tab}`).click({ timeout: 5000 });
+    }
     await page.waitForTimeout(300);
     const allowedEnglish = /Hall of Fame|Agent|API|OpenAI|Google Chat|BYOK|MCP|Key|HOF_API_KEY|GEMINI_API_KEY|AZURE_OPENAI_API_KEY|URL|Gateway|Gemini|Cursor|OAuth|JWT|MCP|Browser Tools|Vector Store|Usage Budget|Webhook|GPT|Claude|Azure|Ollama|Temperature|Tokens|Context|Compact|Personal|Private|Workspace|Development|Staging|Production|Session|Metadata|Debug|Off|Local|Endpoint|Rules|Roundtable/i;
     const modalText = await page.locator('section').first().innerText({ timeout: 5000 });
@@ -280,6 +327,12 @@ async function validateSettingsTabs(browser, url, language) {
 async function validateProjectLanguageOverride(browser, url) {
   const page = await openWithLanguage(browser, url, 'en');
   await openManagerDemoProject(page);
+  await openSettings(page);
+  await page.getByTestId('settings-tab-workspace').click({ timeout: 5000 });
+  const initialProjectLanguage = await page.getByTestId('settings-project-language').inputValue();
+  assert(initialProjectLanguage === 'en', `Manager demo should start in English before project override; settings reported ${initialProjectLanguage}.`);
+  await page.getByLabel(/Close|关闭/).last().evaluate((button) => button.click());
+  await page.waitForTimeout(400);
   await assertVisibleLanguage(page, 'en', 'project before language override');
   await openSettings(page);
   await page.getByTestId('settings-tab-workspace').click({ timeout: 5000 });
@@ -345,12 +398,11 @@ async function clickSurfaceByText(page, labels) {
 }
 
 async function openManagerDemoProject(page) {
-  const projectEntry = page.getByTestId('project-nav-p_manager_demo_001');
-  if (await projectEntry.count()) {
-    await projectEntry.click({ timeout: 5000 });
-  } else {
-    await page.evaluate(() => document.querySelector('[data-testid="run-manager-demo-button"]')?.click());
-  }
+  await page.getByText(/Workspace Hub|工作区中枢/).first().click({ timeout: 5000 });
+  await page.getByTestId('workspace-open-advanced').click({ timeout: 10000 });
+  await page.getByTestId('manager-demo-tools').waitFor({ state: 'visible', timeout: 5000 });
+  await page.getByTestId('manager-demo-tools').evaluate((element) => { element.open = true; });
+  await page.getByTestId('run-manager-demo-button').evaluate((button) => button.click());
   await page.waitForFunction(() => /p_manager_demo_001|Manager Demo: Autonomous Agent Studio|Project Dashboard|项目仪表盘|项目看板/.test(document.body.innerText), null, { timeout: 10000 }).catch(async (error) => {
     const body = await page.locator('body').innerText({ timeout: 3000 }).catch(() => '');
     throw new Error(`${error.message}\nBody after opening manager demo:\n${body.slice(0, 1200)}`);
@@ -381,6 +433,12 @@ function assertTextLanguage(text, language, scope, allowedEnglish = null) {
 
 async function validateProjectSurfaces(browser, url, language) {
   const page = await openWithLanguage(browser, url, language);
+  const duplicateKeyWarnings = [];
+  page.on('console', (message) => {
+    if (['error', 'warning'].includes(message.type()) && /Encountered two children with the same key/i.test(message.text())) {
+      duplicateKeyWarnings.push(`${message.type()}: ${message.text()}`);
+    }
+  });
   await openManagerDemoProject(page);
   const allowedEnglish = /Hall of Fame|Agent|API|OpenAI|Google Chat|BYOK|MCP|ID:|P_\d|P_MANAGER|Steve Jobs|Alan Turing|Marie Curie|Elon Musk|Confucius|You|Apollo Neural|Manager Demo|Autonomous Agent Studio|Auth Middleware|Timeline|Chat|Roundtable|War Room|Flow Graph|URL|HTTP|127\.0\.0\.1|Gateway|Gemini|Cursor|OAuth|JWT|Docs|Skill|First Pulse|Daily|Hourly|Leader|Reviewer|Product Visionary|System Architect|Evidence Reviewer|Consensus Steward|Execution Driver|SYSTEM|BODY TEMPLATE|TRIGGER|CADENCE|SOURCE|NOW|ISO|RUN ACTION|RUN AGAIN|HOUR|DAY REPORT|ACTIVE|BACKEND WORKER|LOOP|SCHEDULE|PULSE|CHECKLIST|CURRENT|IMPLEMENTATION PROGRESS NOTE|REVIEW EVIDENCE NOTE|CHECK ACCEPTANCE BAR|CHALLENGE RISK|VERIFY EVIDENCE|OPEN OBLIGATION|OPEN OWNED TASK|MANAGER-DEMO|NO PLAYBOOK|AUDIT RECEIPT|PROJECT .* RUN|PACKAGE SYNC|DASHBOARD SYNC|TRAIL SYNC|REQUIREMENT MATRIX SYNC|USE CASE AUDIT SYNC|ACTION QUEUE SYNC|BACKEND .* SNAPSHOT|READINESS|ROUTES|TRAIL|WALKTHROUGH|STANDALONE|PROOFS|BRIEF ALIGNMENT|CONTINUOUS|MANAGEMENT CHECKS|ASSIGNMENT|CHANGE ROWS|BACKEND ROUTE|NOT AVAILABLE|REQUIREMENT MATRIX ROUTE|ACTION QUEUE ROUTE|CHECK|START|STOP|SYNC STATE|SYNC .* VIEW|SYNC PACKAGE|SYNC MATRIX|SYNC AUDIT|SYNC QUEUE|SERVER|UNIFIED|RETAINED|TOTAL|SEQ|ASSIGN|CHANGE|HANDOFF|AUTO|GOVERNANCE|SPEECH PROTOCOL|LEAD|DECIDES|CHALLENGES|Project kickoff|Recurring sync|GOAL|SCOPE|OWNERS|FIRST-CYCLE|DEADLINE|DECISION|ROLE|FIRST ARTIFACT|DEPENDENCY|RISK|PROGRESS MAP|BLOCKERS|QUEUE|DONE|DOING|BLOCKED-BY|NEXT-DELIVERY|CONFIDENCE|CHARTER|APPROVED|Publish kickoff charter|FLOW|MEETING PROOF|questions|SELF NOMINATIONS|volunteers|PEER HEARING|edges|candidates|persisted|PROJECT BRIEF|BRIEF HEARD BY|BRIEF PROOF|MATRIX|PROJECT STATE|RESOLUTION|MARKER PERSISTED|WAITING|HEARING MATRIX|HEARING PROOF|HEARING/i;
   const surfaces = [
@@ -397,7 +455,10 @@ async function validateProjectSurfaces(browser, url, language) {
       if (language === 'zh') {
         assert(/项目仪表盘|项目看板|下一步建议/.test(text), 'Chinese project dashboard should expose localized primary UI.');
       } else {
-        assert(/Project Dashboard|Next Recommendation/i.test(text), 'English project dashboard should expose localized primary UI.');
+        assert(
+          /Project Dashboard|Next Recommendation/i.test(text),
+          `English project dashboard should expose localized primary UI. Page excerpt:\n${text.slice(0, 1600)}`,
+        );
       }
       continue;
     }
@@ -409,6 +470,7 @@ async function validateProjectSurfaces(browser, url, language) {
       assert(unexpectedEnglish.length === 0, `Chinese ${name} surface has unexpected English UI text:\n${unexpectedEnglish.slice(0, 20).join('\n')}`);
     }
   }
+  assert(!duplicateKeyWarnings.length, `${language} project surfaces must not emit duplicate React key warnings. First warning: ${duplicateKeyWarnings[0] || ''}`);
   await page.close();
 }
 
@@ -453,26 +515,57 @@ async function validateInitiationEntry(browser, url, language) {
       const unexpectedChinese = uniqueLinesMatching(text, /[\u4e00-\u9fff]/);
       assert(unexpectedChinese.length === 0, `English initiation ${stage} has unexpected Chinese UI text:\n${unexpectedChinese.slice(0, 20).join('\n')}`);
     } else {
-      const allowedEnglish = /Hall of Fame|Agent|API|OpenAI|Google Chat|BYOK|MCP|ID:[A-Z_]+|Steve Jobs|Alan Turing|Marie Curie|Elon Musk|Confucius|Albert Einstein|Isaac Newton|William Shakespeare|Walt Disney|Winston Churchill|Leonardo da Vinci|Abraham Lincoln|You|Dashboard|Roundtable|Skill|Director|Project|Step|URL|API|BYOK|BRIEF|SLATE|SELECTED|SAVING|CAMPAIGN|PEERS|LEADER|ASSIGNMENTS|APPROVAL|SAVE|MEETING|RESOLUTION|AWAITING|CONFIRMATION|CLARIFICATION|SELF-NOMINATION|ROLE-CLARIFICATION|LEADER-CAMPAIGN|BACKEND|SESSION/i;
+      const allowedEnglish = /Hall of Fame|Agent|API|OpenAI|Google Chat|BYOK|MCP|ID:[A-Z_]+|Steve Jobs|Alan Turing|Marie Curie|Elon Musk|Confucius|Albert Einstein|Isaac Newton|William Shakespeare|Walt Disney|Winston Churchill|Leonardo da Vinci|Abraham Lincoln|You|Dashboard|Roundtable|Skill|Director|Project|Step|URL|API|BYOK|BRIEF|SLATE|SELECTED|SAVING|CAMPAIGN|PEERS|LEADER|ASSIGNMENTS|APPROVAL|SAVE|MEETING|RESOLUTION|AWAITING|CONFIRMATION|CLARIFICATION|SELF-NOMINATION|ROLE-CLARIFICATION|LEADER-CAMPAIGN|BACKEND|SESSION|LOCAL-MVP-STARTUP-READINESS/i;
       const unexpectedEnglish = uniqueLinesMatching(text, /[A-Za-z]{4,}/, allowedEnglish);
       assert(unexpectedEnglish.length === 0, `Chinese initiation ${stage} has unexpected English UI text:\n${unexpectedEnglish.slice(0, 20).join('\n')}`);
     }
   };
-  await page.evaluate(() => {
-    const candidates = [...document.querySelectorAll('button, [role="button"], a')];
-    const target = candidates.find((element) => (
-      (element.getAttribute('title') || '').includes('Start')
-      || (element.textContent || '').trim() === '+'
-      || (element.textContent || '').includes('Start Initiation')
-      || (element.textContent || '').includes('发起立项')
-    ));
-    target?.click();
+  await page.waitForFunction(() => (
+    document.querySelector('[data-testid="first-run-start-project"]')
+    || document.querySelector('[data-testid="first-run-skip-model"]')
+    || document.querySelector('[data-testid="initiation-next-workspace"]')
+  ), null, { timeout: 15000 });
+  const firstRunStart = page.getByTestId('first-run-start-project');
+  if (await firstRunStart.count()) {
+    await firstRunStart.click({ timeout: 5000 });
+  } else if (await page.getByTestId('first-run-skip-model').count()) {
+    await page.getByTestId('first-run-skip-model').click({ timeout: 5000 });
+  } else {
+    await page.evaluate(() => {
+      const candidates = [...document.querySelectorAll('button, [role="button"], a')];
+      const target = candidates.find((element) => (
+        (element.getAttribute('title') || '').includes('Start')
+        || (element.textContent || '').trim() === '+'
+        || (element.textContent || '').includes('Start Initiation')
+        || (element.textContent || '').includes('发起立项')
+      ));
+      target?.click();
+    });
+  }
+  await page.getByTestId('initiation-next-workspace').waitFor({ state: 'visible', timeout: 10000 }).catch(async (error) => {
+    const body = await page.locator('body').innerText({ timeout: 3000 }).catch(() => '');
+    throw new Error(`${error.message}\nBody after opening initiation:\n${body.slice(0, 1400)}`);
   });
-  await page.waitForTimeout(800);
   await assertCurrentLanguage('brief');
-  await page.getByTestId('initiation-next-invite').click({ timeout: 5000 });
+  await page.getByTestId('initiation-next-workspace').click({ timeout: 5000 });
   await page.waitForTimeout(500);
-  await assertCurrentLanguage('invite');
+  await assertCurrentLanguage('workspace');
+  await page.getByTestId('initiation-workspace-base-path').fill(TEMP_DIR);
+  await page.getByTestId('initiation-workspace-folder-name').fill(`language-${language}`);
+  await page.getByTestId('initiation-workspace-prepare').click({ timeout: 5000 });
+  await page.waitForFunction(() => !document.querySelector('[data-testid="initiation-workspace-next-invite"]')?.disabled, null, { timeout: 10000 }).catch(async (error) => {
+    const body = await page.locator('body').innerText({ timeout: 3000 }).catch(() => '');
+    throw new Error(`${error.message}\nBody after preparing initiation workspace:\n${body.slice(0, 1800)}`);
+  });
+  await page.getByTestId('initiation-workspace-next-invite').click({ timeout: 5000 });
+  await page.getByTestId('initiation-talent-market').waitFor({ state: 'visible', timeout: 10000 });
+  await assertCurrentLanguage('talent market');
+  await page.getByTestId('market-open-jobs').click({ timeout: 5000 });
+  await page.getByTestId('initiation-contract-jobs').waitFor({ state: 'visible', timeout: 10000 });
+  await assertCurrentLanguage('talent dossier');
+  await page.getByTestId('initiation-contract-jobs').click({ timeout: 5000 });
+  await page.getByTestId('initiation-talent-market').waitFor({ state: 'visible', timeout: 10000 });
+  await page.waitForFunction(() => !document.querySelector('[data-testid="initiation-next-lobby"]')?.disabled, null, { timeout: 10000 });
   await page.getByTestId('initiation-next-lobby').click({ timeout: 5000 });
   await page.waitForTimeout(500);
   await assertCurrentLanguage('lobby');
@@ -501,8 +594,84 @@ async function validateLiveSwitch(browser, url) {
   await page.close();
 }
 
+rmSync(TEMP_DIR, { recursive: true, force: true });
+mkdirSync(TEMP_DIR, { recursive: true });
+const secretVault = createSecretVaultFromEnv({
+  SECRET_VAULT_ENABLED: 'true',
+  SECRET_VAULT_KEY: 'language-validation-local-vault-key',
+  SECRET_VAULT_KEY_ID: 'language-validation',
+  SECRET_VAULT_RECORDS_FILE: join(TEMP_DIR, 'vault-records.json'),
+});
+const llmProvider = createModelProvider({
+  provider: 'openai-compatible',
+  apiKey: 'language-validation-model-key',
+  apiKeySource: 'local-secret-vault',
+  secretVaultStatus: secretVault.status(),
+  baseURL: 'https://model.language-validation.local/v1',
+  model: 'language-validation-model',
+  enabled: true,
+  fetchImpl: async (_input, init = {}) => {
+    const requestBody = JSON.parse(String(init.body || '{}'));
+    const prompt = (requestBody.messages || []).map((message) => message.content || '').join('\n');
+    const language = /PROJECT LANGUAGE:\s*zh\b/i.test(prompt) ? 'zh' : 'en';
+    const projectName = prompt.match(/PROJECT NAME:\s*([^\n]+)/i)?.[1]?.trim()
+      || (language === 'zh' ? '本地验证项目' : 'Local validation project');
+    const agentId = prompt.match(/AGENTS:\s*\n([^:\n]+):/i)?.[1]?.trim() || 'jobs';
+    const content = language === 'zh'
+      ? {
+          roleTurns: [{ agentId, type: 'role-question', text: `请确认${projectName}的首项交付。`, hears: [] }],
+          decisionSummary: `${projectName}等待总监确认首项交付。`,
+          risks: [`${projectName}需要明确验收标准。`],
+        }
+      : {
+          roleTurns: [{ agentId, type: 'role-question', text: `Please confirm the first deliverable for ${projectName}.`, hears: [] }],
+          decisionSummary: `${projectName} awaits the Director's first-deliverable decision.`,
+          risks: [`${projectName} needs explicit acceptance criteria.`],
+        };
+    return new Response(JSON.stringify({
+      id: 'language-validation-model-response',
+      model: 'language-validation-model',
+      choices: [{ message: { role: 'assistant', content: JSON.stringify(content) } }],
+      usage: { prompt_tokens: 12, completion_tokens: 12, total_tokens: 24 },
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+  },
+});
+const searchProvider = createSearchProvider({
+  provider: 'deterministic',
+  apiKey: 'language-validation-search-key',
+  apiKeySource: 'local-secret-vault',
+  secretVaultStatus: secretVault.status(),
+  enabled: true,
+});
+const backendServer = createAgentProjectHttpServer({
+  filePath: join(TEMP_DIR, 'projects.json'),
+  localAuthFilePath: join(TEMP_DIR, 'auth.json'),
+  localAuthRequired: true,
+  secretVault,
+  llmProvider,
+  searchProvider,
+  projectRuntime: createLocalProjectRuntime({
+    rootPath: join(TEMP_DIR, 'runtime'),
+  }),
+  projects: [],
+});
+const backendRuntime = await backendServer.listen({ port: 0, host: '127.0.0.1' });
+validationBackendStore = backendServer.api.store;
+const bootstrapResponse = await fetch(`${backendRuntime.url}/local-auth/bootstrap`, {
+  method: 'POST',
+  headers: { 'content-type': 'application/json' },
+  body: JSON.stringify({ username: 'language-validator', password: 'lang1' }),
+});
+const bootstrapPayload = await bootstrapResponse.json();
+assert(bootstrapResponse.status === 201, `Could not create isolated language-validation account: ${bootstrapPayload.error || bootstrapResponse.status}.`);
+validationBackendUrl = backendRuntime.url;
+validationAuthSession = {
+  ...bootstrapPayload.localAuth,
+  baseUrl: backendRuntime.url,
+};
+
 const { server, url } = await startServer();
-const browser = await chromium.launch({ headless: true });
+const browser = await launchLocalBrowser();
 
 try {
   if (SHOULD_WRITE_PROGRESS_LOG) {
@@ -510,6 +679,7 @@ try {
     rmSync(PROGRESS_LOG, { force: true });
   }
   const runStep = async (name, fn) => {
+    if (REQUESTED_STEP && name !== REQUESTED_STEP) return;
     if (SHOULD_WRITE_PROGRESS_LOG) {
       appendFileSync(PROGRESS_LOG, `[language] ${name}\n`);
     }
@@ -537,4 +707,6 @@ try {
 } finally {
   await browser.close();
   await new Promise((resolve) => server.close(resolve));
+  await backendServer.close();
+  rmSync(TEMP_DIR, { recursive: true, force: true });
 }

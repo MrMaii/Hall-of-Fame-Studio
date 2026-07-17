@@ -4,12 +4,16 @@ export function createAgentProjectMemoryStore({
   kickoffMeetings = [],
   securityAccessAuditRecords = [],
   accessReplayRecords = [],
-  messageLimit = 240,
+  messageLimit = 0,
   hydrateProject = (project) => project,
 } = {}) {
+  const retainMessages = (items = []) => {
+    const limit = Number(messageLimit);
+    return Number.isFinite(limit) && limit > 0 ? items.slice(-limit) : items;
+  };
   const projectMap = new Map();
   const kickoffMeetingMap = new Map();
-  let chatMessages = [...messages].slice(-messageLimit);
+  let chatMessages = retainMessages([...messages]);
   let auditRecords = [...securityAccessAuditRecords];
   let replayRecords = [...accessReplayRecords].filter((record) => record?.replayKey);
 
@@ -64,7 +68,7 @@ export function createAgentProjectMemoryStore({
     },
     appendMessages(nextMessages = []) {
       if (!nextMessages.length) return [];
-      chatMessages = [...chatMessages, ...nextMessages].slice(-messageLimit);
+      chatMessages = retainMessages([...chatMessages, ...nextMessages]);
       return nextMessages;
     },
     getMessages(projectId) {

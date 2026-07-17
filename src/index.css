@@ -1,3 +1,11 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* Product-wide readability floor for legacy compact labels and controls. */
+[class~="text-[8px]"],
+[class~="text-[9px]"],
+[class~="text-[10px]"] {
+  font-size: 0.75rem !important;
+  line-height: 1rem !important;
+}

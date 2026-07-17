@@ -104,15 +104,22 @@ try {
   });
 
   await page.goto(staticRuntime.url, { waitUntil: 'networkidle' });
+  await page.getByTestId('local-first-run').waitFor({ state: 'visible', timeout: 10_000 });
+  await page.getByRole('button', { name: '创建项目', exact: true }).click();
+  await page.getByTestId('local-first-run').waitFor({ state: 'visible', timeout: 10_000 });
+  await page.getByTestId('first-run-auth-required-notice').waitFor({ state: 'visible', timeout: 10_000 });
   await page.getByTestId('open-settings-label').click();
+  const openAdvancedSettings = page.getByRole('button', { name: '打开高级设置', exact: true });
+  if (await openAdvancedSettings.count()) await openAdvancedSettings.click();
+  await page.getByTestId('settings-tab-account').click();
   await page.getByTestId('settings-local-auth').waitFor({ state: 'visible', timeout: 10_000 });
   await page.getByTestId('settings-local-auth-username').fill('owner');
-  await page.getByTestId('settings-local-auth-password').fill('correct horse battery staple');
+  await page.getByTestId('settings-local-auth-password').fill('correct horse battery staple1');
   await page.getByTestId('settings-local-auth-bootstrap').click();
   await page.getByTestId('settings-local-auth-signed-in').waitFor({ state: 'visible', timeout: 15_000 });
   await page.getByTestId('settings-local-auth-users').waitFor({ state: 'visible', timeout: 15_000 });
   await page.getByTestId('settings-local-auth-create-username').fill('manager');
-  await page.getByTestId('settings-local-auth-create-password').fill('another correct horse battery staple');
+  await page.getByTestId('settings-local-auth-create-password').fill('another correct horse battery staple1');
   await page.getByTestId('settings-local-auth-create-role').selectOption('manager');
   await page.getByTestId('settings-local-auth-create-user').click();
   await page.getByTestId('settings-local-auth-user-manager').waitFor({ state: 'visible', timeout: 15_000 });
@@ -124,10 +131,34 @@ try {
     new URL(request.url()).pathname === '/settings/runtime-readiness'
       && Boolean(request.headers()['x-hofs-local-auth-token'])
   ), { timeout: 15_000 });
+  await page.getByTestId('settings-tab-deployment').click();
   await page.getByTestId('settings-local-auth-sync-runtime').click();
   await authenticatedRequest;
   assert(authenticatedRequests.length > 0, 'Authenticated Settings runtime requests must carry the local auth token.');
 
+  await page.getByTestId('settings-tab-keys').click();
+  await page.getByTestId('settings-local-model-simple').waitFor({ state: 'visible', timeout: 10_000 });
+  await page.getByTestId('settings-model-provider-trigger').click();
+  await page.getByTestId('settings-model-provider-option-stepfun').click();
+  await page.getByTestId('settings-model-name-trigger').click();
+  await page.getByTestId('settings-model-name-option-step-3.5-flash').click();
+  await page.getByTestId('settings-provider-model-key-input').fill('LOCAL_AUTH_UI_FAKE_MODEL_KEY');
+  const modelSaveButton = page.getByTestId('settings-provider-seal-model-key');
+  assert.equal(
+    await modelSaveButton.isEnabled(),
+    true,
+    'A complete visible model form must remain actionable when vault readiness needs recovery.',
+  );
+  await modelSaveButton.click();
+  const modelSaveFeedback = page.getByTestId('settings-provider-seal-receipt');
+  await modelSaveFeedback.waitFor({ state: 'visible', timeout: 10_000 });
+  assert.match(
+    await modelSaveFeedback.innerText(),
+    /本地密钥存储.*(?:未就绪|尚未准备好)|本地身份.*重新登录/,
+    'Unavailable local secret storage must produce an actionable Chinese recovery message.',
+  );
+
+  await page.getByTestId('settings-tab-account').click();
   await page.getByTestId('settings-local-auth-logout').click();
   await page.getByTestId('settings-local-auth-form').waitFor({ state: 'visible', timeout: 10_000 });
   assert.equal(await page.evaluate((storageKey) => window.sessionStorage.getItem(storageKey), localAuthStorageKey), null, 'Logout must clear the browser session token.');
@@ -135,6 +166,7 @@ try {
     new URL(request.url()).pathname === '/settings/runtime-readiness'
       && !request.headers()['x-hofs-local-auth-token']
   ), { timeout: 15_000 });
+  await page.getByTestId('settings-tab-deployment').click();
   await page.getByTestId('settings-local-auth-sync-runtime').click();
   await unauthenticatedRequest;
   assert(unauthenticatedRequests.length > 0, 'After logout, Settings runtime requests must not carry the old local auth token.');

@@ -121,9 +121,10 @@ function withHeader(headers = {}, name = '', value = '') {
 function languageFromRequest(request = {}, body = {}) {
   try {
     const url = new URL(request.url || request.path || '/', 'http://127.0.0.1');
-    return normalizeLanguage(body.language || url.searchParams.get('language'));
+    const requestedLanguage = body.language || url.searchParams.get('language');
+    return requestedLanguage ? normalizeLanguage(requestedLanguage) : undefined;
   } catch {
-    return normalizeLanguage(body.language);
+    return body.language ? normalizeLanguage(body.language) : undefined;
   }
 }
 
@@ -622,6 +623,7 @@ export function createAgentProjectApi({ service, accessControl = {}, localAuth =
     launchApprovalWorkflowRoute: projectId ? `/projects/${projectId}/launch-approvals` : null,
     pilotLaunchReadinessRoute: projectId ? `/projects/${projectId}/pilot-launch-readiness` : null,
     productionLaunchAuditRoute: projectId ? `/projects/${projectId}/production-launch-audit` : null,
+    privatePilotReleaseCandidateWorkflowRoute: projectId ? `/projects/${projectId}/private-pilot-release-candidates` : null,
     ...extraRoutes,
   });
   const launchApprovalReadModels = (projectId, extraRoutes = {}) => deferredReadModels(projectId, '', {
@@ -714,8 +716,15 @@ export function createAgentProjectApi({ service, accessControl = {}, localAuth =
       : {
           managerDashboard: projectId ? service.getManagerDashboard(projectId, { language }) : null,
           managerReadyPackage: projectId ? service.getManagerReadyPackage(projectId, { language }) : null,
-        }),
+      }),
   });
+  const compactProjectResult = (result = {}, projectId = null) => {
+    const { project: _project, ...compact } = result;
+    return {
+      ...compact,
+      projectRef: projectId ? { id: projectId } : null,
+    };
+  };
   const flushLocalAuthAuditTransactions = ({ recovered = false, traceId = null } = {}) => {
     if (!localAuth || typeof localAuth.pendingAuditTransactions !== 'function') return { ok: true, flushed: 0 };
     if (typeof service.recordLocalAuthMutationResult !== 'function') return { ok: false, reason: 'local-auth-security-audit-unavailable' };
@@ -2294,10 +2303,19 @@ export function createAgentProjectApi({ service, accessControl = {}, localAuth =
                   })),
             });
           }
+          const requestRole = String(readHeader(request.headers, 'x-hofs-role') || request.actorRole || '').trim().toLowerCase();
+          const requestAgentId = String(readHeader(request.headers, 'x-hofs-agent-id') || request.actorAgentId || '').trim();
+          const isAgentCaller = requestRole === 'agent';
+          const requestAgent = isAgentCaller && requestAgentId
+            ? (service.getProject(route.projectId).team || []).find((agent) => String(agent.id || '') === requestAgentId)
+            : null;
           const result = service.createTranscriptChannel({
             projectId: route.projectId,
             ...body,
             channelId: body.channelId || (route.tail[0] ? decodeURIComponent(route.tail[0]) : ''),
+            actorId: isAgentCaller ? requestAgentId : body.actorId,
+            actor: isAgentCaller ? requestAgent?.name || requestAgentId || 'Agent' : body.actor,
+            actorRole: isAgentCaller ? 'agent' : requestRole || body.actorRole,
           });
           const resultProjectId = result.project?.id || route.projectId;
           const includeReadModels = shouldIncludeReadModels(body);
@@ -3310,6 +3328,7 @@ export function createAgentProjectApi({ service, accessControl = {}, localAuth =
               projectEvidenceExportWorkflow: result.projectEvidenceExportWorkflow,
               projectEvidenceExportPackage: result.projectEvidenceExportPackage,
               projectEvidenceArchive: result.projectEvidenceArchive,
+              privatePilotReleaseCandidateWorkflow: result.privatePilotReleaseCandidateWorkflow,
               log: result.log,
               ...(includeReadModels
                 ? { managerReadyPackage: service.getManagerReadyPackage(resultProjectId, { language }) }
@@ -3338,6 +3357,7 @@ export function createAgentProjectApi({ service, accessControl = {}, localAuth =
               ...publicProjectResult(result, resultProjectId, language, { includeReadModels }),
               privatePilotReleaseCandidate: result.privatePilotReleaseCandidate,
               privatePilotReleaseCandidateWorkflow: result.privatePilotReleaseCandidateWorkflow,
+              privatePilotLaunchRunWorkflow: result.privatePilotLaunchRunWorkflow,
               projectEvidenceExportPackage: result.projectEvidenceExportPackage,
               log: result.log,
               ...(includeReadModels
@@ -3369,6 +3389,7 @@ export function createAgentProjectApi({ service, accessControl = {}, localAuth =
               ...publicProjectResult(result, resultProjectId, language, { includeReadModels }),
               privatePilotLaunchRun: result.privatePilotLaunchRun,
               privatePilotLaunchRunWorkflow: result.privatePilotLaunchRunWorkflow,
+              privatePilotLaunchHealthCheckWorkflow: result.privatePilotLaunchHealthCheckWorkflow,
               log: result.log,
               ...(includeReadModels
                 ? { managerReadyPackage: service.getManagerReadyPackage(resultProjectId, { language, fresh: true }) }
@@ -3399,6 +3420,7 @@ export function createAgentProjectApi({ service, accessControl = {}, localAuth =
               ...publicProjectResult(result, resultProjectId, language, { includeReadModels }),
               privatePilotLaunchHealthCheck: result.privatePilotLaunchHealthCheck,
               privatePilotLaunchHealthCheckWorkflow: result.privatePilotLaunchHealthCheckWorkflow,
+              privatePilotAcceptanceReportWorkflow: result.privatePilotAcceptanceReportWorkflow,
               log: result.log,
               ...(includeReadModels
                 ? { managerReadyPackage: service.getManagerReadyPackage(resultProjectId, { language, fresh: true }) }
@@ -3431,11 +3453,16 @@ export function createAgentProjectApi({ service, accessControl = {}, localAuth =
               ...publicProjectResult(result, resultProjectId, language, { includeReadModels }),
               privatePilotAcceptanceReport: result.privatePilotAcceptanceReport,
               privatePilotAcceptanceReportWorkflow: result.privatePilotAcceptanceReportWorkflow,
+              privatePilotGoLiveReadiness: result.privatePilotGoLiveReadiness,
+              launchOperationsOverview: result.launchOperationsOverview,
+              productionOperationsReadiness: result.productionOperationsReadiness,
+              productionOperationsControlReceiptWorkflow: result.productionOperationsControlReceiptWorkflow,
               log: result.log,
               ...(includeReadModels
                 ? { managerReadyPackage: service.getManagerReadyPackage(resultProjectId, { language, fresh: true }) }
                 : privatePilotReceiptReadModels(resultProjectId, {
                     privatePilotAcceptanceReportWorkflowRoute: `/projects/${resultProjectId}/private-pilot-acceptance-reports`,
+                    launchOperationsOverviewRoute: `/projects/${resultProjectId}/launch-operations-overview`,
                     productionOperationsReadinessRoute: `/projects/${resultProjectId}/production-operations-readiness`,
                     managerReadyPackageRoute: `/projects/${resultProjectId}/manager-ready-package`,
                     managerFlowGraphRoute: `/projects/${resultProjectId}/manager-flow-graph`,
@@ -3703,10 +3730,10 @@ export function createAgentProjectApi({ service, accessControl = {}, localAuth =
             return json(200, {
               ...publicProjectResult(result, resultProjectId, language, { includeReadModels }),
               productionOperationsControlReceipt: result.productionOperationsControlReceipt,
+              productionOperationsControlReceiptWorkflow: result.productionOperationsControlReceiptWorkflow,
               log: result.log,
               ...(includeReadModels
                 ? {
-                    productionOperationsControlReceiptWorkflow: result.productionOperationsControlReceiptWorkflow,
                     productionOperationsReadiness: result.productionOperationsReadiness,
                     managerReadyPackage: service.getManagerReadyPackage(resultProjectId, { language, fresh: true }),
                   }
@@ -3734,10 +3761,10 @@ export function createAgentProjectApi({ service, accessControl = {}, localAuth =
             return json(200, {
               ...publicProjectResult(result, resultProjectId, language, { includeReadModels }),
               productionDeploymentControlReceipt: result.productionDeploymentControlReceipt,
+              productionDeploymentControlReceiptWorkflow: result.productionDeploymentControlReceiptWorkflow,
               log: result.log,
               ...(includeReadModels
                 ? {
-                    productionDeploymentControlReceiptWorkflow: result.productionDeploymentControlReceiptWorkflow,
                     deploymentPreflight: result.deploymentPreflight,
                     persistenceAdapterDryRun: result.persistenceAdapterDryRun,
                     workerQueueAdapterDryRun: result.workerQueueAdapterDryRun,
@@ -3833,10 +3860,10 @@ export function createAgentProjectApi({ service, accessControl = {}, localAuth =
             return json(200, {
               ...publicProjectResult(result, resultProjectId, language, { includeReadModels }),
               productionProviderControlReceipt: result.productionProviderControlReceipt,
+              productionProviderControlReceiptWorkflow: result.productionProviderControlReceiptWorkflow,
               log: result.log,
               ...(includeReadModels
                 ? {
-                    productionProviderControlReceiptWorkflow: result.productionProviderControlReceiptWorkflow,
                     providerReadiness: result.providerReadiness,
                     providerControlledRun: result.providerControlledRun,
                     providerEvalRunWorkflow: result.providerEvalRunWorkflow,
@@ -3871,10 +3898,10 @@ export function createAgentProjectApi({ service, accessControl = {}, localAuth =
             return json(200, {
               ...publicProjectResult(result, resultProjectId, language, { includeReadModels }),
               productionSecurityControlReceipt: result.productionSecurityControlReceipt,
+              productionSecurityControlReceiptWorkflow: result.productionSecurityControlReceiptWorkflow,
               log: result.log,
               ...(includeReadModels
                 ? {
-                    productionSecurityControlReceiptWorkflow: result.productionSecurityControlReceiptWorkflow,
                     securityBoundary: result.securityBoundary,
                     managerReadyPackage: service.getManagerReadyPackage(resultProjectId, { language, fresh: true }),
                   }
@@ -4502,7 +4529,10 @@ export function createAgentProjectApi({ service, accessControl = {}, localAuth =
           const result = service.submitMeetingMessage({ projectId: route.projectId, ...body });
           const resultProjectId = result.project?.id || route.projectId;
           const includeReadModels = shouldIncludeReadModels(body);
-          return json(200, publicProjectResult(result, resultProjectId, language, { includeReadModels }));
+          const response = publicProjectResult(result, resultProjectId, language, { includeReadModels });
+          return json(200, body.compactResult === true
+            ? compactProjectResult(response, resultProjectId)
+            : response);
         }
         if (method === 'POST' && route.action === 'change-request') {
           const result = service.submitMultiChannelChangeRequest({ projectId: route.projectId, ...body });
@@ -4520,7 +4550,9 @@ export function createAgentProjectApi({ service, accessControl = {}, localAuth =
         return json(405, { error: 'method-not-allowed', method, path });
       } catch (error) {
         return json(error.message?.includes('not found') ? 404 : 400, {
-          error: 'agent-project-api-error',
+          error: error.message === 'transcript-channel-create-leader-required'
+            ? error.message
+            : 'agent-project-api-error',
           message: error.message || String(error),
         });
       }
@@ -4534,7 +4566,7 @@ export function createFileBackedAgentProjectApi({
   projects = [],
   messages = [],
   kickoffMeetings = [],
-  messageLimit = 240,
+  messageLimit = 0,
   replaceWithSeed = false,
   artifactWriter = null,
   projectRuntime = null,

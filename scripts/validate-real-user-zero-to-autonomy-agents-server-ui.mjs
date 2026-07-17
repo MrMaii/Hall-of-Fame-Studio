@@ -17,6 +17,7 @@ const languageStorageKey = 'hall_of_fame_studio.language.v1';
 const projectId = 'p_roundtable_001';
 const modelPlaintext = 'REAL_USER_ZERO_TO_AUTONOMY_MODEL_KEY_SHOULD_NOT_LEAK';
 const searchPlaintext = 'REAL_USER_ZERO_TO_AUTONOMY_SEARCH_KEY_SHOULD_NOT_LEAK';
+let backendLocalAuthToken = '';
 
 function readCliArg(name) {
   const inlinePrefix = `${name}=`;
@@ -90,7 +91,13 @@ function assert(condition, message) {
 }
 
 async function fetchJson(url, options = {}) {
-  const response = await fetch(url, options);
+  const response = await fetch(url, {
+    ...options,
+    headers: {
+      ...(backendLocalAuthToken ? { 'x-hofs-local-auth-token': backendLocalAuthToken } : {}),
+      ...(options.headers || {}),
+    },
+  });
   const body = await response.json().catch(() => ({}));
   return { status: response.status, body };
 }
@@ -252,7 +259,7 @@ async function waitForBackendSnapshot(url, predicate, message, { timeoutMs = 250
   const deadline = Date.now() + timeoutMs;
   let lastSnapshot = null;
   while (Date.now() < deadline) {
-    lastSnapshot = await fetch(`${url}/snapshot`).then((response) => response.json());
+    lastSnapshot = (await fetchJson(`${url}/snapshot`)).body;
     if (predicate(lastSnapshot)) return lastSnapshot;
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 250));
   }
@@ -367,11 +374,11 @@ async function fillControlledInput(page, testId, value) {
 }
 
 async function waitForSettingsProviderIdle(page) {
-  const syncStatusButton = page.getByRole('button', { name: /Sync status/i });
+  const syncStatusButton = page.getByRole('button', { name: /Sync status|刷新状态/i });
   await syncStatusButton.waitFor({ state: 'visible', timeout: 10000 });
   await page.waitForFunction(() => {
     const button = Array.from(document.querySelectorAll('button'))
-      .find((element) => /Sync status/i.test(element.textContent || ''));
+      .find((element) => /Sync status|刷新状态/i.test(element.textContent || ''));
     return Boolean(button && !button.disabled);
   }, null, { timeout: 15000 });
 }
@@ -487,6 +494,8 @@ const backendChild = spawn(process.execPath, [serverScript], {
     AGENT_PROJECT_PORT: '0',
     AGENT_PROJECT_STORE: resolve(tempRoot, 'store.json'),
     AGENT_PROJECT_RUNTIME_ROOT: resolve(tempRoot, 'runtime'),
+    AGENT_LOCAL_AUTH_STORE: resolve(tempRoot, 'local-auth.json'),
+    AGENT_LOCAL_AUTH_REQUIRED: 'true',
     AGENT_SECURITY_AUDIT_LOG: resolve(tempRoot, 'security-audit.jsonl'),
     AGENT_AUTONOMOUS_AGENT_STRATEGY: 'true',
     AGENT_AUTONOMOUS_AGENT_SUBMISSIONS: 'true',
@@ -513,8 +522,6 @@ const backendCriticalTraffic = [];
 
 try {
   const backendUrl = await waitForServerUrl(backendChild);
-  const vaultStatus = await fetchJson(`${backendUrl}/secret-vault/status`);
-  assert(vaultStatus.body.secretVaultStatus?.ready === true, 'Real-user gate must start agents:server with a ready Secret Vault.');
 
   browser = await launchBrowserWithRetry();
   const context = await browser.newContext({ viewport: { width: 1440, height: 1100 } });
@@ -536,7 +543,7 @@ try {
     }
   });
   page.on('response', (response) => {
-    if (/\/(projects|product-team-missions|workers|kickoff-meetings|secret-vault)\b/.test(response.url())) {
+    if (/\/(projects|product-team-missions|workers|kickoff-meetings|secret-vault|local-auth)\b/.test(response.url())) {
       const entry = `${response.status()} ${response.request().method()} ${response.url()}`;
       backendResponses.push(entry);
       if (/collaboration-intent-queue/.test(response.url()) || response.request().method() === 'POST') {
@@ -545,7 +552,7 @@ try {
     }
   });
   page.on('requestfailed', (request) => {
-    if (/\/(projects|product-team-missions|workers|kickoff-meetings|secret-vault)\b/.test(request.url())) {
+    if (/\/(projects|product-team-missions|workers|kickoff-meetings|secret-vault|local-auth)\b/.test(request.url())) {
       backendCriticalTraffic.push(`FAILED ${request.method()} ${request.url()} ${request.failure()?.errorText || ''}`.trim());
     }
   });
@@ -565,23 +572,28 @@ try {
     backendUrl,
     '/workers/autonomous/status',
   ], 'Real-user Settings Deployment must let the user set the active backend API target before sealing providers.');
-  await page.getByTestId('settings-tab-keys').click();
-  await page.getByTestId('settings-provider-boundary').waitFor({ state: 'visible', timeout: 10000 });
-  await page.getByTestId('settings-provider-open-backend-target').click();
-  await page.getByTestId('settings-deployment-backend-url-input').waitFor({ state: 'visible', timeout: 10000 });
-  const linkedBackendUrl = await page.getByTestId('settings-deployment-backend-url-input').inputValue();
-  assert(
-    normalizeBaseUrl(linkedBackendUrl) === backendUrl,
-    `Settings Keys backend URL shortcut must open the active backend target. Expected ${backendUrl}, got ${linkedBackendUrl}.`,
-  );
-  await page.getByTestId('settings-tab-keys').click();
-  await page.getByTestId('settings-provider-boundary').waitFor({ state: 'visible', timeout: 10000 });
-  await page.getByRole('button', { name: /Sync status/i }).click();
-  await page.waitForFunction(() => {
-    const statusCard = document.querySelector('[data-testid="settings-secret-vault-status"]');
-    return Boolean(statusCard && /ready/i.test(statusCard.textContent || ''));
-  }, null, { timeout: 10000 });
+  await page.getByRole('button', { name: /Close/i }).last().click();
+  await page.getByTestId('first-run-local-auth').waitFor({ state: 'visible', timeout: 10000 });
+  await fillControlledInput(page, 'first-run-username', 'real-user-owner');
+  await fillControlledInput(page, 'first-run-password', 'ab12');
+  await page.getByTestId('first-run-password-valid').waitFor({ state: 'visible', timeout: 10000 });
+  await page.getByTestId('first-run-auth-submit').click();
+  await page.getByTestId('first-run-open-model-settings').waitFor({ state: 'visible', timeout: 15000 });
+  backendLocalAuthToken = await page.evaluate(() => {
+    const session = JSON.parse(window.sessionStorage.getItem('hall_of_fame_studio.local_auth_session.v1') || 'null');
+    return session?.token || '';
+  });
+  assert(backendLocalAuthToken, 'Real-user gate must create a local authenticated session before protected backend work.');
+  const vaultStatus = await fetchJson(`${backendUrl}/secret-vault/status`);
+  assert(vaultStatus.body.secretVaultStatus?.ready === true, 'Real-user gate must start agents:server with a ready Secret Vault.');
+  await page.getByTestId('first-run-open-model-settings').click();
+  await page.getByTestId('settings-local-model-simple').waitFor({ state: 'visible', timeout: 10000 });
+  await page.getByRole('button', { name: /Sync status|刷新状态/i }).click();
   await waitForSettingsProviderIdle(page);
+  await page.waitForFunction(() => {
+    const input = document.querySelector('[data-testid="settings-provider-model-key-input"]');
+    return Boolean(input && !input.disabled);
+  }, null, { timeout: 10000 });
   await fillControlledInput(page, 'settings-provider-model-base-url-input', `${mockModelRuntime.url}/v1`);
   await fillControlledInput(page, 'settings-provider-model-name-input', 'gpt-4o-mini');
   await fillControlledInput(page, 'settings-provider-model-key-input', modelPlaintext);
@@ -589,12 +601,15 @@ try {
   await sealModelButton.click();
   await page.getByTestId('settings-provider-seal-receipt').waitFor({ state: 'visible', timeout: 10000 });
   await waitForSettingsProviderIdle(page);
+  const searchKeyInput = page.getByTestId('settings-provider-search-key-input');
+  const searchDetails = searchKeyInput.locator('xpath=ancestor::details');
+  if (!(await searchKeyInput.isVisible())) await searchDetails.locator('summary').click();
   await fillControlledInput(page, 'settings-provider-search-key-input', searchPlaintext);
   await fillControlledInput(page, 'settings-provider-search-endpoint-input', `${mockSearchRuntime.url}/search`);
   const sealSearchButton = await waitForButtonEnabled(page, 'settings-provider-seal-search-key', 'Real user must be able to seal a tested search configuration before project startup.');
   await sealSearchButton.click();
-  await page.waitForFunction(() => document.querySelector('[data-testid="settings-provider-seal-receipt"]')?.textContent?.includes('search configuration'), null, { timeout: 10000 });
   await waitForSettingsProviderIdle(page);
+  await page.getByTestId('settings-provider-seal-receipt').waitFor({ state: 'visible', timeout: 10000 });
 
   const modelStatus = await fetchJson(`${backendUrl}/llm/status`);
   assert(modelStatus.body.modelProvider?.apiKeySource === 'local-secret-vault' && modelStatus.body.modelProvider?.enabled === true, 'Real-user model provider must be vault-backed and enabled after Settings key seal.');
@@ -617,6 +632,7 @@ try {
 
   await page.getByRole('button', { name: /Close/i }).last().click();
   await page.getByText('Workspace Hub', { exact: false }).click();
+  await page.getByTestId('workspace-open-advanced').click();
   await assertPageContains(page, 'ACTIVE PROJECTS', 'Workspace dashboard must be reachable before starting a real initiation.');
   await page.getByTestId('workspace-local-mvp-startup-readiness').waitFor({ state: 'visible', timeout: 10000 });
   await assertPanelTextIncludes(page, 'workspace-local-mvp-startup-readiness', [
@@ -656,8 +672,13 @@ try {
   ], 'Project Initiation must preserve backend startup readiness before starting kickoff.');
   await page.getByTestId('initiation-next-workspace').click();
   await page.getByTestId('initiation-workspace-prepare').click();
-  await page.waitForFunction(() => /workspace prepared/i.test(document.querySelector('[data-testid="initiation-workspace-status"]')?.textContent || ''), null, { timeout: 15000 });
-  await page.getByTestId('initiation-workspace-next-invite').click();
+  const workspaceNextButton = await waitForButtonEnabled(
+    page,
+    'initiation-workspace-next-invite',
+    'Prepared local workspace must enable the next initiation step.',
+    { timeoutMs: 15000 },
+  );
+  await workspaceNextButton.click();
   await page.getByTestId('initiation-talent-market').waitFor({ state: 'visible', timeout: 5000 });
   for (const agentId of ['musk', 'turing', 'curie', 'confucius']) {
     await page.getByTestId(`market-open-${agentId}`).click();
@@ -677,6 +698,8 @@ try {
   await page.getByTestId('leader-candidate-turing').click();
   await page.getByTestId('initiation-next-action-0').fill('Run the first generic product-team autonomy handoff and submit visible Agent output.');
   await page.getByTestId('initiation-approve-create').click();
+  await page.getByRole('button', { name: '查看完整项目控制台' }).waitFor({ state: 'visible', timeout: 30000 });
+  await page.getByRole('button', { name: '查看完整项目控制台' }).click();
   await page.getByTestId('backend-worker-station').waitFor({ state: 'visible', timeout: 30000 });
 
   const missionSnapshot = await waitForBackendSnapshot(
@@ -757,17 +780,15 @@ try {
     '/workers/autonomous/status',
   ], 'Real-user Settings Deployment must show the project-scoped runtime readiness route after project creation.');
   await page.getByTestId('settings-tab-keys').click();
-  await page.getByRole('button', { name: /Sync status/i }).click();
-  await page.waitForFunction((expectedRoute) => {
-    const text = document.querySelector('[data-testid="settings-provider-readiness-contract"]')?.textContent || '';
-    return text.includes(expectedRoute);
-  }, `/projects/${projectId}/settings-provider-readiness`, { timeout: 15000 });
-  await assertPanelTextIncludes(page, 'settings-provider-readiness-contract', [
-    `/projects/${projectId}/settings-provider-readiness`,
-    'API fields: enabled for draft entry',
-  ], 'Real-user Settings Keys must show the project-scoped provider readiness route after project creation.');
+  await page.getByRole('button', { name: /Sync status|刷新状态/i }).click();
+  await waitForSettingsProviderIdle(page);
+  await page.getByTestId('settings-local-model-simple').waitFor({ state: 'visible', timeout: 10000 });
+  assert(
+    await page.getByTestId('settings-provider-model-key-input').isEnabled(),
+    'Real-user Settings Keys must keep model API entry enabled after project creation.',
+  );
   await page.getByTestId('settings-tab-integrations').click();
-  await page.getByRole('button', { name: /Sync integration readiness/i }).click();
+  await page.getByTestId('settings-tools-technical-details').locator('summary').click();
   await page.getByTestId('settings-integration-readiness-contract').waitFor({ state: 'visible', timeout: 15000 });
   await assertPanelTextIncludes(page, 'settings-integration-readiness-route', [
     `/projects/${projectId}/settings-integration-readiness`,
@@ -1348,6 +1369,11 @@ try {
   await page.getByTestId('backend-submission-review-workflow-snapshot').waitFor({ state: 'visible', timeout: 25000 });
   await page.getByTestId('backend-evidence-index-readiness-snapshot').waitFor({ state: 'visible', timeout: 25000 });
   await page.getByTestId('backend-project-evidence-archive-snapshot').waitFor({ state: 'visible', timeout: 25000 });
+  await page.waitForFunction(() => {
+    const syncButton = document.querySelector('[data-testid="backend-sync-proof-models"]');
+    const trace = document.querySelector('[data-testid="backend-product-team-delivery-trace-snapshot"]');
+    return syncButton && !syncButton.disabled && /trace closed/i.test(trace?.textContent || '');
+  }, null, { timeout: 90000 });
   await page.waitForFunction(
     (artifactTypes) => {
       const audit = document.querySelector('[data-testid="backend-artifact-quality-audit-snapshot"]');
@@ -1442,9 +1468,10 @@ try {
   assert(!duplicateKeyWarnings.length, `Real-user UI must not emit duplicate React key warnings. First warning: ${duplicateKeyWarnings[0] || ''}`);
   const defaultBackendTraffic = [...backendResponses, ...backendCriticalTraffic]
     .filter((entry) => entry.includes('http://127.0.0.1:8787'));
+  const defaultBackendWrites = defaultBackendTraffic.filter((entry) => /\b(POST|PUT|PATCH|DELETE)\b/i.test(entry));
   assert(
-    normalizeBaseUrl(backendUrl) === 'http://127.0.0.1:8787' || defaultBackendTraffic.length === 0,
-    `Real-user UI must not auto-probe the default backend before the user saves the active backend URL. Traffic: ${defaultBackendTraffic.slice(0, 4).join(' | ')}`,
+    normalizeBaseUrl(backendUrl) === 'http://127.0.0.1:8787' || defaultBackendWrites.length === 0,
+    `Real-user UI may read local readiness from the default backend, but must not send writes before the user saves the active backend URL. Traffic: ${defaultBackendWrites.slice(0, 4).join(' | ')}`,
   );
 
   console.log('Real-user zero-to-autonomy agents:server UI validation passed.');

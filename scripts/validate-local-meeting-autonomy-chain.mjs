@@ -3,6 +3,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createFileBackedAgentProjectApi } from '../src/agents/agentProjectApi.js';
 import { createLocalProjectRuntime } from '../src/agents/localProjectRuntime.js';
+import { MEETING_TURN_GRACE_PERIOD_MS } from '../src/agents/meetingQueueProtocol.js';
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -62,7 +63,7 @@ try {
   });
   assert(response.status === 200, 'Director meeting text must be persisted through the backend.');
   assert(response.body.messages?.[0]?.author === 'Director', 'The Director transcript entry must be persisted before Agent output.');
-  assert(response.body.meetingAgentTurns?.[0]?.delayMs >= 5000, 'The first Agent response must retain the five-second queue grace period.');
+  assert(response.body.meetingAgentTurns?.[0]?.delayMs >= MEETING_TURN_GRACE_PERIOD_MS, 'The first Agent response must retain the configured queue grace period.');
 
   response = api.handle({
     method: 'POST',
@@ -92,7 +93,7 @@ try {
   assert(appSource.includes('/meeting-report'), 'Confirmed initiation must request the backend Leader meeting report after workspace verification.');
   assert(appSource.includes('meetingReportSubmissionId'), 'Confirmed initiation must retain the meeting-report receipt for UI verification.');
   const runbook = await readFile(resolve(repoRoot, 'docs', 'LOCAL_MEETING_AUTONOMY.md'), 'utf8');
-  for (const requiredText of ['npm run dev', '5 seconds', 'Director precedence', 'meeting-notes', 'Manager Flow Graph']) {
+  for (const requiredText of ['npm run dev', '800 ms', 'Director precedence', 'meeting-notes', 'Manager Flow Graph']) {
     assert(runbook.includes(requiredText), `Local meeting runbook must document ${requiredText}.`);
   }
   console.log('Local meeting autonomy chain passed.');

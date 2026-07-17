@@ -202,6 +202,7 @@ import {
 import { createHash, randomUUID } from 'node:crypto';
 import { createHttpJsonAdapterGatewayClient } from './adapterGatewayClient.js';
 import { meetingTurnDelayMs } from './meetingQueueProtocol.js';
+import { selectMeetingResponders } from '../meeting/meetingMessageState.js';
 import {
   buildModelKickoffMeetingMessages,
   buildModelKickoffMeetingTurnMessages,
@@ -247,7 +248,6 @@ const DEFAULT_AGENT_WORK_INTERVAL_MS = 30 * 60 * 1000;
 const WORKER_QUEUE_RECOMMENDED_LEASE_SECONDS = 300;
 const WORKER_QUEUE_MAX_ATTEMPTS = 3;
 const WORKER_QUEUE_RETRY_BACKOFF_SECONDS = [30, 120, 300];
-const MODEL_INTENT_LEDGER_LIMIT = 120;
 const AGENT_SUBMISSION_LIMIT = 240;
 const AGENT_EVIDENCE_SEARCH_LIMIT = 240;
 const AGENT_SUBMISSION_REVIEW_LIMIT = 240;
@@ -2653,9 +2653,25 @@ export function createProjectTranscriptChannel({
   now = nowIso(),
   actor = 'Director',
   actorId = 'director',
+  actorRole = '',
   source = 'backend-transcript-channel-create',
   messageId,
 } = {}) {
+  const team = project.team || [];
+  const agentActor = team.find((agent) => String(agent.id || '') === String(actorId || ''));
+  if (String(actorRole || '').toLowerCase() === 'agent' && !agentActor) {
+    throw new Error('transcript-channel-create-leader-required');
+  }
+  if (agentActor) {
+    const electedLeaderId = team.find((agent) => agent.isLeader)?.id
+      || project.initiation?.leaderElection?.selectedLeaderId
+      || project.initiation?.leaderElection?.winnerId
+      || project.kickoffCharter?.leaderId
+      || null;
+    if (!electedLeaderId || String(agentActor.id) !== String(electedLeaderId)) {
+      throw new Error('transcript-channel-create-leader-required');
+    }
+  }
   const existingIndex = buildTranscriptIndex({ project, messages });
   const requestedChannel = normalizeTranscriptChannel({
     projectId: project.id,
@@ -3934,7 +3950,8 @@ export function submitProjectMeetingMessage({
   const meetingDirective = project.meetingSkillBrief
     ? `${project.meetingSkillBrief}\n\nDirector input:\n${trimmedText}`
     : trimmedText;
-  const meetingExchange = runRoundtableExchange(team, meetingDirective, {
+  const respondingTeam = selectMeetingResponders(team, trimmedText);
+  const meetingExchange = runRoundtableExchange(respondingTeam, meetingDirective, {
     projectId: project.id,
     projectName: project.name,
     meetingType: project.lastAutonomousRunAt ? 'sync' : 'kickoff',
@@ -17343,7 +17360,7 @@ function buildManagerDashboardSnapshot({ project = {}, messages = [] } = {}) {
     return {
       ...row,
       assignmentPosted: row.evidence.hasAssignment,
-      assigneeReceived: row.inboxSeen || row.obligationSeen,
+      assigneeReceived: row.inboxSeen || row.obligationSeen || row.evidence.hasAcknowledgement,
       assigneeAccepted: row.evidence.hasAcknowledgement,
       timelineRecorded: row.timelineSeen,
       assignmentTimelineLogIds,
@@ -17582,7 +17599,7 @@ function buildManagerDashboardSnapshot({ project = {}, messages = [] } = {}) {
       message.source === 'agent-to-agent-message'
       || (team.some((agent) => agent.id === message.authorId || agent.name === message.author) && (message.directTargetIds || []).length > 0)
     ))
-    .slice(-40)
+    .slice()
     .reverse()
     .map((message) => {
       const sender = team.find((agent) => agent.id === message.authorId || agent.name === message.author);
@@ -34822,6 +34839,19 @@ function summarizeSecurityAccessAudit(rows = []) {
   };
 }
 
+function listSecurityAccessEventIds(project = {}) {
+  const retainedAuditIds = new Set((project.securityAccessAudit || [])
+    .map((row) => row?.id)
+    .filter(Boolean));
+  return (project.eventLedger || [])
+    .filter((event) => (
+      event.type === 'security-access'
+      && retainedAuditIds.has(event.entityIds?.accessAuditId)
+    ))
+    .map((event) => event.id)
+    .filter(Boolean);
+}
+
 function summarizeSecurityAuditStream(rows = []) {
   const list = Array.isArray(rows) ? rows : [];
   const deniedRows = list.filter((row) => !row.allowed || row.status === 'denied');
@@ -37476,6 +37506,7 @@ function buildWorkerQueueSnapshot({
   projectId = null,
 } = {}) {
   const forceProjectIdSet = new Set((forceProjectIds || []).map(normalizeProjectIdKey).filter(Boolean));
+  const forcedProjectFilterActive = Boolean(forceDue) && forceProjectIdSet.size > 0;
   const selectedProjectIdKey = normalizeProjectIdKey(projectId);
   const selectedProjects = projectId
     ? projects.filter((project) => normalizeProjectIdKey(project.id) === selectedProjectIdKey)
@@ -37483,13 +37514,14 @@ function buildWorkerQueueSnapshot({
   const queueIdBase = Date.parse(now) || Date.now();
   const projectQueue = selectedProjects.map((project, index) => {
     const projectIdKey = normalizeProjectIdKey(project.id);
+    const filteredByForceProject = forcedProjectFilterActive && !forceProjectIdSet.has(projectIdKey);
     const cadence = project.autonomy?.cadence || project.autonomousCadence || 'hourly';
     const schedule = evaluateAutonomousSchedule({ project, cadence, now });
-    const forced = Boolean(forceDue) && (!forceProjectIdSet.size || forceProjectIdSet.has(projectIdKey));
-    const due = forced || schedule.due;
+    const forced = Boolean(forceDue) && !filteredByForceProject && (!forceProjectIdSet.size || forceProjectIdSet.has(projectIdKey));
+    const due = !filteredByForceProject && (forced || schedule.due);
     const dueAt = forced ? now : schedule.dueAt;
     const queueId = `queue_project_${project.id}_${queueIdBase}`;
-    const reason = forced ? forceReason : schedule.reason;
+    const reason = filteredByForceProject ? 'project-force-project-filter' : forced ? forceReason : schedule.reason;
     const idempotencyKey = buildWorkerIdempotencyKey({
       workerKind: 'project-autonomous',
       projectId: project.id,
@@ -37528,7 +37560,8 @@ function buildWorkerQueueSnapshot({
   const agentRows = [];
   selectedProjects.forEach((project) => {
     const projectIdKey = normalizeProjectIdKey(project.id);
-    const forcedProject = Boolean(forceDue) && (!forceProjectIdSet.size || forceProjectIdSet.has(projectIdKey));
+    const filteredByForceProject = forcedProjectFilterActive && !forceProjectIdSet.has(projectIdKey);
+    const forcedProject = Boolean(forceDue) && !filteredByForceProject && (!forceProjectIdSet.size || forceProjectIdSet.has(projectIdKey));
     const agentAutonomousQueue = buildAgentAutonomousActionQueue({
       project,
       now,
@@ -37547,6 +37580,7 @@ function buildWorkerQueueSnapshot({
         forceDue: forcedProject,
         forceReason,
       });
+      const agentDue = !filteredByForceProject && Boolean(schedule.due);
       const idempotencyKey = buildWorkerIdempotencyKey({
         workerKind: 'agent-work',
         projectId: project.id,
@@ -37565,9 +37599,9 @@ function buildWorkerQueueSnapshot({
             agentId: agent.id,
             name: agent.name || agent.id,
             role: agent.role || agent.title || '',
-            status: schedule.due ? 'queued' : 'waiting',
+            status: agentDue ? 'queued' : 'waiting',
             canRun: Boolean(autonomousActionRow?.canRun),
-            due: Boolean(schedule.due),
+            due: agentDue,
             runApiPath: project.id ? `/projects/${project.id}/agent-autonomous-action-queue/${encodeURIComponent(agent.id)}/run` : null,
             agentWorkCycleApiPath: project.id ? `/projects/${project.id}/agents/${encodeURIComponent(agent.id)}/work-cycle` : null,
           },
@@ -37581,14 +37615,14 @@ function buildWorkerQueueSnapshot({
         projectName: project.name || project.id,
         agentId: agent.id,
         agentName: agent.name || agent.id,
-        status: schedule.due ? 'queued' : 'waiting',
-        due: Boolean(schedule.due),
+        status: agentDue ? 'queued' : 'waiting',
+        due: agentDue,
         dueAt: schedule.dueAt || null,
         nextRunAt: schedule.nextRunAt || state.nextAgentRunAt || null,
         cadenceMs: schedule.cadenceMs || null,
-        reason: schedule.reason,
+        reason: filteredByForceProject ? 'agent-force-project-filter' : schedule.reason,
         forced: Boolean(schedule.forced),
-        priority: schedule.managementPriority || 0,
+        priority: agentDue ? schedule.managementPriority || 0 : 0,
         managementPriority: schedule.managementPriority || 0,
         managementReasons: schedule.managementReasons || [],
         selectedAction: autonomousActionRow?.selectedAction || initiative.selectedAction || null,
@@ -37605,7 +37639,7 @@ function buildWorkerQueueSnapshot({
         leaseKey,
         runApiPath: '/workers/agents/due',
         directRunApiPath: `/projects/${encodeURIComponent(project.id)}/agents/${encodeURIComponent(agent.id)}/work-cycle`,
-        ...buildQueuedWorkerControlFields({ idempotencyKey, leaseKey, status: schedule.due ? 'queued' : 'waiting' }),
+        ...buildQueuedWorkerControlFields({ idempotencyKey, leaseKey, status: agentDue ? 'queued' : 'waiting' }),
         requestBody: {
           now,
           forceDue: Boolean(schedule.forced),
@@ -40091,11 +40125,7 @@ function buildSecurityBoundarySnapshot({
           productionRequirement: 'immutable centralized audit storage',
         },
       },
-      eventIds: (project.eventLedger || [])
-        .filter((event) => event.type === 'security-access')
-        .map((event) => event.id)
-        .filter(Boolean)
-        .slice(-40),
+      eventIds: listSecurityAccessEventIds(project),
     },
     providerBoundary: {
       modelProviderStatus: redactSensitiveObject(modelProviderStatus || {}),
@@ -42749,8 +42779,27 @@ function buildManagerFlowGraphSnapshot({ project = {}, messages = [], managerRea
   const projectId = project.id || dashboard.projectId || null;
   const team = project.team || [];
   const agentNameById = Object.fromEntries(team.map((agent) => [agent.id, agent.name]));
-  const allMessages = [...messages, ...transcriptRecoveredMessages(project)]
-    .filter((message) => !projectId || !message.projectId || message.projectId === projectId);
+  const messagesByStableId = new Map();
+  [...transcriptRecoveredMessages(project), ...messages]
+    .filter((message) => !projectId || !message.projectId || message.projectId === projectId)
+    .forEach((message) => {
+      if (message?.id) messagesByStableId.set(String(message.id), message);
+    });
+  const allMessages = [...messagesByStableId.values()];
+  const intentDiagnostics = buildTeamCollaborationDiagnostics({
+    project,
+    messages: allMessages,
+    managerDashboard: dashboard,
+    managerFlowGraph: { summary: {} },
+    readinessProofMap: dashboard.readinessProofMap || {},
+  });
+  const collaborationIntentQueue = buildCollaborationIntentQueue({
+    project,
+    messages: allMessages,
+    managerDashboard: dashboard,
+    teamCollaborationDiagnostics: intentDiagnostics,
+    readinessProofMap: dashboard.readinessProofMap || {},
+  });
   const messagesById = new Map(allMessages.map((message) => [String(message.id || ''), message]));
   const logsById = new Map((project.logs || []).map((log) => [String(log.id || ''), log]));
   const eventsById = new Map((project.eventLedger || []).map((event) => [String(event.id || ''), event]));
@@ -42797,6 +42846,9 @@ function buildManagerFlowGraphSnapshot({ project = {}, messages = [], managerRea
       evidenceSourceReviewRoute: input.evidenceSourceReviewRoute || null,
       submissionReviewId: input.submissionReviewId || null,
       submissionReviewRoute: input.submissionReviewRoute || null,
+      intentId: input.intentId || null,
+      intentLane: input.intentLane || null,
+      strategyDecisionId: input.strategyDecisionId || null,
       time: input.time || timeFor(proofIds, input.fallbackTime || fallbackTime),
       summary: input.summary || input.title || id,
       status: normalizeManagerFlowStatus(input.status),
@@ -43403,9 +43455,7 @@ function buildManagerFlowGraphSnapshot({ project = {}, messages = [], managerRea
       ),
       importance: submission.artifactType === 'final-deliverable'
         ? 'critical'
-        : ['decision-proposal', 'risk-review', 'evidence-packet'].includes(submission.artifactType)
-          ? 'major'
-          : 'normal',
+        : 'major',
       source: 'agentSubmissions',
       proofIds: [submission.messageId].filter(Boolean),
       timelineLogIds: [submission.timelineLogId].filter(Boolean),
@@ -44590,8 +44640,10 @@ function buildManagerFlowGraphSnapshot({ project = {}, messages = [], managerRea
     });
   });
 
-  (dashboard.agentCommunicationFlow?.rows || []).slice(0, 16).forEach((row) => {
+  const graphMessageIds = new Set();
+  (dashboard.agentCommunicationFlow?.rows || []).forEach((row) => {
     const nodeId = `agent-message-${row.messageId}`;
+    graphMessageIds.add(String(row.messageId));
     addNode({
       id: nodeId,
       category: 'communication',
@@ -44627,6 +44679,42 @@ function buildManagerFlowGraphSnapshot({ project = {}, messages = [], managerRea
           importance: row.obligationSeen ? 'major' : 'normal',
         });
       }
+    });
+  });
+
+  allMessages.forEach((message) => {
+    const messageId = String(message.id || '');
+    if (!messageId || graphMessageIds.has(messageId)) return;
+    const authorAgent = team.find((agent) => agent.id === message.authorId || agent.name === message.author);
+    const targetIds = uniqueStrings([
+      ...(message.directTargetIds || []),
+      ...(message.targetIds || []),
+      ...(message.targets || []),
+    ]);
+    const isDecision = ['decision', 'director-clarification'].includes(message.type)
+      || ['leader-confirmed', 'change-confirmed'].includes(message.eventType);
+    addNode({
+      id: `transcript-message-${messageId}`,
+      category: 'communication',
+      subtype: isDecision ? 'chat-decision' : 'group-chat-message',
+      title: `${message.author || authorAgent?.name || 'Project participant'} in #${message.channelId || 'main'}`,
+      agentId: authorAgent?.id || message.authorId || null,
+      summary: message.text || 'Project transcript message',
+      status: 'published',
+      importance: isDecision ? 'major' : 'normal',
+      source: message.source || 'messages',
+      proofIds: [messageId],
+      channelId: message.channelId || 'main',
+      affectedAgentIds: targetIds,
+      participantIds: uniqueStrings([authorAgent?.id || message.authorId, ...targetIds].filter(Boolean)),
+      relationshipRoles: {
+        ...((authorAgent?.id || message.authorId) ? { [authorAgent?.id || message.authorId]: 'sender' } : {}),
+        ...Object.fromEntries(targetIds.map((targetId) => [targetId, 'recipient'])),
+      },
+      submissionIntent: 'Submit the complete Group Chat sentence to the expanded project record.',
+      attachmentType: 'chat-record',
+      attachmentTitle: `${message.author || authorAgent?.name || 'Project participant'} transcript sentence`,
+      route: projectId ? `/projects/${projectId}/transcripts/${encodeURIComponent(message.channelId || 'main')}` : null,
     });
   });
 
@@ -44747,6 +44835,127 @@ function buildManagerFlowGraphSnapshot({ project = {}, messages = [], managerRea
       proofIds: row.chatProofIds || [],
       timelineLogIds: row.timelineLogIds || [],
       importance: row.proofReady ? 'normal' : 'major',
+    });
+  });
+
+  (collaborationIntentQueue.rows || []).forEach((intent) => {
+    const nodeId = `collaboration-intent-${intent.id}`;
+    const agentId = intent.agentId || null;
+    const importance = intent.priority >= 90
+      ? 'critical'
+      : intent.priority >= 70 || intent.canRun
+        ? 'major'
+        : 'normal';
+    addNode({
+      id: nodeId,
+      category: intent.lane === 'chat-intent' || intent.lane === 'meeting-intent' ? 'communication' : 'decision',
+      subtype: intent.lane || 'collaboration-intent',
+      title: agentId
+        ? `${agentLabel(agentId)} intent`
+        : `${String(intent.stage || 'Project').replaceAll('-', ' ')} intent`,
+      agentId,
+      intentId: intent.id,
+      intentLane: intent.lane || null,
+      summary: intent.intent || intent.id,
+      status: intent.canRun ? 'published' : normalizeManagerFlowStatus(intent.status, 'draft'),
+      importance,
+      source: 'collaborationIntentQueue',
+      proofIds: intent.proofIds || [],
+      timelineLogIds: intent.timelineLogIds || [],
+      eventIds: intent.eventIds || [],
+      affectedAgentIds: uniqueStrings([agentId].filter(Boolean)),
+      participantIds: uniqueStrings([agentId].filter(Boolean)),
+      relationshipRoles: agentId ? { [agentId]: 'intent-owner' } : {},
+      submissionIntent: 'Submit the individual collaboration intent for expanded Manager inspection.',
+      attachmentType: 'collaboration-intent',
+      attachmentTitle: intent.intent || intent.id,
+      attachmentSummary: (intent.rationale || []).join(' '),
+      route: intent.runApiPath || intent.apiPath || collaborationIntentQueue.backendRoutes?.collaborationIntentQueue || null,
+    });
+  });
+
+  const historicalStrategyIntents = new Map();
+  (project.logs || []).forEach((log) => {
+    const decision = log.strategyDecision;
+    if (!decision?.id) return;
+    historicalStrategyIntents.set(decision.id, {
+      decision,
+      agentId: log.agentId || decision.agentId || null,
+      taskId: log.taskId || decision.inputs?.taskId || null,
+      proofIds: [log.id].filter(Boolean),
+      timelineLogIds: [log.id].filter(Boolean),
+      time: log.time || null,
+    });
+  });
+  (project.agentWorkerLedger || []).forEach((run) => {
+    const decision = run.strategyDecision;
+    if (!decision?.id || historicalStrategyIntents.has(decision.id)) return;
+    historicalStrategyIntents.set(decision.id, {
+      decision,
+      agentId: run.agentId || decision.agentId || null,
+      taskId: run.taskId || decision.inputs?.taskId || null,
+      proofIds: [run.messageId, run.logId].filter(Boolean),
+      timelineLogIds: [run.logId].filter(Boolean),
+      time: run.ranAt || null,
+    });
+  });
+  historicalStrategyIntents.forEach((entry, strategyDecisionId) => {
+    const { decision } = entry;
+    const selectedAction = decision.selectedAction || 'monitor-project';
+    addNode({
+      id: `agent-strategy-intent-${strategyDecisionId}`,
+      category: 'decision',
+      subtype: 'agent-strategy-intent',
+      title: `${agentLabel(entry.agentId)} selected ${actionLabelForAgentStrategy(selectedAction)}`,
+      agentId: entry.agentId,
+      taskId: entry.taskId,
+      strategyDecisionId,
+      intentId: strategyDecisionId,
+      intentLane: 'agent-strategy-intent',
+      summary: decision.nextStep || actionLabelForAgentStrategy(selectedAction),
+      status: 'published',
+      importance: ['complete-and-submit-owned-work', 'review-pending-submission', 'respond-to-review-obligation'].includes(selectedAction)
+        ? 'major'
+        : 'normal',
+      source: 'agentStrategyDecision',
+      proofIds: entry.proofIds,
+      timelineLogIds: entry.timelineLogIds,
+      affectedAgentIds: uniqueStrings([entry.agentId].filter(Boolean)),
+      affectedTaskIds: [entry.taskId].filter(Boolean),
+      participantIds: uniqueStrings([entry.agentId].filter(Boolean)),
+      relationshipRoles: entry.agentId ? { [entry.agentId]: 'intent-owner' } : {},
+      submissionIntent: 'Submit the Agent strategy intent and its recorded rationale.',
+      attachmentType: 'agent-strategy-intent',
+      attachmentTitle: decision.nextStep || actionLabelForAgentStrategy(selectedAction),
+      attachmentSummary: (decision.rationale || []).join(' '),
+    });
+  });
+
+  (project.modelIntentLedger || []).forEach((intent) => {
+    if (!intent?.id) return;
+    const logId = `log_${intent.id}`;
+    const intentSummary = intent.intent?.summary
+      || intent.intent?.objective
+      || intent.intent?.action
+      || intent.content
+      || intent.command
+      || 'Model intent recorded';
+    addNode({
+      id: `model-intent-${intent.id}`,
+      category: 'decision',
+      subtype: 'model-intent',
+      title: `Model intent for ${intent.command || 'project command'}`,
+      intentId: intent.id,
+      intentLane: 'model-intent',
+      summary: typeof intentSummary === 'string' ? intentSummary : JSON.stringify(intentSummary),
+      status: intent.ok ? 'published' : 'blocked',
+      importance: intent.ok ? 'normal' : 'major',
+      source: 'modelIntentLedger',
+      proofIds: [intent.id, logId],
+      timelineLogIds: logsById.has(logId) ? [logId] : [],
+      submissionIntent: 'Submit the model-derived intent to the expanded Manager record.',
+      attachmentType: 'model-intent',
+      attachmentTitle: intent.command || intent.id,
     });
   });
 
@@ -45625,6 +45834,21 @@ function buildManagerFlowGraphSnapshot({ project = {}, messages = [], managerRea
           importance: 'critical',
         });
       });
+    (collaborationIntentQueue.rows || []).forEach((intent) => {
+      const nodeId = `collaboration-intent-${intent.id}`;
+      if (!nodesById.has(nodeId)) return;
+      addEdge({
+        type: 'agent_collaboration',
+        fromNodeId: nodeId,
+        toNodeId: 'collaboration-intent-queue',
+        label: 'Individual intent in queue',
+        source: 'collaborationIntentQueue',
+        proofIds: intent.proofIds || [],
+        timelineLogIds: intent.timelineLogIds || [],
+        eventIds: intent.eventIds || [],
+        importance: intent.priority >= 90 ? 'critical' : intent.priority >= 70 ? 'major' : 'normal',
+      });
+    });
   }
 
   if (projectId && nodesById.has('team-collaboration-diagnostics')) {
@@ -48600,7 +48824,7 @@ export function createAgentProjectService({
   projects = [],
   messages = [],
   kickoffMeetings = [],
-  messageLimit = 240,
+  messageLimit = 0,
   artifactWriter = null,
   projectRuntime = null,
   llmProvider = null,
@@ -48932,6 +49156,15 @@ export function createAgentProjectService({
       : []
   );
   const persistResult = (result) => {
+    if (result.project?.id && result.messages?.length && typeof store.saveProjectAndAppendMessages === 'function') {
+      const persisted = store.saveProjectAndAppendMessages(result.project, result.messages);
+      return {
+        ...result,
+        project: persisted.project,
+        messages: persisted.messages,
+        allMessages: store.getMessages(persisted.project?.id),
+      };
+    }
     if (result.project?.id) {
       result = {
         ...result,
@@ -49379,12 +49612,13 @@ export function createAgentProjectService({
       const status = llmProvider.setApiKey(secretValue, 'local-secret-vault');
       return { kind, target, bound: Boolean(status?.hasApiKey), status };
     }
-    if (kind === 'model' && (target === 'endpoint' || target === 'model') && typeof llmProvider?.setConfig === 'function') {
+    if (kind === 'model' && ['provider', 'endpoint', 'model'].includes(target) && typeof llmProvider?.setConfig === 'function') {
       const status = llmProvider.setConfig({
+        ...(target === 'provider' ? { provider: secretValue } : {}),
         ...(target === 'endpoint' ? { baseURL: secretValue } : {}),
         ...(target === 'model' ? { model: secretValue } : {}),
       }, 'local-secret-vault');
-      return { kind, target, bound: Boolean(target === 'endpoint' ? status?.baseURL : status?.model), status };
+      return { kind, target, bound: Boolean(target === 'provider' ? status?.provider : target === 'endpoint' ? status?.baseURL : status?.model), status };
     }
     if (kind === 'search' && target === 'api-key' && typeof searchProvider?.setApiKey === 'function') {
       const status = searchProvider.setApiKey(secretValue, 'local-secret-vault');
@@ -52505,7 +52739,7 @@ export function createAgentProjectService({
       modelIntentLedger: [
         modelIntent,
         ...(project.modelIntentLedger || []),
-      ].slice(0, MODEL_INTENT_LEDGER_LIMIT),
+      ],
     }, [
       createProjectLedgerEvent({
         id: `evt_${modelIntent.id}`,
@@ -53044,8 +53278,10 @@ export function createAgentProjectService({
       const transientApiKey = String(input.apiKey || input.modelApiKey || '').trim();
       const transientBaseURL = String(input.baseURL || input.baseUrl || input.modelBaseUrl || input.endpoint || '').trim();
       const transientModel = String(input.model || input.modelName || input.modelId || input.modelID || '').trim();
+      const transientProviderId = String(input.provider || input.providerId || input.modelProvider || '').trim();
       if (transientApiKey || transientBaseURL || transientModel) {
         const transientProvider = createModelProviderFromEnv(globalThis.process?.env || {}, {
+          provider: transientProviderId || undefined,
           apiKey: transientApiKey,
           apiKeySource: transientApiKey ? 'transient-settings-test' : 'missing',
           baseURL: transientBaseURL || undefined,
@@ -60282,6 +60518,7 @@ export function createAgentProjectService({
         project: savedProject,
         privatePilotReleaseCandidate: recordWithProof,
         privatePilotReleaseCandidateWorkflow: workflow,
+        privatePilotLaunchRunWorkflow: savedManagerReadyPackage.privatePilotLaunchRunWorkflow,
         projectEvidenceExportPackage,
         log,
       };
@@ -60384,6 +60621,7 @@ export function createAgentProjectService({
         project: savedProject,
         privatePilotLaunchRun: recordWithProof,
         privatePilotLaunchRunWorkflow: workflow,
+        privatePilotLaunchHealthCheckWorkflow: savedManagerReadyPackage.privatePilotLaunchHealthCheckWorkflow,
         log,
       };
     },
@@ -60485,6 +60723,7 @@ export function createAgentProjectService({
         project: savedProject,
         privatePilotLaunchHealthCheck: recordWithProof,
         privatePilotLaunchHealthCheckWorkflow: workflow,
+        privatePilotAcceptanceReportWorkflow: savedManagerReadyPackage.privatePilotAcceptanceReportWorkflow,
         log,
       };
     },
@@ -60808,6 +61047,10 @@ export function createAgentProjectService({
         project: savedProject,
         privatePilotAcceptanceReport: recordWithProof,
         privatePilotAcceptanceReportWorkflow: workflow,
+        privatePilotGoLiveReadiness: savedManagerReadyPackage.privatePilotGoLiveReadiness,
+        launchOperationsOverview: savedManagerReadyPackage.launchOperationsOverview,
+        productionOperationsReadiness: savedManagerReadyPackage.productionOperationsReadiness,
+        productionOperationsControlReceiptWorkflow: savedManagerReadyPackage.productionOperationsControlReceiptWorkflow,
         log,
       };
     },
@@ -60919,6 +61162,7 @@ export function createAgentProjectService({
         projectEvidenceExportWorkflow: savedWorkflow,
         projectEvidenceExportPackage,
         projectEvidenceArchive: exportRecord.action === 'request' ? archive : savedArchive,
+        privatePilotReleaseCandidateWorkflow: savedManagerReadyPackage.privatePilotReleaseCandidateWorkflow,
         log,
       };
     },
@@ -63752,11 +63996,7 @@ export function createAgentProjectService({
           apiPath: `/projects/${projectId}/security-audit-stream`,
           storage: streamSummary.count ? 'prototype-store-backed' : 'waiting-for-enforced-traffic',
         },
-        eventIds: (project.eventLedger || [])
-          .filter((event) => event.type === 'security-access')
-          .map((event) => event.id)
-          .filter(Boolean)
-          .slice(-40),
+        eventIds: listSecurityAccessEventIds(project),
         backendRoutes: {
           securityBoundary: `/projects/${projectId}/security-boundary`,
           identitySessions: `/projects/${projectId}/identity-sessions`,
@@ -66283,10 +66523,10 @@ export function createAgentProjectService({
       const rebuiltWithReceiptEvent = appendProjectEvents(rebuiltBase, [recoveryEvent]);
       const rebuiltVerification = verifyProjectEventLedger(rebuiltWithReceiptEvent);
       if (!rebuiltVerification.valid) throw new Error('project-event-recovery-rebuild-invalid');
-      saveProject(rebuiltWithReceiptEvent);
+      const persistedRebuiltProject = saveProject(rebuiltWithReceiptEvent);
       const rereadProject = store.getProject(projectId);
       const rereadVerification = verifyProjectEventLedger(rereadProject);
-      if (!rereadVerification.valid || rereadVerification.rootHash !== rebuiltWithReceiptEvent.eventLedgerRootHash) {
+      if (!rereadVerification.valid || rereadVerification.rootHash !== persistedRebuiltProject.eventLedgerRootHash) {
         throw new Error('project-event-recovery-reread-invalid');
       }
       const receiptBase = {
@@ -66493,7 +66733,9 @@ export function createAgentProjectService({
       };
     },
     recordAccessDecision({ projectId, decision = {}, method = 'GET', path = '/', statusCode = null, outcome = '', traceId = null, now = nowIso() } = {}) {
-      const project = projectId ? store.getProject(projectId) : null;
+      const project = projectId
+        ? store.listProjects().find((row) => row.id === projectId) || null
+        : null;
       const auditRecord = buildSecurityAccessAuditRecord({
         projectId: projectId || null,
         decision,

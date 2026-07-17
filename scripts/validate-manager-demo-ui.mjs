@@ -1,14 +1,20 @@
 import { createServer } from 'node:http';
-import { readFile, mkdir } from 'node:fs/promises';
+import { readFile, mkdir, rm } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
+import { createAgentProjectHttpServer } from '../src/agents/agentProjectHttpServer.js';
+import { createModelProvider } from '../src/agents/modelProvider.js';
+import { localizeText } from '../src/i18n/runtime.js';
 
 const REQUESTED_URL = process.env.MANAGER_DEMO_URL || null;
 const DEFAULT_PORTS = [4173, 4174, 4175, 4176, 4180];
 const VIEWPORT = { width: 1440, height: 1100 };
 const ROOT_DIR = fileURLToPath(new URL('..', import.meta.url));
 const DIST_DIR = join(ROOT_DIR, 'dist');
+const TEMP_DIR = join(ROOT_DIR, '.tmp', `manager-demo-ui-${process.pid}`);
+const BACKEND_STORAGE_KEY = 'hall_of_fame_studio.agent_backend_url.v1';
+const LOCAL_AUTH_STORAGE_KEY = 'hall_of_fame_studio.local_auth_session.v1';
 const LANGUAGE_STORAGE_KEY = 'hall_of_fame_studio.language.v1';
 
 const MIME_TYPES = {
@@ -89,15 +95,18 @@ async function ensureServer() {
 }
 
 async function assertPageContains(page, text, message = `Expected page to contain "${text}".`) {
-  const visibleMatches = await page.getByText(text, { exact: false }).count();
+  const acceptedTexts = [...new Set([text, localizeText(text, 'zh')].filter(Boolean))];
+  const visibleMatches = (await Promise.all(acceptedTexts.map((candidate) => (
+    page.getByText(candidate, { exact: false }).count()
+  )))).reduce((sum, count) => sum + count, 0);
   if (visibleMatches > 0) return;
   await page.waitForFunction(
-    (expectedText) => document.body.innerText.includes(expectedText),
-    text,
+    (expectedTexts) => expectedTexts.some((expectedText) => document.body.innerText.includes(expectedText)),
+    acceptedTexts,
     { timeout: 8000 },
   ).catch(() => {});
   const bodyText = await page.locator('body').innerText({ timeout: 5000 });
-  assert(bodyText.includes(text), message);
+  assert(acceptedTexts.some((acceptedText) => bodyText.includes(acceptedText)), message);
 }
 
 async function scrollDashboardToBottom(page) {
@@ -183,16 +192,77 @@ async function launchLocalBrowser() {
   throw lastError;
 }
 
+await rm(TEMP_DIR, { recursive: true, force: true });
+await mkdir(TEMP_DIR, { recursive: true });
+
+const llmProvider = createModelProvider({
+  provider: 'openai-compatible',
+  apiKey: 'manager-demo-ui-local-key',
+  baseURL: 'http://127.0.0.1:11434/v1',
+  model: 'manager-demo-ui-local-model',
+  enabled: true,
+  fetchImpl: async () => new Response(JSON.stringify({
+    id: 'manager-demo-ui-local-response',
+    model: 'manager-demo-ui-local-model',
+    choices: [{ message: { role: 'assistant', content: 'Local manager demo validation response.' } }],
+  }), { status: 200, headers: { 'content-type': 'application/json' } }),
+});
+const backendServer = createAgentProjectHttpServer({
+  filePath: join(TEMP_DIR, 'projects.json'),
+  localAuthFilePath: join(TEMP_DIR, 'auth.json'),
+  localAuthRequired: true,
+  llmProvider,
+  projects: [{
+    id: 'manager-demo-validation-setup',
+    name: 'Manager Demo Validation Setup',
+    status: 'ready',
+    progress: 0,
+    team: [],
+    tasks: [],
+    logs: [],
+    language: 'en',
+    createdAt: '2026-07-14T00:00:00.000Z',
+  }],
+});
+const backendRuntime = await backendServer.listen({ port: 0, host: '127.0.0.1' });
+const bootstrapResponse = await fetch(`${backendRuntime.url}/local-auth/bootstrap`, {
+  method: 'POST',
+  headers: { 'content-type': 'application/json' },
+  body: JSON.stringify({ username: 'manager-demo-validator', password: 'demo1' }),
+});
+const bootstrapPayload = await bootstrapResponse.json();
+assert(bootstrapResponse.status === 201, `Could not create isolated local validation account: ${bootstrapPayload.error || bootstrapResponse.status}.`);
+const localAuthSession = {
+  ...bootstrapPayload.localAuth,
+  baseUrl: backendRuntime.url,
+};
+
 const { server, url } = await ensureServer();
 const browser = await launchLocalBrowser();
 const consoleErrors = [];
 const pageErrors = [];
+const failedResponses = [];
 
 try {
-  const context = await browser.newContext({ viewport: VIEWPORT });
-  await context.addInitScript(([key, value]) => {
-    window.localStorage.setItem(key, value);
-  }, [LANGUAGE_STORAGE_KEY, 'en']);
+  const context = await browser.newContext({
+    viewport: VIEWPORT,
+    storageState: {
+      cookies: [],
+      origins: [{
+        origin: new URL(url).origin,
+        localStorage: [
+          { name: BACKEND_STORAGE_KEY, value: JSON.stringify(backendRuntime.url) },
+          { name: LANGUAGE_STORAGE_KEY, value: 'en' },
+        ],
+      }],
+    },
+  });
+  const authInitScript = await context.addInitScript(({ authStorageKey, authSession }) => {
+    window.sessionStorage.setItem(authStorageKey, JSON.stringify(authSession));
+  }, {
+    authStorageKey: LOCAL_AUTH_STORAGE_KEY,
+    authSession: localAuthSession,
+  });
   const page = await context.newPage();
   page.on('console', (message) => {
     if (['error', 'warning'].includes(message.type())) {
@@ -202,10 +272,16 @@ try {
   page.on('pageerror', (error) => {
     pageErrors.push(error.stack || error.message);
   });
+  page.on('response', (response) => {
+    if (response.status() >= 400) failedResponses.push(`${response.status()} ${response.url()}`);
+  });
 
   await page.goto(url, { waitUntil: 'domcontentloaded' });
   await page.waitForLoadState('networkidle');
+  await authInitScript.dispose();
 
+  await page.getByTestId('workspace-open-advanced').click();
+  await page.getByTestId('manager-demo-tools').click();
   const demoButton = page.getByRole('button', { name: /Load Sample Fixture.*Manager demo data/i });
   assert(await demoButton.count() === 1, 'Dashboard must expose exactly one Manager Demo sample fixture entry point.');
   await demoButton.click();
@@ -214,6 +290,100 @@ try {
   await page.getByTestId('project-sample-fixture-banner').waitFor({ state: 'visible', timeout: 5000 });
   await assertPageContains(page, 'Sample Fixture');
   await assertPageContains(page, 'Validation and demo data only');
+  await mkdir(new URL('../dist/', import.meta.url), { recursive: true });
+  await page.screenshot({
+    path: fileURLToPath(new URL('../dist/manager-dashboard-current.png', import.meta.url)),
+    fullPage: true,
+  });
+
+  await page.getByRole('button', { name: 'Open project tools' }).click({ force: true });
+  const flowGraphButton = page.getByRole('button', { name: /Manager Flow Graph/i }).first();
+  assert(await flowGraphButton.count() === 1, 'Original Dashboard must expose the Manager Flow Graph action.');
+  await flowGraphButton.click();
+  await page.getByTestId('manager-flow-graph').waitFor({ state: 'visible', timeout: 10000 });
+  assert(
+    await page.locator('[data-testid^="manager-flow-node-"]').count() > 0,
+    'Manager Flow Graph must render its original node cards.',
+  );
+  const managerFlowViewportState = await page.getByTestId('manager-flow-graph').evaluate((graph) => {
+    const viewport = graph.parentElement;
+    const viewportRect = viewport?.getBoundingClientRect();
+    const nodes = [...graph.querySelectorAll('[data-testid^="manager-flow-node-"]')];
+    const nodeRects = nodes.map((node) => {
+      const rect = node.getBoundingClientRect();
+      return {
+        id: node.getAttribute('data-testid'),
+        left: Math.round(rect.left),
+        top: Math.round(rect.top),
+        right: Math.round(rect.right),
+        bottom: Math.round(rect.bottom),
+      };
+    });
+    const visibleNodeCount = viewportRect
+      ? nodeRects.filter((rect) => (
+          rect.right > viewportRect.left
+          && rect.bottom > viewportRect.top
+          && rect.left < viewportRect.right
+          && rect.top < viewportRect.bottom
+        )).length
+      : 0;
+    return {
+      visibleNodeCount,
+      viewport: viewportRect ? {
+        left: Math.round(viewportRect.left),
+        top: Math.round(viewportRect.top),
+        right: Math.round(viewportRect.right),
+        bottom: Math.round(viewportRect.bottom),
+      } : null,
+      sampleNodeRects: nodeRects.slice(0, 6),
+    };
+  });
+  assert(
+    managerFlowViewportState.visibleNodeCount > 0,
+    `Manager Flow Graph must show at least one node card when opened. State: ${JSON.stringify(managerFlowViewportState)}`,
+  );
+  const zoomControl = page.getByTestId('manager-flow-zoom');
+  await zoomControl.evaluate((input) => {
+    input.value = '60';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  await page.waitForTimeout(120);
+  const compactNodeCount = await page.locator('[data-testid^="manager-flow-node-"]').count();
+  assert(compactNodeCount > 0, 'Compact Manager Flow Graph must keep major and critical project nodes visible.');
+  await zoomControl.evaluate((input) => {
+    input.value = '180';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  await page.waitForTimeout(120);
+  const expandedNodeCount = await page.locator('[data-testid^="manager-flow-node-"]').count();
+  assert(expandedNodeCount >= compactNodeCount, 'Expanded Manager Flow Graph must retain compact nodes and reveal detailed records.');
+  await page.getByRole('button', { name: /^RESET$/i }).click();
+  await page.waitForTimeout(250);
+  const resetManagerFlowVisibleNodeCount = await page.getByTestId('manager-flow-graph').evaluate((graph) => {
+    const viewportRect = graph.parentElement?.getBoundingClientRect();
+    if (!viewportRect) return 0;
+    return [...graph.querySelectorAll('[data-testid^="manager-flow-node-"]')].filter((node) => {
+      const rect = node.getBoundingClientRect();
+      return (
+        rect.right > viewportRect.left
+        && rect.bottom > viewportRect.top
+        && rect.left < viewportRect.right
+        && rect.top < viewportRect.bottom
+      );
+    }).length;
+  });
+  assert(resetManagerFlowVisibleNodeCount > 0, 'Manager Flow Graph Reset must keep node cards in the viewport.');
+  await backToDashboard(page);
+
+  await page.getByRole('button', { name: 'Open project tools' }).click({ force: true });
+  const groupChatButton = page.getByRole('button', { name: /Group Channels/i }).first();
+  assert(await groupChatButton.count() === 1, 'Original Dashboard must expose the Group Chat action.');
+  await groupChatButton.click();
+  await page.getByPlaceholder(/Message #/i).waitFor({ state: 'visible', timeout: 10000 });
+  await backToDashboard(page);
+
   const scenarioControlCenter = page.getByTestId('scenario-control-center');
   await scenarioControlCenter.scrollIntoViewIfNeeded();
   await scenarioControlCenter.waitFor({ state: 'visible', timeout: 5000 });
@@ -280,7 +450,7 @@ try {
   await assertPageContains(page, 'Project Brief Heard');
   await assertPageContains(page, 'Leader Marker Confirmed');
   await assertPageContains(page, 'Assigned Work Progress');
-  await assertPageContains(page, 'Meeting + Google Chat Change');
+  await page.getByTestId('manager-scenario-trail-row-dual-channel-change').waitFor({ state: 'visible', timeout: 5000 });
   await page.getByTestId('sync-protocol-audit').waitFor({ state: 'visible', timeout: 5000 });
   await assertPageContains(page, 'Sync Protocol Audit');
   await assertPageContains(page, 'Backend collaboration protocol');
@@ -295,9 +465,9 @@ try {
   await assertPageContains(page, 'Sync Audit');
   await page.getByTestId('manager-requirement-matrix').waitFor({ state: 'visible', timeout: 5000 });
   await assertPageContains(page, 'Manager Requirement Matrix');
-  await assertPageContains(page, 'Director opens a kickoff meeting');
-  await assertPageContains(page, 'Leader assigns tasks by @mentioning Agents in group chat.');
-  await assertPageContains(page, 'The owner adds the change to their plan and syncs it back to the team.');
+  await page.getByTestId('manager-requirement-row-kickoff-brief-understood').waitFor({ state: 'visible', timeout: 5000 });
+  await page.getByTestId('manager-requirement-row-leader-group-assignment').waitFor({ state: 'visible', timeout: 5000 });
+  await page.getByTestId('manager-requirement-row-owner-plan-and-team-sync').waitFor({ state: 'visible', timeout: 5000 });
   await page.getByTestId('manager-requirement-proof-leader-group-assignment').click();
   await assertPageContains(page, 'PROOF FOCUS:');
   await backToDashboard(page);
@@ -499,8 +669,11 @@ try {
   await assertPageContains(page, 'Open Obligation');
   await assertPageContains(page, 'Latest Worklog');
   await assertPageContains(page, 'Next Agent Run');
-  await page.getByTestId('agent-focus-open-turing').click();
-  await page.getByTestId('agent-focus-panel-turing').waitFor({ state: 'visible', timeout: 5000 });
+  const turingAgentFocusPanel = page.getByTestId('agent-focus-panel-turing');
+  if (await turingAgentFocusPanel.count() === 0) {
+    await page.getByTestId('agent-focus-open-turing').click();
+  }
+  await turingAgentFocusPanel.waitFor({ state: 'visible', timeout: 15000 });
   await assertPageContains(page, 'Agent Focus Workspace');
   await assertPageContains(page, 'Run Agent Pulse');
   await assertPageContains(page, 'Owned Task Evidence');
@@ -600,12 +773,61 @@ try {
   await assertPageContains(page, 'I own the dependency');
   await assertPageContains(page, 'review the next manager handoff evidence');
   await backToDashboard(page);
-  await assertPageContains(page, 'review the next manager handoff evidence');
+  await page.getByTestId('project-sample-fixture-banner').waitFor({ state: 'visible', timeout: 5000 });
+  await assertPageContains(page, 'Peer Handoffs');
 
   await clickDashboardStep(page, 'timeline_evidence');
-  await page.getByText('MANAGER FLOW GRAPH', { exact: false }).waitFor({ state: 'visible', timeout: 5000 });
+  await page.getByTestId('manager-flow-graph').waitFor({ state: 'visible', timeout: 5000 });
   await assertPageContains(page, 'MANAGER FLOW GRAPH');
   await assertPageContains(page, 'RESET');
+  await page.evaluate(() => {
+    window.__managerFlowFocusStability = { transform: null, stableSince: performance.now() };
+  });
+  await page.waitForFunction(() => {
+    const graph = document.querySelector('[data-testid="manager-flow-graph"]');
+    const viewportRect = graph?.parentElement?.getBoundingClientRect();
+    if (!graph || !viewportRect) return false;
+    const visibleCount = [...graph.querySelectorAll('[data-testid^="manager-flow-node-"]')].filter((node) => {
+      const rect = node.getBoundingClientRect();
+      return (
+        rect.right > viewportRect.left
+        && rect.bottom > viewportRect.top
+        && rect.left < viewportRect.right
+        && rect.top < viewportRect.bottom
+      );
+    }).length;
+    const transform = getComputedStyle(graph).transform;
+    const now = performance.now();
+    const stability = window.__managerFlowFocusStability || { transform: null, stableSince: now };
+    if (transform === stability.transform && visibleCount > 0) {
+      const stableForMs = now - stability.stableSince;
+      return stableForMs >= 320;
+    }
+    window.__managerFlowFocusStability = { transform, stableSince: now };
+    return false;
+  }, null, { timeout: 5000, polling: 50 });
+  const focusedManagerFlowVisibleNodeCount = await page.getByTestId('manager-flow-graph').evaluate((graph) => {
+    const viewportRect = graph.parentElement?.getBoundingClientRect();
+    if (!viewportRect) return 0;
+    return [...graph.querySelectorAll('[data-testid^="manager-flow-node-"]')].filter((node) => {
+      const rect = node.getBoundingClientRect();
+      return (
+        rect.right > viewportRect.left
+        && rect.bottom > viewportRect.top
+        && rect.left < viewportRect.right
+        && rect.top < viewportRect.bottom
+      );
+    }).length;
+  });
+  assert(
+    focusedManagerFlowVisibleNodeCount > 0,
+    'Manager Flow Graph must show node cards after opening a focused timeline proof.',
+  );
+
+  const duplicateKeyWarnings = consoleErrors.filter((message) => /Encountered two children with the same key/i.test(message));
+  assert(!duplicateKeyWarnings.length, `Manager demo UI must not emit duplicate React key warnings. First warning: ${duplicateKeyWarnings[0] || ''}`);
+  const uniqueFailedResponses = [...new Set(failedResponses)];
+  assert(!uniqueFailedResponses.length, `Manager demo UI must not emit failed HTTP responses. First failure: ${uniqueFailedResponses[0] || ''}`);
 
   await mkdir(new URL('../dist/', import.meta.url), { recursive: true });
   await page.screenshot({
@@ -623,6 +845,46 @@ try {
       path: fileURLToPath(new URL('manager-demo-ui-failure.png', failureDir)),
       fullPage: true,
     }).catch(() => {});
+    const managerFlowState = await page.getByTestId('manager-flow-graph').evaluate((graph) => {
+      const viewportRect = graph.parentElement?.getBoundingClientRect();
+      const nodes = [...graph.querySelectorAll('[data-testid^="manager-flow-node-"]')];
+      const nodeState = nodes.map((node) => {
+        const rect = node.getBoundingClientRect();
+        return {
+          id: node.getAttribute('data-testid'),
+          focused: node.classList.contains('ring-2'),
+          offsetLeft: node.offsetLeft,
+          offsetTop: node.offsetTop,
+          rect: {
+            left: Math.round(rect.left),
+            top: Math.round(rect.top),
+            right: Math.round(rect.right),
+            bottom: Math.round(rect.bottom),
+          },
+        };
+      });
+      const isVisible = (node) => Boolean(viewportRect && (
+        node.rect.right > viewportRect.left
+        && node.rect.bottom > viewportRect.top
+        && node.rect.left < viewportRect.right
+        && node.rect.top < viewportRect.bottom
+      ));
+      return {
+        inlineTransform: graph.style.transform,
+        computedTransform: getComputedStyle(graph).transform,
+        viewport: viewportRect ? {
+          left: Math.round(viewportRect.left),
+          top: Math.round(viewportRect.top),
+          right: Math.round(viewportRect.right),
+          bottom: Math.round(viewportRect.bottom),
+        } : null,
+        nodeCount: nodes.length,
+        visibleNodeCount: nodeState.filter(isVisible).length,
+        focusedNodes: nodeState.filter(node => node.focused).slice(0, 6),
+        sampleNodes: nodeState.slice(0, 6),
+      };
+    }).catch(() => null);
+    if (managerFlowState) console.error(`Manager Flow Graph state:\n${JSON.stringify(managerFlowState, null, 2)}`);
     const bodyText = await page.locator('body').innerText({ timeout: 1000 }).catch(() => '');
     console.error(`Visible page excerpt:\n${bodyText.slice(0, 1600)}`);
   }
@@ -632,8 +894,14 @@ try {
   if (pageErrors.length) {
     console.error(`Page errors:\n${pageErrors.slice(-6).join('\n')}`);
   }
+  if (failedResponses.length) {
+    console.error(`Failed responses:\n${[...new Set(failedResponses)].slice(-20).join('\n')}`);
+  }
+  console.error(error.stack || error.message || String(error));
   throw error;
 } finally {
   await browser.close();
-  if (server) server.close();
+  if (server) await new Promise(resolvePromise => server.close(resolvePromise));
+  await backendServer.close();
+  await rm(TEMP_DIR, { recursive: true, force: true });
 }

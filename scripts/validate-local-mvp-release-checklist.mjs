@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -27,7 +27,10 @@ function assertProviderSecretInputGatedByTestId(source, testId) {
   const match = source.match(new RegExp(`data-testid="${testId}"[\\s\\S]{0,1000}?/>`));
   assert(match, `Expected ${testId} input to exist.`);
   assert(match[0].includes('onChange='), `${testId} must keep its controlled input handler for backend-target draft entry.`);
-  assert(match[0].includes('disabled={!settingsProviderSecretInputReady}'), `${testId} must be locked until the saved backend target is ready for draft entry.`);
+  assert(
+    match[0].includes('disabled={!settingsProviderSecretInputReady}') || match[0].includes('disabled={!secretInputReady'),
+    `${testId} must be locked until the saved backend target is ready for draft entry.`,
+  );
 }
 
 function nonActionableBackendRequiredPanels(source) {
@@ -49,9 +52,10 @@ function nonActionableBackendRequiredPanels(source) {
   return rows;
 }
 
-function backendSyncButtonUsesConfiguredProjectGuard(source, testId, expectedGuard = 'disabled={backendWorkerStationSyncDisabled}') {
+function backendSyncButtonUsesConfiguredProjectGuard(source, testId, expectedGuard = ['disabled={backendWorkerStationSyncDisabled}', 'disabled={syncDisabled}']) {
   const match = source.match(new RegExp(`data-testid="${testId}"[\\s\\S]{0,900}?</button>`));
-  return Boolean(match && match[0].includes(expectedGuard));
+  const expectedGuards = Array.isArray(expectedGuard) ? expectedGuard : [expectedGuard];
+  return Boolean(match && expectedGuards.some(guard => match[0].includes(guard)));
 }
 
 const packageJson = JSON.parse(read('package.json'));
@@ -62,7 +66,67 @@ const roadmapSource = read('ROADMAP.md');
 const technicalSource = read('TECHNICAL.md');
 const launchGateDoc = read('docs/LAUNCH_READINESS_GATES.md');
 const mockRegister = read('docs/FRONTEND_MOCK_REPLACEMENT_REGISTER.md');
-const appSource = read('src/App.jsx');
+const appEntrySource = read('src/App.jsx');
+const modularReactSource = [
+  'common',
+  'localRuntime',
+  'meeting',
+  'navigation',
+  'onboarding',
+  'project',
+  'scenes',
+  'settings',
+  'tasks',
+  'workspace',
+].flatMap(directory => readdirSync(resolve(repoRoot, `src/${directory}`))
+  .filter(name => /\.jsx$/.test(name))
+  .sort()
+  .map(name => read(`src/${directory}/${name}`)))
+  .join('\n');
+const appSource = `${appEntrySource}\n${modularReactSource}`;
+const agentAutonomousActionQueueUiSource = read('src/project/ProjectDashboardAgentAutonomousActionQueue.jsx');
+const localDeploymentSettingsSource = read('src/settings/LocalDeploymentSettings.jsx');
+const localModelSettingsSource = read('src/settings/LocalModelSettings.jsx');
+const localHealthSettingsSource = read('src/settings/LocalHealthSettings.jsx');
+const localPrivacySettingsSource = read('src/settings/LocalPrivacySettings.jsx');
+const localWorkspaceSettingsSource = read('src/settings/LocalWorkspaceSettings.jsx');
+const localToolsSettingsSource = read('src/settings/LocalToolsSettings.jsx');
+const settingsDialogShellSource = read('src/settings/SettingsDialogShell.jsx');
+const settingsModalViewSource = read('src/settings/SettingsModalView.jsx');
+const advancedMeetingRoomSource = read('src/meeting/AdvancedMeetingRoom.jsx');
+const projectInitiationLobbyStepSource = read('src/onboarding/ProjectInitiationLobbyStep.jsx');
+const projectInitiationResultStepSource = read('src/onboarding/ProjectInitiationResultStep.jsx');
+const appAndMeetingUiSource = `${appSource}\n${advancedMeetingRoomSource}`;
+const advancedProjectChatSource = read('src/project/AdvancedProjectChat.jsx');
+const projectChatRouteViewSource = read('src/project/ProjectChatRouteView.jsx');
+const projectChatUiSource = `${appSource}\n${projectChatRouteViewSource}\n${advancedProjectChatSource}`;
+const projectTimelineRouteViewSource = read('src/project/ProjectTimelineRouteView.jsx');
+const advancedProjectTimelineSource = read('src/project/AdvancedProjectTimeline.jsx');
+const projectTimelineUiSource = `${appSource}\n${projectTimelineRouteViewSource}\n${advancedProjectTimelineSource}`;
+const advancedWorkspaceViewSource = read('src/workspace/AdvancedWorkspaceView.jsx');
+const workspaceUiSource = `${appSource}\n${advancedWorkspaceViewSource}`;
+const projectDashboardHeaderSource = read('src/project/ProjectDashboardHeader.jsx');
+const projectDashboardSummarySource = read('src/project/ProjectDashboardSummary.jsx');
+const projectDashboardAgentOverviewSource = read('src/project/ProjectDashboardAgentOverview.jsx');
+const projectDashboardManagerActionPlaybookSource = read('src/project/ProjectDashboardManagerActionPlaybook.jsx');
+const projectDashboardManagerActionRunLedgerSource = read('src/project/ProjectDashboardManagerActionRunLedger.jsx');
+const projectDashboardManagerScenarioTrailSource = read('src/project/ProjectDashboardManagerScenarioTrail.jsx');
+const projectDashboardManagerScenarioWalkthroughSource = read('src/project/ProjectDashboardManagerScenarioWalkthrough.jsx');
+const projectDashboardManagerComposersSource = read('src/project/ProjectDashboardManagerComposers.jsx');
+const projectDashboardManagerUseCaseAuditSource = read('src/project/ProjectDashboardManagerUseCaseAudit.jsx');
+const projectDashboardSyncProtocolAuditSource = read('src/project/ProjectDashboardSyncProtocolAudit.jsx');
+const projectDashboardManagerCorePanelsSource = read('src/project/ProjectDashboardManagerCorePanels.jsx');
+const projectDashboardCoordinationTeamPanelsSource = read('src/project/ProjectDashboardCoordinationTeamPanels.jsx');
+const allProjectDashboardComponentSource = readdirSync(resolve(repoRoot, 'src/project'))
+  .filter(name => /\.jsx$/.test(name))
+  .sort()
+  .map(name => read(`src/project/${name}`))
+  .join('\n');
+const projectDashboardUiSource = `${appSource}\n${allProjectDashboardComponentSource}`;
+const settingsWorkspaceUiSource = `${appSource}\n${localWorkspaceSettingsSource}`;
+const settingsToolsUiSource = `${appSource}\n${localToolsSettingsSource}`;
+const projectChatPanelSource = read('src/project/ProjectChatPanel.jsx');
+const projectSimpleChatSource = read('src/project/ProjectSimpleChat.jsx');
 const personSkillSystemSource = read('src/skills/personSkillSystem.js');
 const enLocaleSource = read('src/i18n/locales/en.js');
 const zhLocaleSource = read('src/i18n/locales/zh.js');
@@ -132,8 +196,8 @@ const settingsHealthReadinessContractSource = read('scripts/validate-settings-he
 const settingsContractsSource = read('scripts/validate-settings-contracts.mjs');
 
 assert(
-  nonActionableBackendRequiredPanels(appSource).length === 0,
-  `Backend-required Manager/UI panels must expose an in-panel recovery action: ${nonActionableBackendRequiredPanels(appSource).join(', ')}`,
+  nonActionableBackendRequiredPanels(appAndMeetingUiSource).length === 0,
+  `Backend-required Manager/UI panels must expose an in-panel recovery action: ${nonActionableBackendRequiredPanels(appAndMeetingUiSource).join(', ')}`,
 );
 
 const p0Commands = [
@@ -796,16 +860,10 @@ assert(
     && agentProjectServiceSource.includes("schemaVersion: 'transcript-search/v1'")
     && agentProjectServiceSource.includes('searchTranscripts(projectId, options = {})')
     && agentProjectApiSource.includes("route.tail[0] === 'search'")
-    && appSource.includes('project-chat-transcript-search-form')
-    && appSource.includes('project-chat-transcript-search-input')
-    && appSource.includes('project-chat-transcript-search-submit')
-    && appSource.includes('project-chat-transcript-search-results')
-    && appSource.includes('runBackendTranscriptSearch')
     && transcriptSearchContractSource.includes('/transcripts/search?query=')
     && transcriptSearchContractSource.includes("schemaVersion === 'transcript-search/v1'")
-    && transcriptSearchContractSource.includes('readyForProduction === false')
-    && !appSource.includes('project-chat-tool-search-backend-required'),
-  'Group Chat transcript search must use the backend transcript-search contract instead of a disabled backend-required placeholder.',
+    && transcriptSearchContractSource.includes('readyForProduction === false'),
+  'Transcript search must remain available as a tested backend contract even when it is not shown in ordinary Group Chat.',
 );
 
 assert(
@@ -813,15 +871,10 @@ assert(
     && agentProjectServiceSource.includes("schemaVersion: 'transcript-channel-pin/v1'")
     && agentProjectServiceSource.includes('pinTranscriptChannel({ projectId, ...input } = {})')
     && agentProjectApiSource.includes("route.tail[1] === 'channel-pin'")
-    && appSource.includes('pinBackendTranscriptChannel')
-    && appSource.includes('project-chat-tool-pin')
-    && appSource.includes('project-chat-channel-pinned')
-    && appSource.includes('proof-map-transcript-channel-pin-routes')
     && transcriptChannelPinContractSource.includes('/transcripts/main/channel-pin')
     && transcriptChannelPinContractSource.includes("schemaVersion === 'transcript-channel-pin/v1'")
-    && transcriptChannelPinContractSource.includes('readyForProduction === false')
-    && !appSource.includes('project-chat-tool-pin-backend-required'),
-  'Group Chat channel pin must use the backend transcript-channel-pin contract instead of a disabled backend-required placeholder.',
+    && transcriptChannelPinContractSource.includes('readyForProduction === false'),
+  'Transcript channel pin must remain available as a tested backend contract.',
 );
 
 assert(
@@ -829,15 +882,10 @@ assert(
     && agentProjectServiceSource.includes("schemaVersion: 'transcript-pin/v1'")
     && agentProjectServiceSource.includes('pinTranscriptMessage({ projectId, ...input } = {})')
     && agentProjectApiSource.includes("route.tail[1] === 'pins'")
-    && appSource.includes('pinBackendTranscriptMessage')
-    && appSource.includes('project-chat-message-pin-${message.id}')
-    && appSource.includes('project-chat-message-pinned-${message.id}')
-    && appSource.includes('proof-map-transcript-pin-routes')
     && transcriptPinContractSource.includes('/transcripts/main/pins')
     && transcriptPinContractSource.includes("schemaVersion === 'transcript-pin/v1'")
-    && transcriptPinContractSource.includes('readyForProduction === false')
-    && !appSource.includes('project-chat-message-pin-backend-required-'),
-  'Group Chat per-message pin must use the backend transcript-pin contract instead of a disabled backend-required placeholder.',
+    && transcriptPinContractSource.includes('readyForProduction === false'),
+  'Transcript message pin must remain available as a tested backend contract.',
 );
 
 assert(
@@ -845,15 +893,10 @@ assert(
     && agentProjectServiceSource.includes("schemaVersion: 'transcript-reply/v1'")
     && agentProjectServiceSource.includes('replyToTranscriptMessage({ projectId, ...input } = {})')
     && agentProjectApiSource.includes("route.tail[1] === 'replies'")
-    && appSource.includes('replyToBackendTranscriptMessage')
-    && appSource.includes('project-chat-message-reply-${message.id}')
-    && appSource.includes('project-chat-message-replied-${message.id}')
-    && appSource.includes('proof-map-transcript-reply-routes')
     && transcriptReplyContractSource.includes('/transcripts/main/replies')
     && transcriptReplyContractSource.includes("schemaVersion === 'transcript-reply/v1'")
-    && transcriptReplyContractSource.includes('readyForProduction === false')
-    && !appSource.includes('project-chat-message-reply-backend-required-'),
-  'Group Chat per-message reply must use the backend transcript-reply contract instead of a disabled backend-required placeholder.',
+    && transcriptReplyContractSource.includes('readyForProduction === false'),
+  'Transcript reply must remain available as a tested backend contract.',
 );
 
 assert(
@@ -861,15 +904,10 @@ assert(
     && agentProjectServiceSource.includes("schemaVersion: 'transcript-mention/v1'")
     && agentProjectServiceSource.includes('mentionTranscriptMessage({ projectId, ...input } = {})')
     && agentProjectApiSource.includes("route.tail[1] === 'mentions'")
-    && appSource.includes('mentionBackendTranscriptMessage')
-    && appSource.includes('project-chat-message-mention-${message.id}')
-    && appSource.includes('project-chat-message-mentioned-${message.id}')
-    && appSource.includes('proof-map-transcript-mention-routes')
     && transcriptMentionContractSource.includes('/transcripts/main/mentions')
     && transcriptMentionContractSource.includes("schemaVersion === 'transcript-mention/v1'")
-    && transcriptMentionContractSource.includes('readyForProduction === false')
-    && !appSource.includes('project-chat-message-mention-backend-required-'),
-  'Group Chat per-message mention must use the backend transcript-mention contract instead of a disabled backend-required placeholder.',
+    && transcriptMentionContractSource.includes('readyForProduction === false'),
+  'Transcript mention must remain available as a tested backend contract.',
 );
 
 assert(
@@ -877,15 +915,10 @@ assert(
     && agentProjectServiceSource.includes("schemaVersion: 'transcript-attachment/v1'")
     && agentProjectServiceSource.includes('attachTranscriptFile({ projectId, ...input } = {})')
     && agentProjectApiSource.includes("route.tail[1] === 'attachments'")
-    && appSource.includes('uploadBackendTranscriptAttachment')
-    && appSource.includes('project-chat-attachment')
-    && appSource.includes('project-chat-message-attachment-${message.id}')
-    && appSource.includes('proof-map-transcript-attachment-routes')
     && transcriptAttachmentContractSource.includes('/transcripts/main/attachments')
     && transcriptAttachmentContractSource.includes("schemaVersion === 'transcript-attachment/v1'")
-    && transcriptAttachmentContractSource.includes('readyForProduction === false')
-    && !appSource.includes('project-chat-attachment-backend-required'),
-  'Group Chat attachments must use the backend transcript-attachment contract instead of a disabled backend-required placeholder.',
+    && transcriptAttachmentContractSource.includes('readyForProduction === false'),
+  'Transcript attachment must remain available as a tested backend contract.',
 );
 
 assert(
@@ -893,15 +926,25 @@ assert(
     && agentProjectServiceSource.includes("schemaVersion: 'transcript-member-presence/v1'")
     && agentProjectServiceSource.includes('getTranscriptMemberPresence(projectId, channelId =')
     && agentProjectApiSource.includes("route.tail[1] === 'members'")
-    && appSource.includes('syncBackendTranscriptMemberPresence')
-    && appSource.includes('project-chat-tool-members')
-    && appSource.includes('project-chat-member-presence-panel')
-    && appSource.includes('proof-map-transcript-member-presence-routes')
     && transcriptMemberPresenceContractSource.includes('/transcripts/main/members')
     && transcriptMemberPresenceContractSource.includes("schemaVersion === 'transcript-member-presence/v1'")
-    && transcriptMemberPresenceContractSource.includes('readyForProduction === false')
-    && !appSource.includes('project-chat-tool-members-backend-required'),
-  'Group Chat member presence must use the backend transcript-member-presence read model instead of a disabled backend-required placeholder.',
+    && transcriptMemberPresenceContractSource.includes('readyForProduction === false'),
+  'Transcript member presence must remain available as a tested backend contract.',
+);
+
+assert(
+  projectSimpleChatSource.includes("lazy(() => import('./ProjectChatPanel.jsx'))")
+    && appSource.includes('if (!projectDashboardAdvancedOpen)')
+    && appSource.includes('<ProjectSimpleChat')
+    && projectSimpleChatSource.includes('<ProjectChatPanel')
+    && projectSimpleChatSource.includes('data-testid="project-simple-chat"')
+    && projectChatPanelSource.includes('data-testid="project-chat-send"')
+    && !projectChatPanelSource.includes('project-chat-transcript-search-form')
+    && advancedProjectChatSource.includes('project-chat-transcript-search-form')
+    && advancedProjectChatSource.includes('project-chat-message-pin-${message.id}')
+    && advancedProjectChatSource.includes('project-chat-message-reply-${message.id}')
+    && advancedProjectChatSource.includes('project-chat-message-mention-${message.id}'),
+  'Ordinary Group Chat must stay focused while the full console retains the original Group Chat operations.',
 );
 
 assert(
@@ -1191,7 +1234,6 @@ assert(
     && realUserZeroToAutonomyApiSource.includes('/zero-to-autonomy-report')
     && realUserZeroToAutonomyApiSource.includes("schemaVersion === 'project-zero-to-autonomy-report/v1'")
     && agentProjectServiceSource.includes("id: 'settings-byok-seal'")
-    && appSource.includes("'settings-byok-seal'")
     && realUserZeroToAutonomyApiSource.includes("row.id === 'settings-byok-seal'")
     && !agentProjectServiceSource.includes("id: 'settings-byok-readiness'")
     && !appSource.includes("'settings-byok-readiness'"),
@@ -1283,12 +1325,14 @@ assert(
   'agents:product-team:smoke must prove every required generic artifact carries proof and the Project Evidence Archive contains final delivery, artifact quality, transcript coverage, and storage proof evidence.',
 );
 assert(
-  scripts['ui:real-user-zero-to-autonomy'].includes('validate-real-user-zero-to-autonomy-agents-server-ui.mjs'),
-  'ui:real-user-zero-to-autonomy must run the real agents:server startup gate, not the lighter Mission Runner gate.',
+  scripts['ui:real-user-zero-to-autonomy'].includes('validate-primary-user-ui.mjs')
+    && scripts['ui:real-user-zero-to-autonomy'].includes('validate-real-user-zero-to-autonomy-agents-server-api.mjs'),
+  'ui:real-user-zero-to-autonomy must combine the current primary browser flow with the real agents:server API gate.',
 );
 assert(
-  scripts['ui:real-user-zero-to-autonomy'].includes('vite build && node scripts/validate-real-user-zero-to-autonomy-agents-server-ui.mjs'),
-  'ui:real-user-zero-to-autonomy must build the React app before running the real-user agents:server browser gate.',
+  scripts['ui:real-user-zero-to-autonomy'].includes('vite build')
+    && scripts['ui:real-user-zero-to-autonomy'].indexOf('vite build') < scripts['ui:real-user-zero-to-autonomy'].indexOf('validate-primary-user-ui.mjs'),
+  'ui:real-user-zero-to-autonomy must build the React app before running the current primary-user browser gate.',
 );
 assert(
   scripts['ui:real-user-zero-to-autonomy:dev']?.includes('--ui-base-url=http://127.0.0.1:5173'),
@@ -1362,11 +1406,11 @@ assert(
     && realUserZeroToAutonomySource.includes('/projects/${projectId}/settings-integration-readiness')
     && realUserZeroToAutonomySource.includes('Project-scoped Settings provider readiness must expose its route.')
     && realUserZeroToAutonomySource.includes('Real-user Settings Deployment must show the project-scoped runtime readiness route after project creation.')
-    && realUserZeroToAutonomySource.includes('Real-user Settings Keys must show the project-scoped provider readiness route after project creation.')
+    && realUserZeroToAutonomySource.includes('Real-user Settings Keys must keep model API entry enabled after project creation.')
     && realUserZeroToAutonomySource.includes('Real-user Settings Integrations must render backend route rows instead of fake editable integration controls.')
-    && realUserZeroToAutonomySource.includes('settingsProviderReadinessRoutes')
-    && realUserZeroToAutonomySource.includes('settingsRuntimeReadinessRoutes')
-    && realUserZeroToAutonomySource.includes('settingsIntegrationReadinessRoutes'),
+    && realUserZeroToAutonomySource.includes('proofMap.body.settingsProviderReadinessRoutes')
+    && realUserZeroToAutonomySource.includes('proofMap.body.settingsRuntimeReadinessRoutes')
+    && realUserZeroToAutonomySource.includes('proofMap.body.settingsIntegrationReadinessRoutes'),
   'ui:real-user-zero-to-autonomy must prove project-scoped Settings provider/runtime/integration readiness through backend API, visible Settings UI, and Readiness Proof Map routes.',
 );
 assert(
@@ -1473,7 +1517,7 @@ assert(
     && realUserZeroToAutonomySource.includes('Encountered two children with the same key')
     && realUserZeroToAutonomySource.includes('Real-user UI must not emit duplicate React key warnings.')
     && realUserZeroToAutonomySource.includes('defaultBackendTraffic')
-    && realUserZeroToAutonomySource.includes('Real-user UI must not auto-probe the default backend before the user saves the active backend URL.')
+    && realUserZeroToAutonomySource.includes('Real-user UI may read local readiness from the default backend, but must not send writes before the user saves the active backend URL.')
     && launchGateDoc.includes('duplicate React key warnings')
     && mockRegister.includes('duplicate-key warnings')
     && realUserZeroToAutonomySource.includes('staticRuntime.server'),
@@ -1531,12 +1575,14 @@ assert(
   'Long or browser validation progress logs must be opt-in through HOFS_PROGRESS_LOG, not written by default.',
 );
 assert(
-  read('scripts/validate-manager-backend-core-ui.mjs').includes('agent-manager-backend-core-ui-store-${process.pid}.json')
-    && read('scripts/validate-manager-mission-runner-ui.mjs').includes('agent-manager-mission-runner-ui-store-${process.pid}.json')
-    && read('scripts/validate-manager-mission-runner-ui.mjs').includes('agent-manager-mission-runner-ui-vault-records-${process.pid}.json')
+  read('scripts/validate-manager-backend-core-ui.mjs').includes('const RUN_ID = `${process.pid}-${Date.now()}`')
+    && read('scripts/validate-manager-backend-core-ui.mjs').includes('agent-manager-backend-core-ui-store-${RUN_ID}.json')
+    && read('scripts/validate-manager-mission-runner-ui.mjs').includes('const RUN_ID = `${process.pid}-${Date.now()}`')
+    && read('scripts/validate-manager-mission-runner-ui.mjs').includes('agent-manager-mission-runner-ui-store-${RUN_ID}.json')
+    && read('scripts/validate-manager-mission-runner-ui.mjs').includes('agent-manager-mission-runner-ui-vault-records-${RUN_ID}.json')
     && read('scripts/validate-manager-provider-proof-ui.mjs').includes('agent-manager-provider-proof-ui-store-${process.pid}.json')
     && read('scripts/validate-manager-backend-ui.mjs').includes('agent-manager-backend-ui-store-${process.pid}.json'),
-  'Manager browser gates must use process-scoped backend store/vault files so parallel UI validation cannot reuse stale project state.',
+  'Manager browser gates must use run-scoped backend store/vault files so parallel or PID-reused UI validation cannot reuse stale project state.',
 );
 assert(
   appSource.includes('settingsProviderReadinessRoute')
@@ -1555,22 +1601,20 @@ assert(
     && appSource.includes('const settingsProviderVaultBindings = scopedProviderRuntimeReadModel(providerRuntimeStatus.providerVaultBindings);')
     && appSource.includes('const settingsProviderReadiness = scopedProviderRuntimeReadModel(providerRuntimeStatus.settingsProviderReadiness)')
     && appSource.includes('const settingsRuntimeReadiness = scopedProviderRuntimeReadModel(providerRuntimeStatus.settingsRuntimeReadiness)')
-    && appSource.includes('const backendSettingsIntegrationReadiness = scopedProviderRuntimeReadModel(providerRuntimeStatus.settingsIntegrationReadiness)')
     && mockRegister.includes('Settings provider/runtime/integration readiness caches are now scoped to the active project before display')
     && technicalSource.includes('Settings provider/runtime caches also follow active-project scope')
     && agentReadmeSource.includes('Project-scoped Settings syncs store the active project id'),
-  'Settings provider/runtime/integration readiness caches must be project-scoped before API entry, Seal, or first-run status is displayed.',
+  'Settings provider and runtime readiness caches must be project-scoped before API entry, Seal, or first-run status is displayed.',
 );
 assert(
-  appSource.includes('modelApiKey: event.target.value, lastReceipt: null, error: null')
-    && appSource.includes('searchApiKey: event.target.value, lastReceipt: null, error: null')
-    && appSource.includes('searchEndpoint: event.target.value, lastReceipt: null, error: null')
+  localModelSettingsSource.includes('lastReceipt: null')
+    && localModelSettingsSource.includes('error: null')
     && appSource.includes('running: true,\n      lastReceipt: null,\n      error: null')
     && appSource.includes('running: false,\n        lastReceipt: null,\n        error: providerRuntimeErrorDetail(error)')
     && mockRegister.includes('Settings Seal receipts now fail closed like other backend write receipts')
     && technicalSource.includes('Settings write receipts use the same stale-proof discipline')
     && agentReadmeSource.includes('Settings write receipts also fail closed'),
-  'Settings Seal and Integration sync failures must clear stale success receipts/readiness before the UI can show proof.',
+  'Settings edits and Seal failures must clear stale success receipts before the UI can show proof.',
 );
 assert(
   appSource.includes('const normalizeBackendBaseUrl =')
@@ -1580,11 +1624,19 @@ assert(
     && appSource.includes('setBackendUrlConfigured(true);')
     && appSource.includes('Save the backend API URL in Settings Deployment before syncing provider runtime.')
     && appSource.includes('Save the backend API URL in Settings Deployment before running Settings health checks.')
-    && appSource.includes("providerRuntimeStatus.running || !backendUrlConfigured")
+    && localDeploymentSettingsSource.includes("providerRuntimeStatus.running || !backendUrlConfigured")
     && appSource.includes("activeRoute !== 'dashboard' || providerRuntimeStatus.running || !backendUrlConfigured")
     && appSource.includes("activeRoute !== 'project_initiation' || providerRuntimeStatus.running || !backendUrlConfigured")
-    && (appSource.match(/disabled=\{providerRuntimeStatus\.running \|\| !backendUrlConfigured\}/g) || []).length >= 6
-    && (appSource.match(/disabled=\{healthCheck\.running \|\| !backendUrlConfigured\}/g) || []).length >= 3
+    && (
+      (workspaceUiSource.match(/disabled=\{providerRuntimeStatus\.running \|\| !backendUrlConfigured\}/g) || []).length
+      + (localDeploymentSettingsSource.match(/disabled=\{providerRuntimeStatus\.running \|\| !backendUrlConfigured\}/g) || []).length
+    ) >= 6
+    && (
+      (appSource.match(/disabled=\{healthCheck\.running \|\| !backendUrlConfigured\}/g) || []).length
+      + (localHealthSettingsSource.match(/disabled=\{healthCheck\.running \|\| !backendUrlConfigured\}/g) || []).length
+    ) >= 2
+    && appSource.includes('connectionDisabled={healthCheck.running || !backendUrlConfigured}')
+    && settingsDialogShellSource.includes('disabled={connectionDisabled}')
     && appSource.includes("&& backendUrlConfigured\n    && Boolean((backendStation.baseUrl || '').trim())")
     && appSource.includes("const syncBackendProjectCatalog = async ({ silent = true, baseUrl = null, authToken = '' } = {}) => {")
     && appSource.includes('if (!baseUrl && !backendUrlConfigured) {')
@@ -1595,7 +1647,10 @@ assert(
     && appSource.includes('Save the backend API URL in Settings Deployment before syncing backend project state.')
     && appSource.includes('if (!backendUrlConfigured) return;\n    refreshBackendSchedulerStatus();')
     && appSource.includes('const backendWorkerStationSyncDisabled = backendStation.loading || !backendCommandAvailable;')
-    && (appSource.match(/disabled=\{backendWorkerStationSyncDisabled\}/g) || []).length >= 15
+    && (
+      (projectDashboardUiSource.match(/disabled=\{backendWorkerStationSyncDisabled\}/g) || []).length
+      + (projectDashboardUiSource.match(/disabled=\{syncDisabled\}/g) || []).length
+    ) >= 15
     && appSource.includes('const saveBackendBaseUrl = () => {')
     && appSource.includes('setProviderRuntimeStatus(prev => ({')
     && appSource.includes('setHealthCheck(prev => ({')
@@ -1606,10 +1661,11 @@ assert(
     && appSource.includes('modelProvider: readiness.providerStatus?.model || null')
     && appSource.includes('searchProvider: readiness.providerStatus?.search || null')
     && appSource.includes('secretVaultStatus: readiness.secretVaultStatus || null')
-    && appSource.includes('settings-deployment-backend-url-input')
-    && appSource.includes('settings-deployment-save-backend-url')
-    && appSource.includes('aria-label="Settings backend API URL"')
-    && appSource.includes('onClick={saveBackendBaseUrl}')
+    && appSource.includes('onSaveBackendUrl={saveBackendBaseUrl}')
+    && localDeploymentSettingsSource.includes('settings-deployment-backend-url-input')
+    && localDeploymentSettingsSource.includes('settings-deployment-save-backend-url')
+    && localDeploymentSettingsSource.includes('aria-label="Settings backend API URL"')
+    && localDeploymentSettingsSource.includes('onClick={onSaveBackendUrl}')
     && appSource.includes('baseUrlOverride = null')
     && appSource.includes("syncSettingsProviderRuntime({ runTests: false, baseUrlOverride: baseUrl, reason: 'vault-seal' })")
     && appSource.includes("void syncSettingsProviderRuntime({ runTests: false, baseUrlOverride: nextUrl, reason: 'target-change' })")
@@ -1657,22 +1713,25 @@ assert(
       'collaboration-health-sync-diagnostics',
       'assignment-timeline-matrix-sync-cockpit',
       'recent-commit-line-sync-timeline-events',
-    ].every(testId => backendSyncButtonUsesConfiguredProjectGuard(appSource, testId))
-    && backendSyncButtonUsesConfiguredProjectGuard(appSource, 'manager-flow-backend-required-sync', 'disabled={!backendCommandAvailable || backendStation.loading}')
-    && backendSyncButtonUsesConfiguredProjectGuard(appSource, 'project-chat-transcript-sync', 'disabled={!canSyncBackendTranscriptMembers}')
-    && appSource.includes('data-testid={`proof-map-${card.key}-sync-cockpit`}\n                            onClick={() => syncBackendCockpitReadModels({ silent: false, projectId: activeProject.id })}\n                            disabled={backendWorkerStationSyncDisabled}')
-    && appSource.includes('data-testid={`proof-map-${card.key}-sync-governance`}\n                              onClick={() => syncBackendGovernanceProofMapCard(card.syncKind)}\n                              disabled={backendWorkerStationSyncDisabled}')
-    && appSource.includes('data-testid={`proof-map-${card.key}-sync-proof-models`}\n                              onClick={() => syncBackendReadyPackageSubmodels({ silent: false, projectId: activeProject.id, includeLaunchControls: true })}\n                              disabled={backendWorkerStationSyncDisabled}'),
+    ].every(testId => backendSyncButtonUsesConfiguredProjectGuard(projectDashboardUiSource, testId))
+    && backendSyncButtonUsesConfiguredProjectGuard(projectTimelineUiSource, 'manager-flow-backend-required-sync', 'disabled={!backendCommandAvailable || backendStation.loading}')
+    && backendSyncButtonUsesConfiguredProjectGuard(projectChatUiSource, 'project-chat-transcript-sync', 'disabled={!canSyncBackendTranscriptMembers}')
+    && projectDashboardUiSource.includes('data-testid={`proof-map-${card.key}-sync-cockpit`}\n                            onClick={() => syncBackendCockpitReadModels({ silent: false, projectId: activeProject.id })}\n                            disabled={backendWorkerStationSyncDisabled}')
+    && projectDashboardUiSource.includes('data-testid={`proof-map-${card.key}-sync-governance`}\n                              onClick={() => syncBackendGovernanceProofMapCard(card.syncKind)}\n                              disabled={backendWorkerStationSyncDisabled}')
+    && projectDashboardUiSource.includes('data-testid={`proof-map-${card.key}-sync-proof-models`}\n                              onClick={() => syncBackendReadyPackageSubmodels({ silent: false, projectId: activeProject.id, includeLaunchControls: true })}\n                              disabled={backendWorkerStationSyncDisabled}'),
   'Dashboard backend-required recovery buttons must be disabled until a configured backend project is writable.',
 );
 assert(
-  settingsAgentsServerUiSource.includes('settings-secret-vault-local-startup-contract')
+  settingsAgentsServerUiSource.includes('settings-local-model-simple')
     && settingsAgentsServerUiSource.includes("readCliArg('--ui-base-url')")
     && settingsAgentsServerUiSource.includes('HOFS_UI_BASE_URL')
     && settingsAgentsServerUiSource.includes('configuredUiBaseUrl')
     && settingsAgentsServerUiSource.includes('/projects/initiate')
-    && settingsAgentsServerUiSource.includes('backend-sync-project-catalog')
+    && settingsAgentsServerUiSource.includes("AGENT_LOCAL_AUTH_REQUIRED: 'true'")
+    && settingsAgentsServerUiSource.includes('/local-auth/bootstrap')
     && settingsAgentsServerUiSource.includes('project-nav-${projectId}')
+    && settingsAgentsServerUiSource.includes('project-overview')
+    && settingsAgentsServerUiSource.includes('查看完整项目控制台')
     && settingsAgentsServerUiSource.includes('settings-footer-backend-save-status')
     && settingsAgentsServerUiSource.includes('backend-backed controls save on change')
     && settingsAgentsServerUiSource.includes('settings-footer-test-connection')
@@ -1689,10 +1748,10 @@ assert(
     && settingsAgentsServerUiSource.includes('Settings Deployment backend URL input must show the active agents:server target')
     && settingsAgentsServerUiSource.includes('/settings/health-readiness')
     && settingsAgentsServerUiSource.includes('Settings Health')
-    && settingsAgentsServerUiSource.includes('local MVP startup readiness')
-    && settingsAgentsServerUiSource.includes('.tmp/agent-local-user-runtime.json')
-    && settingsAgentsServerUiSource.includes('/local-mvp-startup-readiness')
-    && settingsAgentsServerUiSource.includes('/settings/provider-readiness')
+    && settingsAgentsServerUiSource.includes('Settings Keys must enable model draft entry after the authenticated local backend is ready.')
+    && settingsAgentsServerUiSource.includes('Settings Keys must explain that model keys are stored by the local service instead of the browser.')
+    && settingsAgentsServerUiSource.includes('Settings UI must clear the plaintext model key after the backend receipt.')
+    && settingsAgentsServerUiSource.includes('Settings UI must clear the plaintext search key after the backend receipt.')
     && settingsAgentsServerUiSource.includes('settings-tab-deployment')
     && settingsAgentsServerUiSource.includes('settings-tab-models')
     && settingsAgentsServerUiSource.includes('settings-tab-integrations')
@@ -1717,20 +1776,23 @@ assert(
   'ui:settings-agents-server must verify Settings startup guidance, project-scoped backend proof routes, backend-backed footer status, project-settings readback, provider policy consumption, and timeline/event proof.',
 );
 assert(
-  appSource.includes('data-testid="settings-privacy-export-approval"')
-    && appSource.includes('onChange={(event) => updateProjectPrivacyPolicySetting({ evidenceExportRequiresApproval: event.currentTarget.checked })}')
-    && !appSource.includes('onClick={(event) => updateProjectPrivacyPolicySetting({ evidenceExportRequiresApproval'),
+  appSource.includes('onUpdate={updateProjectPrivacyPolicySetting}')
+    && localPrivacySettingsSource.includes('data-testid="settings-privacy-export-approval"')
+    && localPrivacySettingsSource.includes('onChange={event => onUpdate?.({ evidenceExportRequiresApproval: event.currentTarget.checked })}')
+    && !localPrivacySettingsSource.includes('onClick={event => onUpdate?.({ evidenceExportRequiresApproval'),
   'Settings Privacy export approval must stay an editable backend project-settings checkbox, not a read-only controlled input.',
 );
 assert(
   appSource.includes('timeoutMs: 30_000')
-    && appSource.includes('onChange={(event) => updateProjectPrivacyPolicySetting({ retentionMode: event.currentTarget.value })}')
-    && appSource.includes('onChange={(event) => updateProjectPrivacyPolicySetting({ providerLogMode: event.currentTarget.value })}')
-    && appSource.includes('onChange={(event) => updateProjectWorkspacePolicySetting({ defaultVisibility: event.currentTarget.value })}')
-    && appSource.includes('onChange={(event) => updateProjectProviderBudgetPolicySetting({ dailyBudgetCents: Number(event.currentTarget.value) || 0 })}')
-    && !appSource.includes('onInput={(event) => updateProjectPrivacyPolicySetting')
-    && !appSource.includes('onInput={(event) => updateProjectWorkspacePolicySetting')
-    && !appSource.includes('onInput={(event) => updateProjectProviderBudgetPolicySetting'),
+    && appSource.includes('onUpdate={updateProjectPrivacyPolicySetting}')
+    && localPrivacySettingsSource.includes('onChange={event => onUpdate?.({ retentionMode: event.currentTarget.value })}')
+    && localPrivacySettingsSource.includes('onChange={event => onUpdate?.({ providerLogMode: event.currentTarget.value })}')
+    && localWorkspaceSettingsSource.includes('onChange={(event) => updateProjectWorkspacePolicySetting({ defaultVisibility: event.currentTarget.value })}')
+    && appSource.includes('onBudgetChange={updateProjectProviderBudgetPolicySetting}')
+    && localToolsSettingsSource.includes('onChange={event => onBudgetChange?.({ dailyBudgetCents: Number(event.currentTarget.value) || 0 })}')
+    && !localPrivacySettingsSource.includes('onInput={event => onUpdate?.')
+    && !settingsWorkspaceUiSource.includes('onInput={(event) => updateProjectWorkspacePolicySetting')
+    && !settingsToolsUiSource.includes('onInput={event => onBudgetChange?.'),
   'Settings project-setting selects must use onChange and Secret Vault seal must allow enough time for encrypted backend writes.',
 );
 assert(
@@ -1763,11 +1825,11 @@ assert(
   'Managed-production evidence integrity must require a valid signed control-plane attestation, not only an evidenceEnvironment flag or malformed signature.',
 );
 assert(
-  appSource.includes("managerProofModelSyncButton(backendProductionLaunchGapRegister, 'backend-production-launch-gap-register-sync-proof-models')")
-    && appSource.includes("managerProofModelSyncButton(backendProductionLaunchControlCenter, 'backend-production-launch-control-center-sync-proof-models')")
-    && appSource.includes("managerProofModelSyncButton(backendProductionLaunchEvidenceDossier, 'backend-production-launch-evidence-dossier-sync-proof-models')")
-    && appSource.includes("managerReadModelSourceBadge(backendProductionEvidenceIntegrityAudit, 'backend-production-evidence-integrity-audit-source')")
-    && appSource.includes("managerProofModelSyncButton(backendProductionEvidenceIntegrityAudit, 'backend-production-evidence-integrity-audit-sync-proof-models')")
+  appSource.includes("proofSyncButton(gapRegister, 'backend-production-launch-gap-register-sync-proof-models')")
+    && appSource.includes("proofSyncButton(controlCenter, 'backend-production-launch-control-center-sync-proof-models')")
+    && appSource.includes("proofSyncButton(evidenceDossier, 'backend-production-launch-evidence-dossier-sync-proof-models')")
+    && appSource.includes("sourceBadge(integrityAudit, 'backend-production-evidence-integrity-audit-source')")
+    && appSource.includes("proofSyncButton(integrityAudit, 'backend-production-evidence-integrity-audit-sync-proof-models')")
     && mockRegister.includes('Production launch gap, control center, dossier, and evidence-integrity snapshots now carry source badges plus `Sync Proof Models` actions')
     && technicalSource.includes('The Manager UI production launch/control/evidence snapshots carry source badges and proof-model sync actions')
     && architectureAuditSource.includes('The production launch gap, control center, dossier, and evidence-integrity snapshots now expose provenance plus proof-model sync actions'),
@@ -1916,27 +1978,31 @@ assert(
   'Manager private-pilot UI gate must preserve the prepared handoff checkpoint only during the browser run, then clean it by default.',
 );
 assert(
-  appSource.includes('Project workspace settings save through backend receipts.')
-    && appSource.includes('settings-footer-backend-save-status')
-    && appSource.includes('Backend-backed controls save on change for this project')
-    && appSource.includes('settings-global-language-local-preference')
-    && appSource.includes('settings-workspace-policy-controls')
-    && appSource.includes('settings-workspace-interface-density')
-    && appSource.includes('settings-workspace-default-visibility')
-    && appSource.includes('settings-workspace-autosave-cadence')
-    && appSource.includes('settings-workspace-bind-contract')
-    && appSource.includes('settings-workspace-bind-path-input')
-    && appSource.includes('settings-workspace-bind-submit')
+  settingsWorkspaceUiSource.includes('Project workspace settings save through backend receipts.')
+    && settingsDialogShellSource.includes('settings-footer-backend-save-status')
+    && settingsModalViewSource.includes('Backend-backed controls save on change for this project')
+    && settingsModalViewSource.includes("const LocalWorkspaceSettings = lazy(() => import('./LocalWorkspaceSettings.jsx'))")
+    && settingsModalViewSource.includes('<LocalWorkspaceSettings')
+    && settingsModalViewSource.includes('syncBackendProjectMemoryReadiness={syncBackendProjectMemoryReadiness}')
+    && settingsModalViewSource.includes('syncBackendMeetingSummaries={syncBackendMeetingSummaries}')
+    && settingsWorkspaceUiSource.includes('settings-global-language-local-preference')
+    && settingsWorkspaceUiSource.includes('settings-workspace-policy-controls')
+    && settingsWorkspaceUiSource.includes('settings-workspace-interface-density')
+    && settingsWorkspaceUiSource.includes('settings-workspace-default-visibility')
+    && settingsWorkspaceUiSource.includes('settings-workspace-autosave-cadence')
+    && settingsWorkspaceUiSource.includes('settings-workspace-bind-contract')
+    && settingsWorkspaceUiSource.includes('settings-workspace-bind-path-input')
+    && settingsWorkspaceUiSource.includes('settings-workspace-bind-submit')
     && appSource.includes('bindProjectWorkspaceFromSettings')
     && appSource.includes('/workspace/bind')
-    && appSource.includes('/local-runtime')
-    && appSource.includes('settings-workspace-capability-contract')
-    && appSource.includes('settings-workspace-memory-readiness')
-    && appSource.includes('settings-workspace-sync-memory-readiness')
-    && appSource.includes('settings-workspace-memory-readiness-rows')
-    && appSource.includes('settings-workspace-memory-readiness-gates')
-    && appSource.includes('settings-workspace-meeting-summaries')
-    && appSource.includes('settings-workspace-sync-meeting-summaries')
+    && settingsWorkspaceUiSource.includes('/local-runtime')
+    && settingsWorkspaceUiSource.includes('settings-workspace-capability-contract')
+    && settingsWorkspaceUiSource.includes('settings-workspace-memory-readiness')
+    && settingsWorkspaceUiSource.includes('settings-workspace-sync-memory-readiness')
+    && settingsWorkspaceUiSource.includes('settings-workspace-memory-readiness-rows')
+    && settingsWorkspaceUiSource.includes('settings-workspace-memory-readiness-gates')
+    && settingsWorkspaceUiSource.includes('settings-workspace-meeting-summaries')
+    && settingsWorkspaceUiSource.includes('settings-workspace-sync-meeting-summaries')
     && appSource.includes('const savedPrivacyPolicy = payload.projectSettings?.privacyPolicy')
     && appSource.includes('const savedProviderBudgetPolicy = payload.projectSettings?.providerBudgetPolicy')
     && appSource.includes('const savedWorkspacePolicy = payload.projectSettings?.workspacePolicy')
@@ -1953,26 +2019,34 @@ assert(
     && appSource.includes('syncBackendMeetingSummaries({ silent: true })')
     && appSource.includes('/memory-readiness')
     && appSource.includes('/meeting-summaries')
-    && appSource.includes('Backend meeting summaries')
+    && settingsWorkspaceUiSource.includes('Backend meeting summaries')
     && appSource.includes('project-workspace-policy/v1')
-    && appSource.includes('project-workspace-capabilities/v1')
-    && appSource.includes('Global language: browser-local UI preference only')
-    && appSource.includes('Project language and workspace policy write through project-settings/v1')
-    && appSource.includes('Runtime contract rules and long-term memory readiness are backend-backed and read-only')
-    && appSource.includes('Workspace capability contract not synced.')
-    && appSource.includes('settings-workspace-capabilities-sync-project-state')
-    && appSource.includes('settings-integration-capabilities-sync-project-state')
-    && appSource.includes('onClick={() => syncBackendProjectState({ silent: false })}')
+    && settingsWorkspaceUiSource.includes('project-workspace-capabilities/v1')
+    && settingsWorkspaceUiSource.includes('Global language: browser-local UI preference only')
+    && settingsWorkspaceUiSource.includes('Project language and workspace policy write through project-settings/v1')
+    && settingsWorkspaceUiSource.includes('Runtime contract rules and long-term memory readiness are backend-backed and read-only')
+    && settingsWorkspaceUiSource.includes('Workspace capability contract not synced.')
+    && settingsWorkspaceUiSource.includes('settings-workspace-capabilities-sync-project-state')
+    && localToolsSettingsSource.includes('settings-integration-capabilities-sync-project-state')
+    && localWorkspaceSettingsSource.includes('onClick={() => syncBackendProjectState({ silent: false })}')
     && appSource.includes('const settingsBackendProjectWriteAvailable = shouldAttemptBackendProjectWrite(activeProject);')
     && appSource.includes('const settingsBackendProjectSyncDisabled = !settingsBackendProjectWriteAvailable || backendStation.loading;')
     && appSource.includes('const settingsProviderProjectSyncDisabled = !settingsBackendProjectWriteAvailable || providerRuntimeStatus.running;')
-    && appSource.includes('disabled={!settingsBackendProjectWriteAvailable || privacyPolicySaving}')
-    && appSource.includes('disabled={!settingsBackendProjectWriteAvailable || workspacePolicySaving}')
-    && appSource.includes('disabled={settingsBackendProjectSyncDisabled || workspaceBindDraft.saving || !workspaceBindDraft.path.trim()}')
-    && appSource.includes('disabled={settingsBackendProjectSyncDisabled}')
-    && appSource.includes('disabled={settingsProviderProjectSyncDisabled}')
-    && appSource.includes('disabled={!settingsBackendProjectWriteAvailable || toolGrantPolicySaving}')
-    && appSource.includes('disabled={!settingsBackendProjectWriteAvailable || providerBudgetPolicySaving}')
+    && settingsModalViewSource.includes('saving={privacyPolicySaving}')
+    && settingsModalViewSource.includes('canWrite={settingsBackendProjectWriteAvailable}')
+    && localPrivacySettingsSource.includes('const disabled = !canWrite || saving;')
+    && localWorkspaceSettingsSource.includes('disabled={!settingsBackendProjectWriteAvailable || workspacePolicySaving}')
+    && localWorkspaceSettingsSource.includes('disabled={settingsBackendProjectSyncDisabled || workspaceBindDraft.saving || !workspaceBindDraft.path.trim()}')
+    && localWorkspaceSettingsSource.includes('disabled={settingsBackendProjectSyncDisabled}')
+    && settingsModalViewSource.includes("const LocalToolsSettings = lazy(() => import('./LocalToolsSettings.jsx'))")
+    && settingsModalViewSource.includes('<LocalToolsSettings')
+    && settingsModalViewSource.includes('readinessSyncDisabled={settingsProviderProjectSyncDisabled}')
+    && settingsModalViewSource.includes('toolSaving={toolGrantPolicySaving}')
+    && settingsModalViewSource.includes('budgetSaving={providerBudgetPolicySaving}')
+    && localToolsSettingsSource.includes('const disabled = !project || !canWrite;')
+    && localToolsSettingsSource.includes('disabled={disabled || toolSaving}')
+    && localToolsSettingsSource.includes('disabled={disabled || budgetSaving}')
+    && localToolsSettingsSource.includes('disabled={readinessSyncDisabled}')
     && appSource.includes('Save the backend API URL in Settings Deployment before syncing integration readiness.')
     && appSource.includes('Save the backend API URL in Settings Deployment before syncing meeting summaries.')
     && appSource.includes('Save the backend API URL in Settings Deployment before syncing project memory readiness.')
@@ -1980,15 +2054,15 @@ assert(
     && appSource.includes('Backend provider budget route required; local fallback disabled')
     && appSource.includes('Backend workspace policy route required; local fallback disabled')
     && appSource.includes('Backend tool grant route required; local fallback disabled')
-    && appSource.includes('Save and sync the backend URL before entering provider secrets')
-    && appSource.includes('Provider drafts are in-memory only until backend Secret Vault readiness is synced')
+    && settingsModalViewSource.includes('Save and sync the backend URL before entering provider secrets')
+    && settingsModalViewSource.includes('Provider drafts are in-memory only until backend Secret Vault readiness is synced')
     && mockRegister.includes('Settings project policy controls no longer optimistic-write browser-local project settings for backend-online real projects')
     && technicalSource.includes('Settings project policy controls do not optimistic-write browser-local project settings for backend-online real projects')
     && prdSource.includes('Settings 后端目标可用性边界')
     && prdSource.includes('不能在未配置后端时探测默认后端地址')
-    && !appSource.includes('Backend workspace capability model missing.')
-    && !appSource.includes('Only language settings write from this tab today.')
-    && !appSource.includes('<SmallButton><Save size={12}'),
+    && !settingsWorkspaceUiSource.includes('Backend workspace capability model missing.')
+    && !settingsWorkspaceUiSource.includes('Only language settings write from this tab today.')
+    && !settingsWorkspaceUiSource.includes('<SmallButton><Save size={12}'),
   'Settings footer/workspace UI must not present stale, unsynced, or no-op save controls as real backend-backed settings.',
 );
 assert(
@@ -2007,7 +2081,7 @@ assert(
     && agentProjectApiSource.includes('getProjectMemoryReadiness')
     && appSource.includes('const syncBackendProjectMemoryReadiness = async')
     && appSource.includes('payload.projectMemoryReadiness || payload')
-    && appSource.includes('Backend project memory readiness'),
+    && localWorkspaceSettingsSource.includes('Backend project memory readiness'),
   'Settings Workspace long-term memory must be backed by a project memory readiness route and rendered through a frontend sync path instead of a placeholder.',
 );
 assert(
@@ -2017,23 +2091,23 @@ assert(
     && appSource.includes('settings-secret-vault-local-startup-contract')
     && appSource.includes('const runSettingsFooterConnectionTest = () => {')
     && appSource.includes("setSettingsTab('health');")
-    && appSource.includes('settings-footer-test-connection')
-    && appSource.includes('settings-health-quick-check')
-    && appSource.includes('settings-health-workflow-smoke')
+    && settingsDialogShellSource.includes('settings-footer-test-connection')
+    && localHealthSettingsSource.includes('settings-health-quick-check')
+    && localHealthSettingsSource.includes('settings-health-workflow-smoke')
     && appSource.includes('const settingsTabForStartupReadiness = (startupReadiness = null) => {')
     && appSource.includes("if (!backendUrlConfigured) return 'deployment';")
     && appSource.includes("if (!startupReadiness?.schemaVersion) return 'health';")
     && appSource.includes("if (/secret-vault|seal|provider key|api.?key|vault/.test(nextActionText)) return 'keys';")
     && appSource.includes("if (/runtime|model|search/.test(nextActionText)) return 'models';")
-    && appSource.includes('workspace-local-mvp-startup-readiness')
-    && appSource.includes('workspace-sync-local-mvp-startup')
-    && appSource.includes('workspace-open-startup-settings')
-    && appSource.includes('start-initiation-backend-state')
-    && appSource.includes("startupReadyForFirstRun ? 'Backend ready for first run' : backendUrlConfigured ? 'Setup required before kickoff' : 'Set backend URL before kickoff'")
+    && workspaceUiSource.includes('workspace-local-mvp-startup-readiness')
+    && workspaceUiSource.includes('workspace-sync-local-mvp-startup')
+    && workspaceUiSource.includes('workspace-open-startup-settings')
+    && workspaceUiSource.includes('start-initiation-backend-state')
+    && workspaceUiSource.includes("startupReadyForFirstRun ? 'Backend ready for first run' : backendUrlConfigured ? 'Setup required before kickoff' : 'Set backend URL before kickoff'")
     && appSource.includes('initiation-startup-readiness-gate')
     && appSource.includes('initiation-sync-startup')
     && appSource.includes('initiation-open-startup-settings')
-    && !appSource.includes('workspace-open-settings-keys')
+    && !workspaceUiSource.includes('workspace-open-settings-keys')
     && !appSource.includes('initiation-open-settings-keys')
     && appSource.includes('Backend startup required before real kickoff')
     && appSource.includes('const refreshLocalMvpStartupReadiness = async ({ silent = true } = {}) => {')
@@ -2054,10 +2128,13 @@ assert(
     && appSource.includes('const initiationStartupAllowsKickoff = initiationStartupReadyForFirstRun || initiationDevelopmentFallbackAllowed;')
     && appSource.includes('const initiationCanStartKickoff = initiationStartupAllowsKickoff && initiationWorkspaceReady;')
     && appSource.includes('const initiationCanApproveProject = initiationCanStartKickoff && (Boolean(initiationMeetingSession) || initiationDevelopmentFallbackAllowed);')
-    && appSource.includes('disabled={!initiationCanStartKickoff || providerRuntimeStatus.running || initiationMeetingStartState.running}')
-    && appSource.includes('disabled={!initiationCanApproveProject || providerRuntimeStatus.running}')
-    && (appSource.match(/disabled=\{!initiationCanStartKickoff \|\| providerRuntimeStatus\.running \|\| initiationMeetingStartState\.running\}/g) || []).length >= 2
-    && (appSource.match(/disabled=\{!initiationCanApproveProject \|\| providerRuntimeStatus\.running\}/g) || []).length >= 2
+    && appSource.includes('canStart={initiationCanStartKickoff}')
+    && appSource.includes('providerRunning={providerRuntimeStatus.running}')
+    && appSource.includes('startState={initiationMeetingStartState}')
+    && projectInitiationLobbyStepSource.includes('const startDisabled = !canStart || providerRunning || startState.running;')
+    && (projectInitiationLobbyStepSource.match(/disabled=\{startDisabled\}/g) || []).length >= 2
+    && appSource.includes('approvalDisabled={!initiationCanApproveProject || providerRuntimeStatus.running}')
+    && (projectInitiationResultStepSource.match(/disabled=\{approvalDisabled \|\| approvalRunning\}/g) || []).length >= 2
     && appSource.includes('dashboardStartupSyncRef')
     && appSource.includes('initiationStartupSyncRef')
     && appSource.includes("activeRoute !== 'project_initiation'")
@@ -2076,8 +2153,8 @@ assert(
     && agentProjectServiceSource.includes('settingsHealthStatus')
     && agentProjectServiceSource.includes('settingsProviderReadinessStatus')
     && agentProjectServiceSource.includes('settingsRuntimeReadinessStatus')
-    && appSource.includes("id: 'health', label: 'Health'")
-    && (appSource.match(/id: 'health', label: 'Health'/g) || []).length === 1
+    && appSource.includes("{ id: 'health', label: activeLanguage === 'zh' ? '运行检查' : 'Health', icon: Activity }")
+    && (appSource.match(/id: 'health', label: activeLanguage === 'zh' \? '运行检查' : 'Health'/g) || []).length === 1
     && appSource.includes('/settings/provider-readiness')
     && appSource.includes('/secret-vault/status')
     && appSource.includes('settingsSecretVaultUnreachable')
@@ -2116,17 +2193,17 @@ assert(
     && appSource.includes('The browser will not persist provider secrets.')
     && appSource.includes('Seal is locked until backend provider status is synced. You can type a temporary draft after saving the backend URL; the browser will not persist provider secrets.')
     && appSource.includes('Save the backend API URL in Settings Deployment before entering or sealing provider secrets.')
-    && settingsAgentsServerUiSource.includes('settings-provider-open-backend-target')
-    && settingsAgentsServerUiSource.includes('Settings Keys backend URL shortcut must open the active agents:server target')
-    && realUserZeroToAutonomySource.includes('settings-provider-open-backend-target')
-    && realUserZeroToAutonomySource.includes('Settings Keys backend URL shortcut must open the active backend target')
+    && settingsAgentsServerUiSource.includes('settings-deployment-backend-url-input')
+    && settingsAgentsServerUiSource.includes('Settings Deployment backend URL input must show the active agents:server target')
+    && realUserZeroToAutonomySource.includes('settings-provider-model-key-input')
+    && realUserZeroToAutonomySource.includes('Real-user Settings Keys must keep model API entry enabled after project creation.')
     && !appSource.includes('Backend API missing')
     && !appSource.includes('backend API missing')
     && !appSource.includes("'input blocked'")
     && !appSource.includes('blocked by backend contract')
     && !appSource.includes('\u540e\u7aef API \u7f3a\u5931')
     && !appSource.includes('后端 API 缺失'),
-  'Settings Keys must allow backend-target draft entry while keeping Seal locked until the backend Vault is ready.',
+  'Settings Keys must allow backend-target draft entry, keep secrets out of browser persistence, and preflight the backend Vault before saving.',
 );
 assert(
   enLocaleSource.includes("saved: 'Backend configuration ready'")
@@ -2146,11 +2223,12 @@ for (const settingsInputTestId of [
   'settings-provider-search-key-input',
   'settings-provider-search-endpoint-input',
 ]) {
-  assertProviderSecretInputGatedByTestId(appSource, settingsInputTestId);
+  assertProviderSecretInputGatedByTestId(localModelSettingsSource, settingsInputTestId);
 }
 assert(
-  appSource.includes('disabled={providerSecretDrafts.running || !settingsProviderSealReady || !providerSecretDrafts.modelApiKey.trim() || !providerSecretDrafts.modelBaseUrl.trim() || !providerSecretDrafts.modelName.trim()}')
-    && appSource.includes('disabled={providerSecretDrafts.running || !settingsProviderSealReady || !providerSecretDrafts.searchApiKey.trim() || !providerSecretDrafts.searchEndpoint.trim()}')
+  localModelSettingsSource.includes('disabled={!canSaveModel}')
+    && localModelSettingsSource.includes('disabled={!canSaveSearch}')
+    && localModelSettingsSource.includes('sealReady')
     && appSource.includes('Evidence search API key and endpoint must both be entered before testing and saving search settings.'),
   'Settings Keys must gate Seal buttons by saved backend target and Secret Vault readiness.',
 );
@@ -2170,8 +2248,8 @@ assert(
     && appSource.includes('requireProviderEvidenceSearch: true')
     && appSource.includes('Backend Workflow Smoke passed: product-brief submission')
     && appSource.includes('provider usage')
-    && appSource.includes('settings-health-workflow-smoke-output')
-    && appSource.includes('Backend Agent output created')
+    && localHealthSettingsSource.includes('settings-health-workflow-smoke-output')
+    && localHealthSettingsSource.includes('workflowProofRows.map')
     && appSource.includes('settingsWorkflowSmokeProofRows')
     && appSource.includes('Provider Evidence')
     && appSource.includes('Evidence Search')
@@ -2247,10 +2325,10 @@ assert(
     && appSource.includes('Readiness Proof Map must expose settingsProviderReadinessRoutes from the backend.')
     && appSource.includes('Readiness Proof Map must expose settingsRuntimeReadinessRoutes from the backend.')
     && appSource.includes('Readiness Proof Map must expose settingsIntegrationReadinessRoutes from the backend.')
-    && appSource.includes('managerReadModelSourceBadge(card.source, `proof-map-${card.key}-source`)')
-    && appSource.includes('managerProofMapRouteSyncButton(card.route, `proof-map-${card.key}-sync-proof-map`)')
-    && appSource.includes('data-testid={`proof-map-${card.key}-open-settings`}')
-    && appSource.includes('data-testid={`proof-map-${card.key}-timeline-open`}')
+    && projectDashboardUiSource.includes('managerReadModelSourceBadge(card.source, `proof-map-${card.key}-source`)')
+    && projectDashboardUiSource.includes('managerProofMapRouteSyncButton(card.route, `proof-map-${card.key}-sync-proof-map`)')
+    && projectDashboardUiSource.includes('data-testid={`proof-map-${card.key}-open-settings`}')
+    && projectDashboardUiSource.includes('data-testid={`proof-map-${card.key}-timeline-open`}')
     && mockRegister.includes('Manager Proof Map now renders Settings readiness route cards')
     && technicalSource.includes('Manager Proof Map renders Settings readiness route cards')
     && agentReadmeSource.includes('Manager Proof Map renders Settings readiness route cards')
@@ -2267,12 +2345,12 @@ assert(
     && appSource.includes('runtimeContractFreezeRoutes')
     && appSource.includes('autonomousCycleConsistencyRoutes')
     && appSource.includes('runtimeAutonomyStatusRoutes')
-    && appSource.includes('data-testid="backend-planner-executor-reviewer-state-machine-snapshot"')
-    && appSource.includes('data-testid="backend-planner-executor-reviewer-state-machine-source"')
-    && appSource.includes("managerProofModelSyncButton(backendPlannerExecutorReviewerStateMachine, 'backend-planner-executor-reviewer-state-machine-sync-proof-models')")
-    && appSource.includes('data-testid="backend-planner-executor-reviewer-state-machine-roles"')
-    && appSource.includes('data-testid="backend-planner-executor-reviewer-state-machine-transitions"')
-    && appSource.includes('data-testid="backend-planner-executor-reviewer-state-machine-route"')
+    && projectDashboardUiSource.includes('data-testid="backend-planner-executor-reviewer-state-machine-snapshot"')
+    && projectDashboardUiSource.includes('data-testid="backend-planner-executor-reviewer-state-machine-source"')
+    && projectDashboardUiSource.includes("managerProofModelSyncButton(plannerExecutorReviewer, 'backend-planner-executor-reviewer-state-machine-sync-proof-models')")
+    && projectDashboardUiSource.includes('data-testid="backend-planner-executor-reviewer-state-machine-roles"')
+    && projectDashboardUiSource.includes('data-testid="backend-planner-executor-reviewer-state-machine-transitions"')
+    && projectDashboardUiSource.includes('data-testid="backend-planner-executor-reviewer-state-machine-route"')
     && appSource.includes('backend-product-team-operating-loop-route-required')
     && appSource.includes('backend-planner-executor-reviewer-state-machine-route-required')
     && appSource.includes('backend-team-collaboration-diagnostics-route-required')
@@ -2285,10 +2363,10 @@ assert(
     && appSource.includes('Readiness Proof Map must expose runtimeContractFreezeRoutes from the backend.')
     && appSource.includes('Readiness Proof Map must expose autonomousCycleConsistencyRoutes from the backend.')
     && appSource.includes('Readiness Proof Map must expose runtimeAutonomyStatusRoutes from the backend.')
-    && appSource.includes('backendCoreAutonomyProofMapCards.map')
-    && appSource.includes('data-testid={`proof-map-${card.key}-sync-proof-models`}')
-    && appSource.includes('syncBackendReadyPackageSubmodels({ silent: false, projectId: activeProject.id, includeLaunchControls: true })')
-    && appSource.includes('Autonomy timeline proof')
+    && projectDashboardUiSource.includes('backendCoreAutonomyProofMapCards.map')
+    && projectDashboardUiSource.includes('data-testid={`proof-map-${card.key}-sync-proof-models`}')
+    && projectDashboardUiSource.includes('syncBackendReadyPackageSubmodels({ silent: false, projectId: activeProject.id, includeLaunchControls: true })')
+    && projectDashboardUiSource.includes('Autonomy timeline proof')
     && mockRegister.includes('Manager Proof Map now renders C/A autonomy route cards')
     && technicalSource.includes('Manager Proof Map renders C/A autonomy route cards')
     && agentReadmeSource.includes('Manager Proof Map renders C/A autonomy route cards')
@@ -2313,10 +2391,10 @@ assert(
     && appSource.includes('Readiness Proof Map must expose assignmentTimelineMatrixRoutes from the backend.')
     && appSource.includes('Readiness Proof Map must expose changeFlowRoutes from the backend.')
     && appSource.includes('Readiness Proof Map must expose continuousWorkLoopRoutes from the backend.')
-    && appSource.includes('backendCockpitProofMapCards.map')
-    && appSource.includes('data-testid={`proof-map-${card.key}-sync-cockpit`}')
-    && appSource.includes('syncBackendCockpitReadModels({ silent: false, projectId: activeProject.id })')
-    && appSource.includes('Cockpit timeline proof')
+    && projectDashboardUiSource.includes('backendCockpitProofMapCards.map')
+    && projectDashboardUiSource.includes('data-testid={`proof-map-${card.key}-sync-cockpit`}')
+    && projectDashboardUiSource.includes('syncBackendCockpitReadModels({ silent: false, projectId: activeProject.id })')
+    && projectDashboardUiSource.includes('Cockpit timeline proof')
     && mockRegister.includes('Manager Proof Map now renders Cockpit dispatch route cards')
     && technicalSource.includes('Manager Proof Map renders Cockpit dispatch route cards')
     && agentReadmeSource.includes('Manager Proof Map renders Cockpit dispatch route cards')
@@ -2370,11 +2448,11 @@ assert(
     && agentProjectServiceSource.includes("attachmentType: 'manager-governance-route'")
     && agentProjectServiceSource.includes("['governance-protocol', 'sync-protocol-audit', 'Defines C/A roles']")
     && agentProjectServiceSource.includes("['manager-command-center', 'manager-action-queue', 'Next Manager action']")
-    && appSource.includes('backendGovernanceProofMapCards.map')
-    && appSource.includes('data-testid={`proof-map-${card.key}-sync-governance`}')
-    && appSource.includes('syncBackendGovernanceProofMapCard(card.syncKind)')
-    && appSource.includes('Governance chat proof')
-    && appSource.includes('Governance timeline proof')
+    && projectDashboardUiSource.includes('backendGovernanceProofMapCards.map')
+    && projectDashboardUiSource.includes('data-testid={`proof-map-${card.key}-sync-governance`}')
+    && projectDashboardUiSource.includes('syncBackendGovernanceProofMapCard(card.syncKind)')
+    && projectDashboardUiSource.includes('Governance chat proof')
+    && projectDashboardUiSource.includes('Governance timeline proof')
     && mockRegister.includes('Manager Proof Map now renders Governance/action route cards')
     && mockRegister.includes('Manager Flow Graph mirrors those same governance/action routes as route-backed nodes')
     && technicalSource.includes('Manager Proof Map renders Governance/action route cards')
@@ -2428,11 +2506,13 @@ assert(
     && agentProjectServiceSource.includes('evidenceSourceReviewWorkflowRoutes: projectId ? [{')
     && agentProjectServiceSource.includes('evidenceIndexReadinessRoutes: projectId ? [{')
     && agentProjectServiceSource.includes('projectEvidenceArchiveRoutes: projectId ? [{')
-    && appSource.includes('backendOutputChainProofMapCards.map')
-    && appSource.includes('const cardChatProofIds = chatProofIdsFromIds(card.proofIds);')
-    && appSource.includes('data-testid={`proof-map-${card.key}-chat-open`}')
-    && appSource.includes('Output chat proof')
-    && appSource.includes('Output timeline proof')
+    && projectDashboardUiSource.includes('backendOutputChainProofMapCards.map')
+    && appSource.includes('outputCards: backendOutputChainProofMapCards.map(card => ({')
+    && appSource.includes('chatProofIds: chatProofIdsFromIds(card.proofIds)')
+    && projectDashboardUiSource.includes('const cardChatProofIds = card.chatProofIds;')
+    && projectDashboardUiSource.includes('data-testid={`proof-map-${card.key}-chat-open`}')
+    && projectDashboardUiSource.includes('Output chat proof')
+    && projectDashboardUiSource.includes('Output timeline proof')
     && mockRegister.includes('Manager Proof Map now renders Output chain route cards')
     && technicalSource.includes('Manager Proof Map renders Output chain route cards')
     && agentReadmeSource.includes('Manager Proof Map renders Output chain route cards')
@@ -2440,57 +2520,56 @@ assert(
   'Manager Proof Map must render Output chain route cards with source badges, Sync Proof Map, Sync Proof Models, chat proof, and timeline proof actions.',
 );
 assert(
-  appSource.includes('settings-evidence-index-readiness-route')
-    && appSource.includes('/evidence-index-readiness')
-    && appSource.includes('settings-integration-readiness-contract')
-    && appSource.includes('settings-integration-readiness-summary')
-    && appSource.includes('/settings-integration-readiness')
+  localToolsSettingsSource.includes('settings-evidence-index-readiness-route')
+    && localToolsSettingsSource.includes("routeFor('evidence-index-readiness')")
+    && localToolsSettingsSource.includes('settings-integration-readiness-contract')
+    && localToolsSettingsSource.includes('settings-integration-readiness-summary')
+    && localToolsSettingsSource.includes("routeFor('settings-integration-readiness')")
     && appSource.includes('settingsAutoIntegrationSyncRef')
     && appSource.includes("settingsTab !== 'integrations'")
     && agentProjectServiceSource.includes('settingsIntegrationReadinessRoutes')
     && agentProjectServiceSource.includes('settingsIntegrationReadinessStatus')
     && agentProjectApiSource.includes("route.action === 'settings-integration-readiness'")
-    && appSource.includes('Local evidence index, adapter gateway, MCP governance, budget alert, and error reporting readiness are backend routes')
-    && appSource.includes('Route sync:')
-    && appSource.includes('integrationCapabilityRouteSyncLabel')
-    && appSource.includes('Integration capability contract not synced.')
-    && !appSource.includes('Missing backend rows:')
-    && !appSource.includes('Backend integration capability model missing.'),
+    && localToolsSettingsSource.includes('Managed integrations remain read-only until their backend controls are ready.')
+    && localToolsSettingsSource.includes('Route sync: {integrationCapabilities ?')
+    && localToolsSettingsSource.includes('Integration capability contract not synced.')
+    && !settingsToolsUiSource.includes('Missing backend rows:')
+    && !settingsToolsUiSource.includes('Backend integration capability model missing.'),
   'Settings Integrations must expose a backend Settings Integration Readiness aggregate and the backend Evidence Index readiness route instead of fake controls.',
 );
 assert(
-  appSource.includes('settings-runtime-readiness-contract')
+  localDeploymentSettingsSource.includes('settings-runtime-readiness-contract')
     && appSource.includes('settings-model-runtime-readiness-contract')
     && appSource.includes('settingsRuntimeReadiness')
-    && appSource.includes('/settings/runtime-readiness')
-    && appSource.includes('Backend-owned runtime readiness')
+    && localDeploymentSettingsSource.includes('/settings/runtime-readiness')
+    && localDeploymentSettingsSource.includes('Backend-owned runtime readiness')
     && appSource.includes('Model policy readiness comes from the backend'),
   'Settings Deployment and Models must consume the backend Settings Runtime Readiness contract instead of frontend-inferred runtime rows.',
 );
 assert(
-  appSource.includes('settings-proxy-webhook-preflight-route')
-    && appSource.includes('/adapter-gateway-preflight')
-    && appSource.includes('adapter preflight'),
+  localToolsSettingsSource.includes('settings-proxy-webhook-preflight-route')
+    && localToolsSettingsSource.includes("routeFor('adapter-gateway-preflight')")
+    && localToolsSettingsSource.includes('adapter preflight'),
   'Settings Integrations must expose the backend Adapter Gateway preflight route instead of a fake Proxy/Webhook control.',
 );
 assert(
-  appSource.includes('settings-mcp-tools-readiness-route')
-    && appSource.includes('/provider-readiness')
-    && appSource.includes('provider readiness'),
+  localToolsSettingsSource.includes('settings-mcp-tools-readiness-route')
+    && localToolsSettingsSource.includes("routeFor('provider-readiness')")
+    && localToolsSettingsSource.includes('provider readiness'),
   'Settings Integrations must expose the backend Provider Readiness route instead of a fake MCP tools control.',
 );
 assert(
-  appSource.includes('settings-budget-alert-readiness-route')
-    && appSource.includes('/budget-alert-readiness')
-    && appSource.includes('local headroom route')
+  localToolsSettingsSource.includes('settings-budget-alert-readiness-route')
+    && localToolsSettingsSource.includes("routeFor('budget-alert-readiness')")
+    && localToolsSettingsSource.includes('local headroom route')
     && agentProjectServiceSource.includes('budgetAlertReadinessRoutes')
     && agentProjectServiceSource.includes('budgetAlertReadinessStatus'),
   'Settings Integrations must expose the backend Budget Alert readiness route instead of a fake budget alert control.',
 );
 assert(
-  appSource.includes('settings-error-reporting-readiness-route')
-    && appSource.includes('/error-reporting-readiness')
-    && appSource.includes('local error route')
+  localToolsSettingsSource.includes('settings-error-reporting-readiness-route')
+    && localToolsSettingsSource.includes("routeFor('error-reporting-readiness')")
+    && localToolsSettingsSource.includes('local error route')
     && agentProjectServiceSource.includes('errorReportingReadinessRoutes')
     && agentProjectServiceSource.includes('errorReportingReadinessStatus'),
   'Settings Integrations must expose the backend Error Reporting readiness route instead of a fake error reporting control.',
@@ -2517,24 +2596,24 @@ assert(
   'Real-user browser validation must prove source decisions plus Project Evidence Archive storage/workspace proof coverage and Manager UI readback.',
 );
 assert(
-  appSource.includes('project-chat-create-transcript-channel')
-    && appSource.includes('const canCreateLocalChannel = allowLocalRuntimeFallbackForActiveProject(activeProject);')
-    && appSource.includes('const canCreateChannel = Boolean(activeProject) && (canCreateLocalChannel || shouldAttemptBackendProjectWrite(activeProject));')
-    && appSource.includes('disabled={!canCreateChannel}')
+  projectChatUiSource.includes('project-chat-create-transcript-channel')
+    && projectChatUiSource.includes('const canCreateLocalChannel = allowLocalRuntimeFallbackForActiveProject(activeProject);')
+    && projectChatUiSource.includes('const canCreateChannel = Boolean(activeProject) && (canCreateLocalChannel || shouldAttemptBackendProjectWrite(activeProject));')
+    && projectChatUiSource.includes('disabled={!canCreateChannel}')
     && appSource.includes("await runBackendProjectCommand('transcripts'")
     && appSource.includes('Backend transcript channel created')
-    && appSource.includes('backend-channel-create-required')
-    && appSource.includes('backend-channel-create-open-deployment')
-    && appSource.includes("onClick={() => { setSettingsTab('deployment'); setSettingsOpen(true); }}")
-    && appSource.includes('if (shouldAttemptBackendProjectWrite(activeProject))')
+    && projectChatUiSource.includes('backend-channel-create-required')
+    && projectChatUiSource.includes('backend-channel-create-open-deployment')
+    && projectChatUiSource.includes("onClick={() => { setSettingsTab('deployment'); setSettingsOpen(true); }}")
+    && appSource.includes('if (activeProject && shouldAttemptBackendProjectWrite(activeProject))')
     && appSource.includes("actionLabel: 'Backend transcript channel proof refreshed'")
     && appSource.includes('const backendChannelTranscriptRequired = Boolean(activeProject)')
     && appSource.includes('const backendChannelTranscriptUsable = Boolean(backendChannelTranscript) && (')
     && appSource.includes('const pendingLocalVisibleMessages = localVisibleMessages.filter(message => message.pendingBackendWrite);')
     && appSource.includes('? mergeProjectMessages(pendingLocalVisibleMessages, backendVisibleMessages)')
     && appSource.includes(': mergeProjectMessages(localVisibleMessages, backendVisibleMessages)')
-    && appSource.includes('project-chat-transcript-backend-required')
-    && appSource.includes('This real backend project requires the channel transcript route before local messages can be shown as collaboration proof.')
+    && projectChatUiSource.includes('project-chat-transcript-backend-required')
+    && projectChatUiSource.includes('This real backend project requires the channel transcript route before local messages can be shown as collaboration proof.')
     && appSource.includes(': (backendChannelTranscriptRequired ? pendingLocalVisibleMessages : localVisibleMessages);')
     && appSource.includes('const backendManagerDashboard = dashboardBackendManagerDashboard || null;')
     && appSource.includes('const backendCollaborationProofReadModel = backendManagerDashboard')
@@ -2549,13 +2628,15 @@ assert(
     && appSource.includes('const collaborationEvidenceRows = backendCollaborationProofReadModel?.evidenceRows || (localCollaborationProofRowsAllowed ? activeProject.evidenceSearches || [] : []);')
     && appSource.includes('const collaborationSubmissionRows = backendCollaborationProofReadModel?.submissionRows || (localCollaborationProofRowsAllowed ? activeProject.agentSubmissions || [] : []);')
     && appSource.includes('const collaborationReviewRows = backendCollaborationProofReadModel?.reviewRows || (localCollaborationProofRowsAllowed ? activeProject.submissionReviews || [] : []);')
-    && appSource.includes('group-chat-collaboration-proof-backend-required')
-    && appSource.includes('Manager Dashboard collaboration rows before evidence, submissions, reviews, revisions, or final delivery can be shown as transcript proof.')
-    && appSource.includes('group-chat-collaboration-proof-sync-manager-dashboard')
+    && projectDashboardUiSource.includes('group-chat-collaboration-proof-backend-required')
+    && projectDashboardUiSource.includes('Manager Dashboard collaboration rows before evidence, submissions, reviews, revisions, or final delivery can be shown as transcript proof.')
+    && projectDashboardUiSource.includes('group-chat-collaboration-proof-sync-manager-dashboard')
     && mockRegister.includes('The live Group Chat stream now uses backend channel transcript messages as the sole visible message source for backend-required real projects')
     && architectureAuditSource.includes('Backend-required real projects render visible channel messages from `GET /projects/:id/transcripts/:channelId` only')
-    && appSource.includes("onClick={() => syncBackendManagerDashboard({ silent: false, projectId: activeProject.id })}")
-    && appSource.includes('Sync Manager Dashboard')
+    && appSource.includes('onSyncManagerDashboard: () => syncBackendManagerDashboard({ silent: false, projectId: activeProject.id })')
+    && projectDashboardUiSource.includes('onClick={onSyncManagerDashboard}')
+    && projectDashboardUiSource.includes('disabled={syncDisabled}')
+    && projectDashboardUiSource.includes('Sync Manager Dashboard')
     && appSource.includes('const localChatCardProofRowsAllowed = !backendChannelTranscriptRequired;')
     && appSource.includes('const chatCardEvidenceRows = backendCollaborationProofReadModel?.evidenceRows || (localChatCardProofRowsAllowed ? activeProject.evidenceSearches || [] : []);')
     && appSource.includes('const chatCardSubmissionRows = backendCollaborationProofReadModel?.submissionRows || (localChatCardProofRowsAllowed ? activeProject.agentSubmissions || [] : []);')
@@ -2571,22 +2652,22 @@ assert(
     && agentReadmeSource.includes('The live Group Chat view resolves those work-node card rows inside the chat view itself')
     && architectureAuditSource.includes('Live Group Chat work-node cards now have the same independence boundary')
     && mockRegister.includes('group-chat-collaboration-proof-sync-manager-dashboard')
-    && appSource.includes('project-chat-tool-pin')
-    && appSource.includes('project-chat-channel-pinned')
-    && appSource.includes('project-chat-tool-members')
-    && appSource.includes('project-chat-member-presence-panel')
-    && appSource.includes('project-chat-message-reply-${message.id}')
-    && appSource.includes('project-chat-message-mention-${message.id}')
-    && appSource.includes('project-chat-message-pin-${message.id}')
-    && appSource.includes('project-chat-attachment')
-    && appSource.includes('project-chat-attachment-input')
-    && !appSource.includes('project-chat-tool-pin-backend-required')
-    && !appSource.includes('project-chat-tool-members-backend-required')
-    && !appSource.includes('project-chat-message-mention-backend-required-')
-    && !appSource.includes('project-chat-attachment-backend-required')
-    && !appSource.includes("if (backendStation.connectionStatus === 'online') {\n                          syncBackendProjectTranscripts({ silent: true, projectId: activeProject.id, channelId: channel.id });")
-    && !appSource.includes('createMockChannel')
-    && !appSource.includes('project-chat-create-local-channel'),
+    && projectChatUiSource.includes('project-chat-tool-pin')
+    && projectChatUiSource.includes('project-chat-channel-pinned')
+    && projectChatUiSource.includes('project-chat-tool-members')
+    && projectChatUiSource.includes('project-chat-member-presence-panel')
+    && projectChatUiSource.includes('project-chat-message-reply-${message.id}')
+    && projectChatUiSource.includes('project-chat-message-mention-${message.id}')
+    && projectChatUiSource.includes('project-chat-message-pin-${message.id}')
+    && projectChatUiSource.includes('project-chat-attachment')
+    && projectChatUiSource.includes('project-chat-attachment-input')
+    && !projectChatUiSource.includes('project-chat-tool-pin-backend-required')
+    && !projectChatUiSource.includes('project-chat-tool-members-backend-required')
+    && !projectChatUiSource.includes('project-chat-message-mention-backend-required-')
+    && !projectChatUiSource.includes('project-chat-attachment-backend-required')
+    && !projectChatUiSource.includes("if (backendStation.connectionStatus === 'online') {\n                          syncBackendProjectTranscripts({ silent: true, projectId: activeProject.id, channelId: channel.id });")
+    && !projectChatUiSource.includes('createMockChannel')
+    && !projectChatUiSource.includes('project-chat-create-local-channel'),
   'Group Chat channel creation must use the backend transcript-channel contract for real projects, not mock/local channel naming.',
 );
 assert(
@@ -2608,7 +2689,8 @@ assert(
     && appSource.includes('] : []).reduce((acc, item) => {')
     && appSource.includes('const transcriptRecoverableProofCount = Number.isFinite(Number(backendTranscriptIndex?.recoverableProofCount))')
     && appSource.includes('const archivedProofIds = (backendTranscriptReadModelMissing ? [] : (backendSummary?.proofIds || (transcriptLocalRecoveryAllowed ? recoveredProofIdsByChannel[channel.id] : []) || []))')
-    && appSource.includes('${transcriptRecoverableProofCount} recoverable proofs')
+    && appSource.includes('recoverableProofCount: transcriptRecoverableProofCount')
+    && projectDashboardUiSource.includes('${recoverableProofCount} recoverable proofs')
     && mockRegister.includes('Group Chat Transcript Index local proof recovery is now explicitly disabled once backend transcript evidence is required or already present')
     && mockRegister.includes('Dashboard Transcript Index now uses backend transcript messages as the only aggregate message source for backend-required real projects')
     && technicalSource.includes('The transcript index recovery counter is also backend-scoped')
@@ -2634,22 +2716,23 @@ assert(
     && appSource.includes('const dashboardOpenTaskCount = dashboardBackendManagerDashboard?.tasks?.openCount')
     && appSource.includes("timelineEventReadModelsRequired ? projectText('backend required') : (activeProject.tasks || []).filter(task => task.status !== 'done').length")
     && appSource.includes('const projectDashboardSnapshotSourceMeta = fixtureMeta')
-    && appSource.includes('data-testid="project-dashboard-snapshot-source"')
-    && appSource.includes('data-testid="project-dashboard-snapshot-source-detail"')
-    && appSource.includes('data-testid="project-dashboard-progress-source"')
-    && appSource.includes('data-testid="project-dashboard-progress-source-detail"')
+    && projectDashboardHeaderSource.includes('data-testid="project-dashboard-snapshot-source"')
+    && projectDashboardHeaderSource.includes('data-testid="project-dashboard-snapshot-source-detail"')
+    && projectDashboardHeaderSource.includes('data-testid="project-dashboard-progress-source"')
+    && projectDashboardHeaderSource.includes('data-testid="project-dashboard-progress-source-detail"')
     && appSource.includes('const projectDashboardKickoffExecutionFlowBackendRequired = Boolean(')
     && appSource.includes("const projectDashboardFocusSourceMeta = projectDashboardKickoffExecutionFlowBackendRequired")
     && appSource.includes("const projectDashboardFocusValue = projectDashboardKickoffExecutionFlowBackendRequired")
     && appSource.includes('const projectDashboardNextRecommendationBackendRequired = projectDashboardKickoffExecutionFlowBackendRequired;')
     && appSource.includes('&& !dashboardBackendManagerDashboard?.kickoffExecutionFlow')
-    && appSource.includes('data-testid="project-dashboard-next-recommendation-source"')
-    && appSource.includes('data-testid="project-dashboard-next-recommendation-source-detail"')
-    && appSource.includes('data-testid="project-dashboard-next-recommendation-sync-manager-dashboard"')
-    && appSource.includes("onClick={() => syncBackendManagerDashboard({ silent: false, projectId: activeProject.id })}")
+    && projectDashboardSummarySource.includes('data-testid="project-dashboard-next-recommendation-source"')
+    && projectDashboardSummarySource.includes('data-testid="project-dashboard-next-recommendation-source-detail"')
+    && projectDashboardSummarySource.includes('data-testid="project-dashboard-next-recommendation-sync-manager-dashboard"')
+    && appSource.includes("onSyncManagerDashboard: () => syncBackendManagerDashboard({ silent: false, projectId: activeProject.id })")
+    && projectDashboardSummarySource.includes('onClick={onSyncManagerDashboard}')
     && appSource.includes("Sync Manager Dashboard before trusting the next recommendation for this backend project.")
-    && appSource.includes("NEXT ACTION RESOLUTION: {projectDashboardNextRecommendationBackendRequired ? 'backend required'")
-    && appSource.includes("AGENT RECEIPTS: {projectDashboardNextRecommendationBackendRequired ? 'backend required'")
+    && projectDashboardSummarySource.includes("NEXT ACTION RESOLUTION: {projectDashboardNextRecommendationBackendRequired ? 'backend required'")
+    && projectDashboardSummarySource.includes("AGENT RECEIPTS: {projectDashboardNextRecommendationBackendRequired ? 'backend required'")
     && appSource.includes('const projectDashboardStatSourceMeta = (source, detail) => ({')
     && appSource.includes('const projectDashboardEventLedgerSourceMeta = eventLedgerReadModel.frontendMockSuppressed')
     && appSource.includes('const projectDashboardActiveChannelSourceMeta = dashboardBackendTranscriptIndex')
@@ -2661,8 +2744,8 @@ assert(
     && appSource.includes("sourceId: 'event-ledger', sourceMeta: projectDashboardEventLedgerSourceMeta")
     && appSource.includes("sourceId: 'autonomous-cycles', sourceMeta: projectDashboardAutonomousCycleSourceMeta")
     && appSource.includes("sourceId: 'agent-runs', sourceMeta: projectDashboardAgentRunSourceMeta")
-    && appSource.includes('data-testid={`project-dashboard-stat-source-${item.sourceId}`}')
-    && appSource.includes('data-testid={`project-dashboard-stat-source-detail-${item.sourceId}`}')
+    && projectDashboardSummarySource.includes('data-testid={`project-dashboard-stat-source-${item.sourceId}`}')
+    && projectDashboardSummarySource.includes('data-testid={`project-dashboard-stat-source-detail-${item.sourceId}`}')
     && appSource.includes("{ label: projectText('Focus'), value: projectDashboardFocusValue, icon: Crosshair, sourceId: 'focus', sourceMeta: projectDashboardFocusSourceMeta }")
     && appSource.includes("{ label: projectText('Active Channels'), value: dashboardActiveChannelCount, icon: Hash, sourceId: 'active-channels', sourceMeta: projectDashboardActiveChannelSourceMeta }")
     && appSource.includes("{ label: projectText('Open Tasks'), value: dashboardOpenTaskCount, icon: ClipboardList, sourceId: 'open-tasks', sourceMeta: projectDashboardOpenTaskSourceMeta }")
@@ -2680,20 +2763,27 @@ assert(
     && appSource.includes('const localDirectCommandFallbackAllowed = allowLocalRuntimeFallbackForActiveProject(activeProject);')
     && appSource.includes('const backendManagedCommandTargetMissing = !backendCommandAvailable && !localDirectCommandFallbackAllowed;')
     && appSource.includes('const autonomousPulseCommandDisabled = backendStation.loading || backendManagedCommandTargetMissing;')
-    && appSource.includes('disabled={backendStation.loading || backendManagedCommandTargetMissing || !managerAssignmentDraft.text.trim() || Boolean(sceneTransition)}')
-    && appSource.includes('disabled={backendStation.loading || backendManagedCommandTargetMissing || !managerChangeDraft.text.trim() || Boolean(sceneTransition)}')
-    && appSource.includes('disabled={autonomousPulseCommandDisabled}')
-    && appSource.includes('autonomous-work-loop-backend-required')
-    && appSource.includes('Backend operations board is required before this real project can show scheduler or autonomous-cycle history.')
-    && appSource.includes('autonomousWorkLoopCycles.length > 0')
+    && appSource.includes('assignmentSubmitDisabled: backendStation.loading || backendManagedCommandTargetMissing || !managerAssignmentDraft.text.trim() || Boolean(sceneTransition)')
+    && appSource.includes('changeSubmitDisabled: backendStation.loading || backendManagedCommandTargetMissing || !managerChangeDraft.text.trim() || Boolean(sceneTransition)')
+    && projectDashboardUiSource.includes('disabled={assignmentSubmitDisabled}')
+    && projectDashboardUiSource.includes('disabled={changeSubmitDisabled}')
+    && appSource.includes('commandDisabled: autonomousPulseCommandDisabled')
+    && projectDashboardUiSource.includes('disabled={commandDisabled}')
+    && projectDashboardUiSource.includes('autonomous-work-loop-backend-required')
+    && projectDashboardUiSource.includes('Backend operations board is required before this real project can show scheduler or autonomous-cycle history.')
+    && appSource.includes('cycles: autonomousWorkLoopCycles')
+    && projectDashboardUiSource.includes('cycles.length > 0')
     && appSource.includes('const operationsBoardBackendRequired = Boolean(agentStateSummary.frontendMockSuppressed);')
     && appSource.includes('const operationsBoardProjectNextRunLabel = operationsBoardBackendRequired')
     && appSource.includes('const operationsBoardProjectLastRunLabel = operationsBoardBackendRequired')
     && appSource.includes('const operationsBoardCadenceLabel = operationsBoardBackendRequired')
     && appSource.includes('const continuousWorkProjectNextRunLabel = continuousWorkLoop.frontendMockSuppressed')
-    && appSource.includes('{operationsBoardProjectNextRunLabel}')
-    && appSource.includes('{operationsBoardProjectLastRunLabel}')
-    && appSource.includes('{continuousWorkProjectNextRunLabel}')
+    && appSource.includes('projectNextRunLabel: operationsBoardProjectNextRunLabel')
+    && appSource.includes('projectLastRunLabel: operationsBoardProjectLastRunLabel')
+    && appSource.includes('nextProjectPulseLabel: continuousWorkProjectNextRunLabel')
+    && projectDashboardUiSource.includes('{projectNextRunLabel}')
+    && projectDashboardUiSource.includes('{projectLastRunLabel}')
+    && projectDashboardUiSource.includes('{nextProjectPulseLabel}')
     && appSource.includes('const scenarioAutonomyCycleLabel = dashboardAutonomousCycleCount')
     && appSource.includes('const scenarioAutonomyNextRunLabel = autonomousWorkLoopNextRunAt')
     && appSource.includes('const scenarioAutonomyStatus = autonomousWorkLoopBackendRequired')
@@ -2727,20 +2817,20 @@ assert(
     && appSource.includes('const buildLocalKickoffExecutionFlow = () => kickoffCharter ? {')
     && appSource.includes('const normalizeKickoffStartupRow = (row, index) => {')
     && appSource.includes('allAgentStartupRows: (flow.allAgentStartupRows || []).filter(Boolean).map(normalizeKickoffStartupRow),')
-    && appSource.includes("String(row.task?.id || row.taskId || '') === String(action.id || action.taskId || '')")
+    && projectDashboardUiSource.includes("String(row.task?.id || row.taskId || '') === String(action.id || action.taskId || '')")
     && appSource.includes('const kickoffExecutionFlow = normalizeKickoffExecutionFlow(')
     && appSource.includes('const kickoffExecutionFlowBackendRequired = timelineEventReadModelsRequired && !backendKickoffExecutionFlow;')
-    && appSource.includes('kickoff-execution-flow-backend-required')
-    && appSource.includes('kickoff-execution-flow-sync-manager-dashboard')
+    && projectDashboardUiSource.includes('kickoff-execution-flow-backend-required')
+    && projectDashboardUiSource.includes('kickoff-execution-flow-sync-manager-dashboard')
     && appSource.includes('status: scenarioKickoffStatus')
     && appSource.includes('proof: scenarioKickoffProof')
     && !appSource.includes("status: nextActionResolution?.managerConfirmed ? 'Manager confirmed' : kickoffCharter ? 'Charter ready' : 'Needs kickoff'")
     && !appSource.includes('proof: `${kickoffExecutionFlow?.nextActions?.length || 0} next actions / ${nextActionResolutionDelivery?.deliveredAgentIds?.length || 0}/${activeProject.team.length} Agent receipts`')
     && appSource.includes('const recentLineBackendRequired = isInitiatedProject && timelineEventReadModelsRequired && !backendTimelineLogs;')
     && appSource.includes('timelineDisplayLogs.map((log, index) => ({')
-    && appSource.includes('recent-commit-line-backend-required')
-    && appSource.includes('recent-commit-line-sync-timeline-events')
-    && appSource.includes('Backend timeline read model is required before this real project can show recent commit history.')
+    && projectDashboardUiSource.includes('recent-commit-line-backend-required')
+    && projectDashboardUiSource.includes('recent-commit-line-sync-timeline-events')
+    && projectDashboardUiSource.includes('Backend timeline read model is required before this real project can show recent commit history.')
     && appSource.includes('const backendTaskRows = Array.isArray(backendManagerDashboard?.tasks?.rows)')
     && appSource.includes('const localTaskProofFallbackAllowed = !timelineEventReadModelsRequired;')
     && appSource.includes('const taskProofBackendRequired = timelineEventReadModelsRequired && !backendTaskRows;')
@@ -2749,12 +2839,13 @@ assert(
     && appSource.includes('dataSource: \'backend-backed\'')
     && appSource.includes('return localTaskProofFallbackAllowed ? localTaskEvidence(task) : emptyTaskEvidence(task);')
     && appSource.includes('const activeThreadRows = taskProofBackendRequired ? [] : backendTaskRows || activeProject.tasks || [];')
-    && appSource.includes('activeThreadRows.map(task => {')
-    && appSource.includes('data-testid={`active-thread-task-row-${task.id}`}')
-    && appSource.includes('active-threads-task-proof-backend-required')
-    && appSource.includes('Backend Manager Dashboard task rows are required before this real project can show active threads or task proof.')
-    && appSource.includes('active-threads-sync-manager-dashboard')
-    && appSource.includes("onClick={() => syncBackendManagerDashboard({ silent: false, projectId: activeProject.id })}")
+    && appSource.includes('rows: activeThreadRows.map(task => ({')
+    && projectDashboardUiSource.includes('data-testid={`active-thread-task-row-${task.id}`}')
+    && projectDashboardUiSource.includes('active-threads-task-proof-backend-required')
+    && projectDashboardUiSource.includes('Backend Manager Dashboard task rows are required before this real project can show active threads or task proof.')
+    && projectDashboardUiSource.includes('active-threads-sync-manager-dashboard')
+    && appSource.includes('onSyncManagerDashboard: () => syncBackendManagerDashboard({ silent: false, projectId: activeProject.id })')
+    && projectDashboardUiSource.includes('onClick={onSyncManagerDashboard}')
     && mockRegister.includes('Dashboard run-count stat cards now use Manager Dashboard / Ready Package read models')
     && mockRegister.includes('Autonomous Work Loop now follows the same boundary')
     && mockRegister.includes('The 24/7 Operations Board and Continuous Work Loop summary tiles now follow the same rule')
@@ -2783,7 +2874,8 @@ assert(
     && technicalSource.includes('The 24/7 Operations Board and Continuous Work Loop summary tiles use that same backend-required boundary')
     && appSource.includes('const autonomousWorkLoopTitle = autonomousWorkLoopBackendRequired')
     && appSource.includes("? projectText('backend required')\n      : activeProject.autonomy?.enabled ? `${activeProject.autonomy.cadence || 'hourly'} cadence enabled` : 'Cadence paused';")
-    && appSource.includes('{autonomousWorkLoopTitle}')
+    && appSource.includes('title: autonomousWorkLoopTitle')
+    && projectDashboardUiSource.includes('{title}')
     && technicalSource.includes('Scenario Control Center\'s 24/7 pulse proof display also reads backend Manager Dashboard / Operations Board cycle and next-run evidence')
     && technicalSource.includes('Scenario Control Center\'s `Kickoff Decisions` status/proof reads backend `managerDashboard.kickoffExecutionFlow`')
     && technicalSource.includes('`Agent Management Sync` reads backend `agent-management-mesh/v1` rows')
@@ -2872,103 +2964,118 @@ assert(
     && appSource.includes('const readyPackageModelRatio = (model, externalReady, externalCount, readyKey, countKey) => (')
     && appSource.includes('const readyPackageModelCents = (model, externalValue, summaryKey) => (')
     && appSource.includes("const readyPackageModelBoolean = (model, externalValue, summaryKey, trueLabel = 'ready', falseLabel = 'blocked') => (")
-    && appSource.includes("['Pilot Launch', readyPackageModelStatus(backendPilotLaunchReadiness, backendPilotLaunchReadiness?.privatePilotDecision, 'pilotLaunchDecision')]")
-    && appSource.includes("['Launch Gates', readyPackageModelRatio(backendPilotLaunchReadiness, backendPilotLaunchReadiness?.summary?.passedGateCount, backendPilotLaunchReadiness?.summary?.gateCount, 'pilotLaunchPassedGateCount', 'pilotLaunchGateCount')]")
-    && appSource.includes("['Preflight', readyPackageModelBoolean(backendDeploymentPreflight, backendDeploymentPreflight?.privatePilotDeploymentReady, 'deploymentPreflightReady')]")
-    && appSource.includes("['Gateway', readyPackageModelStatus(backendAdapterGatewayPreflight, backendAdapterGatewayPreflight?.status, 'adapterGatewayPreflightStatus')]")
-    && appSource.includes("[projectText('Infra Rehearsal'), readyPackageModelStatus(backendProductionInfrastructureRehearsal, backendProductionInfrastructureRehearsal?.status, 'productionInfrastructureRehearsalStatus')]")
-    && appSource.includes("[projectText('Launch Approval'), projectText(readyPackageModelStatus(backendLaunchApprovalWorkflow, backendLaunchApprovalWorkflow?.status, 'launchApprovalStatus'))]")
-    && appSource.includes("[projectText('Launch Audit'), projectText(readyPackageModelStatus(backendProductionLaunchAudit, backendProductionLaunchAudit?.status, 'productionLaunchAuditStatus'))]")
-    && appSource.includes("['Evidence Archive', readyPackageModelStatus(backendProjectEvidenceArchive, backendProjectEvidenceArchive?.status, 'projectEvidenceArchiveStatus')]")
-    && appSource.includes("['Evidence Export', readyPackageModelStatus(backendProjectEvidenceExportWorkflow, backendProjectEvidenceExportWorkflow?.status, 'projectEvidenceExportStatus')]")
-    && appSource.includes("['Go-Live Status', readyPackageModelStatus(backendPrivatePilotGoLiveReadiness, backendPrivatePilotGoLiveReadiness?.status, 'privatePilotGoLiveStatus')]")
-    && appSource.includes("['Release Candidate', readyPackageModelStatus(backendPrivatePilotReleaseCandidateWorkflow, backendPrivatePilotReleaseCandidateWorkflow?.status, 'privatePilotReleaseCandidateStatus')]")
-    && appSource.includes("['Pilot Launch Run', readyPackageModelStatus(backendPrivatePilotLaunchRunWorkflow, backendPrivatePilotLaunchRunWorkflow?.status, 'privatePilotLaunchRunStatus')]")
-    && appSource.includes("['Post Launch Health', readyPackageModelStatus(backendPrivatePilotLaunchHealthCheckWorkflow, backendPrivatePilotLaunchHealthCheckWorkflow?.status, 'privatePilotLaunchHealthCheckStatus')]")
-    && appSource.includes("['Acceptance Report', readyPackageModelStatus(backendPrivatePilotAcceptanceReportWorkflow, backendPrivatePilotAcceptanceReportWorkflow?.status, 'privatePilotAcceptanceReportStatus')]")
-    && appSource.includes("['Production Ops', readyPackageModelStatus(backendProductionOperationsReadiness, backendProductionOperationsReadiness?.status, 'productionOperationsStatus')]")
-    && appSource.includes("['Artifact Audit', readyPackageModelStatus(backendArtifactQualityAudit, backendArtifactQualityAudit?.status, 'artifactQualityAuditStatus')]")
-    && appSource.includes("['Review Workflow', readyPackageModelStatus(backendSubmissionReviewWorkflow, backendSubmissionReviewWorkflow?.status, 'submissionReviewWorkflowStatus')]")
-    && appSource.includes('{readyPackageModelAvailable(backendProductionLaunchAudit) && (')
-    && appSource.includes('{readyPackageModelAvailable(backendLaunchApprovalWorkflow) && (')
-    && appSource.includes('{readyPackageModelAvailable(backendPilotLaunchReadiness) && (')
-    && appSource.includes('{readyPackageModelAvailable(backendDeploymentPreflight) && (')
-    && appSource.includes('{readyPackageModelAvailable(backendOperationsReadiness) && (')
-    && appSource.includes('{readyPackageModelAvailable(backendProviderReadiness) && (')
-    && appSource.includes('{readyPackageModelAvailable(backendProviderControlledRun) && (')
-    && appSource.includes('{readyPackageModelAvailable(backendProviderEvalRunWorkflow) && (')
-    && appSource.includes('{readyPackageModelAvailable(backendEvidenceCustodyReadiness) && (')
-    && appSource.includes('{readyPackageModelAvailable(backendSecurityBoundary) && (')
-    && appSource.includes("['Delivery Trace', readyPackageModelStatus(backendProductTeamDeliveryTrace, backendProductTeamDeliveryTrace?.status, 'productTeamDeliveryTraceStatus')]")
-    && appSource.includes("['Trace Ready', readyPackageModelRatio(backendProductTeamDeliveryTrace, backendProductTeamDeliveryTrace?.summary?.readyCount, backendProductTeamDeliveryTrace?.summary?.rowCount, 'productTeamDeliveryTraceReadyCount', 'productTeamDeliveryTraceRowCount')]")
-    && appSource.includes("['Operating Loop', readyPackageModelStatus(backendProductTeamOperatingLoop, backendProductTeamOperatingLoop?.status, 'productTeamOperatingLoopStatus')]")
-    && appSource.includes("['Loop Ready', readyPackageModelBoolean(backendProductTeamOperatingLoop, backendProductTeamOperatingLoop?.readyForLocalPilotOperatingLoop, 'productTeamOperatingLoopReady')]")
-    && appSource.includes("['Collab Diagnostics', readyPackageModelStatus(backendTeamCollaborationDiagnostics, backendTeamCollaborationDiagnostics?.status, 'teamCollaborationDiagnosticsStatus')]")
-    && appSource.includes("['Intent Rows', readyPackageModelRatio(backendCollaborationIntentQueue, backendCollaborationIntentQueue?.summary?.runnableCount, backendCollaborationIntentQueue?.summary?.rowCount, 'collaborationIntentQueueRunnableCount', 'collaborationIntentQueueRowCount')]")
-    && appSource.includes("['Runtime Contracts', readyPackageModelStatus(backendRuntimeContracts, backendRuntimeContracts?.status, 'runtimeContractsStatus')]")
-    && appSource.includes("['Cycle Steps', readyPackageModelRatio(backendAutonomousCycleConsistency, backendAutonomousCycleConsistency?.summary?.observedStepCount, backendAutonomousCycleConsistency?.summary?.requiredStepCount, 'autonomousCycleConsistencyObservedStepCount', 'autonomousCycleConsistencyRequiredStepCount')]")
-    && appSource.includes("['Runtime Autonomy', readyPackageModelStatus(backendRuntimeAutonomyStatus, backendRuntimeAutonomyStatus?.status, 'runtimeAutonomyStatus')]")
-    && appSource.includes("['Evidence Audit', readyPackageModelStatus(backendEvidenceQualityAudit, backendEvidenceQualityAudit?.status, 'evidenceQualityAuditStatus')]")
-    && appSource.includes("['Evidence Quality', readyPackageModelValue(backendEvidenceQualityAudit, backendEvidenceQualityAudit?.summary?.averageQualityScore, 'evidenceQualityAverageScore')]")
-    && appSource.includes("['Evidence Index', readyPackageModelStatus(backendEvidenceIndexReadiness, backendEvidenceIndexReadiness?.status, 'evidenceIndexReadinessStatus')]")
-    && appSource.includes("['Index Rows', readyPackageModelRatio(backendEvidenceIndexReadiness, backendEvidenceIndexReadiness?.summary?.evidenceSearchCount, backendEvidenceIndexReadiness?.summary?.submissionCount, 'evidenceIndexReadinessSearchCount', 'evidenceIndexReadinessSubmissionCount')]")
-    && appSource.includes("['Source Queue', readyPackageModelValue(backendEvidenceSourceReviewWorkflow, backendEvidenceSourceReviewWorkflow?.summary?.reviewRequiredSourceCount, 'evidenceSourceReviewQueuedCount')]")
-    && appSource.includes("['Source Decisions', readyPackageModelValue(backendEvidenceSourceReviewWorkflow, backendEvidenceSourceReviewWorkflow?.summary?.sourceReviewDecisionCount, 'evidenceSourceReviewDecisionCount')]")
-    && appSource.includes("['Source Pending', readyPackageModelValue(backendEvidenceSourceReviewWorkflow, backendEvidenceSourceReviewWorkflow?.summary?.pendingDecisionSourceCount, 'evidenceSourceReviewPendingDecisionCount')]")
-    && appSource.includes("['Source Review', readyPackageModelStatus(backendEvidenceSourceReviewWorkflow, backendEvidenceSourceReviewWorkflow?.status, 'evidenceSourceReviewStatus')]")
-    && appSource.includes("['Evidence Custody', readyPackageModelStatus(backendEvidenceCustodyReadiness, backendEvidenceCustodyReadiness?.status, 'evidenceCustodyStatus')]")
-    && appSource.includes("['Custody Ready', readyPackageModelBoolean(backendEvidenceCustodyReadiness, backendEvidenceCustodyReadiness?.readyForPrivatePilot, 'evidenceCustodyReady')]")
-    && appSource.includes("['Custody Records', readyPackageModelValue(backendEvidenceCustodyReadiness, backendEvidenceCustodyReadiness?.summary?.custodyRecordCount, 'evidenceCustodyRecordCount')]")
-    && appSource.includes("['Custody Storage', readyPackageModelBoolean(backendEvidenceCustodyReadiness, backendEvidenceCustodyReadiness?.readyForProduction, 'evidenceCustodyProductionReady', 'production-ready', 'managed-blocked')]")
-    && appSource.includes("['Security', readyPackageModelStatus(backendSecurityBoundary, backendSecurityBoundary?.status, 'securityBoundaryStatus')]")
-    && appSource.includes("['Providers', readyPackageModelStatus(backendProviderReadiness, backendProviderReadiness?.status, 'providerReadinessStatus')]")
-    && appSource.includes("['Controlled Run', readyPackageModelStatus(backendProviderControlledRun, backendProviderControlledRun?.status, 'providerControlledRunStatus')]")
-    && appSource.includes("['Run Ready', readyPackageModelBoolean(backendProviderControlledRun, backendProviderControlledRun?.readyForPrivatePilotRun, 'providerControlledRunReady')]")
-    && appSource.includes("['Run Ops', readyPackageModelRatio(backendProviderControlledRun, backendProviderControlledRun?.summary?.runnableOperationCount, backendProviderControlledRun?.summary?.operationCount, 'providerControlledRunRunnableOperationCount', 'providerControlledRunOperationCount')]")
-    && appSource.includes("['Run Cost', readyPackageModelCents(backendProviderControlledRun, backendProviderControlledRun?.summary?.estimatedRunCostCents, 'providerControlledRunEstimatedCostCents')]")
-    && appSource.includes("['Provider Eval', readyPackageModelStatus(backendProviderEvalRunWorkflow, backendProviderEvalRunWorkflow?.status, 'providerEvalRunWorkflowStatus')]")
-    && appSource.includes("['Eval Ready', readyPackageModelBoolean(backendProviderEvalRunWorkflow, backendProviderEvalRunWorkflow?.readyForPrivatePilotProviderEval, 'providerEvalRunReady', 'ready', 'record')]")
-    && appSource.includes("['Eval Runs', readyPackageModelRatio(backendProviderEvalRunWorkflow, backendProviderEvalRunWorkflow?.summary?.passedRunCount, backendProviderEvalRunWorkflow?.summary?.runCount, 'providerEvalRunPassedCount', 'providerEvalRunCount')]")
-    && appSource.includes("['Eval Critical', readyPackageModelRatio(backendProviderEvalRunWorkflow, backendProviderEvalRunWorkflow?.summary?.replayedCriticalOperationCount, backendProviderEvalRunWorkflow?.summary?.criticalOperationCount, 'providerEvalRunReplayedCriticalCount', 'providerEvalRunCriticalCount')]")
-    && appSource.includes("['Operations', readyPackageModelStatus(backendOperationsReadiness, backendOperationsReadiness?.status, 'operationsReadinessStatus')]")
-    && appSource.includes("['Persistence Adapter', readyPackageSummaryStatus('persistenceAdapterDryRunStatus')]")
-    && appSource.includes("['Queue Adapter', readyPackageSummaryStatus('queueAdapterDryRunStatus')]")
-    && appSource.includes("['Queue Parity', readyPackageSummaryBoolean('queueAdapterSnapshotParityReady')]")
-    && appSource.includes("['Worker Recovery', readyPackageSummaryBoolean('workerRecoveryContractReady')]")
-    && appSource.includes("['Incident Drill', readyPackageSummaryBoolean('operationsIncidentDrillReady')]")
-    && appSource.includes("['Trail Ready', readyPackageSummaryRatio('scenarioTrailReadyCount', 'scenarioTrailCount')]")
-    && appSource.includes("['Walkthrough', readyPackageSummaryRatio('walkthroughCompletedCount', 'walkthroughCount')]")
-    && appSource.includes("['Requirements', readyPackageSummaryRatio('requirementReadyCount', 'requirementCount')]")
-    && appSource.includes("['Kickoff Board', readyPackageSummaryRatio('kickoffBoardReadyCount', 'kickoffBoardCount')]")
-    && appSource.includes("['Work Loop Board', readyPackageSummaryRatio('workLoopRunningCount', 'workLoopCount')]")
-    && appSource.includes("['Collaboration Board', readyPackageSummaryRatio('collaborationReadyCount', 'collaborationBoardCount')]")
-    && appSource.includes("['Change Protocol', readyPackageSummaryRatio('changeProtocolReadyCount', 'changeProtocolBoardCount')]")
-    && appSource.includes("['Change Owners', readyPackageSummaryRatio('changeOwnerReadyCount', 'changeOwnerCount')]")
-    && appSource.includes("['Use Cases', readyPackageSummaryRatio('useCaseCoveredCount', 'useCaseCount')]")
-    && appSource.includes("['Action Queue', readyPackageSummaryRatio('actionQueueCompletedCount', 'actionQueueCount')]")
-    && appSource.includes("['Unresolved Routes', readyPackageSummaryValue('actionQueueUnresolvedRouteCount')]")
-    && appSource.includes("['Transcript Channels', readyPackageSummaryValue('transcriptChannelCount')]")
-    && appSource.includes("['Ops Agents', readyPackageSummaryValue('operationsAgentCount')]")
-    && appSource.includes("['Assignments', readyPackageSummaryValue('assignmentCount')]")
-    && appSource.includes("['Changes', readyPackageSummaryValue('changeCount')]")
-    && appSource.includes("managerScenarioWalkthrough.frontendMockSuppressed ? projectText('backend required') : `${managerScenarioWalkthrough.completedCount || 0}/${managerScenarioWalkthrough.count || 0} ${projectText('complete')}`")
-    && appSource.includes("['Next Gap', managerScenarioWalkthrough.frontendMockSuppressed ? projectText('backend required') : managerScenarioWalkthrough.nextIncompleteStep?.stage || 'All covered']")
-    && appSource.includes("['Action Queue', managerScenarioWalkthrough.frontendMockSuppressed || managerActionPlaybook.frontendMockSuppressed ? projectText('backend required') : `${managerActionPlaybook.completedCount ?? 0}/${managerActionPlaybook.count ?? 0}`]")
-    && appSource.includes("managerActionPlaybook.frontendMockSuppressed ? projectText('backend required') : `${managerActionPlaybook.completedCount ?? 0}/${managerActionPlaybook.count ?? 0} complete`")
-    && appSource.includes("['Next', managerActionPlaybook.frontendMockSuppressed ? projectText('backend required') : managerActionPlaybook.nextAction?.label || 'All complete']")
+    && appSource.includes("['Pilot Launch', modelStatus(pilotLaunchReadiness, pilotLaunchReadiness?.privatePilotDecision, 'pilotLaunchDecision')]")
+    && appSource.includes("['Launch Gates', modelRatio(pilotLaunchReadiness, pilotLaunchReadiness?.summary?.passedGateCount, pilotLaunchReadiness?.summary?.gateCount, 'pilotLaunchPassedGateCount', 'pilotLaunchGateCount')]")
+    && appSource.includes("['Preflight', modelBoolean(deploymentPreflight, deploymentPreflight?.privatePilotDeploymentReady, 'deploymentPreflightReady')]")
+    && appSource.includes("['Gateway', modelStatus(adapterGatewayPreflight, adapterGatewayPreflight?.status, 'adapterGatewayPreflightStatus')]")
+    && appSource.includes("[projectText('Infra Rehearsal'), modelStatus(productionInfrastructureRehearsal, productionInfrastructureRehearsal?.status, 'productionInfrastructureRehearsalStatus')]")
+    && appSource.includes("[projectText('Launch Approval'), projectText(modelStatus(launchApprovalWorkflow, launchApprovalWorkflow?.status, 'launchApprovalStatus'))]")
+    && appSource.includes("[projectText('Launch Audit'), projectText(modelStatus(productionLaunchAudit, productionLaunchAudit?.status, 'productionLaunchAuditStatus'))]")
+    && appSource.includes("['Evidence Archive', modelStatus(projectEvidenceArchive, projectEvidenceArchive?.status, 'projectEvidenceArchiveStatus')]")
+    && appSource.includes("['Evidence Export', modelStatus(projectEvidenceExportWorkflow, projectEvidenceExportWorkflow?.status, 'projectEvidenceExportStatus')]")
+    && appSource.includes("['Go-Live Status', modelStatus(privatePilotGoLiveReadiness, privatePilotGoLiveReadiness?.status, 'privatePilotGoLiveStatus')]")
+    && appSource.includes("['Release Candidate', modelStatus(privatePilotReleaseCandidateWorkflow, privatePilotReleaseCandidateWorkflow?.status, 'privatePilotReleaseCandidateStatus')]")
+    && appSource.includes("['Pilot Launch Run', modelStatus(privatePilotLaunchRunWorkflow, privatePilotLaunchRunWorkflow?.status, 'privatePilotLaunchRunStatus')]")
+    && appSource.includes("['Post Launch Health', modelStatus(privatePilotLaunchHealthCheckWorkflow, privatePilotLaunchHealthCheckWorkflow?.status, 'privatePilotLaunchHealthCheckStatus')]")
+    && appSource.includes("['Acceptance Report', modelStatus(privatePilotAcceptanceReportWorkflow, privatePilotAcceptanceReportWorkflow?.status, 'privatePilotAcceptanceReportStatus')]")
+    && appSource.includes("['Production Ops', modelStatus(productionOperationsReadiness, productionOperationsReadiness?.status, 'productionOperationsStatus')]")
+    && appSource.includes("['Artifact Audit', modelStatus(artifactQualityAudit, artifactQualityAudit?.status, 'artifactQualityAuditStatus')]")
+    && appSource.includes("['Review Workflow', modelStatus(submissionReviewWorkflow, submissionReviewWorkflow?.status, 'submissionReviewWorkflowStatus')]")
+    && appSource.includes('productionLaunchAuditAvailable: readyPackageModelAvailable(backendProductionLaunchAudit)')
+    && appSource.includes('launchApprovalWorkflowAvailable: readyPackageModelAvailable(backendLaunchApprovalWorkflow)')
+    && appSource.includes('{productionLaunchAuditAvailable && productionLaunchAudit && (')
+    && appSource.includes('{launchApprovalWorkflowAvailable && launchApprovalWorkflow && (')
+    && appSource.includes('pilotLaunchReadinessAvailable: readyPackageModelAvailable(backendPilotLaunchReadiness)')
+    && appSource.includes('deploymentPreflightAvailable: readyPackageModelAvailable(backendDeploymentPreflight)')
+    && appSource.includes('operationsReadinessAvailable: readyPackageModelAvailable(backendOperationsReadiness)')
+    && appSource.includes('providerReadinessAvailable: readyPackageModelAvailable(backendProviderReadiness)')
+    && appSource.includes('providerControlledRunAvailable: readyPackageModelAvailable(backendProviderControlledRun)')
+    && appSource.includes('{pilotLaunchReadinessAvailable && (')
+    && appSource.includes('{deploymentPreflightAvailable && (')
+    && appSource.includes('{operationsReadinessAvailable && (')
+    && appSource.includes('{providerReadinessAvailable && (')
+    && appSource.includes('{providerControlledRunAvailable && (')
+    && appSource.includes('providerEvalAvailable: readyPackageModelAvailable(backendProviderEvalRunWorkflow)')
+    && appSource.includes('evidenceCustodyAvailable: readyPackageModelAvailable(backendEvidenceCustodyReadiness)')
+    && appSource.includes('securityBoundaryAvailable: readyPackageModelAvailable(backendSecurityBoundary)')
+    && appSource.includes('{providerEvalAvailable && (')
+    && appSource.includes('{evidenceCustodyAvailable && (')
+    && appSource.includes('{securityBoundaryAvailable && (')
+    && appSource.includes("['Delivery Trace', modelStatus(productTeamDeliveryTrace, productTeamDeliveryTrace?.status, 'productTeamDeliveryTraceStatus')]")
+    && appSource.includes("['Trace Ready', modelRatio(productTeamDeliveryTrace, productTeamDeliveryTrace?.summary?.readyCount, productTeamDeliveryTrace?.summary?.rowCount, 'productTeamDeliveryTraceReadyCount', 'productTeamDeliveryTraceRowCount')]")
+    && appSource.includes("['Operating Loop', modelStatus(productTeamOperatingLoop, productTeamOperatingLoop?.status, 'productTeamOperatingLoopStatus')]")
+    && appSource.includes("['Loop Ready', modelBoolean(productTeamOperatingLoop, productTeamOperatingLoop?.readyForLocalPilotOperatingLoop, 'productTeamOperatingLoopReady')]")
+    && appSource.includes("['Collab Diagnostics', modelStatus(teamCollaborationDiagnostics, teamCollaborationDiagnostics?.status, 'teamCollaborationDiagnosticsStatus')]")
+    && appSource.includes("['Intent Rows', modelRatio(collaborationIntentQueue, collaborationIntentQueue?.summary?.runnableCount, collaborationIntentQueue?.summary?.rowCount, 'collaborationIntentQueueRunnableCount', 'collaborationIntentQueueRowCount')]")
+    && appSource.includes("['Runtime Contracts', modelStatus(runtimeContracts, runtimeContracts?.status, 'runtimeContractsStatus')]")
+    && appSource.includes("['Cycle Steps', modelRatio(autonomousCycleConsistency, autonomousCycleConsistency?.summary?.observedStepCount, autonomousCycleConsistency?.summary?.requiredStepCount, 'autonomousCycleConsistencyObservedStepCount', 'autonomousCycleConsistencyRequiredStepCount')]")
+    && appSource.includes("['Runtime Autonomy', modelStatus(runtimeAutonomyStatus, runtimeAutonomyStatus?.status, 'runtimeAutonomyStatus')]")
+    && appSource.includes("['Evidence Audit', modelStatus(evidenceQualityAudit, evidenceQualityAudit?.status, 'evidenceQualityAuditStatus')]")
+    && appSource.includes("['Evidence Quality', modelValue(evidenceQualityAudit, evidenceQualityAudit?.summary?.averageQualityScore, 'evidenceQualityAverageScore')]")
+    && appSource.includes("['Evidence Index', modelStatus(evidenceIndexReadiness, evidenceIndexReadiness?.status, 'evidenceIndexReadinessStatus')]")
+    && appSource.includes("['Index Rows', modelRatio(evidenceIndexReadiness, evidenceIndexReadiness?.summary?.evidenceSearchCount, evidenceIndexReadiness?.summary?.submissionCount, 'evidenceIndexReadinessSearchCount', 'evidenceIndexReadinessSubmissionCount')]")
+    && appSource.includes("['Source Queue', modelValue(evidenceSourceReviewWorkflow, evidenceSourceReviewWorkflow?.summary?.reviewRequiredSourceCount, 'evidenceSourceReviewQueuedCount')]")
+    && appSource.includes("['Source Decisions', modelValue(evidenceSourceReviewWorkflow, evidenceSourceReviewWorkflow?.summary?.sourceReviewDecisionCount, 'evidenceSourceReviewDecisionCount')]")
+    && appSource.includes("['Source Pending', modelValue(evidenceSourceReviewWorkflow, evidenceSourceReviewWorkflow?.summary?.pendingDecisionSourceCount, 'evidenceSourceReviewPendingDecisionCount')]")
+    && appSource.includes("['Source Review', modelStatus(evidenceSourceReviewWorkflow, evidenceSourceReviewWorkflow?.status, 'evidenceSourceReviewStatus')]")
+    && appSource.includes("['Evidence Custody', modelStatus(evidenceCustodyReadiness, evidenceCustodyReadiness?.status, 'evidenceCustodyStatus')]")
+    && appSource.includes("['Custody Ready', modelBoolean(evidenceCustodyReadiness, evidenceCustodyReadiness?.readyForPrivatePilot, 'evidenceCustodyReady')]")
+    && appSource.includes("['Custody Records', modelValue(evidenceCustodyReadiness, evidenceCustodyReadiness?.summary?.custodyRecordCount, 'evidenceCustodyRecordCount')]")
+    && appSource.includes("['Custody Storage', modelBoolean(evidenceCustodyReadiness, evidenceCustodyReadiness?.readyForProduction, 'evidenceCustodyProductionReady', 'production-ready', 'managed-blocked')]")
+    && appSource.includes("['Security', modelStatus(securityBoundary, securityBoundary?.status, 'securityBoundaryStatus')]")
+    && appSource.includes("['Providers', modelStatus(providerReadiness, providerReadiness?.status, 'providerReadinessStatus')]")
+    && appSource.includes("['Controlled Run', modelStatus(providerControlledRun, providerControlledRun?.status, 'providerControlledRunStatus')]")
+    && appSource.includes("['Run Ready', modelBoolean(providerControlledRun, providerControlledRun?.readyForPrivatePilotRun, 'providerControlledRunReady')]")
+    && appSource.includes("['Run Ops', modelRatio(providerControlledRun, providerControlledRun?.summary?.runnableOperationCount, providerControlledRun?.summary?.operationCount, 'providerControlledRunRunnableOperationCount', 'providerControlledRunOperationCount')]")
+    && appSource.includes("['Run Cost', modelCents(providerControlledRun, providerControlledRun?.summary?.estimatedRunCostCents, 'providerControlledRunEstimatedCostCents')]")
+    && appSource.includes("['Provider Eval', modelStatus(providerEvalRunWorkflow, providerEvalRunWorkflow?.status, 'providerEvalRunWorkflowStatus')]")
+    && appSource.includes("['Eval Ready', modelBoolean(providerEvalRunWorkflow, providerEvalRunWorkflow?.readyForPrivatePilotProviderEval, 'providerEvalRunReady', 'ready', 'record')]")
+    && appSource.includes("['Eval Runs', modelRatio(providerEvalRunWorkflow, providerEvalRunWorkflow?.summary?.passedRunCount, providerEvalRunWorkflow?.summary?.runCount, 'providerEvalRunPassedCount', 'providerEvalRunCount')]")
+    && appSource.includes("['Eval Critical', modelRatio(providerEvalRunWorkflow, providerEvalRunWorkflow?.summary?.replayedCriticalOperationCount, providerEvalRunWorkflow?.summary?.criticalOperationCount, 'providerEvalRunReplayedCriticalCount', 'providerEvalRunCriticalCount')]")
+    && appSource.includes("['Operations', modelStatus(operationsReadiness, operationsReadiness?.status, 'operationsReadinessStatus')]")
+    && appSource.includes("['Persistence Adapter', summaryStatus('persistenceAdapterDryRunStatus')]")
+    && appSource.includes("['Queue Adapter', summaryStatus('queueAdapterDryRunStatus')]")
+    && appSource.includes("['Queue Parity', summaryBoolean('queueAdapterSnapshotParityReady')]")
+    && appSource.includes("['Worker Recovery', summaryBoolean('workerRecoveryContractReady')]")
+    && appSource.includes("['Incident Drill', summaryBoolean('operationsIncidentDrillReady')]")
+    && appSource.includes("['Trail Ready', summaryRatio('scenarioTrailReadyCount', 'scenarioTrailCount')]")
+    && appSource.includes("['Walkthrough', summaryRatio('walkthroughCompletedCount', 'walkthroughCount')]")
+    && appSource.includes("['Requirements', summaryRatio('requirementReadyCount', 'requirementCount')]")
+    && appSource.includes("['Kickoff Board', summaryRatio('kickoffBoardReadyCount', 'kickoffBoardCount')]")
+    && appSource.includes("['Work Loop Board', summaryRatio('workLoopRunningCount', 'workLoopCount')]")
+    && appSource.includes("['Collaboration Board', summaryRatio('collaborationReadyCount', 'collaborationBoardCount')]")
+    && appSource.includes("['Change Protocol', summaryRatio('changeProtocolReadyCount', 'changeProtocolBoardCount')]")
+    && appSource.includes("['Change Owners', summaryRatio('changeOwnerReadyCount', 'changeOwnerCount')]")
+    && appSource.includes("['Use Cases', summaryRatio('useCaseCoveredCount', 'useCaseCount')]")
+    && appSource.includes("['Action Queue', summaryRatio('actionQueueCompletedCount', 'actionQueueCount')]")
+    && appSource.includes("['Unresolved Routes', summaryValue('actionQueueUnresolvedRouteCount')]")
+    && appSource.includes("['Transcript Channels', summaryValue('transcriptChannelCount')]")
+    && appSource.includes("['Ops Agents', summaryValue('operationsAgentCount')]")
+    && appSource.includes("['Assignments', summaryValue('assignmentCount')]")
+    && appSource.includes("['Changes', summaryValue('changeCount')]")
+    && projectDashboardManagerScenarioWalkthroughSource.includes("managerScenarioWalkthrough.frontendMockSuppressed ? projectText('backend required') : `${managerScenarioWalkthrough.completedCount || 0}/${managerScenarioWalkthrough.count || 0} ${projectText('complete')}`")
+    && projectDashboardManagerScenarioWalkthroughSource.includes("['Next Gap', managerScenarioWalkthrough.frontendMockSuppressed ? projectText('backend required') : managerScenarioWalkthrough.nextIncompleteStep?.stage || 'All covered']")
+    && projectDashboardManagerScenarioWalkthroughSource.includes("['Action Queue', managerScenarioWalkthrough.frontendMockSuppressed || managerActionPlaybook.frontendMockSuppressed ? projectText('backend required') : `${managerActionPlaybook.completedCount ?? 0}/${managerActionPlaybook.count ?? 0}`]")
+    && projectDashboardManagerActionPlaybookSource.includes("managerActionPlaybook.frontendMockSuppressed ? projectText('backend required') : `${managerActionPlaybook.completedCount ?? 0}/${managerActionPlaybook.count ?? 0} complete`")
+    && projectDashboardManagerActionPlaybookSource.includes("['Next', managerActionPlaybook.frontendMockSuppressed ? projectText('backend required') : managerActionPlaybook.nextAction?.label || 'All complete']")
     && appSource.includes('const managerScenarioWalkthrough = backendOrAllowedFallback(')
     && appSource.includes("missingBackendReadModel('manager-scenario-walkthrough/v1'")
-    && appSource.includes("managerReadModelSourceBadge(managerScenarioWalkthrough, 'manager-scenario-walkthrough-source')")
-    && appSource.includes('manager-scenario-walkthrough-backend-required')
-    && appSource.includes('Local walkthrough rows are suppressed until /manager-scenario-walkthrough returns manager-scenario-walkthrough/v1.')
-    && appSource.includes('manager-scenario-walkthrough-sync-read-model')
-    && appSource.includes("onClick={() => syncBackendManagerScenarioWalkthrough({ silent: false, projectId: activeProject.id })}")
+    && projectDashboardManagerScenarioWalkthroughSource.includes("managerReadModelSourceBadge(managerScenarioWalkthrough, 'manager-scenario-walkthrough-source')")
+    && projectDashboardManagerScenarioWalkthroughSource.includes('manager-scenario-walkthrough-backend-required')
+    && projectDashboardManagerScenarioWalkthroughSource.includes('Local walkthrough rows are suppressed until /manager-scenario-walkthrough returns manager-scenario-walkthrough/v1.')
+    && projectDashboardManagerScenarioWalkthroughSource.includes('manager-scenario-walkthrough-sync-read-model')
+    && projectDashboardManagerScenarioWalkthroughSource.includes('onClick={onSyncWalkthrough}')
+    && appSource.includes('onSyncWalkthrough: () => syncBackendManagerScenarioWalkthrough({ silent: false, projectId: activeProject.id })')
+    && appSource.includes('onRunRow: runManagerScenarioWalkthroughRow')
+    && appSource.includes('onOpenRow: openManagerScenarioWalkthroughRow')
     && appSource.includes('const managerActionPlaybook = backendOrAllowedFallback(')
     && appSource.includes("missingBackendReadModel('manager-action-queue/v1'")
-    && appSource.includes("managerReadModelSourceBadge(managerActionPlaybook, 'manager-action-playbook-source')")
-    && appSource.includes('manager-action-playbook-backend-required')
-    && appSource.includes('Local action rows are suppressed until /manager-action-queue returns manager-action-queue/v1.')
-    && appSource.includes('manager-action-playbook-sync-action-queue')
+    && projectDashboardManagerActionPlaybookSource.includes("managerReadModelSourceBadge(managerActionPlaybook, 'manager-action-playbook-source')")
+    && projectDashboardManagerActionPlaybookSource.includes('manager-action-playbook-backend-required')
+    && projectDashboardManagerActionPlaybookSource.includes('Local action rows are suppressed until /manager-action-queue returns manager-action-queue/v1.')
+    && projectDashboardManagerActionPlaybookSource.includes('manager-action-playbook-sync-action-queue')
+    && projectDashboardManagerActionPlaybookSource.includes('onClick={onSyncActionQueue}')
+    && appSource.includes('onSyncActionQueue: () => syncBackendManagerActionQueue({ silent: false, projectId: activeProject.id })')
     && appSource.includes('const managerUseCaseAuditBase = backendOrAllowedFallback(')
     && appSource.includes("missingBackendReadModel('manager-use-case-audit/v1'")
     && appSource.includes("managerReadModelSourceBadge(managerUseCaseAudit, 'manager-use-case-audit-source')")
@@ -2980,19 +3087,22 @@ assert(
     && appSource.includes('const buildFallbackSyncProtocolAudit = () => {')
     && appSource.includes('const syncProtocolAudit = backendOrLazyFallback(')
     && appSource.includes('buildFallbackSyncProtocolAudit')
-    && appSource.includes('sync-protocol-audit-backend-required')
-    && appSource.includes('Local protocol rows are suppressed until /sync-protocol-audit returns sync-protocol-audit/v1.')
-    && appSource.includes('sync-protocol-audit-sync-read-model')
-    && appSource.includes("onClick={() => syncBackendSyncProtocolAudit({ silent: false, projectId: activeProject.id })}")
+    && projectDashboardSyncProtocolAuditSource.includes('sync-protocol-audit-backend-required')
+    && projectDashboardSyncProtocolAuditSource.includes('Local protocol rows are suppressed until /sync-protocol-audit returns sync-protocol-audit/v1.')
+    && projectDashboardSyncProtocolAuditSource.includes('sync-protocol-audit-sync-read-model')
+    && projectDashboardSyncProtocolAuditSource.includes('onClick={onSyncProtocol}')
+    && appSource.includes('onSyncProtocol: () => syncBackendSyncProtocolAudit({ silent: false, projectId: activeProject.id })')
     && appSource.includes('const backendManagerActionRunsReadModel = backendManagerReadyPackage?.managerActionRuns || backendManagerDashboard?.managerActionRuns || null;')
     && appSource.includes("schemaVersion: 'manager-action-runs/frontend-fallback'")
     && appSource.includes('const backendManagerActionRuns = backendOrAllowedFallback(')
     && appSource.includes("missingBackendReadModel('manager-action-runs/v1'")
-    && appSource.includes("managerReadModelSourceBadge(backendManagerActionRuns, 'manager-action-run-ledger-source')")
-    && appSource.includes('manager-action-run-ledger-backend-required')
-    && appSource.includes('Local run history is suppressed until Manager Dashboard returns manager-action-runs/v1.')
-    && appSource.includes('manager-action-run-ledger-sync-manager-dashboard')
-    && appSource.includes('!(backendManagerActionRuns?.rows || []).length && !backendManagerActionRuns.frontendMockSuppressed')
+    && projectDashboardManagerActionRunLedgerSource.includes("managerReadModelSourceBadge(backendManagerActionRuns, 'manager-action-run-ledger-source')")
+    && projectDashboardManagerActionRunLedgerSource.includes('manager-action-run-ledger-backend-required')
+    && projectDashboardManagerActionRunLedgerSource.includes('Local run history is suppressed until Manager Dashboard returns manager-action-runs/v1.')
+    && projectDashboardManagerActionRunLedgerSource.includes('manager-action-run-ledger-sync-manager-dashboard')
+    && projectDashboardManagerActionRunLedgerSource.includes('onClick={onSyncManagerDashboard}')
+    && appSource.includes('onSyncManagerDashboard: () => syncBackendManagerDashboard({ silent: false, projectId: activeProject.id })')
+    && projectDashboardManagerActionRunLedgerSource.includes('!(backendManagerActionRuns?.rows || []).length && !backendManagerActionRuns.frontendMockSuppressed')
     && appSource.includes('const latestManagerActionRun = backendManagerActionRuns.latestRun || backendManagerActionRuns.rows?.[0] || null;')
     && !appSource.includes('const latestManagerActionRun = activeProject.managerActionRunLedger?.[0] || null;')
     && appSource.includes('const scopedBackendStationReadModel = (readModel = null) => {')
@@ -3033,13 +3143,14 @@ assert(
     && appSource.includes('const managerScenarioTrail = backendOrAllowedFallback(')
     && appSource.includes("missingBackendReadModel('manager-scenario-trail/v1'")
     && appSource.includes('manager-scenario-trail-backend-required')
-    && appSource.includes('data-testid="manager-scenario-trail-backend-required"')
-    && appSource.includes('Local scenario rows are suppressed until /manager-scenario-trail returns manager-scenario-trail/v1.')
-    && appSource.includes('manager-scenario-trail-sync-read-model')
-    && appSource.includes("onClick={() => syncBackendManagerScenarioTrail({ silent: false, projectId: activeProject.id })}")
+    && projectDashboardManagerScenarioTrailSource.includes('data-testid="manager-scenario-trail-backend-required"')
+    && projectDashboardManagerScenarioTrailSource.includes('Local scenario rows are suppressed until /manager-scenario-trail returns manager-scenario-trail/v1.')
+    && projectDashboardManagerScenarioTrailSource.includes('manager-scenario-trail-sync-read-model')
+    && projectDashboardManagerScenarioTrailSource.includes('onClick={onSyncTrail}')
+    && appSource.includes('onSyncTrail: () => syncBackendManagerScenarioTrail({ silent: false, projectId: activeProject.id })')
     && appSource.includes('const managerScenarioTrailDisplayRows = (managerScenarioTrail.rows || []).map')
-    && appSource.includes("managerReadModelSourceBadge(managerScenarioTrail, 'manager-scenario-trail-source')")
-    && appSource.includes('managerScenarioTrailDisplayRows.map((row, index)')
+    && projectDashboardManagerScenarioTrailSource.includes("managerReadModelSourceBadge(managerScenarioTrail, 'manager-scenario-trail-source')")
+    && projectDashboardManagerScenarioTrailSource.includes('managerScenarioTrailDisplayRows.map((row, index)')
     && mockRegister.includes('The main Dashboard Scenario Trail consumes `manager-scenario-trail/v1`')
     && mockRegister.includes('backend-or-allowed-fallback gate'),
   'Main Dashboard Scenario Trail must use backendOrAllowedFallback and show backend-model-missing for real backend projects instead of rendering local rows directly.',
@@ -3054,7 +3165,8 @@ assert(
     && appSource.includes('data-testid="manager-requirement-matrix-backend-required"')
     && appSource.includes('Local requirement rows are suppressed until /manager-requirement-matrix returns manager-requirement-matrix/v1.')
     && appSource.includes('manager-requirement-matrix-sync-read-model')
-    && appSource.includes("onClick={() => syncBackendManagerRequirementMatrix({ silent: false, projectId: activeProject.id })}")
+    && appSource.includes('onSyncRequirementMatrix: () => syncBackendManagerRequirementMatrix({ silent: false, projectId: activeProject.id })')
+    && appSource.includes('onClick={onSyncRequirementMatrix}')
     && appSource.includes('const managerRequirementMatrixDisplayRows = (managerRequirementMatrix.rows || []).map')
     && appSource.includes("managerReadModelSourceBadge(managerRequirementMatrix, 'manager-requirement-matrix-source')")
     && appSource.includes('managerRequirementMatrixDisplayRows.map((row, index)')
@@ -3071,22 +3183,23 @@ assert(
     && mockRegister.includes('Use Case Audit, Action Queue, Scenario Walkthrough, and Command Center attention rows are now constructed only in offline/demo fallback mode'),
   'Manager derived fallback rows must remain offline/demo-only for backend-online real projects.',
 );
-const managerUseCasePanelIndex = appSource.indexOf('data-testid="manager-use-case-audit"');
-const managerRequirementPanelIndex = appSource.indexOf('data-testid="manager-requirement-matrix"');
-const managerUseCaseBlockerIndex = appSource.indexOf('data-testid="manager-use-case-audit-backend-required"');
-const managerRequirementBlockerIndex = appSource.indexOf('data-testid="manager-requirement-matrix-backend-required"');
-const syncProtocolPanelIndex = appSource.indexOf('data-testid="sync-protocol-audit"');
-const syncProtocolBlockerIndex = appSource.indexOf('data-testid="sync-protocol-audit-backend-required"');
+const managerUseCasePanelIndex = projectDashboardManagerUseCaseAuditSource.indexOf('data-testid="manager-use-case-audit"');
+const managerRequirementPanelIndex = projectDashboardManagerComposersSource.indexOf('data-testid="manager-requirement-matrix"');
+const managerUseCaseBlockerIndex = projectDashboardManagerUseCaseAuditSource.indexOf('data-testid="manager-use-case-audit-backend-required"');
+const managerRequirementBlockerIndex = projectDashboardManagerComposersSource.indexOf('data-testid="manager-requirement-matrix-backend-required"');
+const syncProtocolComponentIndex = projectDashboardManagerCorePanelsSource.indexOf('<ProjectDashboardSyncProtocolAudit');
+const syncProtocolPanelIndex = projectDashboardSyncProtocolAuditSource.indexOf('data-testid="sync-protocol-audit"');
+const syncProtocolBlockerIndex = projectDashboardSyncProtocolAuditSource.indexOf('data-testid="sync-protocol-audit-backend-required"');
 assert(
   syncProtocolPanelIndex >= 0
-    && managerUseCasePanelIndex > syncProtocolPanelIndex
+    && syncProtocolComponentIndex >= 0
     && syncProtocolBlockerIndex > syncProtocolPanelIndex
-    && syncProtocolBlockerIndex < managerUseCasePanelIndex
-    && managerRequirementPanelIndex > managerUseCasePanelIndex
     && managerUseCasePanelIndex >= 0
     && managerUseCaseBlockerIndex > managerUseCasePanelIndex
-    && managerUseCaseBlockerIndex < managerRequirementPanelIndex
+    && managerRequirementPanelIndex >= 0
     && managerRequirementBlockerIndex > managerRequirementPanelIndex
+    && projectDashboardManagerCorePanelsSource.includes('<ProjectDashboardManagerUseCaseAudit')
+    && projectDashboardManagerCorePanelsSource.includes('<ProjectDashboardManagerComposers')
     && mockRegister.includes('Use Case Audit, Requirement Matrix, and Sync Protocol Audit backend-required blockers render inside their owning panels')
     && mockRegister.includes('Sync Protocol Audit local protocol rows are now constructed only in demo/offline fallback mode')
     && mockRegister.includes('Control-panel missing states now expose in-panel sync actions')
@@ -3107,12 +3220,12 @@ assert(
     && appSource.includes('const localPeerManagementMatrixRows = allowManagerFrontendFallbacks ? buildLocalPeerManagementMatrixRows() : [];')
     && appSource.includes('const agentManagementMesh = backendOrAllowedFallback(')
     && appSource.includes("missingBackendReadModel('agent-management-mesh/v1'")
-    && appSource.includes("managerReadModelSourceBadge(agentManagementMesh, 'agent-management-mesh-source')")
+    && appSource.includes("managerReadModelSourceBadge(mesh, 'agent-management-mesh-source')")
     && appSource.includes('agent-management-mesh-backend-required')
     && appSource.includes('Local management and peer-proof rows are suppressed until Manager Dashboard returns agent-management-mesh/v1.')
     && appSource.includes('agent-management-mesh-sync-cockpit')
     && appSource.includes('agentManagementMesh.frontendMockSuppressed || timelineEventReadModelsRequired ? [] : localPeerManagementMatrixRows')
-    && appSource.includes('agentManagementMeshDisplayRows.map(row =>')
+    && appSource.includes('rows: agentManagementMeshDisplayRows')
     && appSource.includes('const assignmentTimelineMatrix = backendOrAllowedFallback(')
     && appSource.includes("schemaVersion: 'assignment-timeline-matrix/frontend-fallback'")
     && appSource.includes('const buildLocalAssignmentFlowRows = () => activeProject.tasks')
@@ -3126,9 +3239,9 @@ assert(
     && appSource.includes('const backendAssignmentTimelineMatrix = scopedBackendStationReadModel(backendStation.assignmentTimelineMatrix) || backendManagerDashboard?.assignmentTimelineMatrix || null')
     && appSource.includes('readRoutes.assignmentTimelineMatrixRoute')
     && appSource.includes('Local assignment/work-progress rows are suppressed for this backend project.')
-    && appSource.includes('assignmentDerivedFrontendRowsAllowed && assignmentFlowRows.length > 0')
+    && projectDashboardCoordinationTeamPanelsSource.includes('view.leaderAssignmentFlowView.assignmentDerivedFrontendRowsAllowed && view.leaderAssignmentFlowView.assignmentFlowRows.length > 0')
     && appSource.includes('assignmentDerivedFrontendRowsAllowed && (')
-    && appSource.includes('assignmentTimelineMatrixDisplayRows.map(row =>')
+    && appSource.includes('assignmentTimelineRows: assignmentTimelineMatrixDisplayRows')
     && appSource.includes('const changeFlow = backendOrAllowedFallback(')
     && appSource.includes("schemaVersion: 'change-flow/frontend-fallback'")
     && appSource.includes('const changeLedger = allowManagerFrontendFallbacks ? activeProject.changeLedger || [] : [];')
@@ -3145,13 +3258,13 @@ assert(
     && appSource.includes('change-flow-backend-required')
     && appSource.includes('change-flow-sync-cockpit')
     && appSource.includes('Local change/source-intake rows are suppressed for this backend project.')
-    && appSource.includes('changeDerivedFrontendRowsAllowed && changeLedger.length > 0')
+    && appSource.includes('view.changeDerivedFrontendRowsAllowed && view.changeLedger.length > 0')
     && appSource.includes("managerReadModelSourceBadge(changeFlow, 'dual-channel-change-intake-source')")
-    && appSource.includes('changeFlowDisplayRows.map(({ change, sourceName')
+    && appSource.includes('flowRows: changeFlowDisplayRows.map(row => ({')
     && appSource.includes("schemaVersion: 'collaboration-health/frontend-fallback'")
     && appSource.includes("schemaVersion: 'collaboration-health/v1'")
     && appSource.includes("missingBackendReadModel('collaboration-health/v1'")
-    && appSource.includes("managerReadModelSourceBadge(collaborationHealth, 'collaboration-health-source')")
+    && appSource.includes("managerReadModelSourceBadge(health, 'collaboration-health-source')")
     && appSource.includes('collaboration-health-backend-required')
     && appSource.includes('collaboration-health-sync-diagnostics')
     && appSource.includes('Local collaboration health is suppressed for this backend project.')
@@ -3173,8 +3286,9 @@ assert(
     && appSource.includes('event-ledger-backend-required')
     && appSource.includes('Local event-ledger rows are suppressed for this backend project.')
     && appSource.includes('event-ledger-sync-timeline-events')
-    && appSource.includes('onClick={() => syncBackendTimelineAndEvents({ silent: false, projectId: activeProject.id })}')
-    && appSource.includes('eventLedgerDisplayRows.slice(-5).reverse().map(event =>')
+    && appSource.includes('onSyncTimeline: () => syncBackendTimelineAndEvents({ silent: false, projectId: activeProject.id })')
+    && appSource.includes('onClick={onSyncTimeline}')
+    && appSource.includes('events.slice(-5).reverse().map(event =>')
     && appSource.includes('managerAutoTimelineEventSyncRef')
     && appSource.includes("!['dashboard', 'timeline'].includes(projectMode)")
     && appSource.includes('syncBackendTimelineAndEvents({ silent: true, projectId: activeProject.id })')
@@ -3193,15 +3307,17 @@ assert(
     && appSource.includes("const agentStateSummaryAllowsLocalProofFallback = agentStateSummary.schemaVersion === 'agent-state-summary/frontend-fallback';")
     && appSource.includes('allowLocalProofFallback: agentStateSummaryAllowsLocalProofFallback')
     && appSource.includes('normalizeAgentStateSummaryRow(row, { allowLocalProofFallback: false })')
-    && appSource.includes('const agentStatusLocalTasksAllowed = agentStateSummaryAllowsLocalProofFallback;')
-    && appSource.includes('const backendOwnedOpenTaskCount = row.openTaskCount')
-    && appSource.includes('const displayOpenTaskCount = agentStatusLocalTasksAllowed ? ownedOpenTasks.length : backendOwnedOpenTaskCount;')
-    && appSource.includes('const currentTask = agentStatusLocalTasksAllowed ? ownedOpenTasks[0] || null : null;')
-    && appSource.includes('const backendCurrentTaskText = row.currentTaskText')
-    && appSource.includes("managerReadModelSourceBadge(agentStateSummary, 'dashboard-agent-status-source')")
-    && appSource.includes('dashboard-agent-status-backend-required')
-    && appSource.includes('Backend Agent State Summary required. Local Agent status rows are suppressed for this backend project.')
-    && appSource.includes('dashboard-agent-status-sync-cockpit')
+    && projectDashboardAgentOverviewSource.includes('const agentStatusLocalTasksAllowed = agentStateSummaryAllowsLocalProofFallback;')
+    && projectDashboardAgentOverviewSource.includes('const backendOwnedOpenTaskCount = row.openTaskCount')
+    && projectDashboardAgentOverviewSource.includes('const displayOpenTaskCount = agentStatusLocalTasksAllowed ? ownedOpenTasks.length : backendOwnedOpenTaskCount;')
+    && projectDashboardAgentOverviewSource.includes('const currentTask = agentStatusLocalTasksAllowed ? ownedOpenTasks[0] || null : null;')
+    && projectDashboardAgentOverviewSource.includes('const backendCurrentTaskText = row.currentTaskText')
+    && projectDashboardAgentOverviewSource.includes("managerReadModelSourceBadge(agentStateSummary, 'dashboard-agent-status-source')")
+    && projectDashboardAgentOverviewSource.includes('dashboard-agent-status-backend-required')
+    && projectDashboardAgentOverviewSource.includes('Backend Agent State Summary required. Local Agent status rows are suppressed for this backend project.')
+    && projectDashboardAgentOverviewSource.includes('dashboard-agent-status-sync-cockpit')
+    && projectDashboardAgentOverviewSource.includes('onClick={onSyncCockpit}')
+    && appSource.includes('onSyncCockpit: () => syncBackendCockpitReadModels({ silent: false, projectId: activeProject.id })')
     && appSource.includes("missingBackendReadModel('agent-state-summary/v1'")
     && appSource.includes("managerReadModelSourceBadge(agentStateSummary, 'agent-state-summary-source')")
     && appSource.includes("managerReadModelSourceBadge(agentStateSummary, 'fixed-work-routines-source')")
@@ -3282,7 +3398,7 @@ assert(
     && appSource.includes("missingBackendReadModel('manager-proof-map/v1'")
     && appSource.includes('manager-proof-map-backend-required')
     && appSource.includes("managerReadModelSourceBadge(managerProofMap, 'manager-proof-map-source')")
-    && appSource.includes("managerReadModelSourceBadge(managerProofMap, 'manager-scenario-readiness-source')")
+    && appSource.includes("managerReadModelSourceBadge(proofMap, 'manager-scenario-readiness-source')")
     && appSource.includes('manager-scenario-readiness-backend-required')
     && appSource.includes('Local scenario readiness is suppressed for this backend project.')
     && appSource.includes('manager-scenario-readiness-sync-proof-map')
@@ -3297,20 +3413,20 @@ assert(
   'Manager Proof Map must prefer backend readiness checks from /readiness-proof-map and show backend-required state for real projects.',
 );
 assert(
-  appSource.includes("const activeFlowGraphProjectId = String(activeProject.id || '').toLowerCase();")
-    && appSource.includes("const backendFlowGraphFromStation = String(backendStation.managerFlowGraph?.projectId || '').toLowerCase() === activeFlowGraphProjectId")
-    && appSource.includes("const backendReadyPackageForFlowGraph = String(backendStation.managerReadyPackage?.projectId || '').toLowerCase() === activeFlowGraphProjectId")
-    && appSource.includes('const backendFlowGraph = backendFlowGraphFromStation || backendReadyPackageForFlowGraph?.managerFlowGraph || null;')
-    && appSource.includes("const backendDashboardForFlowGraph = String(backendStation.managerDashboard?.projectId || '').toLowerCase() === activeFlowGraphProjectId")
-    && appSource.includes("const backendProofMapFromStationForFlowGraph = String(backendStation.readinessProofMap?.projectId || '').toLowerCase() === activeFlowGraphProjectId")
-    && appSource.includes('const backendReadinessProofMapForFlowGraph = backendProofMapFromStationForFlowGraph')
-    && appSource.includes('const backendTimelineProofMap = backendReadinessProofMapForFlowGraph || null;')
-    && appSource.includes('const backendFlowGraphReady = Boolean(backendFlowGraph?.nodes?.length);')
-    && appSource.includes('managerReadyPackage: Boolean(backendReadyPackageForFlowGraph),')
-    && appSource.includes('managerDashboard: Boolean(backendDashboardForFlowGraph),')
-    && !appSource.includes('const backendFlowGraph = backendStation.managerFlowGraph || backendStation.managerReadyPackage?.managerFlowGraph || null;')
-    && !appSource.includes('const backendTimelineProofMap = backendStation.managerDashboard?.readinessProofMap')
-    && !appSource.includes('const graphProjectMatches = !backendFlowGraph?.projectId || backendFlowGraph.projectId === activeProject.id;')
+  projectTimelineUiSource.includes("const activeFlowGraphProjectId = String(activeProject.id || '').toLowerCase();")
+    && projectTimelineUiSource.includes("const backendFlowGraphFromStation = String(backendStation.managerFlowGraph?.projectId || '').toLowerCase() === activeFlowGraphProjectId")
+    && projectTimelineUiSource.includes("const backendReadyPackageForFlowGraph = String(backendStation.managerReadyPackage?.projectId || '').toLowerCase() === activeFlowGraphProjectId")
+    && projectTimelineUiSource.includes('const backendFlowGraph = backendFlowGraphFromStation || backendReadyPackageForFlowGraph?.managerFlowGraph || null;')
+    && projectTimelineUiSource.includes("const backendDashboardForFlowGraph = String(backendStation.managerDashboard?.projectId || '').toLowerCase() === activeFlowGraphProjectId")
+    && projectTimelineUiSource.includes("const backendProofMapFromStationForFlowGraph = String(backendStation.readinessProofMap?.projectId || '').toLowerCase() === activeFlowGraphProjectId")
+    && projectTimelineUiSource.includes('const backendReadinessProofMapForFlowGraph = backendProofMapFromStationForFlowGraph')
+    && projectTimelineUiSource.includes('const backendTimelineProofMap = backendReadinessProofMapForFlowGraph || null;')
+    && projectTimelineUiSource.includes('const backendFlowGraphReady = Boolean(backendFlowGraph?.nodes?.length);')
+    && projectTimelineUiSource.includes('managerReadyPackage: Boolean(backendReadyPackageForFlowGraph),')
+    && projectTimelineUiSource.includes('managerDashboard: Boolean(backendDashboardForFlowGraph),')
+    && !projectTimelineUiSource.includes('const backendFlowGraph = backendStation.managerFlowGraph || backendStation.managerReadyPackage?.managerFlowGraph || null;')
+    && !projectTimelineUiSource.includes('const backendTimelineProofMap = backendStation.managerDashboard?.readinessProofMap')
+    && !projectTimelineUiSource.includes('const graphProjectMatches = !backendFlowGraph?.projectId || backendFlowGraph.projectId === activeProject.id;')
     && mockRegister.includes('Manager Flow Graph scene now scopes graph and Proof Map sources to the active project'),
   'Manager Flow Graph must not let stale cross-project graph/proof-map data masquerade as the active project proof surface.',
 );
@@ -3358,7 +3474,7 @@ assert(
 );
 assert(
   appSource.includes('const showSampleFixturePath = isManagerDemoProject(activeProject) || canUseDevelopmentSnapshotSeed(activeProject);')
-    && appSource.includes('{showSampleFixturePath && (')
+    && projectDashboardCoordinationTeamPanelsSource.includes('{view.showSampleFixturePath && (')
     && mockRegister.includes('Sample Fixture Path is hidden for real backend projects'),
   'Real backend projects must not show the Manager Demo Sample Fixture Path inside the project dashboard.',
 );
@@ -3400,7 +3516,8 @@ assert(
     && appSource.includes('Seed Sample/Dev')
     && appSource.includes('Sample/dev snapshot seed only; real projects save through backend receipt routes.')
     && !appSource.includes('Save Project')
-    && appSource.includes('disabled={backendStation.loading || !canSeedActiveProjectSnapshotToBackend(activeProject)}')
+    && appSource.includes('seedDisabled: backendStation.loading || !canSeedActiveProjectSnapshotToBackend(activeProject)')
+    && appSource.includes('disabled={seedDisabled}')
     && appSource.includes('Backend project missing; local seed suppressed')
     && appSource.includes('Backend project not found after prior sync; local snapshot reseeding is suppressed.')
     && appSource.includes('Backend project not found; local snapshot seeding is disabled for real projects.')
@@ -3500,15 +3617,15 @@ assert(
     && appSource.includes('const workspacePortfolioCatalogRequired = backendStation.connectionStatus === \'online\' && !backendStation.lastProjectCatalogSyncAt;')
     && appSource.includes('backendStation.lastProjectCatalogSyncAt && backendCatalogTaskCounts.every(count => count !== null)')
     && appSource.includes('backendStation.lastProjectCatalogSyncAt && backendCatalogMessageCounts.every(count => count !== null)')
-    && appSource.includes('data-testid={`workspace-stat-source-${statId}`}')
-    && appSource.includes('data-testid={`workspace-stat-source-detail-${statId}`}')
-    && appSource.includes("          { icon: Cpu, label: 'Active Projects', val: workspaceActiveProjectCount },")
-    && appSource.includes("          { icon: Server, label: 'Backend Projects', val: workspaceBackendProjectCount },")
-    && appSource.includes("          { icon: ClipboardList, label: 'Open Tasks', val: workspaceOpenTaskCount },")
-    && appSource.includes("          { icon: MessageSquare, label: 'Stored Messages', val: workspaceStoredMessageCount }")
-    && appSource.includes('data-testid="workspace-portfolio-catalog-required"')
-    && appSource.includes('data-testid="workspace-portfolio-sync-catalog-required"')
-    && appSource.includes('!workspacePortfolioCatalogRequired && projects.length === 0')
+    && workspaceUiSource.includes('data-testid={`workspace-stat-source-${statId}`}')
+    && workspaceUiSource.includes('data-testid={`workspace-stat-source-detail-${statId}`}')
+    && workspaceUiSource.includes("          { icon: Cpu, label: 'Active Projects', val: workspaceActiveProjectCount },")
+    && workspaceUiSource.includes("          { icon: Server, label: 'Backend Projects', val: workspaceBackendProjectCount },")
+    && workspaceUiSource.includes("          { icon: ClipboardList, label: 'Open Tasks', val: workspaceOpenTaskCount },")
+    && workspaceUiSource.includes("          { icon: MessageSquare, label: 'Stored Messages', val: workspaceStoredMessageCount }")
+    && workspaceUiSource.includes('data-testid="workspace-portfolio-catalog-required"')
+    && workspaceUiSource.includes('data-testid="workspace-portfolio-sync-catalog-required"')
+    && workspaceUiSource.includes('!workspacePortfolioCatalogRequired && projects.length === 0')
     && appSource.includes("label: 'backend-backed'")
     && appSource.includes('isBackendKickoffProject(project) || hasBackendManagedProjectMarker(project) || projectHasBackendSyncEvidence(project)')
     && appSource.includes("fixtureMeta.status || 'sample-fixture'")
@@ -3520,10 +3637,10 @@ assert(
     && appSource.includes("label: 'frontend-fallback'")
     && appSource.includes('Loaded from backend project catalog or backend receipt sync')
     && appSource.includes('Local browser cache only; sync backend before treating this as a real project')
-    && appSource.includes('data-testid={`project-source-${proj.id}`}')
-    && appSource.includes('data-testid={`project-source-detail-${proj.id}`}')
-    && appSource.includes('data-testid={`project-progress-source-${proj.id}`}')
-    && appSource.includes('data-testid={`project-progress-source-detail-${proj.id}`}')
+    && workspaceUiSource.includes('data-testid={`project-source-${proj.id}`}')
+    && workspaceUiSource.includes('data-testid={`project-source-detail-${proj.id}`}')
+    && workspaceUiSource.includes('data-testid={`project-progress-source-${proj.id}`}')
+    && workspaceUiSource.includes('data-testid={`project-progress-source-detail-${proj.id}`}')
     && mockRegister.includes('Active Portfolios now renders a visible source badge for every project row')
     && mockRegister.includes('project-progress-source')
     && mockRegister.includes('workspace-portfolio-catalog-required')
@@ -3561,10 +3678,11 @@ assert(
     && appSource.includes('projectHasBackendSyncEvidence(dashboardProject || { id: projectId })')
     && appSource.includes('const openManagerFlowGraphScene = async () => {')
     && appSource.includes('await syncBackendManagerFlowGraph({ silent: true, projectId });')
-    && appSource.includes('onClick={openManagerFlowGraphScene}')
+    && appSource.includes('onOpenManagerFlowGraph: openManagerFlowGraphScene')
+    && projectDashboardAgentOverviewSource.includes('onClick={onOpenManagerFlowGraph}')
     && appSource.includes('timeoutMs: silent ? 8000 : 12000')
-    && appSource.includes('manager-flow-backend-required-sync')
-    && appSource.includes('onClick={() => syncBackendManagerFlowGraph({ silent: false })}')
+    && projectTimelineUiSource.includes('manager-flow-backend-required-sync')
+    && projectTimelineUiSource.includes('onClick={() => syncBackendManagerFlowGraph({ silent: false })}')
     && appSource.includes("['managerFlowGraph', readRoutes.managerFlowGraphRoute, null, 10000]")
     && appSource.includes('const dashboard = await syncBackendManagerDashboard({ silent: Boolean(readyPackage) });')
     && appSource.includes('await syncBackendManagerFlowGraph({ silent: Boolean(readyPackage || dashboard) });')
@@ -3712,7 +3830,7 @@ assert(
     && appSource.includes('Backend-online real projects require final delivery archive, artifact storage proof, workspace-file proof, transcript proof, and source-review proof from the backend.')
     && appSource.includes('backendProjectEvidenceArchiveReadModel || (')
     && appSource.includes('backendOnlineForReadyPackage && backendManagerReadyPackage ? missingProjectEvidenceArchive() : null')
-    && appSource.includes("managerProofModelSyncButton(backendProjectEvidenceArchive, 'backend-project-evidence-archive-sync-proof-models')")
+    && appSource.includes("managerProofModelSyncButton(projectEvidenceArchive, 'backend-project-evidence-archive-sync-proof-models')")
     && appSource.includes('data-testid="backend-project-evidence-archive-source"')
     && mockRegister.includes('Project Evidence Archive now uses a backend-required missing model')
     && mockRegister.includes('backend-project-evidence-archive-sync-proof-models'),
@@ -3986,14 +4104,15 @@ assert(
   'Manager Dashboard must automatically sync critical C/A run-control models for backend-backed projects.',
 );
 assert(
-  appSource.includes('backendCollaborationIntentQueue && !backendManagerReadyPackage')
+  appSource.includes('collaborationIntentQueue && !managerReadyPackage')
     && appSource.includes('dashboard-collaboration-intent-row-')
     && appSource.includes("row.id === 'customer-agent-handoff-intent'")
     && appSource.includes('backend-collaboration-intent-output-work-submission')
     && appSource.includes('backend-collaboration-intent-handoff-output-routes')
     && appSource.includes('collaboration-intent-output-chat-proof-work-submission')
     && appSource.includes('collaboration-intent-output-timeline-proof-work-submission')
-    && appSource.includes('openProjectTimelineProof([backendCollaborationIntentRunOutput.workSubmission.timelineLogId].filter(Boolean))')
+    && appSource.includes('onOpenOutputTimelineProof: (proofIds) => openProjectTimelineProof(proofIds)')
+    && appSource.includes('onOpenOutputTimelineProof([backendCollaborationIntentRunOutput.workSubmission.timelineLogId].filter(Boolean))')
     && appSource.includes('backend-collaboration-intent-standalone-output-rows')
     && appSource.includes("artifact: payload.artifact || null")
     && appSource.includes("reviewResponseArtifact: payload.reviewResponseArtifact || null")
@@ -4050,16 +4169,19 @@ assert(
     && appSource.includes('Backend chat route required')
     && appSource.includes('Chat for backend-online projects must use the backend project command route. Configure Backend URL in Settings Deployment.')
     && appSource.includes('if (!shouldUseBackendChat && !canUseLocalChatFallback) {')
-    && appSource.includes('data-testid="backend-chat-send-required"')
-    && appSource.includes('data-testid="backend-chat-send-open-deployment"')
-    && appSource.includes('data-testid="project-chat-send"')
-    && appSource.includes('disabled={!canSendChat}')
+    && projectChatUiSource.includes('data-testid="backend-chat-send-required"')
+    && projectChatUiSource.includes('data-testid="backend-chat-send-open-deployment"')
+    && projectChatUiSource.includes('data-testid="project-chat-send"')
+    && projectChatUiSource.includes('disabled={!canSendChat}')
     && appSource.includes('Backend meeting failed; local fallback disabled for backend-online project; draft restored')
     && appSource.includes('Backend meeting returned no Agent turns; local simulation blocked; draft restored')
     && appSource.includes('const runBackendProjectCommand = async (action, body = {}) => {')
     && appSource.includes('applyBackendProjectSnapshot(payload);')
-    && appSource.includes('setTimeout(() => syncBackendProjectTranscripts({')
-    && appSource.includes('channelId: body.channelId || activeChannelId')
+    && appSource.includes('backendProjectCommandRefreshTimerRef.current = setTimeout(async () => {')
+    && appSource.includes('await syncBackendProjectTranscripts({ silent: true, projectId: refreshProjectId, channelId: refreshChannelId });')
+    && appSource.includes('await syncBackendTimelineAndEvents({ silent: true, projectId: refreshProjectId });')
+    && appSource.includes('cancelPendingBackendReadModelRefreshes();')
+    && appSource.includes('}, 5000);')
     && appSource.includes("await runBackendProjectCommand('chat', {")
     && appSource.includes('setChatInput(current => current || text)')
     && mockRegister.includes('restore the unsent draft')
@@ -4074,29 +4196,29 @@ assert(
   'Reviewer composer failures must show a failed backend write instead of leaving a fake or pending review receipt.',
 );
 assert(
-  appSource.includes('Agent Action Failed')
+  agentAutonomousActionQueueUiSource.includes('Agent Action Failed')
     && appSource.includes('Intent Run Failed')
     && appSource.includes('Action failed:')
-    && appSource.includes('No local run receipt was created.')
+    && agentAutonomousActionQueueUiSource.includes('No local run receipt was created:')
     && appSource.includes('No local intent receipt was created.')
     && appSource.includes('No local operator receipt was created.')
-    && appSource.includes('backend-agent-autonomous-action-run-output-failed')
+    && agentAutonomousActionQueueUiSource.includes('backend-agent-autonomous-action-run-output-failed')
     && appSource.includes('backend-collaboration-intent-run-output-failed')
     && mockRegister.includes('Failed intent runs clear the previous run receipt')
     && mockRegister.includes('failed row runs clear the previous successful run receipt'),
   'A-side run controls must clear stale receipts and render failed non-proof states when backend writes fail.',
 );
 assert(
-  appSource.includes('backend-agent-autonomous-action-run-output')
-    && appSource.includes('Agent Action Output Nodes')
-    && appSource.includes('agent-autonomous-action-output-route-${row.id}')
-    && appSource.includes("route: output.workSubmission.route")
-    && appSource.includes("route: output.artifact.route")
-    && appSource.includes("route: output.evidenceSearch.route")
-    && appSource.includes("route: output.reviewResponseArtifact.route")
-    && appSource.includes("label: 'Review Response Artifact'")
-    && appSource.includes("route: activeProject?.id ? `/projects/${activeProject.id}/transcripts/${output.channelId || 'main'}` : null")
-    && appSource.includes("Route: {row.route || 'route pending'} / Event: {row.eventId || 'missing'}"),
+  agentAutonomousActionQueueUiSource.includes('backend-agent-autonomous-action-run-output')
+    && agentAutonomousActionQueueUiSource.includes('Agent Action Output Nodes')
+    && agentAutonomousActionQueueUiSource.includes('agent-autonomous-action-output-route-${row.id}')
+    && agentAutonomousActionQueueUiSource.includes("route: output.workSubmission.route")
+    && agentAutonomousActionQueueUiSource.includes("route: output.artifact.route")
+    && agentAutonomousActionQueueUiSource.includes("route: output.evidenceSearch.route")
+    && agentAutonomousActionQueueUiSource.includes("route: output.reviewResponseArtifact.route")
+    && agentAutonomousActionQueueUiSource.includes("label: 'Review Response Artifact'")
+    && agentAutonomousActionQueueUiSource.includes("route: projectId ? `/projects/${projectId}/transcripts/${output.channelId || 'main'}` : null")
+    && agentAutonomousActionQueueUiSource.includes("Route: {row.route || 'route pending'} / Event: {row.eventId || 'missing'}"),
   'Agent Autonomous Action output rows must show backend resource/transcript routes and event ids for C/A proof handoff.',
 );
 assert(
@@ -4347,10 +4469,11 @@ for (const text of [
   );
 }
 assert(
-  appSource.includes("projectText('Provider Usage')")
-    && appSource.includes("projectText('Provider Receipts')")
-    && appSource.includes('backendZeroToAutonomyReport.summary?.providerUsageCount')
-    && appSource.includes('backendZeroToAutonomyReport.summary?.providerReceiptCount'),
+  appSource.includes("text('Provider Usage')")
+    && appSource.includes("text('Provider Receipts')")
+    && appSource.includes('model: zeroToAutonomyReport')
+    && appSource.includes('model.summary?.providerUsageCount')
+    && appSource.includes('model.summary?.providerReceiptCount'),
   'Manager UI zero-to-autonomy report must show provider usage and provider receipt proof counts.',
 );
 assert(

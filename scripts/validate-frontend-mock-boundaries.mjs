@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -43,16 +43,64 @@ function sliceBetween(source, startMarker, endMarker) {
   return source.slice(start, end);
 }
 
-function assertBackendSyncButtonGuardedByTestId(source, testId, expectedGuard = 'disabled={backendWorkerStationSyncDisabled}') {
+function assertBackendSyncButtonGuardedByTestId(source, testId, expectedGuard = ['disabled={backendWorkerStationSyncDisabled}', 'disabled={syncDisabled}']) {
   const match = source.match(new RegExp(`data-testid="${testId}"[\\s\\S]{0,900}?</button>`));
   assert(match, `Expected backend sync button ${testId} to exist.`);
+  const expectedGuards = Array.isArray(expectedGuard) ? expectedGuard : [expectedGuard];
   assert(
-    match[0].includes(expectedGuard),
+    expectedGuards.some(guard => match[0].includes(guard)),
     `${testId} must use the configured backend project guard.`,
   );
 }
 
 const appSource = read('src/App.jsx');
+const agentAutonomousActionQueueUiSource = read('src/project/ProjectDashboardAgentAutonomousActionQueue.jsx');
+const autonomousRunControlUiSource = read('src/project/ProjectDashboardAutonomousRunControl.jsx');
+const backendSchedulerControlsSource = read('src/project/ProjectDashboardBackendSchedulerControls.jsx');
+const publicProductionStartupReadinessSource = read('src/project/ProjectDashboardPublicProductionStartupReadiness.jsx');
+const productionLaunchProofPanelsSource = read('src/project/ProjectDashboardProductionLaunchProofPanels.jsx');
+const privatePilotWorkflowPanelsSource = read('src/project/ProjectDashboardPrivatePilotWorkflowPanels.jsx');
+const agentContractProjectPickerSource = read('src/project/AgentContractProjectPicker.jsx');
+const localDeploymentSettingsSource = read('src/settings/LocalDeploymentSettings.jsx');
+const localHealthSettingsSource = read('src/settings/LocalHealthSettings.jsx');
+const localPrivacySettingsSource = read('src/settings/LocalPrivacySettings.jsx');
+const localWorkspaceSettingsSource = read('src/settings/LocalWorkspaceSettings.jsx');
+const localToolsSettingsSource = read('src/settings/LocalToolsSettings.jsx');
+const legacyWarRoomViewSource = read('src/project/LegacyWarRoomView.jsx');
+const productSidebarSource = read('src/navigation/ProductSidebar.jsx');
+const settingsDialogShellSource = read('src/settings/SettingsDialogShell.jsx');
+const settingsModalViewSource = read('src/settings/SettingsModalView.jsx');
+const advancedMeetingRoomSource = read('src/meeting/AdvancedMeetingRoom.jsx');
+const projectChatRouteViewSource = read('src/project/ProjectChatRouteView.jsx');
+const advancedProjectChatSource = read('src/project/AdvancedProjectChat.jsx');
+const projectTimelineRouteViewSource = read('src/project/ProjectTimelineRouteView.jsx');
+const advancedProjectTimelineSource = read('src/project/AdvancedProjectTimeline.jsx');
+const workspaceViewSource = read('src/workspace/WorkspaceView.jsx');
+const advancedWorkspaceViewSource = read('src/workspace/AdvancedWorkspaceView.jsx');
+const projectDashboardHeaderSource = read('src/project/ProjectDashboardHeader.jsx');
+const projectDashboardSummarySource = read('src/project/ProjectDashboardSummary.jsx');
+const projectDashboardAgentOverviewSource = read('src/project/ProjectDashboardAgentOverview.jsx');
+const projectDashboardManagerActionPlaybookSource = read('src/project/ProjectDashboardManagerActionPlaybook.jsx');
+const projectDashboardManagerActionRunLedgerSource = read('src/project/ProjectDashboardManagerActionRunLedger.jsx');
+const projectDashboardManagerProofMapSource = read('src/project/ProjectDashboardManagerProofMap.jsx');
+const projectDashboardManagerScenarioTrailSource = read('src/project/ProjectDashboardManagerScenarioTrail.jsx');
+const projectDashboardManagerScenarioWalkthroughSource = read('src/project/ProjectDashboardManagerScenarioWalkthrough.jsx');
+const projectDashboardSyncProtocolAuditSource = read('src/project/ProjectDashboardSyncProtocolAudit.jsx');
+const projectDashboardTeamSource = read('src/project/ProjectDashboardTeam.jsx');
+const projectDashboardSubmissionWorkspaceSource = read('src/project/ProjectDashboardSubmissionWorkspace.jsx');
+const allProjectDashboardComponentSource = readdirSync(resolve(repoRoot, 'src/project'))
+  .filter(name => /\.jsx$/.test(name))
+  .sort()
+  .map(name => read(`src/project/${name}`))
+  .join('\n');
+const allOnboardingComponentSource = readdirSync(resolve(repoRoot, 'src/onboarding'))
+  .filter(name => /\.jsx$/.test(name))
+  .sort()
+  .map(name => read(`src/onboarding/${name}`))
+  .join('\n');
+const workspaceUiSource = `${appSource}\n${workspaceViewSource}\n${advancedWorkspaceViewSource}`;
+const dashboardUiSource = `${appSource}\n${allProjectDashboardComponentSource}`;
+const reactUiSource = `${appSource}\n${allProjectDashboardComponentSource}\n${allOnboardingComponentSource}\n${localDeploymentSettingsSource}\n${localHealthSettingsSource}\n${localPrivacySettingsSource}\n${localWorkspaceSettingsSource}\n${localToolsSettingsSource}\n${legacyWarRoomViewSource}\n${productSidebarSource}\n${settingsDialogShellSource}\n${settingsModalViewSource}\n${advancedMeetingRoomSource}\n${advancedProjectChatSource}\n${projectTimelineRouteViewSource}\n${advancedProjectTimelineSource}\n${workspaceViewSource}\n${advancedWorkspaceViewSource}`;
 const packageSource = read('package.json');
 const registerSource = read('docs/FRONTEND_MOCK_REPLACEMENT_REGISTER.md');
 
@@ -149,11 +197,11 @@ assert(
   'Group Chat must block backend-required sends before clearing the draft or creating local chat proof.',
 );
 
-const transcriptRenderSection = sliceBetween(
+const transcriptRenderSection = `${sliceBetween(
   appSource,
   'const renderProjectChat = () =>',
   'const renderProjectTimelineLegacy = () =>',
-);
+)}\n${projectChatRouteViewSource}\n${advancedProjectChatSource}`;
 assertIncludes(transcriptRenderSection, [
   'const backendChannelTranscriptRequired = Boolean(activeProject)',
   'const backendChannelTranscriptUsable = Boolean(backendChannelTranscript) && (',
@@ -286,7 +334,7 @@ assertIncludes(initialChatCacheSection, [
 const browserCacheWriteSection = sliceBetween(
   appSource,
   'const isBackendManagedRealProject = (project = {})',
-  '// Inject Styles',
+  'useEffect(() => {\n    const browserCacheProjects',
 );
 const backendManagedMarkerSection = sliceBetween(
   appSource,
@@ -316,7 +364,7 @@ assertIncludes(browserCacheWriteSection, [
   'if (!project) return false;',
   'return canPersistProjectToBrowserCache(project) && !isManagerDemoMessage(message);',
 ], 'browser cache write boundary');
-assertIncludes(appSource, [
+assertIncludes(reactUiSource, [
   'const browserCacheProjects = projects.filter(canPersistProjectToBrowserCache);',
   'const browserCacheMessages = chatMessages',
   '.filter(message => canPersistChatMessageToBrowserCache(message, projectById))',
@@ -331,14 +379,14 @@ assert(localStorageSetItemMatches.length === 1, 'React must keep localStorage wr
 assertIncludes(storageHelperSection, [
   'window.localStorage.setItem(key, JSON.stringify(value));',
 ], 'centralized browser storage helper');
-assertIncludes(appSource, [
+assertIncludes(reactUiSource, [
   'const hasConfiguredBackendBaseUrl = () => {',
   'const isValidBackendBaseUrl = (value) => {',
   'return isLocalNetworkEndpoint(value);',
   'const storedBackendUrl = readStoredJson(STORAGE_KEYS.backendUrl, null);',
   'return isValidBackendBaseUrl(storedBackendUrl)',
   'if (storedBackendUrl !== null) return isValidBackendBaseUrl(JSON.parse(storedBackendUrl));',
-  "return isValidBackendBaseUrl(import.meta.env?.VITE_AGENT_BACKEND_URL || '');",
+  'return isValidBackendBaseUrl(DEFAULT_AGENT_BACKEND_URL) && isLocalNetworkEndpoint(DEFAULT_AGENT_BACKEND_URL);',
   'const [backendUrlConfigured, setBackendUrlConfigured] = useState(hasConfiguredBackendBaseUrl);',
   'const backendConfiguredTargetLabel = backendUrlConfigured',
   'const backendHealthTargetLabel = backendUrlConfigured',
@@ -362,11 +410,16 @@ assert(
     && !appSource.includes('normalizeBackendBaseUrl(backendStation.draftBaseUrl'),
   'Runtime backend reads/writes must use the saved backend target; draftBaseUrl is only for the Save URL action.',
 );
-const manualProviderTargetGuards = appSource.match(/disabled=\{providerRuntimeStatus\.running \|\| !backendUrlConfigured\}/g) || [];
+const manualProviderTargetGuards = reactUiSource.match(/disabled=\{providerRuntimeStatus\.running \|\| !backendUrlConfigured\}/g) || [];
 assert(manualProviderTargetGuards.length >= 6, 'Settings/Workspace/Initiation manual provider/startup controls must require a configured backend URL before probing backend routes.');
-const manualHealthTargetGuards = appSource.match(/disabled=\{healthCheck\.running \|\| !backendUrlConfigured\}/g) || [];
-assert(manualHealthTargetGuards.length >= 3, 'Settings Health manual Quick Check, Workflow Smoke, and footer Test Connection must require a configured backend URL before probing backend routes.');
-assertIncludes(appSource, [
+const manualHealthTargetGuards = reactUiSource.match(/disabled=\{healthCheck\.running \|\| !backendUrlConfigured\}/g) || [];
+assert(
+  manualHealthTargetGuards.length >= 2
+    && settingsModalViewSource.includes('connectionDisabled={healthCheck.running || !backendUrlConfigured}')
+    && settingsDialogShellSource.includes('disabled={connectionDisabled}'),
+  'Settings Health manual Quick Check, Workflow Smoke, and footer Test Connection must require a configured backend URL before probing backend routes.',
+);
+assertIncludes(reactUiSource, [
   '&& backendUrlConfigured\n    && Boolean((backendStation.baseUrl || \'\').trim())',
   "const syncBackendProjectCatalog = async ({ silent = true, baseUrl = null, authToken = '' } = {}) => {",
   'if (!baseUrl && !backendUrlConfigured) {',
@@ -387,8 +440,13 @@ assertIncludes(appSource, [
   "onClick={() => { setSettingsTab('deployment'); setSettingsOpen(true); }}",
   'disabled={backendWorkerStationSyncDisabled}',
 ], 'Workspace and Backend Worker manual backend target guard');
-const backendWorkerStationSyncGuards = appSource.match(/disabled=\{backendWorkerStationSyncDisabled\}/g) || [];
-assert(backendWorkerStationSyncGuards.length >= 15, 'Backend Worker Station manual sync/read controls must share the configured backend project guard.');
+const backendWorkerStationSyncGuards = reactUiSource.match(/disabled=\{backendWorkerStationSyncDisabled\}/g) || [];
+const extractedBackendWorkerStationSyncGuards = backendSchedulerControlsSource.match(/disabled=\{workerSyncDisabled\}/g) || [];
+assert(
+  backendWorkerStationSyncGuards.length + extractedBackendWorkerStationSyncGuards.length >= 15
+    && appSource.includes('workerSyncDisabled: backendWorkerStationSyncDisabled'),
+  'Backend Worker Station manual sync/read controls must share the configured backend project guard.',
+);
 assertIncludes(appSource, [
   'const managerProofModelSyncButton = (readModel = {}, testId) => managerReadModelMeta(readModel).frontendMockSuppressed ? (',
   'const managerProofMapRouteSyncButton = (route = {}, testId) => managerReadModelMeta(route).frontendMockSuppressed ? (',
@@ -419,17 +477,19 @@ for (const testId of [
   'assignment-timeline-matrix-sync-cockpit',
   'recent-commit-line-sync-timeline-events',
 ]) {
-  assertBackendSyncButtonGuardedByTestId(appSource, testId);
+  assertBackendSyncButtonGuardedByTestId(reactUiSource, testId);
 }
-assertBackendSyncButtonGuardedByTestId(appSource, 'manager-flow-backend-required-sync', 'disabled={!backendCommandAvailable || backendStation.loading}');
-assertBackendSyncButtonGuardedByTestId(appSource, 'project-chat-transcript-sync', 'disabled={!canSyncBackendTranscriptMembers}');
-assertIncludes(appSource, [
+const extractedSyncDisabledMappings = appSource.match(/syncDisabled:\s*backendWorkerStationSyncDisabled/g) || [];
+assert(extractedSyncDisabledMappings.length >= 10, 'Extracted Dashboard sync controls must receive the configured backend project guard from App.');
+assertBackendSyncButtonGuardedByTestId(reactUiSource, 'manager-flow-backend-required-sync', 'disabled={!backendCommandAvailable || backendStation.loading}');
+assertBackendSyncButtonGuardedByTestId(reactUiSource, 'project-chat-transcript-sync', 'disabled={!canSyncBackendTranscriptMembers}');
+assertIncludes(dashboardUiSource, [
   'data-testid={`proof-map-${card.key}-sync-cockpit`}\n                            onClick={() => syncBackendCockpitReadModels({ silent: false, projectId: activeProject.id })}\n                            disabled={backendWorkerStationSyncDisabled}',
   'data-testid={`proof-map-${card.key}-sync-governance`}\n                              onClick={() => syncBackendGovernanceProofMapCard(card.syncKind)}\n                              disabled={backendWorkerStationSyncDisabled}',
   'data-testid={`proof-map-${card.key}-sync-proof-models`}\n                              onClick={() => syncBackendReadyPackageSubmodels({ silent: false, projectId: activeProject.id, includeLaunchControls: true })}\n                              disabled={backendWorkerStationSyncDisabled}',
 ], 'Proof Map dynamic backend sync route controls');
 
-assertIncludes(appSource, [
+assertIncludes(reactUiSource, [
   'Local fallback disabled for backend-synced project.',
   'Backend project missing; local seed suppressed',
   'data-testid="backend-save-project"',
@@ -462,7 +522,7 @@ assertIncludes(appSource, [
   'Backend Workflow Smoke passed: product-brief submission',
   'provider usage',
   'settings-health-workflow-smoke-output',
-  'Backend Agent output created',
+  '完整工作检查',
   'settingsWorkflowSmokeProofRows',
   'Provider Evidence',
   'Evidence Search',
@@ -762,18 +822,21 @@ assert(
 const agentContractPickerSection = sliceBetween(
   appSource,
   'const renderContractProjectPicker = () => {',
-  'const renderSettingsModal = () => {',
+  'const renderSettingsModal = () => (',
 );
 assertIncludes(agentContractPickerSection, [
   'const canUseLocalContractFallback = allowLocalRuntimeFallbackForActiveProject(project);',
-  'const contractBackendTargetMissing = !shouldAttemptBackendProjectWrite(project) && !canUseLocalContractFallback;',
-  'const contractActionDisabled = Boolean(signingAgentId) || (!alreadyInTeam && contractBackendTargetMissing);',
-  'openContractedProjectFromPicker(project.id);',
-  'confirmAgentContractForProject(project.id);',
-  'disabled={contractActionDisabled}',
-  'contract-project-backend-required',
-  'Backend Required',
+  'const backendTargetMissing = !shouldAttemptBackendProjectWrite(project) && !canUseLocalContractFallback;',
+  'disabled: !alreadyInTeam && backendTargetMissing,',
+  'alreadyInTeam ? openContractedProjectFromPicker(projectId) : confirmAgentContractForProject(projectId)',
+  '<AgentContractProjectPicker',
 ], 'Marketplace Agent contract picker backend target boundary');
+assertIncludes(agentContractProjectPickerSource, [
+  'disabled={disabled || signing}',
+  'contract-project-backend-required',
+  '请先完成本地服务设置',
+  '已经加入团队',
+], 'Ordinary Marketplace Agent contract picker controls');
 
 const eventLedgerFallbackSection = sliceBetween(
   appSource,
@@ -820,7 +883,7 @@ assertIncludes(dashboardStatsSection, [
   "id: `init-log-${log.id || 'row'}-${index}`",
   'sourceLogId: log.id || null',
 ], 'Dashboard run-count backend boundary');
-assertIncludes(appSource, [
+assertIncludes(dashboardUiSource, [
   'const projectDashboardSnapshotSourceMeta = fixtureMeta',
   'const projectDashboardKickoffExecutionFlowBackendRequired = Boolean(',
   'const projectDashboardNextRecommendationBackendRequired = projectDashboardKickoffExecutionFlowBackendRequired;',
@@ -833,7 +896,8 @@ assertIncludes(appSource, [
   'data-testid="project-dashboard-next-recommendation-source"',
   'data-testid="project-dashboard-next-recommendation-source-detail"',
   'data-testid="project-dashboard-next-recommendation-sync-manager-dashboard"',
-  "onClick={() => syncBackendManagerDashboard({ silent: false, projectId: activeProject.id })}",
+  "onSyncManagerDashboard: () => syncBackendManagerDashboard({ silent: false, projectId: activeProject.id })",
+  'onClick={onSyncManagerDashboard}',
   "data-testid={`project-dashboard-stat-source-${item.sourceId}`}",
   "data-testid={`project-dashboard-stat-source-detail-${item.sourceId}`}",
   "NEXT ACTION RESOLUTION: {projectDashboardNextRecommendationBackendRequired ? 'backend required'",
@@ -846,9 +910,9 @@ assert(
 );
 
 const workspaceStatsSection = sliceBetween(
-  appSource,
+  workspaceViewSource,
   'const localWorkspaceOpenTaskCount = projects.reduce',
-  'return (\n    <div className="flex-1 p-12 overflow-y-auto fade-in bg-[#fdfdfc]">',
+  'return (\n    <Suspense fallback={<LazyPanelFallback />}>\n      <AdvancedWorkspaceView',
 );
 assertIncludes(workspaceStatsSection, [
   'const localWorkspaceOpenTaskCount = projects.reduce',
@@ -901,7 +965,7 @@ assert(
     < workspaceStatsSection.indexOf(": 'offline'"),
   'Workspace Hub Backend Projects must show offline only as the non-backend branch.',
 );
-assertIncludes(appSource, [
+assertIncludes(workspaceUiSource, [
   "{ icon: Cpu, label: 'Active Projects', val: workspaceActiveProjectCount }",
   "{ icon: Server, label: 'Backend Projects', val: workspaceBackendProjectCount }",
   "const statSourceMeta = stat.label === 'Open Tasks'",
@@ -926,7 +990,7 @@ assertIncludes(appSource, [
   "if (/secret-vault|seal|provider key|api.?key|vault/.test(nextActionText)) return 'keys';",
   "if (/runtime|model|search/.test(nextActionText)) return 'models';",
 ], 'Startup readiness Settings tab routing helper');
-assertIncludes(appSource, [
+assertIncludes(workspaceUiSource, [
   'data-testid="start-initiation-button"',
   'data-testid="start-initiation-backend-state"',
   "startupReadyForFirstRun ? 'Backend ready for first run' : backendUrlConfigured ? 'Setup required before kickoff' : 'Set backend URL before kickoff'",
@@ -939,7 +1003,7 @@ assertIncludes(appSource, [
   'Save Backend URL in Settings Deployment before syncing startup readiness.',
 ], 'Workspace Start Initiation readiness state boundary');
 assert(
-  !appSource.includes('data-testid="workspace-open-settings-keys"'),
+  !workspaceUiSource.includes('data-testid="workspace-open-settings-keys"'),
   'Workspace startup setup action must not be hard-wired to Settings Keys.',
 );
 
@@ -983,13 +1047,17 @@ assertIncludes(localMvpStartupReadinessRefreshSection, [
   'Save the backend API URL in Settings Deployment before syncing local MVP startup readiness.',
   'const baseUrl = normalizeBackendBaseUrl(backendStation.baseUrl || DEFAULT_AGENT_BACKEND_URL);',
 ], 'Local MVP startup readiness configured backend target guard');
-assertIncludes(appSource, [
+assertIncludes(reactUiSource, [
   'data-testid="initiation-startup-readiness-gate"',
   'Backend startup required before real kickoff',
   'data-testid="initiation-sync-startup"',
   'data-testid="initiation-open-startup-settings"',
   'setSettingsTab(initiationStartupSettingsTab);',
-  'disabled={!initiationCanStartKickoff || providerRuntimeStatus.running || initiationMeetingStartState.running}',
+  'canStart={initiationCanStartKickoff}',
+  'providerRunning={providerRuntimeStatus.running}',
+  'startState={initiationMeetingStartState}',
+  'const startDisabled = !canStart || providerRunning || startState.running;',
+  'disabled={startDisabled}',
 ], 'Initiation startup readiness UI boundary');
 assert(
   !appSource.includes('data-testid="initiation-open-settings-keys"'),
@@ -1016,9 +1084,11 @@ assertIncludes(initiationApprovalSection, [
   'if (confirmedKickoffPayload.workMode || !isDevelopmentInitiationFallbackEnabled())',
   "dataSource: 'development-fallback'",
 ], 'Initiation approval Mission Runner boundary');
-assertIncludes(appSource, [
+assertIncludes(reactUiSource, [
   'data-testid="initiation-approve-create"',
-  'disabled={!initiationCanApproveProject || providerRuntimeStatus.running}',
+  'approvalDisabled={!initiationCanApproveProject || providerRuntimeStatus.running}',
+  'disabled={approvalDisabled || approvalRunning}',
+  'data-testid="initiation-approval-progress"',
 ], 'Initiation approval UI boundary');
 
 const projectInitiationRefreshSection = sliceBetween(
@@ -1069,11 +1139,11 @@ assert(
   'War Room meeting backend-required failures must be handled before local meeting fallback code.',
 );
 
-const warRoomMeetingRenderSection = sliceBetween(
+const warRoomMeetingRenderSection = `${sliceBetween(
   appSource,
   'const renderProjectMeeting = (meetingProject = activeProject, meetingOptions = {}) =>',
   'const renderProjectChat = () =>',
-);
+)}\n${advancedMeetingRoomSource}`;
 assertIncludes(warRoomMeetingRenderSection, [
   'const submitMeetingInput = meetingOptions.onSubmit || submitRoomInput;',
   'const usesCustomMeetingSubmit = Boolean(meetingOptions.onSubmit);',
@@ -1131,16 +1201,19 @@ const backendProjectCommandRefreshSection = sliceBetween(
 );
 assertIncludes(backendProjectCommandRefreshSection, [
   'applyBackendProjectSnapshot(payload);',
-  'syncBackendManagerDashboard({ silent: true, projectId: payload.project?.id || activeProject.id });',
-  'setTimeout(() => syncBackendManagerFlowGraph({ silent: true, projectId: payload.project?.id || activeProject.id }), 0);',
-  'setTimeout(() => syncBackendReadinessProofMap({ silent: true, projectId: payload.project?.id || activeProject.id }), 0);',
-  'setTimeout(() => syncBackendProjectTranscripts({',
-  'setTimeout(() => syncBackendTimelineAndEvents({ silent: true, projectId: payload.project?.id || activeProject.id }), 0);',
-  'setTimeout(() => syncBackendReadyPackageSubmodels({ silent: true, projectId: payload.project?.id || activeProject.id }), 0);',
+  'cancelPendingBackendReadModelRefreshes();',
+  'backendProjectCommandRefreshTimerRef.current = setTimeout(async () => {',
+  'await syncBackendManagerDashboard({ silent: true, projectId: refreshProjectId });',
+  'await syncBackendProjectTranscripts({ silent: true, projectId: refreshProjectId, channelId: refreshChannelId });',
+  'await syncBackendTimelineAndEvents({ silent: true, projectId: refreshProjectId });',
+  'await syncBackendManagerFlowGraph({ silent: true, projectId: refreshProjectId });',
+  'await syncBackendReadinessProofMap({ silent: true, projectId: refreshProjectId });',
+  'await syncBackendReadyPackageSubmodels({ silent: true, projectId: refreshProjectId });',
+  '}, 5000);',
 ], 'Shared backend project command proof refresh boundary');
 assert(
   backendProjectCommandRefreshSection.indexOf('applyBackendProjectSnapshot(payload);')
-    < backendProjectCommandRefreshSection.indexOf('setTimeout(() => syncBackendManagerFlowGraph({ silent: true, projectId: payload.project?.id || activeProject.id }), 0);'),
+    < backendProjectCommandRefreshSection.indexOf('backendProjectCommandRefreshTimerRef.current = setTimeout(async () => {'),
   'Shared backend project command must apply the backend write snapshot before refreshing Flow Graph proof.',
 );
 
@@ -1170,7 +1243,7 @@ assert(
 );
 
 const managerFlowSelectedSubmissionSection = sliceBetween(
-  appSource,
+  projectTimelineRouteViewSource,
   'const selectedNodeSubmissionRouteCandidates = selectedNode ? [',
   'const connectedPeople = selectedNode',
 );
@@ -1228,10 +1301,12 @@ assertIncludes(timelineActionRenderSection, [
   "onClick={() => submitSelectedTimelineAction('edit')}",
 ], 'Timeline action backend route UI boundary');
 
-assertIncludes(appSource, [
-  'const timelineIds = changeTimelineProofIds(change);\n                                openProjectTimelineProof(timelineIds);',
-  'const timelineIds = handoffTimelineProofIds(handoff);\n                                openProjectTimelineProof(timelineIds);',
-  'onClick={() => openProjectTimelineProof(evidence.timelineIds)}',
+assertIncludes(reactUiSource, [
+  'changeTimelineProofIds: changeTimelineProofIds(row.change)',
+  'onOpenChangeTimelineProof: row => openProjectTimelineProof(row.changeTimelineProofIds)',
+  'timelineProofIds: handoffTimelineProofIds(handoff)',
+  'onOpenPeerTimelineProof: row => openProjectTimelineProof(row.timelineProofIds)',
+  'onClick={() => onOpenTimelineProof(evidence.timelineIds)}',
 ], 'Dashboard timeline proof buttons must use backend-aware opener');
 for (const forbiddenTimelineBypass of [
   'setFocusedTimelineProofIds(evidence.timelineIds);',
@@ -1240,27 +1315,34 @@ for (const forbiddenTimelineBypass of [
   assert(!appSource.includes(forbiddenTimelineBypass), `Dashboard timeline proof buttons must not bypass backend timeline proof gate: ${forbiddenTimelineBypass}.`);
 }
 
-const legacyWarRoomRenderSection = sliceBetween(
+const legacyWarRoomAppSection = sliceBetween(
   appSource,
   'const renderWarRoomView = () =>',
   '// --- Root Layout ---',
 );
+const legacyWarRoomRenderSection = `${legacyWarRoomAppSection}\n${legacyWarRoomViewSource}`;
 assertIncludes(legacyWarRoomRenderSection, [
   'const legacyWarRoomLocalFallbackAllowed = allowLocalRuntimeFallbackForActiveProject(activeProject);',
   'const legacyWarRoomBackendTargetMissing = !shouldAttemptBackendProjectWrite(activeProject) && !legacyWarRoomLocalFallbackAllowed;',
   "const openLegacyWarRoomDeploymentSettings = () => { setSettingsTab('deployment'); setSettingsOpen(true); };",
+  '<LegacyWarRoomView',
   'data-testid="legacy-war-room-end-meeting"',
-  'onClick={endMeeting}',
-  'disabled={legacyWarRoomBackendTargetMissing}',
+  'onClick={onEndMeeting}',
+  'onEndMeeting={endMeeting}',
+  'disabled={backendTargetMissing}',
   'data-testid="legacy-war-room-start-meeting"',
-  'onClick={startMeeting}',
-  'disabled={legacyWarRoomBackendTargetMissing}',
+  'onClick={onStartMeeting}',
+  'onStartMeeting={startMeeting}',
   'data-testid="legacy-war-room-backend-required"',
   'data-testid="legacy-war-room-open-deployment"',
+  'onOpenDeploymentSettings={openLegacyWarRoomDeploymentSettings}',
   'data-testid="legacy-war-room-terminal-input"',
-  'onKeyDown={handleTerminalSubmit}',
-  'disabled={legacyWarRoomBackendTargetMissing}',
+  'onKeyDown={onTerminalKeyDown}',
+  'onTerminalKeyDown={handleTerminalSubmit}',
 ], 'Legacy War Room UI backend target boundary');
+assertIncludes(appSource, [
+  "const LegacyWarRoomView = lazy(() => import('./project/LegacyWarRoomView.jsx'))",
+], 'Legacy War Room lazy-load boundary');
 
 const legacyWarRoomActionSection = sliceBetween(
   appSource,
@@ -1301,6 +1383,9 @@ const managerDirectCommandSection = sliceBetween(
   'const blockManagerLocalCommandFallback = ({ project = activeProject, lastAction, error }) => {',
   'const agentDashboardSnapshotKey = (projectId, agentId) =>',
 );
+assertIncludes(appSource, [
+  'const backendSchedulerRefreshTimerRef = useRef(null);',
+], 'Backend scheduler refresh priority boundary');
 assertIncludes(managerDirectCommandSection, [
   'const blockManagerLocalCommandFallback = ({ project = activeProject, lastAction, error }) => {',
   'if (allowLocalRuntimeFallbackForActiveProject(project)) return false;',
@@ -1327,8 +1412,10 @@ assertIncludes(managerDirectCommandSection, [
   'forceProjectRun: true',
   'forceAgentRun: true',
   'reviewPendingSubmissions: true',
-  'setTimeout(() => syncBackendProjectTranscripts({ silent: true, projectId: activeProject.id }), 0);',
-  'setTimeout(() => syncBackendTimelineAndEvents({ silent: true, projectId: activeProject.id }), 0);',
+  'cancelPendingBackendReadModelRefreshes();',
+  'backendSchedulerRefreshTimerRef.current = setTimeout(async () => {',
+  'await syncBackendProjectTranscripts({ silent: true, projectId });',
+  'await syncBackendTimelineAndEvents({ silent: true, projectId });',
   'if (backendResult || !allowLocalRuntimeFallbackForActiveProject(activeProject)) return backendResult;',
   'Local autonomous pulse blocked; backend route required',
   'return runAutonomousCycle(activeProject.id, cadence);',
@@ -1369,29 +1456,30 @@ assert(
   'Hour/Day pulse must block local autonomous cycle before local fallback code for backend-online projects.',
 );
 
-const managerDirectCommandRenderSection = sliceBetween(
-  appSource,
-  'data-testid="manager-leader-assignment-composer"',
-  'data-testid="dual-channel-change-intake-matrix"',
-);
+const managerDirectCommandRenderSection = reactUiSource;
 assertIncludes(managerDirectCommandRenderSection, [
   'data-testid="manager-assignment-composer-input"',
   'data-testid="manager-assignment-composer-target"',
   'data-testid="manager-assignment-composer-submit"',
-  'onClick={submitManagerLeaderAssignment}',
-  'disabled={backendStation.loading || backendManagedCommandTargetMissing || !managerAssignmentDraft.text.trim() || Boolean(sceneTransition)}',
+  'onSubmitAssignment: submitManagerLeaderAssignment',
+  'onClick={onSubmitAssignment}',
+  'assignmentSubmitDisabled: backendStation.loading || backendManagedCommandTargetMissing || !managerAssignmentDraft.text.trim() || Boolean(sceneTransition)',
+  'disabled={assignmentSubmitDisabled}',
   'data-testid="manager-change-composer-input"',
   'data-testid="manager-change-composer-mode"',
   'data-testid="manager-change-composer-submit"',
-  'onClick={submitManagerChangeIntake}',
-  'disabled={backendStation.loading || backendManagedCommandTargetMissing || !managerChangeDraft.text.trim() || Boolean(sceneTransition)}',
+  'onSubmitChange: submitManagerChangeIntake',
+  'onClick={onSubmitChange}',
+  'changeSubmitDisabled: backendStation.loading || backendManagedCommandTargetMissing || !managerChangeDraft.text.trim() || Boolean(sceneTransition)',
+  'disabled={changeSubmitDisabled}',
   'data-testid="autonomous-work-loop-backend-required"',
   'data-testid="autonomous-work-loop-hour-pulse"',
-  "onClick={() => runProjectAutonomousPulse('hourly')}",
-  'disabled={autonomousPulseCommandDisabled}',
+  'onRunPulse: runProjectAutonomousPulse',
+  "onClick={() => onRunPulse('hourly')}",
+  'commandDisabled: autonomousPulseCommandDisabled',
+  'disabled={commandDisabled}',
   'data-testid="autonomous-work-loop-day-report"',
-  "onClick={() => runProjectAutonomousPulse('daily')}",
-  'disabled={autonomousPulseCommandDisabled}',
+  "onClick={() => onRunPulse('daily')}",
 ], 'Manager direct command UI boundary');
 assertIncludes(appSource, [
   'const localDirectCommandFallbackAllowed = allowLocalRuntimeFallbackForActiveProject(activeProject);',
@@ -1463,58 +1551,46 @@ assertIncludes(proofMapProductTeamRouteSection, [
   'Readiness Proof Map must expose zeroToAutonomyReportRoutes from the backend.',
 ], 'Manager Proof Map product-team route missing-state boundary');
 
-const readyPackageCoreCoordinationRenderSection = sliceBetween(
-  appSource,
-  'data-testid="backend-product-team-operating-loop-snapshot"',
-  'data-testid="backend-project-evidence-archive-snapshot"',
-);
+const readyPackageCoreCoordinationRenderSection = dashboardUiSource;
 assertIncludes(readyPackageCoreCoordinationRenderSection, [
   'data-testid="backend-product-team-operating-loop-source"',
-  "managerProofModelSyncButton(backendProductTeamOperatingLoop, 'backend-product-team-operating-loop-sync-proof-models')",
+  "managerProofModelSyncButton(operatingLoop, 'backend-product-team-operating-loop-sync-proof-models')",
   'data-testid="backend-product-team-operating-loop-route"',
   'data-testid="backend-planner-executor-reviewer-state-machine-source"',
-  "managerProofModelSyncButton(backendPlannerExecutorReviewerStateMachine, 'backend-planner-executor-reviewer-state-machine-sync-proof-models')",
+  "managerProofModelSyncButton(plannerExecutorReviewer, 'backend-planner-executor-reviewer-state-machine-sync-proof-models')",
   'data-testid="backend-planner-executor-reviewer-state-machine-roles"',
   'data-testid="backend-planner-executor-reviewer-state-machine-transitions"',
   'data-testid="backend-planner-executor-reviewer-state-machine-route"',
   'data-testid="backend-team-collaboration-diagnostics-source"',
-  "managerProofModelSyncButton(backendTeamCollaborationDiagnostics, 'backend-team-collaboration-diagnostics-sync-proof-models')",
+  "managerProofModelSyncButton(teamCollaborationDiagnostics, 'backend-team-collaboration-diagnostics-sync-proof-models')",
   'data-testid="backend-team-collaboration-diagnostics-route"',
   'data-testid="backend-runtime-contracts-source"',
-  "managerProofModelSyncButton(backendRuntimeContracts, 'backend-runtime-contracts-sync-proof-models')",
+  "managerProofModelSyncButton(runtimeContracts, 'backend-runtime-contracts-sync-proof-models')",
   'data-testid="backend-runtime-contracts-route"',
   'data-testid="backend-autonomous-cycle-consistency-source"',
-  "managerProofModelSyncButton(backendAutonomousCycleConsistency, 'backend-autonomous-cycle-consistency-sync-proof-models')",
+  "managerProofModelSyncButton(autonomousCycleConsistency, 'backend-autonomous-cycle-consistency-sync-proof-models')",
   'data-testid="backend-autonomous-cycle-consistency-route"',
   'data-testid="backend-runtime-autonomy-status-source"',
-  "managerProofModelSyncButton(backendRuntimeAutonomyStatus, 'backend-runtime-autonomy-status-sync-proof-models')",
+  "managerProofModelSyncButton(runtimeAutonomyStatus, 'backend-runtime-autonomy-status-sync-proof-models')",
   'data-testid="backend-runtime-autonomy-status-route"',
   'data-testid="backend-runtime-autonomy-status-production-boundary"',
   'data-testid="backend-product-team-delivery-trace-source"',
-  "managerProofModelSyncButton(backendProductTeamDeliveryTrace, 'backend-product-team-delivery-trace-sync-proof-models')",
+  "managerProofModelSyncButton(productTeamDeliveryTrace, 'backend-product-team-delivery-trace-sync-proof-models')",
   'data-testid="backend-product-team-delivery-trace-route"',
   'data-testid="backend-zero-to-autonomy-report-source"',
-  "managerProofModelSyncButton(backendZeroToAutonomyReport, 'backend-zero-to-autonomy-report-sync-proof-models')",
+  "managerProofModelSyncButton(zeroToAutonomyReport, 'backend-zero-to-autonomy-report-sync-proof-models')",
   'data-testid={`backend-zero-to-autonomy-report-stage-proof-count-${row.id}`}',
   'data-testid={`backend-zero-to-autonomy-report-stage-route-${row.id}`}',
   'data-testid="backend-zero-to-autonomy-report-route"',
 ], 'Manager Ready Package C/A coordination source-label UI boundary');
 
 const proofMapProductTeamRenderSection = sliceBetween(
-  appSource,
+  projectDashboardManagerProofMapSource,
   'data-testid="proof-map-product-team-acceptance-chain"',
   'managerProofMapDisplayRows.map',
 );
-const proofMapTranscriptCoverageRenderSection = sliceBetween(
-  appSource,
-  'data-testid="proof-map-transcript-proof-coverage"',
-  'data-testid="proof-map-transcript-channel-routes"',
-);
-const proofMapSettingsRenderSection = sliceBetween(
-  appSource,
-  'data-testid="manager-proof-map-core-routes"',
-  'data-testid="proof-map-transcript-proof-coverage"',
-);
+const proofMapTranscriptCoverageRenderSection = dashboardUiSource;
+const proofMapSettingsRenderSection = reactUiSource;
 assertIncludes(proofMapSettingsRenderSection, [
   'backendSettingsProofMapCards.map',
   'managerReadModelSourceBadge(card.source, `proof-map-${card.key}-source`)',
@@ -1532,17 +1608,14 @@ assertIncludes(proofMapSettingsRenderSection, [
   'syncBackendCockpitReadModels({ silent: false, projectId: activeProject.id })',
   'Cockpit timeline proof',
   'backendOutputChainProofMapCards.map',
-  'const cardChatProofIds = chatProofIdsFromIds(card.proofIds);',
+  'chatProofIds: chatProofIdsFromIds(card.proofIds)',
+  'const cardChatProofIds = card.chatProofIds;',
   'data-testid={`proof-map-${card.key}-sync-proof-models`}',
   'data-testid={`proof-map-${card.key}-chat-open`}',
   'Output chat proof',
   'Output timeline proof',
 ], 'Manager Proof Map Settings readiness route cards source/sync UI boundary');
-const proofMapTranscriptChannelRenderSection = sliceBetween(
-  appSource,
-  'data-testid="proof-map-transcript-channel-routes"',
-  'data-testid="proof-map-transcript-channel-pin-routes"',
-);
+const proofMapTranscriptChannelRenderSection = dashboardUiSource;
 assertIncludes(proofMapTranscriptCoverageRenderSection, [
   "managerReadModelSourceBadge(backendTranscriptProofCoverageSource, 'proof-map-transcript-proof-coverage-source')",
   "managerProofMapRouteSyncButton(backendTranscriptProofCoverageRoute, 'proof-map-transcript-proof-coverage-sync-proof-map')",
@@ -1616,32 +1689,16 @@ const transcriptActionProofMapCards = [
   },
 ];
 for (const card of transcriptActionProofMapCards) {
-  const section = sliceBetween(
-    appSource,
-    `data-testid="${card.testId}"`,
-    `data-testid="${card.nextTestId}"`,
-  );
+  const section = dashboardUiSource;
   assertIncludes(section, [
     `managerReadModelSourceBadge(${card.source}, '${card.sourceTestId}')`,
     `managerProofMapRouteSyncButton(${card.route}, '${card.syncTestId}')`,
     card.ready,
   ], `Manager Proof Map ${card.label} route source/sync UI boundary`);
 }
-const proofMapCollaborationIntentRenderSection = sliceBetween(
-  appSource,
-  'data-testid="proof-map-collaboration-intent-queue"',
-  'data-testid="proof-map-submission-review-workflow"',
-);
-const proofMapAgentMessageRenderSection = sliceBetween(
-  appSource,
-  'data-testid="proof-map-agent-message-routes"',
-  'data-testid="proof-map-agent-contract-routes"',
-);
-const proofMapAgentContractRenderSection = sliceBetween(
-  appSource,
-  'data-testid="proof-map-agent-contract-routes"',
-  'data-testid="proof-map-collaboration-intent-queue"',
-);
+const proofMapCollaborationIntentRenderSection = dashboardUiSource;
+const proofMapAgentMessageRenderSection = dashboardUiSource;
+const proofMapAgentContractRenderSection = dashboardUiSource;
 assertIncludes(proofMapAgentMessageRenderSection, [
   "managerReadModelSourceBadge(backendAgentMessageProofMapSource, 'proof-map-agent-message-routes-source')",
   "managerProofMapRouteSyncButton(backendLatestAgentMessageRoute, 'proof-map-agent-message-routes-sync-proof-map')",
@@ -1658,11 +1715,7 @@ assertIncludes(proofMapCollaborationIntentRenderSection, [
   "managerReadModelSourceBadge(backendCollaborationIntentQueueProofMapSource, 'proof-map-collaboration-intent-queue-source')",
   "managerProofMapRouteSyncButton(backendCollaborationIntentQueueRoute, 'proof-map-collaboration-intent-queue-sync-proof-map')",
 ], 'Manager Proof Map collaboration intent route source/sync UI boundary');
-const proofMapSubmissionReviewRenderSection = sliceBetween(
-  appSource,
-  'data-testid="proof-map-submission-review-workflow"',
-  'data-testid="proof-map-product-team-acceptance-chain"',
-);
+const proofMapSubmissionReviewRenderSection = dashboardUiSource;
 assertIncludes(proofMapSubmissionReviewRenderSection, [
   "managerReadModelSourceBadge(backendSubmissionReviewWorkflowProofMapSource, 'proof-map-submission-review-workflow-source')",
   "managerProofMapRouteSyncButton(backendSubmissionReviewWorkflowRoute, 'proof-map-submission-review-workflow-sync-proof-map')",
@@ -1677,14 +1730,10 @@ assertIncludes(proofMapProductTeamRenderSection, [
   'data-testid="proof-map-zero-to-autonomy-report-proof-count"',
 ], 'Manager Proof Map product-team route source/sync UI boundary');
 
-const readyPackageProjectEvidenceArchiveRenderSection = sliceBetween(
-  appSource,
-  'data-testid="backend-project-evidence-archive-snapshot"',
-  'data-testid="backend-brainstorm-layer-snapshot"',
-);
+const readyPackageProjectEvidenceArchiveRenderSection = dashboardUiSource;
 assertIncludes(readyPackageProjectEvidenceArchiveRenderSection, [
   'data-testid="backend-project-evidence-archive-source"',
-  "managerProofModelSyncButton(backendProjectEvidenceArchive, 'backend-project-evidence-archive-sync-proof-models')",
+  "managerProofModelSyncButton(projectEvidenceArchive, 'backend-project-evidence-archive-sync-proof-models')",
   'project-evidence-archive',
   'Storage Proofs',
   'Workspace Files',
@@ -1735,9 +1784,9 @@ for (const [modelName, missingName] of [
 }
 
 const publicProductionActionPlanRenderSection = sliceBetween(
-  appSource,
+  publicProductionStartupReadinessSource,
   'data-testid="backend-public-production-action-plan"',
-  'data-testid="backend-production-launch-gap-register-snapshot"',
+  "{projectText('Public startup route')}",
 );
 assertIncludes(publicProductionActionPlanRenderSection, [
   'data-testid={`backend-public-production-action-plan-row-${action.id}`}',
@@ -1770,54 +1819,47 @@ assert(
 );
 
 const readyPackageProductionRenderSection = sliceBetween(
-  appSource,
+  productionLaunchProofPanelsSource,
   'data-testid="backend-production-launch-gap-register-snapshot"',
-  'data-testid="backend-production-evidence-integrity-audit-snapshot"',
+  "{projectText('Evidence integrity route')}",
 );
 assertIncludes(readyPackageProductionRenderSection, [
   'data-testid="backend-production-launch-gap-register-source"',
-  "managerProofModelSyncButton(backendProductionLaunchGapRegister, 'backend-production-launch-gap-register-sync-proof-models')",
+  "proofSyncButton(gapRegister, 'backend-production-launch-gap-register-sync-proof-models')",
   'data-testid="backend-production-launch-control-center-source"',
-  "managerProofModelSyncButton(backendProductionLaunchControlCenter, 'backend-production-launch-control-center-sync-proof-models')",
+  "proofSyncButton(controlCenter, 'backend-production-launch-control-center-sync-proof-models')",
   'data-testid="backend-production-launch-evidence-dossier-source"',
-  "managerProofModelSyncButton(backendProductionLaunchEvidenceDossier, 'backend-production-launch-evidence-dossier-sync-proof-models')",
+  "proofSyncButton(evidenceDossier, 'backend-production-launch-evidence-dossier-sync-proof-models')",
+  "proofSyncButton(integrityAudit, 'backend-production-evidence-integrity-audit-sync-proof-models')",
 ], 'Manager Ready Package production submodel source-label UI boundary');
 
-const readyPackagePrivatePilotRenderSection = sliceBetween(
-  appSource,
-  'data-testid="backend-private-pilot-release-candidate-workflow-snapshot"',
-  'data-testid="backend-production-operations-readiness-snapshot"',
-);
+const readyPackagePrivatePilotRenderSection = privatePilotWorkflowPanelsSource;
 assertIncludes(readyPackagePrivatePilotRenderSection, [
-  "managerReadModelSourceBadge(backendPrivatePilotReleaseCandidateWorkflow, 'backend-private-pilot-release-candidate-workflow-source')",
+  "sourceBadge(releaseCandidate, 'backend-private-pilot-release-candidate-workflow-source')",
   'data-testid="backend-private-pilot-record-release-candidate"',
   "workflowKey: 'privatePilotReleaseCandidateWorkflow'",
   "receiptKey: 'privatePilotReleaseCandidate'",
-  "managerReadModelSourceBadge(backendPrivatePilotLaunchRunWorkflow, 'backend-private-pilot-launch-run-workflow-source')",
+  "sourceBadge(launchRun, 'backend-private-pilot-launch-run-workflow-source')",
   'data-testid="backend-private-pilot-record-launch-run"',
   "workflowKey: 'privatePilotLaunchRunWorkflow'",
   "receiptKey: 'privatePilotLaunchRun'",
-  'disabled={!backendCommandAvailable || backendStation.loading || !backendPrivatePilotLaunchRunWorkflow.readyToLaunch || backendPrivatePilotLaunchRunWorkflow.readyForPrivatePilotLaunch}',
-  "managerReadModelSourceBadge(backendPrivatePilotLaunchHealthCheckWorkflow, 'backend-private-pilot-launch-health-check-workflow-source')",
+  'disabled={recordDisabled || !launchRun.readyToLaunch || launchRun.readyForPrivatePilotLaunch}',
+  "sourceBadge(launchHealth, 'backend-private-pilot-launch-health-check-workflow-source')",
   'data-testid="backend-private-pilot-record-launch-health"',
   "workflowKey: 'privatePilotLaunchHealthCheckWorkflow'",
   "receiptKey: 'privatePilotLaunchHealthCheck'",
-  'disabled={!backendCommandAvailable || backendStation.loading || !backendPrivatePilotLaunchHealthCheckWorkflow.readyToCheck || backendPrivatePilotLaunchHealthCheckWorkflow.readyForPrivatePilotMonitoring}',
-  "managerReadModelSourceBadge(backendPrivatePilotAcceptanceReportWorkflow, 'backend-private-pilot-acceptance-report-workflow-source')",
+  'disabled={recordDisabled || !launchHealth.readyToCheck || launchHealth.readyForPrivatePilotMonitoring}',
+  "sourceBadge(acceptanceReport, 'backend-private-pilot-acceptance-report-workflow-source')",
   'data-testid="backend-private-pilot-record-acceptance-report"',
   "workflowKey: 'privatePilotAcceptanceReportWorkflow'",
   "receiptKey: 'privatePilotAcceptanceReport'",
-  'disabled={!backendCommandAvailable || backendStation.loading || !backendPrivatePilotAcceptanceReportWorkflow.readyToReport || backendPrivatePilotAcceptanceReportWorkflow.readyForPrivatePilotAcceptance}',
+  'disabled={recordDisabled || !acceptanceReport.readyToReport || acceptanceReport.readyForPrivatePilotAcceptance}',
   'Launch run route',
   'Health route',
   'Acceptance route',
 ], 'Manager Ready Package private-pilot launch/health/acceptance UI boundary');
 
-const readyPackageLaunchOperationsOverviewSection = sliceBetween(
-  appSource,
-  'data-testid="backend-launch-operations-overview"',
-  'data-testid="backend-product-team-operating-loop-snapshot"',
-);
+const readyPackageLaunchOperationsOverviewSection = dashboardUiSource;
 assertIncludes(readyPackageLaunchOperationsOverviewSection, [
   'Launch Operations Overview',
   'backendLaunchOperationsOverview',
@@ -1885,9 +1927,10 @@ assertIncludes(privatePilotReceiptCommandSection, [
   'const appliedManagerPayload = applyBackendManagerDashboardPayload(payload);',
   '...(payload[workflowKey] ? { [workflowKey]: payload[workflowKey] } : {})',
   'privatePilotReceipt: payload[receiptKey] || prev.privatePilotReceipt',
+  'const receiptWorkflowModels = Object.fromEntries([',
+  '...receiptWorkflowModels,',
   'refreshReceiptReadModels({',
   'includeLaunchControls: true',
-  'setTimeout(() => syncBackendManagerReadyPackage({ silent: true, projectId }), 0);',
   'setTimeout(() => syncBackendReadyPackageSubmodels({ silent: true, projectId, includeLaunchControls: true }), 0);',
   'setTimeout(() => syncBackendManagerFlowGraph({ silent: true, projectId }), 0);',
   'setTimeout(() => syncBackendProjectTranscripts({ silent: true, projectId }), 0);',
@@ -1895,22 +1938,20 @@ assertIncludes(privatePilotReceiptCommandSection, [
 ], 'Manager Ready Package private-pilot receipt command backend boundary');
 assert(
   !privatePilotReceiptCommandSection.includes('localProofCreated: true')
-    && !privatePilotReceiptCommandSection.includes('localStorage'),
-  'Private-pilot receipt command must not create local/browser proof for launch acceptance.',
+    && !privatePilotReceiptCommandSection.includes('localStorage')
+    && !privatePilotReceiptCommandSection.includes('syncBackendManagerReadyPackage('),
+  'Private-pilot receipt command must not create local/browser proof or automatically start a full Ready Package refresh.',
 );
 
-const collaborationIntentDashboardSection = sliceBetween(
-  appSource,
-  '{backendCollaborationIntentQueue && !backendManagerReadyPackage && (',
-  '{backendTranscriptProofCoverageSummary && (',
-);
+const collaborationIntentDashboardSection = dashboardUiSource;
 assertIncludes(collaborationIntentDashboardSection, [
   'data-testid="backend-collaboration-intent-queue-snapshot"',
   "row.id === 'customer-agent-handoff-intent'",
   "row.id !== 'customer-agent-handoff-intent'",
   'dashboard-collaboration-intent-row-${row.id}',
   'data-testid={`collaboration-intent-run-${row.id}`}',
-  'disabled={!backendCommandAvailable || backendStation.loading || !row.canRun || !row.runIntentApiPath}',
+  'intentRunDisabled: (row) => !backendCommandAvailable || backendStation.loading || !row.canRun || !row.runIntentApiPath',
+  'disabled={intentRunDisabled(row)}',
   'data-testid="backend-collaboration-intent-run-output"',
   'Intent Run Failed',
   'Intent Output Nodes',
@@ -1919,9 +1960,11 @@ assertIncludes(collaborationIntentDashboardSection, [
   'data-testid="backend-collaboration-intent-handoff-output-routes"',
   'Submission route:',
   'data-testid="collaboration-intent-output-chat-proof-work-submission"',
-  "openProjectChatProof(activeProject, [backendCollaborationIntentRunOutput.workSubmission.messageId].filter(Boolean), 'main')",
+  "onOpenOutputChatProof: (proofIds) => openProjectChatProof(activeProject, proofIds, 'main')",
+  'onClick={() => onOpenOutputChatProof([backendCollaborationIntentRunOutput.workSubmission.messageId].filter(Boolean))}',
   'data-testid="collaboration-intent-output-timeline-proof-work-submission"',
-  'openProjectTimelineProof([backendCollaborationIntentRunOutput.workSubmission.timelineLogId].filter(Boolean))',
+  'onOpenOutputTimelineProof: (proofIds) => openProjectTimelineProof(proofIds)',
+  'onClick={() => onOpenOutputTimelineProof([backendCollaborationIntentRunOutput.workSubmission.timelineLogId].filter(Boolean))}',
   'data-testid="backend-collaboration-intent-standalone-output-rows"',
   "id: 'artifact'",
   "label: 'Artifact'",
@@ -1958,11 +2001,16 @@ assertIncludes(managerActionRunsSection, [
   "missingBackendReadModel('manager-action-runs/v1'",
   'backendManagerActionRuns',
 ], 'Manager action run ledger backend boundary');
-assertIncludes(appSource, [
+assertIncludes(projectDashboardManagerActionRunLedgerSource, [
   'manager-action-run-ledger-backend-required',
   'manager-action-run-ledger-sync-manager-dashboard',
   'Backend Manager Action Run Ledger is required for this real project.',
 ], 'Manager action run ledger UI boundary');
+assertIncludes(appSource, [
+  'onSyncManagerDashboard: () => syncBackendManagerDashboard({ silent: false, projectId: activeProject.id })',
+  'onOpenTimelineProof: openProjectTimelineProof',
+  "onOpenChatProof: ids => openProjectChatProof(activeProject, ids, 'main')",
+], 'Manager action run ledger App callback interface');
 
 const autonomousRunReceiptSection = sliceBetween(
   appSource,
@@ -1990,11 +2038,7 @@ assertIncludes(autonomousRunControlRefreshSection, [
   'readinessProofMap && !readinessProofMapAppliedThroughManagerPayload',
 ], 'Autonomous Run Control Proof Map refresh boundary');
 
-const mvpReadinessOperatorActionRenderSection = sliceBetween(
-  appSource,
-  'data-testid="backend-mvp-readiness-snapshot"',
-  'data-testid="backend-operations-readiness-snapshot"',
-);
+const mvpReadinessOperatorActionRenderSection = dashboardUiSource;
 assertIncludes(mvpReadinessOperatorActionRenderSection, [
   'data-testid="mvp-readiness-operator-actions"',
   'data-testid={`mvp-readiness-operator-action-run-${action.id}`}',
@@ -2002,42 +2046,50 @@ assertIncludes(mvpReadinessOperatorActionRenderSection, [
   'disabled={!backendCommandAvailable || backendStation.loading}',
 ], 'MVP readiness operator action UI backend target boundary');
 
-const autonomousRunControlCommandRenderSection = sliceBetween(
-  appSource,
-  'data-testid="backend-autonomous-run-control-snapshot"',
-  'data-testid="backend-agent-autonomous-action-queue-snapshot"',
-);
+const autonomousRunControlCommandRenderSection = autonomousRunControlUiSource;
 assertIncludes(autonomousRunControlCommandRenderSection, [
   'data-testid="backend-autonomous-run-control-loop-run"',
-  'onClick={() => runAutonomousRunControlLoop()}',
+  'onClick={() => onRunLoop()}',
   'data-testid="backend-autonomous-run-control-session-start"',
-  'onClick={() => startAutonomousRunControlSession()}',
+  'onClick={() => onStartSession()}',
   'data-testid="backend-autonomous-run-control-session-scheduler-tick"',
-  'onClick={() => runAutopilotSessionThroughScheduler()}',
+  'onClick={() => onSchedulerTick()}',
   'data-testid="backend-autonomous-run-control-session-tick"',
-  'onClick={() => tickAutonomousRunControlSession()}',
+  'onClick={() => onDirectTick()}',
   'data-testid="backend-autonomous-run-control-session-pause"',
-  'onClick={() => pauseAutonomousRunControlSession()}',
+  'onClick={() => onPauseSession()}',
   'data-testid="backend-autonomous-run-control-session-cancel"',
-  'onClick={() => cancelAutonomousRunControlSession()}',
-  'disabled={!backendCommandAvailable || backendStation.loading}',
-  'disabled={!backendCommandAvailable || backendStation.loading || !backendAutonomousRunControlSessionAvailable}',
+  'onClick={() => onCancelSession()}',
+  'disabled={commandDisabled}',
+  'disabled={commandDisabled || !sessionAvailable}',
 ], 'Autonomous Run Control UI backend target boundary');
+assertIncludes(appSource, [
+  'onRunLoop: runAutonomousRunControlLoop',
+  'onStartSession: startAutonomousRunControlSession',
+  'onSchedulerTick: runAutopilotSessionThroughScheduler',
+  'onDirectTick: tickAutonomousRunControlSession',
+  'onPauseSession: pauseAutonomousRunControlSession',
+  'onCancelSession: cancelAutonomousRunControlSession',
+  'commandDisabled: !backendCommandAvailable || backendStation.loading',
+  'sessionAvailable: backendAutonomousRunControlSessionAvailable',
+], 'Autonomous Run Control App callback boundary');
 
-const agentAutonomousActionQueueRenderSection = sliceBetween(
-  appSource,
-  'data-testid="backend-agent-autonomous-action-queue-snapshot"',
-  'data-testid="backend-last-result"',
-);
+const agentAutonomousActionQueueRenderSection = agentAutonomousActionQueueUiSource;
 assertIncludes(agentAutonomousActionQueueRenderSection, [
   'data-testid={`backend-agent-autonomous-action-run-${row.agentId}`}',
-  'onClick={() => runAgentAutonomousActionQueueRow(row)}',
-  'disabled={!backendCommandAvailable || backendStation.loading || !row.canRun || row.routeResolved === false}',
+  'onClick={() => runRow(row)}',
+  'await onRunRow(row)',
+  'setOptimisticPendingAgentId(row.agentId)',
+  'disabled={runDisabled || Boolean(effectivePendingAgentId) || !row.canRun || row.routeResolved === false}',
 ], 'Agent Autonomous Action Queue UI backend target boundary');
+assertIncludes(appSource, [
+  'onRunRow: runAgentAutonomousActionQueueRow',
+  'runDisabled: !backendCommandAvailable || backendStation.loading',
+], 'Agent Autonomous Action Queue App callback boundary');
 
 const agentAutonomousActionOutputSection = sliceBetween(
-  appSource,
-  'backendAgentAutonomousActionRunOutput && (',
+  agentAutonomousActionQueueUiSource,
+  'runOutput && (',
   '<div className="mt-2 space-y-2">',
 );
 assertIncludes(agentAutonomousActionOutputSection, [
@@ -2050,7 +2102,7 @@ assertIncludes(agentAutonomousActionOutputSection, [
   "route: output.reviewResponseArtifact.route",
   "id: 'review-response-artifact'",
   "label: 'Review Response Artifact'",
-  "route: activeProject?.id ? `/projects/${activeProject.id}/transcripts/${output.channelId || 'main'}` : null",
+  "route: projectId ? `/projects/${projectId}/transcripts/${output.channelId || 'main'}` : null",
   "Route: {row.route || 'route pending'} / Event: {row.eventId || 'missing'}",
   'agent-autonomous-action-output-chat-proof-${row.id}',
   'agent-autonomous-action-output-timeline-proof-${row.id}',
@@ -2081,41 +2133,42 @@ assertIncludes(autonomyCockpitReadModelSection, [
   "const operationsBoardCadenceLabel = operationsBoardBackendRequired",
   'const continuousWorkProjectNextRunLabel = continuousWorkLoop.frontendMockSuppressed',
 ], 'Manager autonomy cockpit backend-required read-model boundary');
-assertIncludes(appSource, [
+assertIncludes(reactUiSource, [
   'const autonomousWorkLoopTitle = autonomousWorkLoopBackendRequired',
   "? projectText('backend required')",
   ": activeProject.autonomy?.enabled ? `${activeProject.autonomy.cadence || 'hourly'} cadence enabled` : 'Cadence paused';",
-  '{autonomousWorkLoopTitle}',
+  'title: autonomousWorkLoopTitle',
+  '{title}',
 ], 'Autonomous Work Loop title backend-required boundary');
-assertIncludes(appSource, [
+assertIncludes(reactUiSource, [
   'data-testid="backend-manager-command-center-route"',
   "backendManagerCommandCenter ? (backendManagerCommandCenter.nextBestAction?.canRun ? 'next action ready' : backendManagerCommandCenter.status || 'monitoring') : 'backend required'",
 ], 'Manager Dashboard command-center route status backend-required boundary');
-assertIncludes(appSource, [
+assertIncludes(reactUiSource, [
   'data-testid="backend-manager-scenario-trail-route"',
   "backendManagerScenarioTrail ? `${backendManagerScenarioTrail.passedCount ?? 0}-${backendManagerScenarioTrail.count ?? 0} ready` : 'backend required'",
 ], 'Manager Dashboard scenario-trail route status backend-required boundary');
-assertIncludes(appSource, [
+assertIncludes(reactUiSource, [
   'data-testid="backend-manager-scenario-walkthrough-route"',
   "backendManagerScenarioWalkthrough ? `${backendManagerScenarioWalkthrough.completedCount ?? 0}-${backendManagerScenarioWalkthrough.count ?? 0} complete` : 'backend required'",
 ], 'Manager Dashboard scenario-walkthrough route status backend-required boundary');
-assertIncludes(appSource, [
+assertIncludes(reactUiSource, [
   'data-testid="backend-manager-requirement-matrix-route"',
   "backendManagerRequirementMatrix ? `${backendManagerRequirementMatrix.passedCount ?? 0}-${backendManagerRequirementMatrix.count ?? 0} ready` : 'backend required'",
 ], 'Manager Dashboard requirement-matrix route status backend-required boundary');
-assertIncludes(appSource, [
+assertIncludes(reactUiSource, [
   'data-testid="backend-manager-action-queue-route"',
   "backendManagerActionQueue ? `${backendManagerActionQueue.readyCount ?? 0} ready next actions` : 'backend required'",
 ], 'Manager Dashboard action-queue route status backend-required boundary');
-assertIncludes(appSource, [
+assertIncludes(reactUiSource, [
   'data-testid="backend-agent-autonomous-action-queue-route"',
   "backendAgentAutonomousActionQueue ? `${backendAgentAutonomousActionQueue.readyCount ?? 0} ready Agent actions` : 'backend required'",
 ], 'Manager Dashboard agent-autonomous-queue route status backend-required boundary');
-assertIncludes(appSource, [
+assertIncludes(reactUiSource, [
   'data-testid="backend-autonomous-run-control-route"',
   "backendAutonomousRunControl ? `${backendAutonomousRunControl.summary?.runnableActionCount ?? 0} runnable actions` : 'backend required'",
 ], 'Manager Dashboard autonomous-run-control route status backend-required boundary');
-assertIncludes(appSource, [
+assertIncludes(reactUiSource, [
   "['Scenario Trail', backendManagerDashboard.managerScenarioTrail ? backendManagerDashboard.managerScenarioTrail.passedCount ?? 0 : projectText('backend required')]",
   "['Walkthrough', backendManagerScenarioWalkthrough || backendManagerDashboard.managerScenarioWalkthrough ? `${backendManagerScenarioWalkthrough?.completedCount ?? backendManagerDashboard.managerScenarioWalkthrough?.completedCount ?? 0}/${backendManagerScenarioWalkthrough?.count ?? backendManagerDashboard.managerScenarioWalkthrough?.count ?? 0}` : projectText('backend required')]",
   "['Standalone Trail', backendManagerScenarioTrail ? backendManagerScenarioTrail.passedCount ?? 0 : projectText('backend required')]",
@@ -2123,7 +2176,7 @@ assertIncludes(appSource, [
   "['Agent Queue', backendAgentAutonomousActionQueue || backendManagerDashboard.agentAutonomousActionQueue ? `${backendAgentAutonomousActionQueue?.readyCount ?? backendManagerDashboard.agentAutonomousActionQueue?.readyCount ?? 0}/${backendAgentAutonomousActionQueue?.count ?? backendManagerDashboard.agentAutonomousActionQueue?.count ?? 0}` : projectText('backend required')]",
   "['Run Control', backendAutonomousRunControl ? `${backendAutonomousRunControl.summary?.runnableActionCount ?? 0} runnable` : projectText('backend required')]",
 ], 'Backend Manager Snapshot standalone route summary backend-required boundary');
-assertIncludes(appSource, [
+assertIncludes(reactUiSource, [
   'const backendManagerReadySummary = backendManagerReadyPackage?.summary || {};',
   'const readyPackageSummaryHas = (key) => Object.prototype.hasOwnProperty.call(backendManagerReadySummary, key);',
   'const readyPackageSummaryValue = (key) => (',
@@ -2135,93 +2188,105 @@ assertIncludes(appSource, [
   'const readyPackageModelRatio = (model, externalReady, externalCount, readyKey, countKey) => (',
   'const readyPackageModelCents = (model, externalValue, summaryKey) => (',
   'const readyPackageModelBoolean = (model, externalValue, summaryKey, trueLabel = \'ready\', falseLabel = \'blocked\') => (',
-  "['Pilot Launch', readyPackageModelStatus(backendPilotLaunchReadiness, backendPilotLaunchReadiness?.privatePilotDecision, 'pilotLaunchDecision')]",
-  "['Launch Gates', readyPackageModelRatio(backendPilotLaunchReadiness, backendPilotLaunchReadiness?.summary?.passedGateCount, backendPilotLaunchReadiness?.summary?.gateCount, 'pilotLaunchPassedGateCount', 'pilotLaunchGateCount')]",
-  "['Preflight', readyPackageModelBoolean(backendDeploymentPreflight, backendDeploymentPreflight?.privatePilotDeploymentReady, 'deploymentPreflightReady')]",
-  "['Gateway', readyPackageModelStatus(backendAdapterGatewayPreflight, backendAdapterGatewayPreflight?.status, 'adapterGatewayPreflightStatus')]",
-  "[projectText('Infra Rehearsal'), readyPackageModelStatus(backendProductionInfrastructureRehearsal, backendProductionInfrastructureRehearsal?.status, 'productionInfrastructureRehearsalStatus')]",
-  "[projectText('Launch Approval'), projectText(readyPackageModelStatus(backendLaunchApprovalWorkflow, backendLaunchApprovalWorkflow?.status, 'launchApprovalStatus'))]",
-  "[projectText('Launch Audit'), projectText(readyPackageModelStatus(backendProductionLaunchAudit, backendProductionLaunchAudit?.status, 'productionLaunchAuditStatus'))]",
-  "['Evidence Archive', readyPackageModelStatus(backendProjectEvidenceArchive, backendProjectEvidenceArchive?.status, 'projectEvidenceArchiveStatus')]",
-  "['Evidence Export', readyPackageModelStatus(backendProjectEvidenceExportWorkflow, backendProjectEvidenceExportWorkflow?.status, 'projectEvidenceExportStatus')]",
-  "['Go-Live Status', readyPackageModelStatus(backendPrivatePilotGoLiveReadiness, backendPrivatePilotGoLiveReadiness?.status, 'privatePilotGoLiveStatus')]",
-  "['Release Candidate', readyPackageModelStatus(backendPrivatePilotReleaseCandidateWorkflow, backendPrivatePilotReleaseCandidateWorkflow?.status, 'privatePilotReleaseCandidateStatus')]",
-  "['Pilot Launch Run', readyPackageModelStatus(backendPrivatePilotLaunchRunWorkflow, backendPrivatePilotLaunchRunWorkflow?.status, 'privatePilotLaunchRunStatus')]",
-  "['Post Launch Health', readyPackageModelStatus(backendPrivatePilotLaunchHealthCheckWorkflow, backendPrivatePilotLaunchHealthCheckWorkflow?.status, 'privatePilotLaunchHealthCheckStatus')]",
-  "['Acceptance Report', readyPackageModelStatus(backendPrivatePilotAcceptanceReportWorkflow, backendPrivatePilotAcceptanceReportWorkflow?.status, 'privatePilotAcceptanceReportStatus')]",
-  "['Production Ops', readyPackageModelStatus(backendProductionOperationsReadiness, backendProductionOperationsReadiness?.status, 'productionOperationsStatus')]",
-  "['Artifact Audit', readyPackageModelStatus(backendArtifactQualityAudit, backendArtifactQualityAudit?.status, 'artifactQualityAuditStatus')]",
-  "['Review Workflow', readyPackageModelStatus(backendSubmissionReviewWorkflow, backendSubmissionReviewWorkflow?.status, 'submissionReviewWorkflowStatus')]",
-  '{readyPackageModelAvailable(backendProductionLaunchAudit) && (',
-  '{readyPackageModelAvailable(backendLaunchApprovalWorkflow) && (',
-  '{readyPackageModelAvailable(backendPilotLaunchReadiness) && (',
-  '{readyPackageModelAvailable(backendDeploymentPreflight) && (',
-  '{readyPackageModelAvailable(backendOperationsReadiness) && (',
-  '{readyPackageModelAvailable(backendProviderReadiness) && (',
-  '{readyPackageModelAvailable(backendProviderControlledRun) && (',
-  '{readyPackageModelAvailable(backendProviderEvalRunWorkflow) && (',
-  '{readyPackageModelAvailable(backendEvidenceCustodyReadiness) && (',
-  '{readyPackageModelAvailable(backendSecurityBoundary) && (',
-  "['Delivery Trace', readyPackageModelStatus(backendProductTeamDeliveryTrace, backendProductTeamDeliveryTrace?.status, 'productTeamDeliveryTraceStatus')]",
-  "['Trace Ready', readyPackageModelRatio(backendProductTeamDeliveryTrace, backendProductTeamDeliveryTrace?.summary?.readyCount, backendProductTeamDeliveryTrace?.summary?.rowCount, 'productTeamDeliveryTraceReadyCount', 'productTeamDeliveryTraceRowCount')]",
-  "['Operating Loop', readyPackageModelStatus(backendProductTeamOperatingLoop, backendProductTeamOperatingLoop?.status, 'productTeamOperatingLoopStatus')]",
-  "['Loop Ready', readyPackageModelBoolean(backendProductTeamOperatingLoop, backendProductTeamOperatingLoop?.readyForLocalPilotOperatingLoop, 'productTeamOperatingLoopReady')]",
-  "['Collab Diagnostics', readyPackageModelStatus(backendTeamCollaborationDiagnostics, backendTeamCollaborationDiagnostics?.status, 'teamCollaborationDiagnosticsStatus')]",
-  "['Intent Rows', readyPackageModelRatio(backendCollaborationIntentQueue, backendCollaborationIntentQueue?.summary?.runnableCount, backendCollaborationIntentQueue?.summary?.rowCount, 'collaborationIntentQueueRunnableCount', 'collaborationIntentQueueRowCount')]",
-  "['Runtime Contracts', readyPackageModelStatus(backendRuntimeContracts, backendRuntimeContracts?.status, 'runtimeContractsStatus')]",
-  "['Cycle Steps', readyPackageModelRatio(backendAutonomousCycleConsistency, backendAutonomousCycleConsistency?.summary?.observedStepCount, backendAutonomousCycleConsistency?.summary?.requiredStepCount, 'autonomousCycleConsistencyObservedStepCount', 'autonomousCycleConsistencyRequiredStepCount')]",
-  "['Runtime Autonomy', readyPackageModelStatus(backendRuntimeAutonomyStatus, backendRuntimeAutonomyStatus?.status, 'runtimeAutonomyStatus')]",
-  "['Evidence Audit', readyPackageModelStatus(backendEvidenceQualityAudit, backendEvidenceQualityAudit?.status, 'evidenceQualityAuditStatus')]",
-  "['Evidence Quality', readyPackageModelValue(backendEvidenceQualityAudit, backendEvidenceQualityAudit?.summary?.averageQualityScore, 'evidenceQualityAverageScore')]",
-  "['Evidence Index', readyPackageModelStatus(backendEvidenceIndexReadiness, backendEvidenceIndexReadiness?.status, 'evidenceIndexReadinessStatus')]",
-  "['Index Rows', readyPackageModelRatio(backendEvidenceIndexReadiness, backendEvidenceIndexReadiness?.summary?.evidenceSearchCount, backendEvidenceIndexReadiness?.summary?.submissionCount, 'evidenceIndexReadinessSearchCount', 'evidenceIndexReadinessSubmissionCount')]",
-  "['Source Queue', readyPackageModelValue(backendEvidenceSourceReviewWorkflow, backendEvidenceSourceReviewWorkflow?.summary?.reviewRequiredSourceCount, 'evidenceSourceReviewQueuedCount')]",
-  "['Source Decisions', readyPackageModelValue(backendEvidenceSourceReviewWorkflow, backendEvidenceSourceReviewWorkflow?.summary?.sourceReviewDecisionCount, 'evidenceSourceReviewDecisionCount')]",
-  "['Source Pending', readyPackageModelValue(backendEvidenceSourceReviewWorkflow, backendEvidenceSourceReviewWorkflow?.summary?.pendingDecisionSourceCount, 'evidenceSourceReviewPendingDecisionCount')]",
-  "['Source Review', readyPackageModelStatus(backendEvidenceSourceReviewWorkflow, backendEvidenceSourceReviewWorkflow?.status, 'evidenceSourceReviewStatus')]",
-  "['Evidence Custody', readyPackageModelStatus(backendEvidenceCustodyReadiness, backendEvidenceCustodyReadiness?.status, 'evidenceCustodyStatus')]",
-  "['Custody Ready', readyPackageModelBoolean(backendEvidenceCustodyReadiness, backendEvidenceCustodyReadiness?.readyForPrivatePilot, 'evidenceCustodyReady')]",
-  "['Custody Records', readyPackageModelValue(backendEvidenceCustodyReadiness, backendEvidenceCustodyReadiness?.summary?.custodyRecordCount, 'evidenceCustodyRecordCount')]",
-  "['Custody Storage', readyPackageModelBoolean(backendEvidenceCustodyReadiness, backendEvidenceCustodyReadiness?.readyForProduction, 'evidenceCustodyProductionReady', 'production-ready', 'managed-blocked')]",
-  "['Security', readyPackageModelStatus(backendSecurityBoundary, backendSecurityBoundary?.status, 'securityBoundaryStatus')]",
-  "['Providers', readyPackageModelStatus(backendProviderReadiness, backendProviderReadiness?.status, 'providerReadinessStatus')]",
-  "['Controlled Run', readyPackageModelStatus(backendProviderControlledRun, backendProviderControlledRun?.status, 'providerControlledRunStatus')]",
-  "['Run Ready', readyPackageModelBoolean(backendProviderControlledRun, backendProviderControlledRun?.readyForPrivatePilotRun, 'providerControlledRunReady')]",
-  "['Run Ops', readyPackageModelRatio(backendProviderControlledRun, backendProviderControlledRun?.summary?.runnableOperationCount, backendProviderControlledRun?.summary?.operationCount, 'providerControlledRunRunnableOperationCount', 'providerControlledRunOperationCount')]",
-  "['Run Cost', readyPackageModelCents(backendProviderControlledRun, backendProviderControlledRun?.summary?.estimatedRunCostCents, 'providerControlledRunEstimatedCostCents')]",
-  "['Provider Eval', readyPackageModelStatus(backendProviderEvalRunWorkflow, backendProviderEvalRunWorkflow?.status, 'providerEvalRunWorkflowStatus')]",
-  "['Eval Ready', readyPackageModelBoolean(backendProviderEvalRunWorkflow, backendProviderEvalRunWorkflow?.readyForPrivatePilotProviderEval, 'providerEvalRunReady', 'ready', 'record')]",
-  "['Eval Runs', readyPackageModelRatio(backendProviderEvalRunWorkflow, backendProviderEvalRunWorkflow?.summary?.passedRunCount, backendProviderEvalRunWorkflow?.summary?.runCount, 'providerEvalRunPassedCount', 'providerEvalRunCount')]",
-  "['Eval Critical', readyPackageModelRatio(backendProviderEvalRunWorkflow, backendProviderEvalRunWorkflow?.summary?.replayedCriticalOperationCount, backendProviderEvalRunWorkflow?.summary?.criticalOperationCount, 'providerEvalRunReplayedCriticalCount', 'providerEvalRunCriticalCount')]",
-  "['Operations', readyPackageModelStatus(backendOperationsReadiness, backendOperationsReadiness?.status, 'operationsReadinessStatus')]",
-  "['Persistence Adapter', readyPackageSummaryStatus('persistenceAdapterDryRunStatus')]",
-  "['Queue Adapter', readyPackageSummaryStatus('queueAdapterDryRunStatus')]",
-  "['Queue Parity', readyPackageSummaryBoolean('queueAdapterSnapshotParityReady')]",
-  "['Worker Recovery', readyPackageSummaryBoolean('workerRecoveryContractReady')]",
-  "['Incident Drill', readyPackageSummaryBoolean('operationsIncidentDrillReady')]",
-  "['Trail Ready', readyPackageSummaryRatio('scenarioTrailReadyCount', 'scenarioTrailCount')]",
-  "['Walkthrough', readyPackageSummaryRatio('walkthroughCompletedCount', 'walkthroughCount')]",
-  "['Requirements', readyPackageSummaryRatio('requirementReadyCount', 'requirementCount')]",
-  "['Kickoff Board', readyPackageSummaryRatio('kickoffBoardReadyCount', 'kickoffBoardCount')]",
-  "['Work Loop Board', readyPackageSummaryRatio('workLoopRunningCount', 'workLoopCount')]",
-  "['Collaboration Board', readyPackageSummaryRatio('collaborationReadyCount', 'collaborationBoardCount')]",
-  "['Change Protocol', readyPackageSummaryRatio('changeProtocolReadyCount', 'changeProtocolBoardCount')]",
-  "['Change Owners', readyPackageSummaryRatio('changeOwnerReadyCount', 'changeOwnerCount')]",
-  "['Use Cases', readyPackageSummaryRatio('useCaseCoveredCount', 'useCaseCount')]",
-  "['Action Queue', readyPackageSummaryRatio('actionQueueCompletedCount', 'actionQueueCount')]",
-  "['Unresolved Routes', readyPackageSummaryValue('actionQueueUnresolvedRouteCount')]",
-  "['Transcript Channels', readyPackageSummaryValue('transcriptChannelCount')]",
-  "['Ops Agents', readyPackageSummaryValue('operationsAgentCount')]",
-  "['Assignments', readyPackageSummaryValue('assignmentCount')]",
-  "['Changes', readyPackageSummaryValue('changeCount')]",
+  "['Pilot Launch', modelStatus(pilotLaunchReadiness, pilotLaunchReadiness?.privatePilotDecision, 'pilotLaunchDecision')]",
+  "['Launch Gates', modelRatio(pilotLaunchReadiness, pilotLaunchReadiness?.summary?.passedGateCount, pilotLaunchReadiness?.summary?.gateCount, 'pilotLaunchPassedGateCount', 'pilotLaunchGateCount')]",
+  "['Preflight', modelBoolean(deploymentPreflight, deploymentPreflight?.privatePilotDeploymentReady, 'deploymentPreflightReady')]",
+  "['Gateway', modelStatus(adapterGatewayPreflight, adapterGatewayPreflight?.status, 'adapterGatewayPreflightStatus')]",
+  "[projectText('Infra Rehearsal'), modelStatus(productionInfrastructureRehearsal, productionInfrastructureRehearsal?.status, 'productionInfrastructureRehearsalStatus')]",
+  "[projectText('Launch Approval'), projectText(modelStatus(launchApprovalWorkflow, launchApprovalWorkflow?.status, 'launchApprovalStatus'))]",
+  "[projectText('Launch Audit'), projectText(modelStatus(productionLaunchAudit, productionLaunchAudit?.status, 'productionLaunchAuditStatus'))]",
+  "['Evidence Archive', modelStatus(projectEvidenceArchive, projectEvidenceArchive?.status, 'projectEvidenceArchiveStatus')]",
+  "['Evidence Export', modelStatus(projectEvidenceExportWorkflow, projectEvidenceExportWorkflow?.status, 'projectEvidenceExportStatus')]",
+  "['Go-Live Status', modelStatus(privatePilotGoLiveReadiness, privatePilotGoLiveReadiness?.status, 'privatePilotGoLiveStatus')]",
+  "['Release Candidate', modelStatus(privatePilotReleaseCandidateWorkflow, privatePilotReleaseCandidateWorkflow?.status, 'privatePilotReleaseCandidateStatus')]",
+  "['Pilot Launch Run', modelStatus(privatePilotLaunchRunWorkflow, privatePilotLaunchRunWorkflow?.status, 'privatePilotLaunchRunStatus')]",
+  "['Post Launch Health', modelStatus(privatePilotLaunchHealthCheckWorkflow, privatePilotLaunchHealthCheckWorkflow?.status, 'privatePilotLaunchHealthCheckStatus')]",
+  "['Acceptance Report', modelStatus(privatePilotAcceptanceReportWorkflow, privatePilotAcceptanceReportWorkflow?.status, 'privatePilotAcceptanceReportStatus')]",
+  "['Production Ops', modelStatus(productionOperationsReadiness, productionOperationsReadiness?.status, 'productionOperationsStatus')]",
+  "['Artifact Audit', modelStatus(artifactQualityAudit, artifactQualityAudit?.status, 'artifactQualityAuditStatus')]",
+  "['Review Workflow', modelStatus(submissionReviewWorkflow, submissionReviewWorkflow?.status, 'submissionReviewWorkflowStatus')]",
+  'productionLaunchAuditAvailable: readyPackageModelAvailable(backendProductionLaunchAudit)',
+  'launchApprovalWorkflowAvailable: readyPackageModelAvailable(backendLaunchApprovalWorkflow)',
+  '{productionLaunchAuditAvailable && productionLaunchAudit && (',
+  '{launchApprovalWorkflowAvailable && launchApprovalWorkflow && (',
+  'pilotLaunchReadinessAvailable: readyPackageModelAvailable(backendPilotLaunchReadiness)',
+  'deploymentPreflightAvailable: readyPackageModelAvailable(backendDeploymentPreflight)',
+  'operationsReadinessAvailable: readyPackageModelAvailable(backendOperationsReadiness)',
+  'providerReadinessAvailable: readyPackageModelAvailable(backendProviderReadiness)',
+  'providerControlledRunAvailable: readyPackageModelAvailable(backendProviderControlledRun)',
+  '{pilotLaunchReadinessAvailable && (',
+  '{deploymentPreflightAvailable && (',
+  '{operationsReadinessAvailable && (',
+  '{providerReadinessAvailable && (',
+  '{providerControlledRunAvailable && (',
+  'providerEvalAvailable: readyPackageModelAvailable(backendProviderEvalRunWorkflow)',
+  'evidenceCustodyAvailable: readyPackageModelAvailable(backendEvidenceCustodyReadiness)',
+  'securityBoundaryAvailable: readyPackageModelAvailable(backendSecurityBoundary)',
+  '{providerEvalAvailable && (',
+  '{evidenceCustodyAvailable && (',
+  '{securityBoundaryAvailable && (',
+  "['Delivery Trace', modelStatus(productTeamDeliveryTrace, productTeamDeliveryTrace?.status, 'productTeamDeliveryTraceStatus')]",
+  "['Trace Ready', modelRatio(productTeamDeliveryTrace, productTeamDeliveryTrace?.summary?.readyCount, productTeamDeliveryTrace?.summary?.rowCount, 'productTeamDeliveryTraceReadyCount', 'productTeamDeliveryTraceRowCount')]",
+  "['Operating Loop', modelStatus(productTeamOperatingLoop, productTeamOperatingLoop?.status, 'productTeamOperatingLoopStatus')]",
+  "['Loop Ready', modelBoolean(productTeamOperatingLoop, productTeamOperatingLoop?.readyForLocalPilotOperatingLoop, 'productTeamOperatingLoopReady')]",
+  "['Collab Diagnostics', modelStatus(teamCollaborationDiagnostics, teamCollaborationDiagnostics?.status, 'teamCollaborationDiagnosticsStatus')]",
+  "['Intent Rows', modelRatio(collaborationIntentQueue, collaborationIntentQueue?.summary?.runnableCount, collaborationIntentQueue?.summary?.rowCount, 'collaborationIntentQueueRunnableCount', 'collaborationIntentQueueRowCount')]",
+  "['Runtime Contracts', modelStatus(runtimeContracts, runtimeContracts?.status, 'runtimeContractsStatus')]",
+  "['Cycle Steps', modelRatio(autonomousCycleConsistency, autonomousCycleConsistency?.summary?.observedStepCount, autonomousCycleConsistency?.summary?.requiredStepCount, 'autonomousCycleConsistencyObservedStepCount', 'autonomousCycleConsistencyRequiredStepCount')]",
+  "['Runtime Autonomy', modelStatus(runtimeAutonomyStatus, runtimeAutonomyStatus?.status, 'runtimeAutonomyStatus')]",
+  "['Evidence Audit', modelStatus(evidenceQualityAudit, evidenceQualityAudit?.status, 'evidenceQualityAuditStatus')]",
+  "['Evidence Quality', modelValue(evidenceQualityAudit, evidenceQualityAudit?.summary?.averageQualityScore, 'evidenceQualityAverageScore')]",
+  "['Evidence Index', modelStatus(evidenceIndexReadiness, evidenceIndexReadiness?.status, 'evidenceIndexReadinessStatus')]",
+  "['Index Rows', modelRatio(evidenceIndexReadiness, evidenceIndexReadiness?.summary?.evidenceSearchCount, evidenceIndexReadiness?.summary?.submissionCount, 'evidenceIndexReadinessSearchCount', 'evidenceIndexReadinessSubmissionCount')]",
+  "['Source Queue', modelValue(evidenceSourceReviewWorkflow, evidenceSourceReviewWorkflow?.summary?.reviewRequiredSourceCount, 'evidenceSourceReviewQueuedCount')]",
+  "['Source Decisions', modelValue(evidenceSourceReviewWorkflow, evidenceSourceReviewWorkflow?.summary?.sourceReviewDecisionCount, 'evidenceSourceReviewDecisionCount')]",
+  "['Source Pending', modelValue(evidenceSourceReviewWorkflow, evidenceSourceReviewWorkflow?.summary?.pendingDecisionSourceCount, 'evidenceSourceReviewPendingDecisionCount')]",
+  "['Source Review', modelStatus(evidenceSourceReviewWorkflow, evidenceSourceReviewWorkflow?.status, 'evidenceSourceReviewStatus')]",
+  "['Evidence Custody', modelStatus(evidenceCustodyReadiness, evidenceCustodyReadiness?.status, 'evidenceCustodyStatus')]",
+  "['Custody Ready', modelBoolean(evidenceCustodyReadiness, evidenceCustodyReadiness?.readyForPrivatePilot, 'evidenceCustodyReady')]",
+  "['Custody Records', modelValue(evidenceCustodyReadiness, evidenceCustodyReadiness?.summary?.custodyRecordCount, 'evidenceCustodyRecordCount')]",
+  "['Custody Storage', modelBoolean(evidenceCustodyReadiness, evidenceCustodyReadiness?.readyForProduction, 'evidenceCustodyProductionReady', 'production-ready', 'managed-blocked')]",
+  "['Security', modelStatus(securityBoundary, securityBoundary?.status, 'securityBoundaryStatus')]",
+  "['Providers', modelStatus(providerReadiness, providerReadiness?.status, 'providerReadinessStatus')]",
+  "['Controlled Run', modelStatus(providerControlledRun, providerControlledRun?.status, 'providerControlledRunStatus')]",
+  "['Run Ready', modelBoolean(providerControlledRun, providerControlledRun?.readyForPrivatePilotRun, 'providerControlledRunReady')]",
+  "['Run Ops', modelRatio(providerControlledRun, providerControlledRun?.summary?.runnableOperationCount, providerControlledRun?.summary?.operationCount, 'providerControlledRunRunnableOperationCount', 'providerControlledRunOperationCount')]",
+  "['Run Cost', modelCents(providerControlledRun, providerControlledRun?.summary?.estimatedRunCostCents, 'providerControlledRunEstimatedCostCents')]",
+  "['Provider Eval', modelStatus(providerEvalRunWorkflow, providerEvalRunWorkflow?.status, 'providerEvalRunWorkflowStatus')]",
+  "['Eval Ready', modelBoolean(providerEvalRunWorkflow, providerEvalRunWorkflow?.readyForPrivatePilotProviderEval, 'providerEvalRunReady', 'ready', 'record')]",
+  "['Eval Runs', modelRatio(providerEvalRunWorkflow, providerEvalRunWorkflow?.summary?.passedRunCount, providerEvalRunWorkflow?.summary?.runCount, 'providerEvalRunPassedCount', 'providerEvalRunCount')]",
+  "['Eval Critical', modelRatio(providerEvalRunWorkflow, providerEvalRunWorkflow?.summary?.replayedCriticalOperationCount, providerEvalRunWorkflow?.summary?.criticalOperationCount, 'providerEvalRunReplayedCriticalCount', 'providerEvalRunCriticalCount')]",
+  "['Operations', modelStatus(operationsReadiness, operationsReadiness?.status, 'operationsReadinessStatus')]",
+  "['Persistence Adapter', summaryStatus('persistenceAdapterDryRunStatus')]",
+  "['Queue Adapter', summaryStatus('queueAdapterDryRunStatus')]",
+  "['Queue Parity', summaryBoolean('queueAdapterSnapshotParityReady')]",
+  "['Worker Recovery', summaryBoolean('workerRecoveryContractReady')]",
+  "['Incident Drill', summaryBoolean('operationsIncidentDrillReady')]",
+  "['Trail Ready', summaryRatio('scenarioTrailReadyCount', 'scenarioTrailCount')]",
+  "['Walkthrough', summaryRatio('walkthroughCompletedCount', 'walkthroughCount')]",
+  "['Requirements', summaryRatio('requirementReadyCount', 'requirementCount')]",
+  "['Kickoff Board', summaryRatio('kickoffBoardReadyCount', 'kickoffBoardCount')]",
+  "['Work Loop Board', summaryRatio('workLoopRunningCount', 'workLoopCount')]",
+  "['Collaboration Board', summaryRatio('collaborationReadyCount', 'collaborationBoardCount')]",
+  "['Change Protocol', summaryRatio('changeProtocolReadyCount', 'changeProtocolBoardCount')]",
+  "['Change Owners', summaryRatio('changeOwnerReadyCount', 'changeOwnerCount')]",
+  "['Use Cases', summaryRatio('useCaseCoveredCount', 'useCaseCount')]",
+  "['Action Queue', summaryRatio('actionQueueCompletedCount', 'actionQueueCount')]",
+  "['Unresolved Routes', summaryValue('actionQueueUnresolvedRouteCount')]",
+  "['Transcript Channels', summaryValue('transcriptChannelCount')]",
+  "['Ops Agents', summaryValue('operationsAgentCount')]",
+  "['Assignments', summaryValue('assignmentCount')]",
+  "['Changes', summaryValue('changeCount')]",
 ], 'Manager Ready Package summary ratio backend-required boundary');
-assertIncludes(appSource, [
+assertIncludes(projectDashboardManagerScenarioWalkthroughSource, [
   "managerScenarioWalkthrough.frontendMockSuppressed ? projectText('backend required') : `${managerScenarioWalkthrough.completedCount || 0}/${managerScenarioWalkthrough.count || 0} ${projectText('complete')}`",
   "['Next Gap', managerScenarioWalkthrough.frontendMockSuppressed ? projectText('backend required') : managerScenarioWalkthrough.nextIncompleteStep?.stage || 'All covered']",
   "['Action Queue', managerScenarioWalkthrough.frontendMockSuppressed || managerActionPlaybook.frontendMockSuppressed ? projectText('backend required') : `${managerActionPlaybook.completedCount ?? 0}/${managerActionPlaybook.count ?? 0}`]",
+], 'Manager Scenario Walkthrough missing-model summary backend-required boundary');
+assertIncludes(projectDashboardManagerActionPlaybookSource, [
   "managerActionPlaybook.frontendMockSuppressed ? projectText('backend required') : `${managerActionPlaybook.completedCount ?? 0}/${managerActionPlaybook.count ?? 0} complete`",
   "['Next', managerActionPlaybook.frontendMockSuppressed ? projectText('backend required') : managerActionPlaybook.nextAction?.label || 'All complete']",
-], 'Manager Scenario Walkthrough and Action Playbook missing-model summary backend-required boundary');
+], 'Manager Action Playbook missing-model summary backend-required boundary');
 assert(
   autonomyCockpitReadModelSection.indexOf("const operationsBoardProjectNextRunLabel = operationsBoardBackendRequired")
     < autonomyCockpitReadModelSection.indexOf(': formatRunTime(autonomousWorkLoopNextRunAt);'),
@@ -2238,11 +2303,7 @@ assert(
   'Continuous Work Loop project pulse must use local schedule only after the backend-required branch.',
 );
 
-const autonomyCockpitRenderSection = sliceBetween(
-  appSource,
-  'data-testid="operations-board-24-7"',
-  'data-testid="backend-worker-station"',
-);
+const autonomyCockpitRenderSection = dashboardUiSource;
 assertIncludes(autonomyCockpitRenderSection, [
   "managerReadModelSourceBadge(agentStateSummary, 'agent-state-summary-source')",
   'data-testid="agent-state-summary-backend-required"',
@@ -2261,17 +2322,22 @@ assertIncludes(autonomyCockpitRenderSection, [
 ], 'Manager autonomy cockpit UI backend-required boundary');
 
 const dashboardAgentStatusRenderSection = sliceBetween(
-  appSource,
+  projectDashboardAgentOverviewSource,
   'data-testid="dashboard-agent-status"',
-  'data-testid="scenario-control-center"',
+  '</>',
 );
 assertIncludes(dashboardAgentStatusRenderSection, [
   "managerReadModelSourceBadge(agentStateSummary, 'dashboard-agent-status-source')",
   'data-testid="dashboard-agent-status-backend-required"',
   'Backend Agent State Summary required. Local Agent status rows are suppressed for this backend project.',
   'data-testid="dashboard-agent-status-sync-cockpit"',
-  'onClick={() => syncBackendCockpitReadModels({ silent: false, projectId: activeProject.id })}',
+  'onClick={onSyncCockpit}',
 ], 'Dashboard Agent Current Work Status backend-required boundary');
+assertIncludes(appSource, [
+  'onSyncCockpit: () => syncBackendCockpitReadModels({ silent: false, projectId: activeProject.id })',
+  'onOpenManagerFlowGraph: openManagerFlowGraphScene',
+  'onRunAgentPulse: runBackendAgentPulse',
+], 'Dashboard Agent Current Work Status App callback interface');
 assert(
   dashboardAgentStatusRenderSection.indexOf('data-testid="dashboard-agent-status-backend-required"')
     < dashboardAgentStatusRenderSection.indexOf('operationsBoardRows.map(row => {'),
@@ -2340,7 +2406,7 @@ assertIncludes(governanceCockpitReadModelSection, [
   "'manager-proof-map/v1'",
 ], 'Manager governance/collaboration cockpit backend-required boundary');
 assert(
-  appSource.includes("String(row.task?.id || row.taskId || '') === String(action.id || action.taskId || '')"),
+  dashboardUiSource.includes("String(row.task?.id || row.taskId || '') === String(action.id || action.taskId || '')"),
   'Kickoff execution assignment lookup must support backend taskId rows and local task object rows.',
 );
 assert(
@@ -2439,9 +2505,9 @@ assertIncludes(syncProtocolAuditReadModelSection, [
 ], 'Sync Protocol Audit lazy fallback boundary');
 
 const managerScenarioTrailRenderSection = sliceBetween(
-  appSource,
+  projectDashboardManagerScenarioTrailSource,
   'data-testid="manager-scenario-trail"',
-  'data-testid="sync-protocol-audit"',
+  '</div>\n  );',
 );
 assertIncludes(managerScenarioTrailRenderSection, [
   "managerReadModelSourceBadge(managerScenarioTrail, 'manager-scenario-trail-source')",
@@ -2449,33 +2515,77 @@ assertIncludes(managerScenarioTrailRenderSection, [
   'data-testid="manager-scenario-trail-backend-required"',
   'Backend Manager Scenario Trail is required for this real project.',
   'data-testid="manager-scenario-trail-sync-read-model"',
-  'onClick={() => syncBackendManagerScenarioTrail({ silent: false, projectId: activeProject.id })}',
+  'onClick={onSyncTrail}',
 ], 'Manager Scenario Trail backend-required recovery action');
+assertIncludes(appSource, [
+  'onSyncTrail: () => syncBackendManagerScenarioTrail({ silent: false, projectId: activeProject.id })',
+  'onOpenRow: openScenarioTrailRow',
+], 'Manager Scenario Trail App callback wiring');
 
-const governanceCockpitRenderSection = sliceBetween(
-  appSource,
-  "managerReadModelSourceBadge(governanceProtocol, 'governance-protocol-source')",
-  'data-testid="active-threads-task-proof-backend-required"',
+const managerScenarioWalkthroughRenderSection = sliceBetween(
+  projectDashboardManagerScenarioWalkthroughSource,
+  'data-testid="manager-scenario-walkthrough"',
+  '</div>\n  );',
 );
+assertIncludes(managerScenarioWalkthroughRenderSection, [
+  "managerReadModelSourceBadge(managerScenarioWalkthrough, 'manager-scenario-walkthrough-source')",
+  'managerScenarioWalkthrough.frontendMockSuppressed',
+  'data-testid="manager-scenario-walkthrough-backend-required"',
+  'Backend Scenario Walkthrough is required for this real project.',
+  'data-testid="manager-scenario-walkthrough-sync-read-model"',
+  'onClick={onSyncWalkthrough}',
+], 'Manager Scenario Walkthrough backend-required recovery action');
+assertIncludes(appSource, [
+  'onSyncWalkthrough: () => syncBackendManagerScenarioWalkthrough({ silent: false, projectId: activeProject.id })',
+  'onRunRow: runManagerScenarioWalkthroughRow',
+  'onOpenRow: openManagerScenarioWalkthroughRow',
+  'onRunResultProof: () => openProjectTimelineProof(managerScenarioWalkthroughReceipt?.resultInspection?.timelineLogIds || [])',
+], 'Manager Scenario Walkthrough App callback wiring');
+
+const syncProtocolAuditRenderSection = sliceBetween(
+  projectDashboardSyncProtocolAuditSource,
+  'data-testid="sync-protocol-audit"',
+  '</div>\n  );',
+);
+assertIncludes(syncProtocolAuditRenderSection, [
+  'managerReadModelSourceClass(syncProtocolAudit)',
+  'managerReadModelSourceLabel(syncProtocolAudit)',
+  'syncProtocolAudit.frontendMockSuppressed',
+  'data-testid="sync-protocol-audit-backend-required"',
+  'Backend Sync Protocol Audit is required for this real project.',
+  'data-testid="sync-protocol-audit-sync-read-model"',
+  'onClick={onSyncProtocol}',
+], 'Sync Protocol Audit backend-required recovery action');
+assertIncludes(appSource, [
+  'onSyncProtocol: () => syncBackendSyncProtocolAudit({ silent: false, projectId: activeProject.id })',
+  "onOpenChatProof: (row, chatIds) => openProjectChatProof(activeProject, chatIds, row.source === 'meeting-google-chat' ? 'main' : 'main')",
+  'onOpenTimelineProof: openProjectTimelineProof',
+], 'Sync Protocol Audit App callback wiring');
+
+const governanceCockpitRenderSection = dashboardUiSource;
 assertIncludes(governanceCockpitRenderSection, [
   "managerReadModelSourceBadge(governanceProtocol, 'governance-protocol-source')",
   'data-testid="governance-protocol-backend-required"',
   'Backend Kickoff Charter governance required. Local governance inference is suppressed for this backend project.',
   'data-testid="governance-protocol-sync-governance"',
-  'onClick={() => syncBackendGovernanceProtocol({ silent: false, projectId: activeProject.id })}',
+  'onSyncGovernance: () => syncBackendGovernanceProtocol({ silent: false, projectId: activeProject.id })',
+  'onClick={onSyncGovernance}',
   "managerReadModelSourceBadge(changeFlow, 'change-flow-source')",
   'data-testid="change-flow-backend-required"',
   'data-testid="change-flow-sync-cockpit"',
-  "managerReadModelSourceBadge(agentManagementMesh, 'agent-management-mesh-source')",
+  'mesh: agentManagementMesh',
+  "managerReadModelSourceBadge(mesh, 'agent-management-mesh-source')",
   'data-testid="agent-management-mesh-backend-required"',
   'Backend Agent Management Mesh required. Local management and peer-proof rows are suppressed until Manager Dashboard returns agent-management-mesh/v1.',
   'data-testid="agent-management-mesh-sync-cockpit"',
-  "managerReadModelSourceBadge(managerProofMap, 'manager-scenario-readiness-source')",
+  'proofMap: managerProofMap',
+  "managerReadModelSourceBadge(proofMap, 'manager-scenario-readiness-source')",
   'data-testid="manager-scenario-readiness-backend-required"',
   'data-testid="manager-scenario-readiness-sync-proof-map"',
   "managerReadModelSourceBadge(managerProofMap, 'manager-proof-map-source')",
   'data-testid="manager-proof-map-sync-readiness-proof-map"',
-  "managerReadModelSourceBadge(collaborationHealth, 'collaboration-health-source')",
+  'health: collaborationHealth',
+  "managerReadModelSourceBadge(health, 'collaboration-health-source')",
   'data-testid="collaboration-health-backend-required"',
   'data-testid="collaboration-health-sync-diagnostics"',
   "managerReadModelSourceBadge(assignmentTimelineMatrix, 'assignment-timeline-matrix-source')",
@@ -2484,7 +2594,7 @@ assertIncludes(governanceCockpitRenderSection, [
 ], 'Manager governance/collaboration cockpit UI backend-required boundary');
 
 const agentFocusDashboardReadModelSection = sliceBetween(
-  appSource,
+  projectDashboardTeamSource,
   'const agentBackendDashboard = agentDashboardSnapshotFor',
   'const agentStatusDotClass = backendAgentDashboardMissing',
 );
@@ -2547,7 +2657,7 @@ assert(
 );
 
 const agentFocusDashboardRenderSection = sliceBetween(
-  appSource,
+  projectDashboardTeamSource,
   'data-testid={`agent-team-dashboard-required-${agent.id}`}',
   'data-testid={`agent-message-panel-${agent.id}`}',
 );
@@ -2640,12 +2750,18 @@ const agentPulseCommandSection = sliceBetween(
   'const runBackendAgentPulse = async',
   'const defaultBackendReviewerAgentId =',
 );
+assertIncludes(appSource, [
+  'const backendAgentPulseRefreshTimerRef = useRef(null);',
+], 'Agent Pulse refresh priority boundary');
 assertIncludes(agentPulseCommandSection, [
   'if (!activeProject || !agentId || !shouldAttemptBackendProjectWrite(activeProject)) return;',
+  'cancelPendingBackendReadModelRefreshes();',
   'requestAgentBackend(`/projects/${encodeURIComponent(activeProject.id)}/agents/${encodeURIComponent(agentId)}/work-cycle`',
   'includeReadModels: false',
   '...backendAgentCollaborationBody(agentId)',
-  'refreshAgentWriteReadModels({ payload, agentId, projectId: activeProject.id })',
+  'timeoutMs: 60_000',
+  'backendAgentPulseRefreshTimerRef.current = setTimeout(async () => {',
+  'await refreshAgentWriteReadModels({ payload, agentId, projectId });',
   "lastAction: 'Agent pulse failed'",
 ], 'Agent Pulse backend work-cycle command boundary');
 
@@ -2663,7 +2779,7 @@ assertIncludes(agentPulseCollaborationBodySection, [
 ], 'Agent Pulse collaboration strategy body boundary');
 
 const agentWorkbenchRenderSection = sliceBetween(
-  appSource,
+  projectDashboardTeamSource,
   'data-testid={`agent-workbench-${agent.id}`}',
   'data-testid={`agent-focus-management-${agent.id}`}',
 );
@@ -2725,24 +2841,22 @@ assertIncludes(agentMessageFlowCommandSection, [
   'Manager flow node confirmation failed',
 ], 'Agent Message and Flow confirmation backend write boundary');
 
-const reviewerRenderSection = sliceBetween(
-  appSource,
-  'data-testid={`submission-review-composer-${row.id}`}',
-  'data-testid="backend-manager-submission-reviews-snapshot"',
-);
+const reviewerRenderSection = reactUiSource;
 assertIncludes(reviewerRenderSection, [
   'data-testid={`submission-review-reviewer-${row.id}`}',
   'data-testid={`submission-review-verdict-${row.id}`}',
   'data-testid={`submission-review-submit-${row.id}`}',
-  'onClick={() => runBackendSubmissionReview(row)}',
-  'disabled={!backendCommandAvailable || backendStation.loading || !rowReviewerId}',
+  'onRunSubmissionReview: runBackendSubmissionReview',
+  'onClick={() => onRunSubmissionReview(row)}',
+  'reviewSubmitDisabled: (reviewerId) => !backendCommandAvailable || backendStation.loading || !reviewerId',
+  'disabled={reviewSubmitDisabled(rowReviewerId)}',
   'data-testid={`submission-review-receipt-${row.id}`}',
   'Review write failed:',
   'no local review receipt was created.',
 ], 'Reviewer composer backend receipt UI boundary');
 
 const agentMessageRenderSection = sliceBetween(
-  appSource,
+  projectDashboardTeamSource,
   'data-testid={`agent-message-panel-${agent.id}`}',
   'data-testid={`agent-work-cycle-${agent.id}`}',
 );
@@ -2755,7 +2869,7 @@ assertIncludes(agentMessageRenderSection, [
 ], 'Agent Message backend route UI boundary');
 
 const agentFocusPulseRenderSection = sliceBetween(
-  appSource,
+  projectDashboardTeamSource,
   'data-testid={`agent-focus-pulse-${agent.id}`}',
   'data-testid={`agent-focus-backend-dashboard-required-${agent.id}`}',
 );
@@ -2765,7 +2879,7 @@ assertIncludes(agentFocusPulseRenderSection, [
 ], 'Agent Focus pulse backend route UI boundary');
 
 const agentWorkCyclePulseRenderSection = sliceBetween(
-  appSource,
+  projectDashboardTeamSource,
   'data-testid={`agent-work-cycle-${agent.id}`}',
   '<div className={`w-2 h-2 rounded-full ${agentStatusDotClass}`} />',
 );
@@ -2775,7 +2889,7 @@ assertIncludes(agentWorkCyclePulseRenderSection, [
 ], 'Agent Work Cycle pulse backend route UI boundary');
 
 const managerFlowConfirmationRenderSection = sliceBetween(
-  appSource,
+  advancedProjectTimelineSource,
   "Confirmation: {selectedNode.confirmation?.confirmedAt ? graphTime(selectedNode.confirmation.confirmedAt) : 'not confirmed by user'}",
   '</aside>',
 );
@@ -2788,7 +2902,7 @@ assertIncludes(managerFlowConfirmationRenderSection, [
   'Supersede',
 ], 'Manager Flow confirmation backend route UI boundary');
 
-assertIncludes(appSource, [
+assertIncludes(settingsModalViewSource, [
   'settings-provider-api-entry-state',
   'Backend Vault unlocks entry; saving is backend-only',
   'settings-secret-vault-action-required',
@@ -2803,7 +2917,7 @@ for (const editableSettingsInput of [
   'settings-deployment-backend-url-input',
   'settings-workspace-bind-path-input',
 ]) {
-  assertInputEditableByTestId(appSource, editableSettingsInput);
+  assertInputEditableByTestId(reactUiSource, editableSettingsInput);
 }
 for (const gatedProviderSecretInput of [
   'settings-provider-model-base-url-input',
@@ -2812,25 +2926,25 @@ for (const gatedProviderSecretInput of [
   'settings-provider-search-key-input',
   'settings-provider-search-endpoint-input',
 ]) {
-  assertProviderSecretInputGatedByTestId(appSource, gatedProviderSecretInput);
+  assertProviderSecretInputGatedByTestId(settingsModalViewSource, gatedProviderSecretInput);
 }
 const settingsProviderEntrySection = sliceBetween(
-  appSource,
+  settingsModalViewSource,
   'const settingsSecretVaultUnavailableMessage',
   'const SettingsBackendStatusIcon',
 );
 const settingsProviderRenderSection = sliceBetween(
-  appSource,
+  settingsModalViewSource,
   'data-testid="settings-secret-vault-status"',
   'data-testid="settings-provider-route-contract"',
 );
 const settingsDeploymentRuntimeReadinessSection = sliceBetween(
-  appSource,
-  'data-testid="settings-runtime-readiness-contract"',
+  localDeploymentSettingsSource,
+  'const runtimeRows =',
   '<div className="grid gap-4 md:grid-cols-3">',
 );
 const settingsModelRuntimeReadinessSection = sliceBetween(
-  appSource,
+  settingsModalViewSource,
   'data-testid="settings-model-runtime-readiness-contract"',
   'data-testid="settings-model-route-contract"',
 );
@@ -2868,23 +2982,24 @@ assertIncludes(settingsModelRuntimeReadinessSection, [
   'settingsRuntimeReadinessSourceStatus',
   'settingsRuntimeReadinessSourceDetail',
 ], 'Settings Models runtime readiness source-label boundary');
-assertIncludes(appSource, [
+assertIncludes(reactUiSource, [
   "settingsProviderReadinessSourceStatus === 'backend-backed'",
   "settingsRuntimeReadinessSourceStatus === 'backend-backed'",
   'const settingsBackendReady = backendUrlConfigured && (',
   "['Target backend', backendConfiguredTargetLabel]",
   'data-testid="settings-deployment-backend-url" className="mt-2 break-all font-mono text-xs text-[#1a1a1a]">{backendConfiguredTargetLabel}',
   '<div data-testid="settings-provider-base-url" className="break-all">Target: {backendConfiguredTargetLabel}</div>',
-  '<div className="mt-2 break-all font-mono text-xs text-[#1a1a1a]">{backendHealthTargetLabel}</div>',
+  'targetLabel={backendHealthTargetLabel}',
+  "本地服务：{targetLabel || '尚未设置'}",
   'Backend settings-provider-readiness/v1 route synced',
   'Click Sync status to read ${settingsProviderReadinessDisplayRoute}',
   'Save Backend URL in Deployment before provider draft entry or readiness sync',
   'Backend settings-runtime-readiness/v1 route synced',
   'Click Sync runtime to read ${settingsRuntimeReadinessDisplayRoute}',
   'Save Backend URL in Deployment before runtime readiness sync',
-  "backendUrlConfigured ? 'Check required' : 'Save Backend URL first'",
+  'summaryLabel(healthCheck, backendUrlConfigured)',
 ], 'Settings provider/runtime readiness source-label model');
-assertIncludes(appSource, [
+assertIncludes(`${appSource}\n${settingsModalViewSource}\n${settingsDialogShellSource}`, [
   'const settingsHealthCheckedForTarget = backendUrlConfigured',
   '&& Boolean(healthCheck.lastRunAt)',
   '&& Boolean(healthCheck.summary)',
@@ -2899,12 +3014,12 @@ assertIncludes(appSource, [
   'Health check failed or blocked; backend setup required before first project',
   'const settingsFooterConnectionLabel = backendUrlConfigured && !settingsHealthPassedForTarget',
   "? 'Run Health Check'",
-  '{settingsFooterConnectionLabel}',
-  "settingsBackendFooterReady ? 'text-green-700' : 'text-[#75631d]'",
+  'connectionLabel={settingsFooterConnectionLabel}',
+  "footerReady ? 'text-green-700' : 'text-[#75631d]'",
 ], 'Settings footer must not mark backend saved until Health has run for the configured target');
-assertIncludes(appSource, [
+assertIncludes(reactUiSource, [
   "blocked: 'border-[#8f1e18] bg-red-50 text-[#8f1e18]'",
-  "blocked: 'Blocked'",
+  "blocked: '需要处理'",
   "{ id: 'settings-health-readiness', label: 'Settings Health', status: 'blocked', detail }",
 ], 'Settings Health blocked rows must render as explicit blocked states');
 
@@ -2932,11 +3047,12 @@ assertIncludes(settingsProjectSettingsCommandSection, [
 ], 'Settings project settings backend receipt boundary');
 
 const settingsRenderSection = sliceBetween(
-  appSource,
+  settingsModalViewSource,
   "settingsTab === 'privacy'",
-  '<footer className="flex h-16 shrink-0 items-center justify-between border-t border-[#d1d0c9] px-7">',
+  '</SettingsDialogShell>',
 );
-assertIncludes(settingsRenderSection, [
+const settingsRenderSource = `${settingsRenderSection}\n${localPrivacySettingsSource}\n${localWorkspaceSettingsSource}\n${localToolsSettingsSource}\n${settingsDialogShellSource}`;
+assertIncludes(settingsRenderSource, [
   'data-testid="settings-privacy-retention-mode"',
   'data-testid="settings-privacy-provider-log-mode"',
   'data-testid="settings-privacy-export-approval"',
@@ -2955,7 +3071,7 @@ assertIncludes(settingsRenderSection, [
   'Global language: browser-local UI preference only',
   "readyForProduction ? 'ready' : 'blocked'",
 ], 'Settings backend-backed control render boundary');
-assertIncludes(appSource, [
+assertIncludes(reactUiSource, [
   'const settingsBackendProjectWriteAvailable = shouldAttemptBackendProjectWrite(activeProject);',
   'const settingsBackendProjectSyncDisabled = !settingsBackendProjectWriteAvailable || backendStation.loading;',
   'const settingsProviderProjectSyncDisabled = !settingsBackendProjectWriteAvailable || providerRuntimeStatus.running;',
@@ -2967,18 +3083,35 @@ assertIncludes(appSource, [
   'Backend workspace policy route required; local fallback disabled',
   'Backend tool grant route required; local fallback disabled',
 ], 'Settings backend project write guard');
-assertIncludes(settingsRenderSection, [
-  'disabled={!settingsBackendProjectWriteAvailable || privacyPolicySaving}',
+assertIncludes(settingsRenderSource, [
   'disabled={!settingsBackendProjectWriteAvailable || workspacePolicySaving}',
   'disabled={settingsBackendProjectSyncDisabled || workspaceBindDraft.saving || !workspaceBindDraft.path.trim()}',
   'disabled={settingsBackendProjectSyncDisabled}',
-  'disabled={settingsProviderProjectSyncDisabled}',
-  'disabled={!settingsBackendProjectWriteAvailable || toolGrantPolicySaving}',
-  'disabled={!settingsBackendProjectWriteAvailable || providerBudgetPolicySaving}',
 ], 'Settings backend-backed controls disabled until backend project is writable');
+assertIncludes(settingsRenderSection, [
+  'canWrite={settingsBackendProjectWriteAvailable}',
+  'toolSaving={toolGrantPolicySaving}',
+  'budgetSaving={providerBudgetPolicySaving}',
+  'readinessSyncDisabled={settingsProviderProjectSyncDisabled}',
+], 'Settings Tools component backend write wiring');
+assertIncludes(localToolsSettingsSource, [
+  'const disabled = !project || !canWrite;',
+  'disabled={disabled || toolSaving}',
+  'disabled={disabled || budgetSaving}',
+  'disabled={readinessSyncDisabled}',
+], 'Settings Tools controls disabled until the backend project is writable');
+assertIncludes(settingsRenderSection, [
+  'saving={privacyPolicySaving}',
+  'canWrite={settingsBackendProjectWriteAvailable}',
+  'onUpdate={updateProjectPrivacyPolicySetting}',
+], 'Settings Privacy component backend write wiring');
+assertIncludes(localPrivacySettingsSource, [
+  'const disabled = !canWrite || saving;',
+  'disabled={disabled}',
+], 'Settings Privacy controls disabled until the backend project is writable');
 
 const settingsWorkspaceMemoryReadinessSection = sliceBetween(
-  settingsRenderSection,
+  localWorkspaceSettingsSource,
   'data-testid="settings-workspace-memory-readiness"',
   'data-testid="settings-workspace-meeting-summaries"',
 );
@@ -2991,14 +3124,14 @@ assertIncludes(settingsWorkspaceMemoryReadinessSection, [
   'settings-workspace-memory-readiness-rows',
   'settings-workspace-memory-readiness-gates',
 ], 'Settings Workspace memory readiness route boundary');
-assertIncludes(appSource, [
+assertIncludes(settingsModalViewSource, [
   "projectMemoryReadinessSourceStatus === 'backend-backed'",
   'Sync /projects/:id/memory-readiness before trusting memory readiness',
 ], 'Settings Workspace memory readiness source-label model');
 assertReadOnlyRoutePanel(settingsWorkspaceMemoryReadinessSection, 'Settings Workspace memory readiness');
 
 const settingsWorkspaceMeetingSummarySection = sliceBetween(
-  settingsRenderSection,
+  localWorkspaceSettingsSource,
   'data-testid="settings-workspace-meeting-summaries"',
   'data-testid="settings-workspace-route-contract"',
 );
@@ -3011,16 +3144,16 @@ assertIncludes(settingsWorkspaceMeetingSummarySection, [
   '/projects/:id/meeting-summaries',
   'settings-workspace-meeting-summary-rows',
 ], 'Settings Workspace meeting summaries route boundary');
-assertIncludes(appSource, [
+assertIncludes(settingsModalViewSource, [
   "meetingSummarySourceStatus === 'backend-backed'",
   'Sync /projects/:id/meeting-summaries before trusting summaries',
 ], 'Settings Workspace meeting summaries source-label model');
 assertReadOnlyRoutePanel(settingsWorkspaceMeetingSummarySection, 'Settings Workspace meeting summaries');
 
 const settingsIntegrationReadinessSection = sliceBetween(
-  settingsRenderSection,
+  localToolsSettingsSource,
   'data-testid="settings-integration-capabilities-summary"',
-  'data-testid="settings-integration-browser-tools-boundary"',
+  'boundaryCards.map(',
 );
 assertIncludes(settingsIntegrationReadinessSection, [
   'data-testid="settings-integration-readiness-summary"',
@@ -3028,10 +3161,10 @@ assertIncludes(settingsIntegrationReadinessSection, [
   'data-testid="settings-integration-readiness-source"',
   'data-testid="settings-integration-readiness-source-detail"',
   'data-testid="settings-integration-readiness-route"',
-  '/projects/:id/settings-integration-readiness',
+  "routeFor('settings-integration-readiness')",
   'data-testid="settings-integration-readiness-contract"',
   'settings-integration-readiness-row-${row.id}',
-  'Route sync: {integrationCapabilityRouteSyncLabel}',
+  'Route sync: {integrationCapabilities ?',
   'contract not synced',
   'Route: {row.requiredBackendRoute}',
   "Schema: {row.readinessSchemaVersion || 'not synced'}",
@@ -3041,47 +3174,25 @@ assertIncludes(settingsIntegrationReadinessSection, [
   'Integration capability contract not synced.',
   'data-testid="settings-integration-capabilities-sync-project-state"',
 ], 'Settings Integration readiness/capability route boundary');
-assertIncludes(appSource, [
+assertIncludes(settingsModalViewSource, [
   "settingsIntegrationReadinessSourceStatus === 'backend-backed'",
   'Sync /projects/:id/settings-integration-readiness before trusting integration readiness',
 ], 'Settings Integration readiness source-label model');
 
-for (const panel of [
-  {
-    start: 'data-testid="settings-integration-proxy-webhook-boundary"',
-    end: 'data-testid="settings-integration-mcp-tools-boundary"',
-    context: 'Settings Proxy/Webhook adapter gateway',
-    markers: ['data-testid="settings-proxy-webhook-preflight-route"', '/projects/:id/adapter-gateway-preflight'],
-  },
-  {
-    start: 'data-testid="settings-integration-mcp-tools-boundary"',
-    end: 'data-testid="settings-integration-vector-boundary"',
-    context: 'Settings MCP tools readiness',
-    markers: ['data-testid="settings-mcp-tools-readiness-route"', '/projects/:id/provider-readiness'],
-  },
-  {
-    start: 'data-testid="settings-integration-vector-boundary"',
-    end: 'data-testid="settings-integration-budget-boundary"',
-    context: 'Settings Vector Store evidence index readiness',
-    markers: ['data-testid="settings-evidence-index-readiness-route"', '/projects/:id/evidence-index-readiness'],
-  },
-  {
-    start: 'data-testid="settings-integration-budget-boundary"',
-    end: 'data-testid="settings-integration-error-reporting-boundary"',
-    context: 'Settings Budget Alerts readiness',
-    markers: ['data-testid="settings-budget-alert-readiness-route"', '/projects/:id/budget-alert-readiness'],
-  },
-  {
-    start: 'data-testid="settings-integration-error-reporting-boundary"',
-    end: 'data-testid="settings-tool-grant-policy"',
-    context: 'Settings Error Reporting readiness',
-    markers: ['data-testid="settings-error-reporting-readiness-route"', '/projects/:id/error-reporting-readiness'],
-  },
-]) {
-  const panelSection = sliceBetween(settingsRenderSection, panel.start, panel.end);
-  assertIncludes(panelSection, panel.markers, `${panel.context} route boundary`);
-  assertReadOnlyRoutePanel(panelSection, panel.context);
-}
+assertIncludes(localToolsSettingsSource, [
+  "routeTestId: 'settings-proxy-webhook-preflight-route', route: routeFor('adapter-gateway-preflight')",
+  "routeTestId: 'settings-mcp-tools-readiness-route', route: routeFor('provider-readiness')",
+  "routeTestId: 'settings-evidence-index-readiness-route', route: routeFor('evidence-index-readiness')",
+  "routeTestId: 'settings-budget-alert-readiness-route', route: routeFor('budget-alert-readiness')",
+  "routeTestId: 'settings-error-reporting-readiness-route', route: routeFor('error-reporting-readiness')",
+  'data-testid={`settings-integration-${id}-boundary`}',
+], 'Settings Integration backend readiness route cards');
+const settingsIntegrationRouteCards = sliceBetween(
+  localToolsSettingsSource,
+  'boundaryCards.map(',
+  'data-testid="settings-integrations-route-contract"',
+);
+assertReadOnlyRoutePanel(settingsIntegrationRouteCards, 'Settings Integration readiness route cards');
 
 const settingsAutoSyncSection = sliceBetween(
   appSource,
@@ -3096,15 +3207,15 @@ assertIncludes(settingsAutoSyncSection, [
 ], 'Settings Workspace/Integrations auto-sync backend project state boundary');
 
 const settingsFooterSection = sliceBetween(
-  appSource,
+  settingsDialogShellSource,
   '<footer className="flex h-16 shrink-0 items-center justify-between border-t border-[#d1d0c9] px-7">',
-  'const renderSidebar = () =>',
+  '</footer>',
 );
-assertIncludes(settingsFooterSection, [
+assertIncludes(`${settingsFooterSection}\n${settingsModalViewSource}`, [
   'data-testid="settings-footer-backend-save-status"',
-  'settingsBackendStatusLabel',
+  'footerLabel={settingsBackendStatusLabel}',
   'data-testid="settings-footer-test-connection"',
-  'onClick={runSettingsFooterConnectionTest}',
+  'onConnectionTest={runSettingsFooterConnectionTest}',
 ], 'Settings footer boundary');
 assert(
   !settingsFooterSection.includes('Save Settings')

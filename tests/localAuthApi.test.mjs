@@ -19,7 +19,7 @@ test('local auth API protects local user administration and authenticates projec
     const bootstrap = api.handle({
       method: 'POST',
       path: '/local-auth/bootstrap',
-      body: { username: 'owner', password: 'correct horse battery staple' },
+      body: { username: 'owner', password: 'correct horse battery staple1' },
     });
     assert.equal(bootstrap.status, 201);
     assert.ok(bootstrap.body.localAuth.token);
@@ -32,7 +32,7 @@ test('local auth API protects local user administration and authenticates projec
       method: 'POST',
       path: '/local-auth/users',
       headers,
-      body: { username: 'manager', password: 'another correct horse battery staple', role: 'manager' },
+      body: { username: 'manager', password: 'another correct horse battery staple1', role: 'manager' },
     });
     assert.equal(created.status, 201);
     assert.equal(created.body.localAuth.user.role, 'manager');
@@ -41,7 +41,7 @@ test('local auth API protects local user administration and authenticates projec
     const managerLogin = api.handle({
       method: 'POST',
       path: '/local-auth/login',
-      body: { username: 'manager', password: 'another correct horse battery staple' },
+      body: { username: 'manager', password: 'another correct horse battery staple1' },
     });
     assert.equal(managerLogin.status, 200);
     assert.equal(api.handle({
@@ -54,7 +54,7 @@ test('local auth API protects local user administration and authenticates projec
       method: 'POST',
       path: '/local-auth/password',
       headers: { 'x-hofs-local-auth-token': managerLogin.body.localAuth.token },
-      body: { currentPassword: 'wrong current password', newPassword: 'replacement manager password' },
+      body: { currentPassword: 'wrong current password', newPassword: 'replacement manager password1' },
     });
     assert.equal(rejectedRotation.status, 403);
     const rotated = api.handle({
@@ -63,8 +63,8 @@ test('local auth API protects local user administration and authenticates projec
       headers: { 'x-hofs-local-auth-token': managerLogin.body.localAuth.token },
       body: {
         userId: bootstrap.body.localAuth.user.id,
-        currentPassword: 'another correct horse battery staple',
-        newPassword: 'replacement manager password',
+        currentPassword: 'another correct horse battery staple1',
+        newPassword: 'replacement manager password1',
       },
     });
     assert.equal(rotated.status, 200);
@@ -72,7 +72,7 @@ test('local auth API protects local user administration and authenticates projec
     assert.equal(api.handle({
       method: 'POST',
       path: '/local-auth/login',
-      body: { username: 'owner', password: 'correct horse battery staple' },
+      body: { username: 'owner', password: 'correct horse battery staple1' },
     }).status, 200);
     assert.equal(api.handle({
       method: 'POST',

@@ -16,11 +16,16 @@ export const providerModelNames = {
   model: ['model.name', 'model.model', 'model.id', 'model.model_id', 'model.model-id', 'model-provider.model', 'model_provider.model'],
 };
 
+export const providerIdentityNames = {
+  model: ['model.provider', 'model.provider_id', 'model.provider-id', 'model-provider.id', 'model_provider.id'],
+};
+
 export const normalizeProviderSecretTarget = (value = '') => {
   const normalized = String(value || '').toLowerCase().replace(/_/g, '-');
   if (['api-key', 'apikey', 'key', 'token', 'credential'].includes(normalized)) return 'api-key';
   if (['endpoint', 'url', 'base-url', 'baseurl', 'provider-endpoint'].includes(normalized)) return 'endpoint';
   if (['model', 'model-id', 'modelid', 'model-name', 'modelname'].includes(normalized)) return 'model';
+  if (['provider', 'provider-id', 'providerid', 'adapter', 'protocol'].includes(normalized)) return 'provider';
   return '';
 };
 
@@ -33,6 +38,12 @@ export const providerSecretBindingForRecord = (record = {}) => {
     || record.metadata?.providerSecretKind
     || '',
   );
+  if (
+    providerIdentityNames.model.includes(name)
+    || (scope === 'model-provider' && target === 'provider')
+  ) {
+    return { kind: 'model', target: 'provider' };
+  }
   if (
     providerModelNames.model.includes(name)
     || (scope === 'model-provider' && target === 'model')
@@ -72,6 +83,8 @@ export const findProviderVaultRecord = ({ kind = '', target = 'api-key', records
   const expectedTarget = normalizeProviderSecretTarget(target) || 'api-key';
   const expectedNames = expectedTarget === 'endpoint'
     ? (providerEndpointNames[normalizedKind] || [])
+    : expectedTarget === 'provider'
+      ? (providerIdentityNames[normalizedKind] || [])
     : expectedTarget === 'model'
       ? (providerModelNames[normalizedKind] || [])
       : (providerApiKeyNames[normalizedKind] || []);

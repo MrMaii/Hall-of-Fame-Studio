@@ -100,3 +100,45 @@ test('fails a sensitive write closed when its local audit sink is unavailable', 
   assert.equal(response.body.error, 'access-audit-write-failed');
   assert.equal(businessWriteCount, 0);
 });
+
+test('returns event-ledger proof for every retained project access decision beyond forty rows', () => {
+  const seed = createKickoffProjectFromMeeting({
+    projectId,
+    name: 'Local sensitive write audit',
+    brief: 'Keep every retained access decision linked to its event-ledger proof.',
+    now,
+    team: [
+      { id: 'leader', name: 'Ada Lovelace', title: 'Technical Leader', skill: 'system design' },
+    ],
+  });
+  const service = createAgentProjectService({ projects: [seed.project], messages: seed.messages });
+  const decision = {
+    allowed: true,
+    status: 'allowed',
+    enforced: true,
+    mode: 'enforced',
+    route: {
+      routeKey: 'project-read',
+      capability: 'Read project',
+      sensitivity: 'project-data',
+      projectId,
+    },
+    actor: { role: 'manager', userId: 'local-manager' },
+  };
+
+  for (let index = 0; index < 41; index += 1) {
+    service.recordAccessDecision({
+      projectId,
+      decision,
+      method: 'GET',
+      path: `/projects/${projectId}?audit=${index}`,
+      now: `2026-07-10T19:00:${String(index).padStart(2, '0')}.000Z`,
+    });
+  }
+
+  const audit = service.getSecurityAccessAudit(projectId);
+  assert.equal(audit.count, 41);
+  assert.equal(audit.eventIds.length, audit.count);
+  assert.equal(new Set(audit.eventIds).size, audit.count);
+  assert.ok(audit.rows.every((row) => audit.eventIds.includes(`evt_${row.id}`)));
+});

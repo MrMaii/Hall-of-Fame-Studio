@@ -1,0 +1,37 @@
+{
+  "schemaVersion": "local-performance-baseline/v1",
+  "measuredAt": "2026-07-14T16:05:12.793Z",
+  "environment": {
+    "platform": "win32",
+    "osRelease": "10.0.26200",
+    "node": "24.18.0",
+    "logicalCpuCount": 32,
+    "totalMemoryBytes": 34056667136,
+    "freeMemoryBytes": 10352156672
+  },
+  "localStore": {
+    "path": "C:\\projects\\Hall-of-Fame-Studio\\.tmp\\agent-project-store.json",
+    "bytes": 44308618,
+    "projectCount": 2,
+    "messageCount": 240,
+    "readMs": 41.8,
+    "parseMs": 89.8,
+    "heapUsedBytesAfterParse": 224236280,
+    "cpuUserMs": 47,
+    "cpuSystemMs": 47
+  },
+  "health": {
+    "url": "http://127.0.0.1:8787/health",
+    "status": 200,
+    "samples": 12,
+    "p50Ms": 1.88,
+    "p95Ms": 26.64,
+    "error": null
+  },
+  "budgets": {
+    "healthP95Ms": 250,
+    "storeReadAndParseMs": 2000,
+    "heapUsedBytesAfterParse": 536870912,
+    "result": "pass"
+  }
+}

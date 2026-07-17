@@ -133,7 +133,7 @@ test('protects local runtime error controls with a security administrator sessio
   const localAuth = createLocalAuthStore({ filePath: join(directory, 'local-auth.json') });
   const owner = localAuth.bootstrap({
     username: 'owner',
-    password: 'correct horse battery staple',
+    password: 'correct horse battery staple1',
   });
   const runtime = createAgentProjectHttpServer({
     api: throwingApi(localAuth),

@@ -489,7 +489,20 @@ function legacyAutonomousSchedulerLedgerEvents(schedulerRecords = []) {
 }
 
 export function backfillProjectEventLedger(project = {}) {
-  const chainedProject = sealLegacyProjectEventLedger(project);
+  const retainedEvents = Array.isArray(project.eventLedger) ? project.eventLedger : [];
+  const ledgerCandidate = retainedEvents.length > 0
+    ? project
+    : {
+        ...project,
+        eventLedger: [],
+        eventLedgerChainVersion: 1,
+        eventLedgerPreviousHash: EVENT_LEDGER_GENESIS_HASH,
+        eventLedgerRootHash: EVENT_LEDGER_GENESIS_HASH,
+        eventLedgerFirstSequence: 0,
+        eventLedgerLastSequence: 0,
+        eventLedgerEventCount: 0,
+      };
+  const chainedProject = sealLegacyProjectEventLedger(ledgerCandidate);
   const integrity = verifyProjectEventLedger(chainedProject);
   if (!integrity.valid) return { ...project, eventLedgerIntegrityStatus: 'invalid' };
   const currentSummary = summarizeProjectEventLedger(chainedProject);
@@ -1522,6 +1535,7 @@ export function planAutonomousWorkCycle({ team = [], project = {}, cadence = 'ho
       },
       publish: shouldPublish
         ? {
+          agentId: agent.id,
           kind: cadence === 'daily' ? 'daily-report' : 'work-pulse',
           frame: cadenceProfile.frame,
           channel: lead?.id === agent.id ? 'project-ledger' : 'team-worklog',
@@ -1701,10 +1715,10 @@ export function advanceAutonomousProjectCycle({
     nextRunAt,
     intervalHours: getCadence(cadence).horizonHours,
   };
-  const nextLogs = publishEvents.map((event) => {
+  const nextLogs = publishEvents.map((event, index) => {
     const agent = cycle.network.agents.find((item) => item.id === event.agentId);
     return {
-      id: `${cycleId}_${event.agentId || event.kind || 'event'}`,
+      id: `${cycleId}_${event.kind || 'event'}_${event.agentId || 'runtime'}_${event.targetAgentId || 'self'}_${index + 1}`,
       time: now,
       agent: agent?.name || 'Agent Runtime',
       agentId: event.agentId || null,
@@ -3417,22 +3431,24 @@ export function handleFeatureChangeRequest({
     language: currentLanguage,
   });
 
-  return localizeGeneratedObject({
-    network,
-    owner,
-    changeTask: evidencedChangeTask,
-    changeRecord,
-    ownerStateUpdate,
-    teamSyncStateUpdates,
-    discussionMessages,
-    logs,
+  return {
+    ...localizeGeneratedObject({
+      network,
+      owner,
+      changeTask: evidencedChangeTask,
+      changeRecord,
+      ownerStateUpdate,
+      teamSyncStateUpdates,
+      discussionMessages,
+      logs,
+      diagnostics: readings.map((reading) => ({
+        agentId: reading.agentId,
+        attentionScore: reading.score,
+        decision: reading.decision,
+        explanation: reading.explanation,
+        obligationCount: reading.obligations.length,
+      })),
+    }, currentLanguage),
     project: projectWithDiscussionDelivery,
-    diagnostics: readings.map((reading) => ({
-      agentId: reading.agentId,
-      attentionScore: reading.score,
-      decision: reading.decision,
-      explanation: reading.explanation,
-      obligationCount: reading.obligations.length,
-    })),
-  }, currentLanguage);
+  };
 }

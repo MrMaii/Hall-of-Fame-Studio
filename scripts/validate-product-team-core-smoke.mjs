@@ -543,6 +543,20 @@ const requiredTraceIds = [
   finalReview.id,
 ];
 assert(flowGraph.status === 200 && requiredTraceIds.every((id) => flowText.includes(id)), 'Manager Flow Graph must trace all required generic submission/evidence/review nodes.');
+const compactFlowNodes = flowNodes.filter((node) => ['major', 'critical'].includes(node.importance));
+assert(compactFlowNodes.some((node) => node.category === 'decision'), 'Compact Manager Flow Graph must retain major project decisions.');
+assert(compactFlowNodes.some((node) => node.subtype === 'leader-assignment'), 'Compact Manager Flow Graph must retain Leader assignments.');
+assert(
+  requiredGenericArtifactTypes.every((artifactType) => compactFlowNodes.some((node) => (
+    node.submission?.artifactType === artifactType
+    || node.attachments?.some((attachment) => attachment.artifactType === artifactType || attachment.type === artifactType)
+  ))),
+  'Compact Manager Flow Graph must retain every submitted work result.',
+);
+assert(
+  compactFlowNodes.some((node) => node.submissionId === finalSubmission.id && node.subtype === 'final-deliverable'),
+  'Compact Manager Flow Graph must retain the final integrated deliverable.',
+);
 const flowSubmissionNodes = flowGraph.body.nodes?.filter((node) => node.category === 'submission' && node.source === 'agentSubmissions') || [];
 const flowSubmissionNodesMissingRoute = flowSubmissionNodes.filter((node) => !(
   node.submissionId

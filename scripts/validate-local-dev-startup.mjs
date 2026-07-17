@@ -24,6 +24,7 @@ const env = {
   AGENT_PROJECT_STORE: resolve(tempRoot, 'projects.json'),
   AGENT_LOCAL_AUTH_STORE: resolve(tempRoot, 'users.json'),
   AGENT_PROJECT_RUNTIME_ROOT: resolve(tempRoot, 'projects'),
+  AGENT_LOCAL_RUNTIME_STATUS_FILE: resolve(tempRoot, 'runtime-status.json'),
   SECRET_VAULT_RECORDS_FILE: resolve(tempRoot, 'vault-records.json'),
 };
 let output = '';

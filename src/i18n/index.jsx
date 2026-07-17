@@ -24,13 +24,19 @@ function readStoredLanguage() {
   }
 }
 
+const localizedTextSources = new WeakMap();
+const localizedAttributeSources = new WeakMap();
+
 function localizeDom(root, language) {
   if (!root || language == null) return;
   const skipTags = new Set(['SCRIPT', 'STYLE', 'TEXTAREA']);
   const translateNode = (node) => {
     if (!node || skipTags.has(node.parentElement?.tagName)) return;
     const value = node.nodeValue;
-    const localized = localizeText(value, language);
+    const previous = localizedTextSources.get(node);
+    const source = previous && value === previous.rendered ? previous.source : value;
+    const localized = localizeText(source, language);
+    localizedTextSources.set(node, { source, rendered: localized });
     if (localized !== value) node.nodeValue = localized;
   };
 
@@ -40,12 +46,17 @@ function localizeDom(root, language) {
   textNodes.forEach(translateNode);
 
   root.querySelectorAll?.('[placeholder], [title], [aria-label]').forEach((element) => {
+    const records = localizedAttributeSources.get(element) || new Map();
     ['placeholder', 'title', 'aria-label'].forEach((attribute) => {
       const value = element.getAttribute(attribute);
       if (!value) return;
-      const localized = localizeText(value, language);
+      const previous = records.get(attribute);
+      const source = previous && value === previous.rendered ? previous.source : value;
+      const localized = localizeText(source, language);
+      records.set(attribute, { source, rendered: localized });
       if (localized !== value) element.setAttribute(attribute, localized);
     });
+    localizedAttributeSources.set(element, records);
   });
 }
 

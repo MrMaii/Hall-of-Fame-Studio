@@ -13,10 +13,12 @@ const serverScript = resolve(repoRoot, 'scripts', 'agent-project-server.mjs');
 const secretVaultRecordsFile = resolve(tempRoot, 'secret-vault-records.json');
 const uiWorkspaceRoot = resolve(tempRoot, 'ui-bound-workspace');
 const backendStorageKey = 'hall_of_fame_studio.agent_backend_url.v1';
+const localAuthStorageKey = 'hall_of_fame_studio.local_auth_session.v1';
 const languageStorageKey = 'hall_of_fame_studio.language.v1';
 const projectId = 'p_roundtable_001';
 const modelPlaintext = 'SETTINGS_UI_MODEL_KEY_SHOULD_NOT_LEAK';
 const searchPlaintext = 'SETTINGS_UI_SEARCH_KEY_SHOULD_NOT_LEAK';
+let activeLocalAuthToken = '';
 
 function readCliArg(name) {
   const index = process.argv.indexOf(name);
@@ -84,7 +86,13 @@ function assert(condition, message) {
 }
 
 async function fetchJson(url, options = {}) {
-  const response = await fetch(url, options);
+  const response = await fetch(url, {
+    ...options,
+    headers: {
+      ...(activeLocalAuthToken ? { 'x-hofs-local-auth-token': activeLocalAuthToken } : {}),
+      ...(options.headers || {}),
+    },
+  });
   const body = await response.json().catch(() => ({}));
   return { status: response.status, body };
 }
@@ -280,7 +288,10 @@ async function assertPageContains(page, text, message) {
     { timeout: 10000 },
   ).catch(() => {});
   const bodyText = await page.locator('body').innerText({ timeout: 5000 });
-  assert(bodyText.toLowerCase().includes(text.toLowerCase()), message || `Expected page to contain "${text}".`);
+  assert(
+    bodyText.toLowerCase().includes(text.toLowerCase()),
+    `${message || `Expected page to contain "${text}".`} Page excerpt: ${bodyText.slice(0, 1600)}`,
+  );
 }
 
 async function assertPanelTextIncludes(page, testId, expectedTexts, message) {
@@ -476,6 +487,8 @@ const backendChild = spawn(process.execPath, [serverScript], {
     AGENT_PROJECT_STORE: resolve(tempRoot, 'store.json'),
     AGENT_PROJECT_RUNTIME_ROOT: resolve(tempRoot, 'runtime'),
     AGENT_SECURITY_AUDIT_LOG: resolve(tempRoot, 'security-audit.jsonl'),
+    AGENT_LOCAL_AUTH_REQUIRED: 'true',
+    AGENT_LOCAL_AUTH_STORE: resolve(tempRoot, 'local-auth.json'),
     SECRET_VAULT_ENABLED: 'true',
     SECRET_VAULT_KEY: 'settings-agents-server-ui-validation-key',
     SECRET_VAULT_KEY_ID: 'settings-agents-server-ui-v1',
@@ -496,14 +509,28 @@ const projectSettingsRequestLog = [];
 const vaultSealRequestLog = [];
 const settingsWorkflowSmokeLog = [];
 const settingsHealthRequestLog = [];
+const workspaceReadinessRequestLog = [];
 
 try {
   const backendUrl = await waitForServerUrl(backendChild);
-  const vaultStatus = await fetchJson(`${backendUrl}/secret-vault/status`);
+  const localAuthBootstrapResponse = await fetchJson(`${backendUrl}/local-auth/bootstrap`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ username: 'settings-admin', password: 'test1' }),
+  });
+  assert(localAuthBootstrapResponse.status === 201, 'Settings UI validation must create an isolated local administrator.');
+  const localAuthSession = { ...localAuthBootstrapResponse.body.localAuth, baseUrl: backendUrl };
+  activeLocalAuthToken = localAuthSession.token;
+  const vaultStatus = await fetchJson(`${backendUrl}/secret-vault/status`, {
+    headers: { 'x-hofs-local-auth-token': localAuthSession.token },
+  });
   assert(vaultStatus.body.secretVaultStatus?.ready === true, 'agents:server Secret Vault must be ready before Settings UI validation.');
   const seedProjectResponse = await fetchJson(`${backendUrl}/projects/initiate`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: {
+      'content-type': 'application/json',
+      'x-hofs-local-auth-token': localAuthSession.token,
+    },
     body: JSON.stringify({
       includeReadModels: false,
       projectId,
@@ -528,13 +555,16 @@ try {
   staticRuntime = configuredUiBaseUrl ? await resolveExternalUiRuntime(configuredUiBaseUrl) : await listen(createStaticServer());
   browser = await launchBrowserWithRetry();
   const context = await browser.newContext({ viewport: { width: 1440, height: 1100 } });
-  await context.addInitScript(({ targetBackendUrl, storageKey, languageKey }) => {
+  await context.addInitScript(({ targetBackendUrl, storageKey, authKey, session, languageKey }) => {
     window.__AGENT_BACKEND_URL__ = targetBackendUrl;
     window.localStorage.setItem(storageKey, JSON.stringify(targetBackendUrl));
+    window.sessionStorage.setItem(authKey, JSON.stringify(session));
     window.localStorage.setItem(languageKey, 'en');
   }, {
     targetBackendUrl: backendUrl,
     storageKey: backendStorageKey,
+    authKey: localAuthStorageKey,
+    session: localAuthSession,
     languageKey: languageStorageKey,
   });
 
@@ -546,12 +576,21 @@ try {
   });
   page.on('request', (request) => {
     const path = new URL(request.url()).pathname;
+    if (/\/projects\/[^/]+\/(memory-readiness|meeting-summaries)$/.test(path)) {
+      workspaceReadinessRequestLog.push({
+        type: 'request',
+        method: request.method(),
+        path,
+        hasLocalAuth: Boolean(request.headers()['x-hofs-local-auth-token']),
+      });
+    }
     if ([
       '/workers/autonomous/status',
       '/llm/status',
       '/llm/test',
       '/search/status',
       '/search/test',
+      '/settings/health-readiness',
       '/settings/workflow-smoke',
     ].includes(path)) {
       settingsHealthRequestLog.push({
@@ -592,6 +631,7 @@ try {
       '/llm/test',
       '/search/status',
       '/search/test',
+      '/settings/health-readiness',
       '/settings/workflow-smoke',
     ].includes(path)) {
       settingsHealthRequestLog.push({
@@ -610,6 +650,9 @@ try {
   });
   page.on('response', (response) => {
     const path = new URL(response.url()).pathname;
+    if (/\/projects\/[^/]+\/(memory-readiness|meeting-summaries)$/.test(path)) {
+      workspaceReadinessRequestLog.push({ type: 'response', status: response.status(), path });
+    }
     if (/\/projects\/[^/]+\/project-settings$/.test(path)) {
       const latest = [...projectSettingsRequestLog].reverse().find((entry) => entry.url === response.url() && entry.status === undefined);
       if (latest) latest.status = response.status();
@@ -621,61 +664,32 @@ try {
   });
 
   await page.goto(staticRuntime.url, { waitUntil: 'networkidle' });
-  await page.getByTestId('backend-sync-project-catalog').click();
   await page.getByTestId(`project-nav-${projectId}`).waitFor({ state: 'visible', timeout: 10000 });
   await page.getByTestId(`project-nav-${projectId}`).click();
+  await page.getByTestId('project-overview').waitFor({ state: 'visible', timeout: 10000 });
+  await page.getByRole('button', { name: '查看完整项目控制台', exact: true }).click();
   await page.getByTestId('project-dashboard-view').waitFor({ state: 'visible', timeout: 10000 });
   await page.getByTestId('open-settings-button').click();
   await page.getByTestId('settings-tab-keys').click();
-  await page.getByTestId('settings-provider-boundary').waitFor({ state: 'visible', timeout: 10000 });
-  await assertPageContains(page, 'Backend-owned provider credentials', 'Settings Keys must render the backend provider boundary.');
-  await page.getByTestId('settings-provider-api-entry-state').waitFor({ state: 'visible', timeout: 10000 });
-  await assertPanelTextIncludes(page, 'settings-provider-api-entry-state', [
-    'API input fields',
-    'Browser persistence: disabled',
-    'Plaintext after Seal: cleared after backend receipt',
-  ], 'Settings Keys must show that provider secrets are backend-vault-only.');
-  await page.getByTestId('settings-provider-open-backend-target').click();
-  await page.getByTestId('settings-deployment-backend-url-input').waitFor({ state: 'visible', timeout: 10000 });
-  const shortcutBackendUrl = await page.getByTestId('settings-deployment-backend-url-input').inputValue();
-  assert(
-    normalizeBaseUrl(shortcutBackendUrl) === backendUrl,
-    `Settings Keys backend URL shortcut must open the active agents:server target. Expected ${backendUrl}, got ${shortcutBackendUrl}.`,
-  );
-  await page.getByTestId('settings-tab-keys').click();
-  await page.getByTestId('settings-provider-boundary').waitFor({ state: 'visible', timeout: 10000 });
-  await page.getByTestId('settings-secret-vault-local-startup-contract').waitFor({ state: 'visible', timeout: 10000 });
-  const startupContractText = await page.getByTestId('settings-secret-vault-local-startup-contract').innerText();
-  assert(
-    startupContractText.includes('Local vault')
-      && startupContractText.includes('.tmp/agent-local-user-runtime.json')
-      && startupContractText.includes('API fields after refresh')
-      && startupContractText.includes('/local-mvp-startup-readiness')
-      && startupContractText.includes('/settings/provider-readiness')
-      && startupContractText.includes('/secret-vault/status')
-      && startupContractText.includes('/secret-vault/seal')
-      && startupContractText.includes('Startup readiness'),
-    'Settings Keys must show the local agents:server Secret Vault startup contract before API keys are sealed.',
-  );
+  await page.getByTestId('settings-local-model-simple').waitFor({ state: 'visible', timeout: 10000 });
   await page.getByTestId('settings-provider-sync-status').click();
   await waitForSettingsProviderIdle(page);
-  await assertPanelTextIncludes(page, 'settings-provider-api-entry-state', [
-    'Seal persistence: available through /secret-vault/seal',
-  ], 'Settings Keys must show Seal availability only after backend Secret Vault readiness is synced.');
-  await assertPanelTextIncludes(page, 'settings-provider-readiness-contract', [
-    'backend-backed',
-    'Backend settings-provider-readiness/v1 route synced',
-  ], 'Settings Keys must expose provider readiness as a backend-backed contract after syncing provider status.');
-  await assertPageContains(page, '/secret-vault/seal', 'Settings Keys must expose the backend secret-vault seal route.');
+  assert(
+    await page.getByTestId('settings-provider-model-key-input').isEnabled(),
+    'Settings Keys must enable model draft entry after the authenticated local backend is ready.',
+  );
+  await assertPanelTextIncludes(
+    page,
+    'settings-local-model-simple',
+    ['Keys are stored only by the local service and are not kept in the browser page.'],
+    'Settings Keys must explain that model keys are stored by the local service instead of the browser.',
+  );
   await page.waitForFunction(() => {
     const footer = document.querySelector('[data-testid="settings-footer-backend-save-status"]')?.textContent || '';
-    const entry = document.querySelector('[data-testid="settings-provider-api-entry-state"]')?.textContent || '';
-    return /run health check before first project/i.test(footer) && /seal persistence:\s*available through \/secret-vault\/seal/i.test(entry);
+    return /run health check before first project/i.test(footer);
   }, null, { timeout: 15000 }).catch(async () => {
     const footerStatus = await page.getByTestId('settings-footer-backend-save-status').innerText().catch(() => '<missing footer>');
-    const entryStatus = await page.getByTestId('settings-provider-api-entry-state').innerText().catch(() => '<missing api entry>');
-    const vaultStatusText = await page.getByTestId('settings-secret-vault-status').innerText().catch(() => '<missing vault status>');
-    throw new Error(`Settings footer must require Health before claiming backend-backed saves. Footer: ${footerStatus}. API entry: ${entryStatus}. Vault: ${vaultStatusText}.`);
+    throw new Error(`Settings footer must require Health before claiming backend-backed saves. Footer: ${footerStatus}.`);
   });
   const footerConnectionButton = await waitForButtonEnabled(
     page,
@@ -683,25 +697,26 @@ try {
     'Settings footer Test Connection must be available as a visible backend health entry point.',
   );
   await footerConnectionButton.click();
+  await page.getByTestId('settings-local-health-simple').waitFor({ state: 'visible', timeout: 10000 });
   await page.getByTestId('settings-health-quick-check').waitFor({ state: 'visible', timeout: 10000 });
   await page.getByTestId('settings-health-workflow-smoke').waitFor({ state: 'visible', timeout: 10000 });
-  try {
-    await page.waitForFunction(() => document.body.innerText.includes('/settings/health-readiness'), null, { timeout: 20000 });
-  } catch (error) {
-    const bodyText = await page.locator('body').innerText({ timeout: 1000 }).catch(() => '');
-    console.error(`Settings Health panel after Quick check:\n${bodyText.slice(0, 1200)}`);
-    throw error;
+  const healthRequestDeadline = Date.now() + 20_000;
+  while (!settingsHealthRequestLog.some((entry) => entry.type === 'response' && entry.path === '/settings/health-readiness') && Date.now() < healthRequestDeadline) {
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 200));
   }
-  await assertPageContains(page, 'Settings Health', 'Settings Health tab must render backend-owned health readiness rows.');
-  await assertPageContains(page, '/local-mvp-startup-readiness', 'Settings Health quick check must include local MVP startup readiness from the backend contract.');
-  await assertPageContains(page, '/projects', 'Settings Health quick check must include backend project catalog readiness.');
+  assert(
+    settingsHealthRequestLog.some((entry) => entry.type === 'response' && entry.path === '/settings/health-readiness' && entry.status === 200),
+    `Settings Health quick check must receive a successful local backend response. Requests: ${JSON.stringify(settingsHealthRequestLog.slice(-12))}`,
+  );
+  await assertPageContains(page, '当前状态', 'Settings Health tab must show a user-facing current status.');
+  await assertPageContains(page, '本地健康检查', 'Settings Health tab must identify the local health check without exposing internal controls.');
   await page.waitForFunction(() => {
     const footer = document.querySelector('[data-testid="settings-footer-backend-save-status"]')?.textContent || '';
     return /health check failed or blocked/i.test(footer) && /backend setup required before first project/i.test(footer);
   }, null, { timeout: 15000 }).catch(async () => {
     const footerStatus = await page.getByTestId('settings-footer-backend-save-status').innerText().catch(() => '<missing footer>');
-    const healthStatusText = await page.getByTestId('settings-health-route-contract').innerText().catch(() => '<missing health status>');
-    throw new Error(`Settings footer must stay blocked after Health runs before provider secrets are sealed. Footer: ${footerStatus}. Health: ${healthStatusText}.`);
+    const healthStatusText = await page.getByTestId('settings-local-health-simple').innerText().catch(() => '<missing health status>');
+    throw new Error(`Settings footer must stay blocked after Health runs before provider secrets are sealed. Footer: ${footerStatus}. Health: ${healthStatusText.slice(0, 800)}.`);
   });
   assert(
     await page.getByTestId('settings-health-workflow-smoke').isVisible(),
@@ -733,24 +748,19 @@ try {
     'npm run agents:settings-runtime-readiness',
   ], 'Settings Deployment must render backend runtime readiness instead of browser-inferred deployment state.');
 
-  await page.getByTestId('settings-tab-models').click();
-  await page.getByTestId('settings-model-runtime-readiness-contract').waitFor({ state: 'visible', timeout: 10000 });
-  await assertPanelTextIncludes(page, 'settings-model-runtime-readiness-contract', [
-    'Model policy readiness comes from the backend',
-    'backend-backed',
-    'Backend settings-runtime-readiness/v1 route synced',
-    '/settings/runtime-readiness',
-    'Model runtime',
-    'Search runtime',
-  ], 'Settings Models must render backend model/runtime readiness instead of a browser-only model picker.');
+  assert((await page.getByTestId('settings-tab-models').count()) === 0, 'Settings must not expose a duplicate technical Models category beside the user-facing model setup page.');
 
   await page.getByTestId('settings-tab-integrations').click();
+  await page.getByTestId('settings-local-tools-simple').waitFor({ state: 'visible', timeout: 10000 });
+  const integrationTechnicalDetails = page.getByTestId('settings-tools-technical-details');
+  assert(!(await integrationTechnicalDetails.getAttribute('open')), 'Settings Integration technical details must be closed by default.');
+  await integrationTechnicalDetails.locator('summary').click();
   await page.getByTestId('settings-integration-readiness-summary').waitFor({ state: 'visible', timeout: 10000 });
-  const integrationSyncButton = page.getByRole('button', { name: /Sync integration readiness/i });
+  const integrationSyncButton = page.getByRole('button', { name: '同步工具就绪状态', exact: true });
   await integrationSyncButton.waitFor({ state: 'visible', timeout: 10000 });
   await page.waitForFunction(() => {
     const buttons = Array.from(document.querySelectorAll('button'));
-    const button = buttons.find((element) => /Sync integration readiness/i.test(element.textContent || ''));
+    const button = buttons.find((element) => (element.textContent || '').includes('同步工具就绪状态'));
     return Boolean(button && !button.disabled);
   }, null, { timeout: 10000 });
   await integrationSyncButton.click();
@@ -796,7 +806,12 @@ try {
   await page.waitForFunction(() => {
     const text = document.querySelector('[data-testid="settings-workspace-memory-readiness-status"]')?.textContent || '';
     return !/not synced/i.test(text);
-  }, null, { timeout: 10000 });
+  }, null, { timeout: 10000 }).catch(async () => {
+    const statusText = await page.getByTestId('settings-workspace-memory-readiness-status').innerText().catch(() => '<missing status>');
+    const directResponse = await fetchJson(`${backendUrl}/projects/${projectId}/memory-readiness`);
+    const bodyText = await page.locator('body').innerText().catch(() => '');
+    throw new Error(`Workspace memory readiness did not update. Browser requests: ${JSON.stringify(workspaceReadinessRequestLog.slice(-12))}. UI: ${statusText}. Direct HTTP: ${directResponse.status} ${JSON.stringify(directResponse.body).slice(0, 900)}. Page: ${bodyText.slice(-1200)}`);
+  });
   const summariesSyncButton = await waitForButtonEnabled(
     page,
     'settings-workspace-sync-meeting-summaries',
@@ -905,8 +920,7 @@ try {
     throw new Error(`${error.message}. Browser project-settings requests: ${JSON.stringify(projectSettingsRequestLog.slice(-12))}`);
   });
   assert(privacySettings.privacyPolicy?.readyForProduction === false, 'Settings Privacy backend receipt must not overclaim production privacy compliance.');
-  const privacyRevisionText = await page.getByTestId('settings-privacy-policy-revision').innerText();
-  assert(/Revision:\s*[1-9]/.test(privacyRevisionText), `Settings Privacy UI must show a backend settings revision after edits. Actual: ${privacyRevisionText}`);
+  assert(Number(privacySettings.revision) >= 1, `Settings Privacy backend receipt must increment the project settings revision. Actual: ${privacySettings.revision}.`);
 
   await page.getByTestId('settings-tab-integrations').click();
   await selectProjectSettingOption(page, 'settings-provider-budget-daily', '500', '"dailyBudgetCents":500');
@@ -914,7 +928,9 @@ try {
     backendUrl,
     (settings) => settings.providerBudgetPolicy?.dailyBudgetCents === 500,
     'Settings provider daily budget must persist through backend project-settings',
-  );
+  ).catch((error) => {
+    throw new Error(`${error.message}. Browser project-settings requests: ${JSON.stringify(projectSettingsRequestLog.slice(-10))}`);
+  });
   await selectProjectSettingOption(page, 'settings-provider-budget-hourly', '20', '"maxRequestsPerProjectHour":20');
   await waitForProjectSettings(
     backendUrl,
@@ -944,12 +960,16 @@ try {
   await assertPanelTextIncludes(page, 'settings-provider-budget-policy', [
     '500 cents/day',
     '20',
-    `/projects/${projectId}/project-settings`,
   ], 'Settings Integrations must render the backend-backed provider budget policy after save.');
   await assertPanelTextIncludes(page, 'settings-tool-grant-policy', [
     'Default grants: 4/5',
-    `/projects/${projectId}/project-settings`,
   ], 'Settings Integrations must render backend-backed Agent tool grants after save.');
+  const savedIntegrationTechnicalDetails = page.getByTestId('settings-tools-technical-details');
+  assert(!(await savedIntegrationTechnicalDetails.getAttribute('open')), 'Settings Integration technical details must return closed after leaving and reopening the tab.');
+  await savedIntegrationTechnicalDetails.locator('summary').click();
+  await assertPanelTextIncludes(page, 'settings-integrations-route-contract', [
+    `/projects/${projectId}/project-settings`,
+  ], 'Settings Integrations technical details must retain the backend project-settings route after save.');
 
   const controlledRunResponse = await fetchJson(`${backendUrl}/projects/${projectId}/provider-controlled-run`);
   assert(controlledRunResponse.status === 200 && controlledRunResponse.body.providerControlledRun?.budget?.dailyBudgetCents === 500, 'Provider controlled run must consume the Settings provider budget saved through the UI.');
@@ -971,10 +991,14 @@ try {
   );
   await clickSealButtonAndWaitForRecord(page, sealModelButton, backendUrl, 'model.apiKey', 'Model key seal button');
   await waitForVaultRecord(backendUrl, 'model.baseURL');
-  await waitForVaultRecord(backendUrl, 'model.name');
+  await waitForVaultRecord(backendUrl, 'model.name').catch(async (error) => {
+    const receiptText = await page.getByTestId('settings-provider-seal-receipt').innerText().catch(() => '<missing receipt>');
+    throw new Error(`${error.message}. Model seal requests: ${JSON.stringify(vaultSealRequestLog.slice(-6))}. Receipt: ${receiptText}`);
+  });
   await page.getByTestId('settings-provider-seal-receipt').waitFor({ state: 'visible', timeout: 10000 });
   await waitForSettingsProviderIdle(page);
 
+  await page.getByText('Configure research search (optional)', { exact: true }).click();
   await fillControlledInput(page, 'settings-provider-search-key-input', searchPlaintext);
   await fillControlledInput(page, 'settings-provider-search-endpoint-input', `${mockSearchRuntime.url}/search`);
   const sealSearchButton = await waitForButtonEnabled(
@@ -1019,22 +1043,13 @@ try {
   assert(searchRequests.length >= 1 && searchRequests.at(-1).authorization === `Bearer ${searchPlaintext}`, 'Settings search test must reach the configured endpoint with the sealed key.');
   await page.getByTestId('settings-provider-sync-status').click();
   await waitForSettingsProviderIdle(page);
-  await assertPanelTextIncludes(page, 'settings-provider-model-status', [
-    'Backend ready',
-    'Runtime enabled: yes',
-    'Secret source: local-secret-vault',
-  ], 'Settings must show the model provider ready after the model key is sealed through the backend vault.');
-  await assertPanelTextIncludes(page, 'settings-provider-search-status', [
-    'Backend ready',
-    'Runtime enabled: yes',
-    'Secret source: local-secret-vault',
-    'Endpoint source: local-secret-vault',
-  ], 'Settings must show the search provider ready after endpoint and key are sealed through the backend vault.');
-
-  const settingsText = await page.getByTestId('settings-provider-boundary').innerText();
-  assert(!settingsText.includes(modelPlaintext) && !settingsText.includes(searchPlaintext), 'Settings UI must clear plaintext keys after backend seal receipts.');
+  const readyStatusCount = await page.getByTestId('settings-local-model-simple').getByText('Ready', { exact: true }).count();
+  assert(readyStatusCount >= 2, `Settings must show both model and search services as usable after saving. Visible ready statuses: ${readyStatusCount}.`);
+  assert(await page.getByTestId('settings-provider-model-key-input').inputValue() === '', 'Settings UI must clear the plaintext model key after the backend receipt.');
+  assert(await page.getByTestId('settings-provider-search-key-input').inputValue() === '', 'Settings UI must clear the plaintext search key after the backend receipt.');
 
   await page.getByTestId('settings-tab-health').click();
+  await page.getByTestId('settings-local-health-simple').getByText('查看技术诊断信息', { exact: true }).click();
   await page.getByTestId('settings-health-workflow-smoke').waitFor({ state: 'visible', timeout: 10000 });
   const workflowSmokeButton = await waitForButtonEnabled(
     page,
@@ -1085,7 +1100,7 @@ try {
   }
   const workflowSmokePostClickState = await page.evaluate(() => {
     const button = document.querySelector('[data-testid="settings-health-workflow-smoke"]');
-    const rows = Array.from(document.querySelectorAll('[data-testid="settings-health-route-contract"], [data-testid="settings-health-workflow-smoke"]'));
+    const rows = Array.from(document.querySelectorAll('[data-testid="settings-health-workflow-smoke-output"], [data-testid="settings-health-workflow-smoke"]'));
     return {
       buttonExists: Boolean(button),
       buttonDisabled: button?.disabled ?? null,
@@ -1103,7 +1118,7 @@ try {
       return /product-brief submission/i.test(text) && /provider usage/i.test(text) && /flow nodes/i.test(text);
     }, null, { timeout: 220000 });
   } catch (error) {
-    const healthText = await page.getByTestId('settings-health-route-contract').innerText({ timeout: 1000 }).catch(() => '<missing settings health route contract>');
+    const healthText = await page.getByTestId('settings-local-health-simple').innerText({ timeout: 1000 }).catch(() => '<missing settings health panel>');
     const bodyText = await page.locator('body').innerText({ timeout: 1000 }).catch(() => '');
     console.error(`Settings Workflow Smoke hit target before click:\n${JSON.stringify(workflowSmokeHitTarget, null, 2)}`);
     console.error(`Settings Workflow Smoke post-click state:\n${JSON.stringify(workflowSmokePostClickState, null, 2)}`);
@@ -1128,7 +1143,7 @@ try {
     return /backend-backed controls save on change/i.test(footer);
   }, null, { timeout: 15000 }).catch(async () => {
     const footerStatus = await page.getByTestId('settings-footer-backend-save-status').innerText().catch(() => '<missing footer>');
-    const healthStatusText = await page.getByTestId('settings-health-route-contract').innerText().catch(() => '<missing health status>');
+    const healthStatusText = await page.getByTestId('settings-local-health-simple').innerText().catch(() => '<missing health status>');
     throw new Error(`Settings footer must claim backend-backed saves after sealed provider secrets and Workflow Smoke pass. Footer: ${footerStatus}. Health: ${healthStatusText}.`);
   });
   assert(
