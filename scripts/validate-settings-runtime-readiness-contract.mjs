@@ -50,6 +50,31 @@ try {
     secretVault,
   });
 
+  const modelOnlyApi = createFileBackedAgentProjectApi({
+    filePath: resolve(tempRoot, 'model-only-store.json'),
+    replaceWithSeed: true,
+    secretVault,
+    llmProvider: {
+      status: () => ({
+        provider: 'stepfun',
+        enabled: true,
+        configured: true,
+        model: 'step-3.5-flash',
+        hasApiKey: true,
+        apiKeySource: 'local-secret-vault',
+      }),
+    },
+  });
+
+  response = modelOnlyApi.handle({
+    method: 'GET',
+    path: '/settings/runtime-readiness',
+  });
+  const modelOnlyRuntime = response.body.settingsRuntimeReadiness;
+  assert(modelOnlyRuntime.readyForLocalMvpRuntime === true, 'Settings runtime must be locally ready with a configured language model and no optional search provider.');
+  assert(modelOnlyRuntime.rows?.some((row) => row.id === 'search-runtime' && row.status === 'pending'), 'Missing optional search must remain pending instead of blocking local runtime readiness.');
+  assert(modelOnlyRuntime.summary?.searchRuntimeReady === false, 'Settings runtime must still report that optional search is unavailable.');
+
   response = readyApi.handle({
     method: 'POST',
     path: '/projects/initiate',

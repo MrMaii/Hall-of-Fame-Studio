@@ -1,5 +1,31 @@
 const model = (id, name, note = '') => Object.freeze({ id, name, note });
 
+export const STEPFUN_REGIONS = Object.freeze([
+  Object.freeze({
+    id: 'global',
+    label: '国际版',
+    englishLabel: 'International',
+    baseURL: 'https://api.stepfun.ai/v1',
+    description: '适用于在 platform.stepfun.ai 创建的 API Key',
+    englishDescription: 'For API keys created at platform.stepfun.ai',
+  }),
+  Object.freeze({
+    id: 'china',
+    label: '国内版',
+    englishLabel: 'Mainland China',
+    baseURL: 'https://api.stepfun.com/v1',
+    description: '适用于在 platform.stepfun.com 创建的 API Key',
+    englishDescription: 'For API keys created at platform.stepfun.com',
+  }),
+]);
+
+export function findStepfunRegion(baseURL = '') {
+  const normalized = String(baseURL || '').trim().replace(/\/+$/, '').toLowerCase();
+  return STEPFUN_REGIONS.find((region) => normalized === region.baseURL.toLowerCase()) || null;
+}
+
+export const stepfunRegionForBaseUrl = findStepfunRegion;
+
 export const MODEL_PROVIDERS = Object.freeze([
   Object.freeze({
     id: 'openai', name: 'OpenAI', description: 'GPT 系列通用、推理和编码模型', logo: 'OpenAI', accent: '#10a37f',
@@ -33,7 +59,7 @@ export const MODEL_PROVIDERS = Object.freeze([
   }),
   Object.freeze({
     id: 'stepfun', aliases: Object.freeze(['step']), name: '阶跃星辰', description: 'Step 系列推理、工具调用与视觉模型', logo: 'Stepfun', accent: '#6d5dfc',
-    protocol: 'openai-chat-completions', baseURL: 'https://api.stepfun.com/v1', defaultModel: 'step-3.5-flash',
+    protocol: 'openai-chat-completions', baseURL: STEPFUN_REGIONS[0].baseURL, regions: STEPFUN_REGIONS, defaultModel: 'step-3.5-flash',
     models: Object.freeze([
       model('step-3.5-flash', 'Step 3.5 Flash', '推荐'), model('step-3.5-flash-2603', 'Step 3.5 Flash 2603', '固定版本'),
       model('step-3', 'Step 3', '视觉与复杂推理'), model('step-2-mini', 'Step 2 Mini', '工具调用'),

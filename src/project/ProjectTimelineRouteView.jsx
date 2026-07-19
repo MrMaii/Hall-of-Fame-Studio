@@ -1,19 +1,42 @@
 import {
   Activity,
+  BadgeCheck,
   BellDot,
   CheckCircle2,
   CircleDot,
   Database,
+  FileCheck2,
   FileText,
+  Landmark,
+  Lightbulb,
   MessageSquare,
   Network,
+  NotebookText,
+  Radar,
+  RotateCcw,
+  ScanEye,
   ScrollText,
-  Search,
   Shield,
+  Sparkles,
   Users,
   X,
 } from 'lucide-react';
 import AdvancedProjectTimeline from './AdvancedProjectTimeline.jsx';
+import {
+  WORKFLOW_NODE_FAMILIES,
+  WORKFLOW_NODE_FAMILY_ORDER,
+  WORKFLOW_NODE_SCALES,
+  decorateWorkflowNode,
+  workflowNodeVisibleAtScale,
+} from '../workflow/workflowNodeProtocol.js';
+import {
+  buildWorkflowTimelineDisplayNodes,
+  centerTimelineNodePan,
+  clampTimelinePan,
+  fitTimelineCanvasZoom,
+  planWorkflowTimelineLayout,
+  preserveTimelineViewportAnchor,
+} from '../workflow/workflowTimelineLayout.js';
 
 export default function ProjectTimelineRouteView({ view }) {
   const {
@@ -31,6 +54,7 @@ export default function ProjectTimelineRouteView({ view }) {
     isManagerDemoProject,
     openProjectChatProof,
     openProjectTimelineProof,
+    projectText,
     renderAutonomousActionDecision,
     sceneTransition,
     selectedTimelineEventId,
@@ -50,18 +74,28 @@ export default function ProjectTimelineRouteView({ view }) {
     tlZoom,
   } = view;
 
-    const categoryMeta = {
-      thinking: { label: 'Thinking', lane: 'Thinking', color: '#b9782b', Icon: Search },
-      decision: { label: 'Decision', lane: 'Decisions', color: '#8f1e18', Icon: Shield },
-      collaboration: { label: 'Collaboration', lane: 'Collaboration', color: '#59684b', Icon: Users },
-      execution: { label: 'Execution', lane: 'Execution', color: '#bcae86', Icon: Activity },
-      submission: { label: 'Submission', lane: 'Submissions', color: '#d8c99f', Icon: FileText },
-      communication: { label: 'Communication', lane: 'Communication', color: '#7b6542', Icon: MessageSquare },
-      monitoring: { label: 'Monitoring', lane: 'Monitoring', color: '#3f5d69', Icon: BellDot },
-      evidence: { label: 'Evidence', lane: 'Evidence', color: '#efe2bd', Icon: Database },
+    const iconByKey = {
+      activity: Activity,
+      'badge-check': BadgeCheck,
+      database: Database,
+      'file-check': FileCheck2,
+      landmark: Landmark,
+      lightbulb: Lightbulb,
+      'message-square': MessageSquare,
+      'notebook-text': NotebookText,
+      radar: Radar,
+      'rotate-ccw': RotateCcw,
+      'scan-check': ScanEye,
+      shield: Shield,
+      sparkles: Sparkles,
+      users: Users,
     };
+    const categoryMeta = Object.fromEntries(WORKFLOW_NODE_FAMILY_ORDER.map((id) => [id, {
+      ...WORKFLOW_NODE_FAMILIES[id],
+      Icon: iconByKey[WORKFLOW_NODE_FAMILIES[id].iconKey] || CircleDot,
+    }]));
     const channelNameById = Object.fromEntries(chatChannels.map(channel => [channel.id, channel.name]));
-    const categoryOrder = ['thinking', 'decision', 'collaboration', 'execution', 'submission', 'communication', 'monitoring', 'evidence'];
+    const categoryOrder = WORKFLOW_NODE_FAMILY_ORDER;
     const edgeMeta = {
       leader_assignment: { label: 'Leader assignment', color: '#8f1e18' },
       agent_collaboration: { label: 'Agent collaboration', color: '#59684b' },
@@ -70,7 +104,6 @@ export default function ProjectTimelineRouteView({ view }) {
       reporting: { label: 'Report line', color: '#d8c99f' },
       evidence: { label: 'Evidence line', color: '#7b6542' },
     };
-    const importanceRank = { minor: 0, normal: 1, major: 2, critical: 3 };
     const localAttachmentTypeFor = (node) => {
       const text = `${node.category || ''} ${node.subtype || ''} ${node.source || ''}`.toLowerCase();
       if (/meeting/.test(text)) return 'meeting-minutes';
@@ -322,19 +355,17 @@ export default function ProjectTimelineRouteView({ view }) {
       : managerFlowGraph.dataSource === 'frontend-fallback'
         ? 'demo data'
         : 'backend-backed';
-    const scaleProfiles = {
-      month: { label: 'Major', test: node => ['major', 'critical'].includes(node.importance) },
-      week: { label: 'Path', test: node => ['major', 'critical'].includes(node.importance) || ['decision', 'collaboration', 'execution', 'submission', 'monitoring'].includes(node.category) },
-      day: { label: 'Work', test: node => node.category !== 'evidence' || ['major', 'critical'].includes(node.importance) },
-      hour: { label: 'Detail', test: () => true },
-    };
-    const scaleOrder = ['month', 'week', 'day', 'hour'];
+    const scaleProfiles = Object.fromEntries(Object.entries(WORKFLOW_NODE_SCALES).map(([id, profile]) => [id, {
+      ...profile,
+      test: node => workflowNodeVisibleAtScale(node, id),
+    }]));
+    const scaleOrder = Object.keys(WORKFLOW_NODE_SCALES);
     const zoomDetail = tlZoom < 0.72 ? 'compact' : tlZoom < 1.12 ? 'medium' : 'expanded';
     const zoomScale = tlZoom < 0.72 ? 'month' : tlZoom < 1.04 ? 'week' : tlZoom < 1.42 ? 'day' : 'hour';
     const activeScaleProfile = scaleProfiles[zoomScale] || scaleProfiles.day;
-    const visibleNodes = Array.from(new Map((managerFlowGraph.nodes || [])
+    const decoratedGraphNodes = (managerFlowGraph.nodes || []).map(decorateWorkflowNode);
+    const semanticNodes = Array.from(new Map(decoratedGraphNodes
       .filter(activeScaleProfile.test)
-      .filter(node => zoomDetail !== 'compact' || ['major', 'critical'].includes(node.importance))
       .map(node => [node.id, node])).values())
       .sort((a, b) => {
         const areaA = a.commitArea?.index ?? managerFlowGraph.layout?.nodeLayoutHints?.[a.id]?.index;
@@ -348,11 +379,27 @@ export default function ProjectTimelineRouteView({ view }) {
         if (Number.isFinite(branchA) && Number.isFinite(branchB) && branchA !== branchB) return branchA - branchB;
         return (a.sequence || 0) - (b.sequence || 0);
       });
+    const timelineDisplay = buildWorkflowTimelineDisplayNodes({ nodes: semanticNodes, scale: zoomScale });
+    const visibleNodes = timelineDisplay.nodes;
     const visibleNodeIds = new Set(visibleNodes.map(node => node.id));
-    const visibleEdges = (managerFlowGraph.edges || []).filter(edge => visibleNodeIds.has(edge.fromNodeId) && visibleNodeIds.has(edge.toNodeId));
-    const nodeMap = Object.fromEntries((managerFlowGraph.nodes || []).map(node => [node.id, node]));
-    const selectedNode = visibleNodes.find(node => node.id === selectedTimelineEventId)
-      || visibleNodes.find(node => [node.id, ...(node.proofIds || []), ...(node.timelineLogIds || []), ...(node.eventIds || [])].includes(selectedTimelineEventId))
+    const visibleEdges = Array.from(new Map((managerFlowGraph.edges || [])
+      .map((edge) => {
+        const fromNodeId = timelineDisplay.memberToDisplayId.get(edge.fromNodeId) || edge.fromNodeId;
+        const toNodeId = timelineDisplay.memberToDisplayId.get(edge.toNodeId) || edge.toNodeId;
+        if (fromNodeId === toNodeId || !visibleNodeIds.has(fromNodeId) || !visibleNodeIds.has(toNodeId)) return null;
+        return [`${fromNodeId}|${toNodeId}|${edge.type || 'task_dependency'}`, {
+          ...edge,
+          id: `${edge.id || 'flow-edge'}-${fromNodeId}-${toNodeId}`,
+          fromNodeId,
+          toNodeId,
+        }];
+      })
+      .filter(Boolean)).values());
+    const nodeMap = Object.fromEntries([...decoratedGraphNodes, ...visibleNodes].map(node => [node.id, node]));
+    const selectedDisplayId = timelineDisplay.memberToDisplayId.get(selectedTimelineEventId) || selectedTimelineEventId;
+    const selectedNode = visibleNodes.find(node => node.id === selectedDisplayId)
+      || visibleNodes.find(node => [node.id, ...(node.clusterMemberIds || []), ...(node.proofIds || []), ...(node.timelineLogIds || []), ...(node.eventIds || [])].includes(selectedTimelineEventId))
+      || decoratedGraphNodes.find(node => node.id === selectedTimelineEventId)
       || null;
     const selectedThinkingFrame = selectedNode?.thinkingFrame || selectedNode?.submission?.thinkingFrame || null;
     const relatedEdges = selectedNode
@@ -395,85 +442,16 @@ export default function ProjectTimelineRouteView({ view }) {
       if (text.length <= max) return text;
       return `${text.slice(0, Math.max(0, max - 3)).trim()}...`;
     };
-    const timeKeyForNode = (node) => {
-      if (node.commitArea?.key) return node.commitArea.key;
-      const hintKey = managerFlowGraph.layout?.nodeLayoutHints?.[node.id]?.key;
-      if (hintKey) return hintKey;
-      const parsed = Date.parse(node.time);
-      if (Number.isFinite(parsed)) {
-        const date = new Date(parsed);
-        date.setSeconds(0, 0);
-        return date.toISOString();
-      }
-      return String(node.time || `sequence-${node.sequence || node.id}`).trim();
-    };
-    const groupedByTime = visibleNodes.reduce((acc, node) => {
-      const key = timeKeyForNode(node);
-      if (!acc.has(key)) acc.set(key, []);
-      acc.get(key).push(node);
-      return acc;
-    }, new Map());
-    const timeColumns = [...groupedByTime.entries()]
-      .map(([key, nodes]) => ({
-        key,
-        time: nodes[0]?.time,
-        nodes: nodes.sort((a, b) => {
-          const branchA = a.commitArea?.branchIndex ?? managerFlowGraph.layout?.nodeLayoutHints?.[a.id]?.branchIndex;
-          const branchB = b.commitArea?.branchIndex ?? managerFlowGraph.layout?.nodeLayoutHints?.[b.id]?.branchIndex;
-          if (Number.isFinite(branchA) && Number.isFinite(branchB) && branchA !== branchB) return branchA - branchB;
-          return (importanceRank[b.importance] || 0) - (importanceRank[a.importance] || 0) || (a.sequence || 0) - (b.sequence || 0);
-        }),
-        layoutIndex: Math.min(...nodes.map(node => node.commitArea?.index ?? managerFlowGraph.layout?.nodeLayoutHints?.[node.id]?.index ?? Number.MAX_SAFE_INTEGER)),
-      }))
-      .sort((a, b) => {
-        if (Number.isFinite(a.layoutIndex) && Number.isFinite(b.layoutIndex) && a.layoutIndex !== b.layoutIndex) return a.layoutIndex - b.layoutIndex;
-        const timeA = Date.parse(a.time) || 0;
-        const timeB = Date.parse(b.time) || 0;
-        if (timeA !== timeB) return timeA - timeB;
-        return (a.nodes[0]?.sequence || 0) - (b.nodes[0]?.sequence || 0);
-      });
-    const nodeWidth = zoomDetail === 'expanded' ? 292 : zoomDetail === 'medium' ? 260 : 224;
-    const nodeHeight = zoomDetail === 'expanded' ? 144 : zoomDetail === 'medium' ? 126 : 108;
-    const branchXGap = nodeWidth + (zoomDetail === 'compact' ? 28 : 38);
-    const timeColumnGap = zoomDetail === 'expanded' ? 128 : zoomDetail === 'medium' ? 112 : 92;
-    const branchYOffset = zoomDetail === 'expanded' ? 88 : zoomDetail === 'medium' ? 78 : 68;
-    const xOffset = 300;
-    const maxBranchCount = Math.max(1, ...timeColumns.map(column => column.nodes.length));
-    const maxBranchLevel = Math.max(1, Math.ceil((maxBranchCount - 1) / 2));
-    const timeAxisY = Math.max(280, 132 + maxBranchLevel * branchYOffset + nodeHeight / 2);
-    const branchSlotFor = (index) => {
-      if (index === 0) return 0;
-      const level = Math.ceil(index / 2);
-      return index % 2 === 1 ? -level : level;
-    };
-    let columnCursor = xOffset;
-    const timeColumnLayouts = timeColumns.map((column) => {
-      const branchCount = Math.max(1, column.nodes.length);
-      const width = Math.max(nodeWidth, (branchCount - 1) * branchXGap + nodeWidth);
-      const layout = {
-        ...column,
-        x: columnCursor,
-        width,
-        centerX: columnCursor + width / 2,
-      };
-      columnCursor += width + timeColumnGap;
-      return layout;
-    });
-    const nodeLayout = {};
-    timeColumnLayouts.forEach((column, columnIndex) => {
-      column.nodes.forEach((node, branchIndex) => {
-        const slot = branchSlotFor(branchIndex);
-        nodeLayout[node.id] = {
-          x: column.x + branchIndex * branchXGap,
-          y: timeAxisY + slot * branchYOffset - nodeHeight / 2,
-          branchIndex,
-          branchCount: column.nodes.length,
-          timeColumnIndex: columnIndex,
-          w: nodeWidth,
-          h: nodeHeight,
-        };
-      });
-    });
+    const timelineLayout = planWorkflowTimelineLayout({ nodes: visibleNodes, scale: zoomScale, detail: zoomDetail });
+    const {
+      canvasH,
+      canvasW,
+      laneGuides,
+      nodeLayout,
+      rulerHeight,
+      timeTicks,
+      xOffset,
+    } = timelineLayout;
     const visibleNodesByPosition = visibleNodes
       .map(node => ({ node, box: nodeLayout[node.id] }))
       .filter(item => item.box)
@@ -484,39 +462,78 @@ export default function ProjectTimelineRouteView({ view }) {
     const defaultGraphPan = initialGraphNodeBox
       ? { x: 300 - initialGraphNodeBox.x, y: 180 - initialGraphNodeBox.y }
       : { x: 0, y: 0 };
-    const canvasW = Math.max(1280, columnCursor + 180);
-    const canvasH = Math.max(760, timeAxisY + maxBranchLevel * branchYOffset + nodeHeight / 2 + 180);
-    const tickEvery = zoomDetail === 'expanded' ? 1 : zoomDetail === 'medium' ? 2 : 3;
-    const timeTicks = timeColumnLayouts
-      .map((column, index) => ({
-        key: `${column.key}-${index}`,
-        time: column.time,
-        x: column.centerX,
-        count: column.nodes.length,
-        show: index === 0 || index === timeColumns.length - 1 || index % tickEvery === 0,
-      }))
-      .filter(tick => tick.show);
-    const branchGuides = timeColumnLayouts.filter(column => column.nodes.length > 1).map((column) => {
-      const boxes = column.nodes.map(node => nodeLayout[node.id]).filter(Boolean);
-      return {
-        key: column.key,
-        x: column.centerX,
-        y: timeAxisY,
-        left: Math.min(...boxes.map(box => box.x + box.w / 2)),
-        right: Math.max(...boxes.map(box => box.x + box.w / 2)),
-        count: column.nodes.length,
-      };
-    });
     const getAnchor = (edge) => {
       const from = nodeLayout[edge.fromNodeId];
       const to = nodeLayout[edge.toNodeId];
       if (!from || !to) return null;
-      const sx = from.x + from.w / 2;
+      const forward = to.x >= from.x;
+      const sx = forward ? from.x + from.w : from.x;
       const sy = from.y + from.h / 2;
-      const ex = to.x + to.w / 2;
+      const ex = forward ? to.x : to.x + to.w;
       const ey = to.y + to.h / 2;
-      const bend = Math.max(70, Math.abs(ex - sx) / 2);
-      return { sx, sy, ex, ey, path: `M ${sx} ${sy} C ${sx + bend} ${sy}, ${ex - bend} ${ey}, ${ex} ${ey}` };
+      const bendX = forward && ex - sx > 80 ? (sx + ex) / 2 : Math.max(sx, ex) + 64;
+      return { sx, sy, ex, ey, path: `M ${sx} ${sy} H ${bendX} V ${ey} H ${ex}` };
+    };
+    const graphViewport = () => {
+      const viewport = timelineViewportRef.current;
+      return viewport ? { width: viewport.clientWidth, height: viewport.clientHeight } : null;
+    };
+    const clampGraphPan = (pan, zoom = tlZoom) => clampTimelinePan({
+      pan,
+      zoom,
+      canvas: { width: canvasW, height: canvasH },
+      viewport: graphViewport(),
+    });
+    const focusGraphNode = (nodeId, zoom = tlZoom) => {
+      const viewport = graphViewport();
+      const box = nodeLayout[nodeId];
+      if (!viewport || !box) return false;
+      setTlPan(clampGraphPan(centerTimelineNodePan({ box, viewport, zoom }), zoom));
+      return true;
+    };
+    const handleGraphZoomChange = (nextZoomValue) => {
+      const nextZoom = Math.min(2.2, Math.max(0.36, Number(nextZoomValue) || 1));
+      const viewport = graphViewport();
+      if (!viewport) {
+        setTlZoom(nextZoom);
+        return;
+      }
+      const selectedBox = selectedNode ? nodeLayout[selectedNode.id] : null;
+      const worldPoint = selectedBox
+        ? { x: selectedBox.x + selectedBox.w / 2, y: selectedBox.y + selectedBox.h / 2 }
+        : { x: (viewport.width / 2 - tlPan.x) / tlZoom, y: (viewport.height / 2 - tlPan.y) / tlZoom };
+      const viewportPoint = selectedBox
+        ? { x: tlPan.x + worldPoint.x * tlZoom, y: tlPan.y + worldPoint.y * tlZoom }
+        : { x: viewport.width / 2, y: viewport.height / 2 };
+      const nextPan = preserveTimelineViewportAnchor({ worldPoint, viewportPoint, zoom: nextZoom });
+      setTlZoom(nextZoom);
+      setTlPan(clampGraphPan(nextPan, nextZoom));
+    };
+    const fitGraphView = () => {
+      const viewport = graphViewport();
+      if (!viewport) return;
+      const nextZoom = fitTimelineCanvasZoom({
+        canvas: { width: canvasW, height: canvasH },
+        viewport,
+        minZoom: 0.36,
+        maxZoom: 1,
+      });
+      const nextPan = preserveTimelineViewportAnchor({
+        worldPoint: { x: canvasW / 2, y: canvasH / 2 },
+        viewportPoint: { x: viewport.width / 2, y: viewport.height / 2 },
+        zoom: nextZoom,
+      });
+      setTlZoom(nextZoom);
+      setTlPan(clampGraphPan(nextPan, nextZoom));
+    };
+    const focusSelectedNode = () => selectedNode && focusGraphNode(selectedNode.id);
+    const focusLatestNode = () => {
+      const latest = [...visibleNodes].sort((a, b) => (
+        (Date.parse(b.time) || 0) - (Date.parse(a.time) || 0) || (b.sequence || 0) - (a.sequence || 0)
+      ))[0];
+      if (!latest) return;
+      setSelectedTimelineEventId(latest.id);
+      focusGraphNode(latest.id);
     };
     const handleGraphWheel = (event) => {
       event.preventDefault();
@@ -533,14 +550,14 @@ export default function ProjectTimelineRouteView({ view }) {
       const rect = event.currentTarget.getBoundingClientRect();
       const pointerX = event.clientX - rect.left;
       const pointerY = event.clientY - rect.top;
-      const nextZoom = Math.min(2.2, Math.max(0.52, tlZoom * Math.exp(-event.deltaY * 0.0012)));
+      const nextZoom = Math.min(2.2, Math.max(0.36, tlZoom * Math.exp(-event.deltaY * 0.0012)));
       const worldX = (pointerX - tlPan.x) / tlZoom;
       const worldY = (pointerY - tlPan.y) / tlZoom;
       setTlZoom(nextZoom);
-      setTlPan({
+      setTlPan(clampGraphPan({
         x: pointerX - worldX * nextZoom,
         y: pointerY - worldY * nextZoom,
-      });
+      }, nextZoom));
     };
     const handleGraphMouseDown = (event) => {
       if (event.target.closest('button')) return;
@@ -549,16 +566,21 @@ export default function ProjectTimelineRouteView({ view }) {
     };
     const handleGraphMouseMove = (event) => {
       if (!tlDragging) return;
-      setTlPan({
+      setTlPan(clampGraphPan({
         x: tlDragStartRef.current.panX + event.clientX - tlDragStartRef.current.x,
         y: tlDragStartRef.current.panY + event.clientY - tlDragStartRef.current.y,
-      });
+      }));
     };
     const resetGraphView = () => {
-      setTlPan({ x: 0, y: 0 });
       setTlZoom(1);
       setTimelineScale('day');
-      setSelectedTimelineEventId(null);
+      const latest = [...visibleNodes].sort((a, b) => (Date.parse(b.time) || 0) - (Date.parse(a.time) || 0))[0];
+      if (latest) {
+        setSelectedTimelineEventId(latest.id);
+        focusGraphNode(latest.id, 1);
+      } else {
+        setTlPan({ x: 0, y: 0 });
+      }
     };
     const graphTime = (value) => {
       if (!value) return 'No time';
@@ -715,7 +737,6 @@ export default function ProjectTimelineRouteView({ view }) {
             agentDisplay,
             backendCommandAvailable,
             backendStation,
-            branchGuides,
             canvasH,
             canvasW,
             categoryMeta,
@@ -730,19 +751,26 @@ export default function ProjectTimelineRouteView({ view }) {
             edgeMeta,
             exitProjectScene,
             focusedTimelineProofIds,
+            fitGraphView,
+            focusGraphNode,
+            focusLatestNode,
+            focusSelectedNode,
             getAnchor,
             graphTime,
             handleGraphMouseDown,
             handleGraphMouseMove,
             handleGraphWheel,
+            handleGraphZoomChange,
             isProofFocused,
             managerFlowGraph,
             managerFlowGraphSourceLabel,
+            laneGuides,
             nodeCommitters,
             nodeLayout,
             nodeMap,
             openProjectChatProof,
             openProjectTimelineProof,
+            projectText,
             openSelectedNodeProofMapRoute,
             openSelectedNodeSubmissionRecord,
             relatedEdges,
@@ -750,6 +778,7 @@ export default function ProjectTimelineRouteView({ view }) {
             relationshipGraph,
             renderAutonomousActionDecision,
             resetGraphView,
+            rulerHeight,
             scaleProfiles,
             sceneTransition,
             selectedChatProofIds,
@@ -765,9 +794,7 @@ export default function ProjectTimelineRouteView({ view }) {
             setSelectedTimelineEventId,
             setTlDragging,
             setTlPan,
-            setTlZoom,
             syncBackendManagerFlowGraph,
-            timeAxisY,
             timeTicks,
             timelineViewportRef,
             tlDragging,
@@ -784,4 +811,3 @@ export default function ProjectTimelineRouteView({ view }) {
         />
     );
 }
-

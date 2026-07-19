@@ -65,6 +65,7 @@
     "agents:transcript-attachment": "node scripts/validate-transcript-attachment-contract.mjs",
     "agents:transcript-member-presence": "node scripts/validate-transcript-member-presence-contract.mjs",
     "agents:timeline-action": "node scripts/validate-timeline-action-contract.mjs",
+    "agents:workflow-nodes": "node scripts/validate-workflow-node-intent-contract.mjs",
     "adapters:gateway": "node scripts/validate-adapter-gateway-contract.mjs",
     "adapters:gateway-server": "node scripts/adapter-gateway-server.mjs",
     "adapters:gateway-server:validate": "node scripts/validate-adapter-gateway-server.mjs",

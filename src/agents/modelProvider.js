@@ -3,6 +3,7 @@ import { parseBoolean, safeJsonParse } from './sharedUtils.js';
 import { createProviderTransportPolicy, createRequestAbortSignal } from './providerTransportReliability.js';
 import { evaluateLocalNetworkEndpoint } from './localNetworkPolicy.js';
 import { createHash } from 'node:crypto';
+import { modelOutputLanguageInstruction, modelOutputMatchesLanguage } from './modelLanguagePolicy.js';
 
 const DEFAULT_PROVIDER = 'openai-compatible';
 const DEFAULT_LOCAL_OPENAI_COMPATIBLE_BASE_URL = 'http://127.0.0.1:11434/v1';
@@ -201,6 +202,7 @@ function buildIntentMessages({
       role: 'system',
       content: [
         'You are the low-level intent engine for Hall of Fame Studio.',
+        modelOutputLanguageInstruction(project.language || 'en'),
         'Return compact JSON only.',
         'Focus on: agent intent, collaboration routing, meeting speech intent, next backend action, and proof to publish.',
         'Do not roleplay as a user. Do not add markdown.',
@@ -615,9 +617,31 @@ export function createModelProvider({
         messages: buildIntentMessages(input),
         json: true,
       });
+      const intent = completion.json || (completion.ok ? { intent: completion.content } : null);
+      const languageMatches = !completion.ok || modelOutputMatchesLanguage({
+        text: [
+          intent?.intent,
+          intent?.publicSpeechIntent,
+          ...(Array.isArray(intent?.privatePlan) ? intent.privatePlan : []),
+          intent?.timelineProof,
+          intent?.risk,
+        ].filter(Boolean).join('\n'),
+        language: input.project?.language || 'en',
+        allowedTerms: [
+          input.project?.name,
+          ...(input.project?.team || []).flatMap((agent) => [agent.id, agent.name]),
+          'Agent',
+          'Hall of Fame Studio',
+        ],
+      });
       return {
         ...completion,
-        intent: completion.json || (completion.ok ? { intent: completion.content } : null),
+        ...(languageMatches ? {} : {
+          ok: false,
+          error: 'model-output-language-mismatch',
+          reason: 'language-policy-violation',
+        }),
+        intent: languageMatches ? intent : null,
       };
     },
     async test(input = {}) {

@@ -112,30 +112,52 @@ export default function ProjectInitiationFlowView({ view }) {
           <div className={`relative z-10 ${isInitiationMeetingStep ? 'h-full overflow-hidden p-0' : 'p-8 xl:p-10'}`}>
             {!isInitiationMeetingStep && initiationBackendErrorVisible && (
               <div data-testid="initiation-backend-error" className="max-w-3xl mx-auto mb-5 border border-[#8f1e18] bg-[#251b13] px-5 py-4 text-[#efe2bd]">
-                <div className="font-mono text-[9px] uppercase tracking-[0.26em] text-[#d8c99f] mb-2">
-                  {backendStation.lastAction || 'Backend action failed'}
+                <div className="font-serif text-lg leading-tight">
+                  {activeLanguage === 'zh' ? '操作没有完成' : 'The action did not finish'}
                 </div>
-                <div className="font-serif text-base leading-relaxed">{backendStation.error}</div>
+                <div className="mt-2 font-serif text-sm leading-relaxed text-[#d8c99f]">
+                  {activeLanguage === 'zh' ? '请重试；如果问题持续出现，请打开设置检查本地服务和模型。' : 'Try again. If the problem continues, open Settings and check the local service and model.'}
+                </div>
+                <details className="mt-3 font-mono text-[9px] leading-relaxed text-[#bcae86]">
+                  <summary className="cursor-pointer">{activeLanguage === 'zh' ? '查看技术信息' : 'View technical details'}</summary>
+                  <div className="mt-2 break-all">{backendStation.lastAction || 'Backend action failed'}</div>
+                  <div className="mt-1 break-all">{backendStation.error}</div>
+                </details>
               </div>
             )}
-            {!isInitiationMeetingStep && (
+            {!isInitiationMeetingStep && !initiationStartupReadyForFirstRun && (
               <div data-testid="initiation-startup-readiness-gate" className={`mx-auto mb-5 max-w-3xl border px-5 py-4 ${initiationStartupGateClass}`}>
                 <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-                  <div>
-                    <div className="font-mono text-[9px] uppercase tracking-[0.24em]">/local-mvp-startup-readiness</div>
+                  <div className="min-w-0">
+                    <div className="font-mono text-[9px] uppercase tracking-[0.24em]">
+                      {activeLanguage === 'zh' ? '开始条件' : 'Start requirements'}
+                    </div>
                     <div className="mt-1 font-serif text-lg leading-tight">
                       {initiationStartupReadyForFirstRun
-                        ? (activeLanguage === 'zh' ? '本地服务已可开始真实立项' : 'Backend ready for real kickoff')
+                        ? (activeLanguage === 'zh' ? '已可开始 Agent 工作' : 'Ready to start Agent work')
                         : initiationDevelopmentFallbackAllowed
                           ? (activeLanguage === 'zh' ? '开发回退已启用，不能作为上线证据' : 'Development fallback enabled; not launch evidence')
-                          : (activeLanguage === 'zh' ? '开始真实立项前需要完成本地服务设置' : 'Backend startup required before real kickoff')}
+                          : (activeLanguage === 'zh' ? '配置模型后即可开始 Agent 工作' : 'Backend startup required before real kickoff')}
                     </div>
-                    <div className="mt-2 font-mono text-[10px] uppercase tracking-[0.12em]">
-                      {activeLanguage === 'zh' ? '状态' : 'Status'}: {localizeText(initiationStartupStatus, activeLanguage)} / {activeLanguage === 'zh' ? '首次项目运行' : 'first project run'}: {initiationStartupReadyForFirstRun ? (activeLanguage === 'zh' ? '已就绪' : 'ready') : (activeLanguage === 'zh' ? '受阻' : 'blocked')}
+                    <div className="mt-2 font-serif text-sm leading-relaxed">
+                      {initiationStartupReadyForFirstRun
+                        ? (activeLanguage === 'zh' ? '本地服务和模型已经就绪。' : 'The local service and model are ready.')
+                        : initiationDevelopmentFallbackAllowed
+                          ? (activeLanguage === 'zh' ? '当前仅用于开发检查，正式使用前仍需完成模型设置。' : 'This mode is for development checks only. Complete model setup before real use.')
+                          : (activeLanguage === 'zh' ? '你可以继续填写项目信息和准备文件夹；开始立项会议前需要完成模型设置。' : 'You can continue preparing the project details and folder. Model setup is required before the kickoff meeting.')}
                     </div>
-                    {initiationStartupBlocker && (
-                      <div className="mt-2 font-serif text-sm leading-relaxed">{localizeText(initiationStartupBlocker, activeLanguage)}</div>
-                    )}
+                    <details data-testid="initiation-startup-technical-details" className="mt-3 font-mono text-[10px] leading-relaxed">
+                      <summary className="cursor-pointer normal-case tracking-normal">
+                        {activeLanguage === 'zh' ? '查看技术信息' : 'View technical details'}
+                      </summary>
+                      <div className="mt-2 break-all">/local-mvp-startup-readiness</div>
+                      <div className="mt-1 uppercase tracking-[0.12em]">
+                        {activeLanguage === 'zh' ? '状态' : 'Status'}: {localizeText(initiationStartupStatus, activeLanguage)} / {activeLanguage === 'zh' ? '首次项目运行' : 'first project run'}: {initiationStartupReadyForFirstRun ? (activeLanguage === 'zh' ? '已就绪' : 'ready') : (activeLanguage === 'zh' ? '尚未就绪' : 'blocked')}
+                      </div>
+                      {initiationStartupBlocker && (
+                        <div className="mt-1 normal-case tracking-normal">{localizeText(initiationStartupBlocker, activeLanguage)}</div>
+                      )}
+                    </details>
                   </div>
                   <div className="flex shrink-0 flex-wrap gap-2">
                     <button
@@ -145,7 +167,7 @@ export default function ProjectInitiationFlowView({ view }) {
                       disabled={providerRuntimeStatus.running || !backendUrlConfigured}
                       className="inline-flex items-center justify-center gap-2 border border-current px-3 py-2 font-mono text-[8px] uppercase tracking-widest disabled:opacity-50"
                     >
-                      <RefreshCw size={12} /> {activeLanguage === 'zh' ? '同步' : 'Sync'}
+                      <RefreshCw size={12} /> {activeLanguage === 'zh' ? '重新检查' : 'Check again'}
                     </button>
                     {!initiationStartupReadyForFirstRun && (
                       <button
@@ -154,7 +176,7 @@ export default function ProjectInitiationFlowView({ view }) {
                         onClick={() => { setSettingsTab(initiationStartupSettingsTab); setSettingsOpen(true); }}
                         className="inline-flex items-center justify-center gap-2 border border-current px-3 py-2 font-mono text-[8px] uppercase tracking-widest"
                       >
-                        <Settings size={12} /> {activeLanguage === 'zh' ? '设置' : 'Settings'}
+                        <Settings size={12} /> {activeLanguage === 'zh' ? '配置模型' : 'Configure model'}
                       </button>
                     )}
                   </div>
@@ -192,6 +214,7 @@ export default function ProjectInitiationFlowView({ view }) {
                     preparedPath: '',
                     receipt: null,
                     verification: null,
+                    notice: null,
                     error: null,
                   }))}
                   onFolderNameChange={(folderName) => setInitiationWorkspaceDraft(prev => ({
@@ -201,6 +224,7 @@ export default function ProjectInitiationFlowView({ view }) {
                     preparedPath: '',
                     receipt: null,
                     verification: null,
+                    notice: null,
                     error: null,
                   }))}
                   onOpenFolderPicker={openInitiationWorkspaceFolderPicker}
@@ -265,8 +289,9 @@ export default function ProjectInitiationFlowView({ view }) {
             {initiationStep === 'result' && (
               <Suspense fallback={<LazyPanelFallback />}>
                 <ProjectInitiationResultStep
+                  activeLanguage={activeLanguage}
                   draft={initiationDraft}
-                  workModeLabel={INITIATION_WORK_MODES.find(mode => mode.id === initiationWorkMode)?.label || initiationWorkMode}
+                  workModeLabel={INITIATION_WORK_MODES.find(mode => mode.id === initiationWorkMode)?.[activeLanguage === 'zh' ? 'zhLabel' : 'label'] || initiationWorkMode}
                   firstLead={firstLead}
                   reporter={reporter}
                   workingGroup={workingGroup}

@@ -13,6 +13,7 @@ export default function ProjectDashboardSummary({ view = {} }) {
     onSyncManagerDashboard,
     projectDashboardNextRecommendationBackendRequired,
     projectDashboardNextRecommendationSourceMeta,
+    projectText,
     t,
   } = view;
 
@@ -84,10 +85,10 @@ export default function ProjectDashboardSummary({ view = {} }) {
         {isInitiatedProject && (
           <div data-testid="dashboard-next-action-resolution" className="mt-5 border-t border-[#7b6542] pt-4 font-mono text-[9px] uppercase tracking-widest text-[#d8c99f] leading-relaxed">
             <div>
-              NEXT ACTION RESOLUTION: {projectDashboardNextRecommendationBackendRequired ? 'backend required' : nextActionResolution?.status || (activeProject.initiation?.output ? 'manager-confirmed' : 'awaiting confirmation')}
+              {projectText('NEXT ACTION RESOLUTION')}: {projectText(projectDashboardNextRecommendationBackendRequired ? 'backend required' : nextActionResolution?.status || (activeProject.initiation?.output ? 'manager-confirmed' : 'awaiting confirmation'))}
             </div>
             <div>
-              AGENT RECEIPTS: {projectDashboardNextRecommendationBackendRequired ? 'backend required' : nextActionResolutionDelivery ? `${nextActionResolutionDelivery.deliveredAgentIds.length}/${nextActionResolutionDelivery.teamCount}` : `${activeProject.team.length}/${activeProject.team.length}`}
+              {projectText('AGENT RECEIPTS')}: {projectText(projectDashboardNextRecommendationBackendRequired ? 'backend required' : nextActionResolutionDelivery ? `${nextActionResolutionDelivery.deliveredAgentIds.length}/${nextActionResolutionDelivery.teamCount}` : `${activeProject.team.length}/${activeProject.team.length}`)}
             </div>
           </div>
         )}

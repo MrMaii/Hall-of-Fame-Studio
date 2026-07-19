@@ -62,6 +62,7 @@ import {
   updateMeetingMessageStatus,
 } from './meeting/meetingMessageState.js';
 import { mergeBackendEventReadModel } from './project/projectEventReadModel.js';
+import { initiationStartupAllowsModelWork } from './onboarding/initiationStartupReadiness.js';
 
 const AgentMarketRouteView = lazy(() => import('./scenes/AgentMarketRouteView.jsx'));
 const AgentDossierRouteView = lazy(() => import('./scenes/AgentDossierRouteView.jsx'));
@@ -199,7 +200,10 @@ function generateBarcode(seed = '') {
 
 const BRAND_LOGO_SRC = '/hall-of-fame-studio-logo.png';
 const DEFAULT_INITIATION_PROJECT_ID = 'p_roundtable_001';
-const DEFAULT_INITIATION_WORKSPACE_BASE_PATH = 'C:\\projects';
+const CLIENT_PLATFORM = typeof navigator === 'undefined'
+  ? 'Windows'
+  : navigator.userAgentData?.platform || navigator.platform || '';
+const DEFAULT_INITIATION_WORKSPACE_BASE_PATH = /win/i.test(CLIENT_PLATFORM) ? 'C:\\projects' : './projects';
 const workspaceSlug = (value = 'project') => String(value || 'project')
   .trim()
   .toLowerCase()
@@ -214,7 +218,8 @@ const joinWindowsPath = (basePath = '', folderName = '') => {
   const folder = String(folderName || '').trim().replace(/^[\\/]+/, '');
   if (!base) return folder;
   if (!folder) return base;
-  return `${base}\\${folder}`;
+  const separator = /^[a-z]:/i.test(base) || base.includes('\\') ? '\\' : '/';
+  return `${base}${separator}${folder}`;
 };
 const normalizeDecisionText = (value = '') => String(value || '').toLowerCase().replace(/\s+/g, '');
 const detectLeaderDecisionAgentId = (text = '', team = []) => {
@@ -951,7 +956,7 @@ const getAgentDeploymentWindow = (agent, profile, language = 'zh') => {
   const summary = profile.advice || profile.realWorldEdge || profile.strength || agent.desc;
 
   return {
-    title: isZh ? `${localizeText(agent.category, language)}浣跨敤绐楀彛` : `${agent.category} Use Window`,
+    title: isZh ? `${localizeText(agent.category, language)}使用窗口` : `${agent.category} Use Window`,
     summary,
     shortLabel: firstOutput,
     strongestAxis: topAxis ? `${topAxis.label} ${topAxis.value}` : agent.category,
@@ -1162,6 +1167,11 @@ export default function EngineWorkspace() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [projectMode, setProjectMode] = useState('dashboard'); // dashboard, meeting, chat, timeline
   const [projectDashboardAdvancedOpen, setProjectDashboardAdvancedOpen] = useState(false);
+  const [projectDashboardCoreSync, setProjectDashboardCoreSync] = useState({
+    projectId: null,
+    status: 'idle',
+    error: null,
+  });
   const [workspaceAdvancedOpen, setWorkspaceAdvancedOpen] = useState(false);
   const [workspaceHubRequested, setWorkspaceHubRequested] = useState(false);
   const [sceneTransition, setSceneTransition] = useState(null);
@@ -1293,9 +1303,11 @@ export default function EngineWorkspace() {
     folderNameEdited: false,
     preparedPath: '',
     preparing: false,
+    pickingFolder: false,
     receipt: null,
     verification: null,
     browserHandleName: '',
+    notice: null,
     error: null,
   }));
   const [initiationInviteIds, setInitiationInviteIds] = useState([]);
@@ -2061,6 +2073,14 @@ export default function EngineWorkspace() {
   // Derived Data
   const activeProject = projects.find(p => p.id === selectedProjectId);
   const activeLanguage = activeProject?.language || language;
+  const projectDashboardCoreSyncMatches = Boolean(
+    activeProject?.id
+    && String(projectDashboardCoreSync.projectId || '').toLowerCase() === String(activeProject.id).toLowerCase()
+  );
+  const projectDashboardCoreReady = Boolean(
+    isManagerDemoProject(activeProject)
+    || (projectDashboardCoreSyncMatches && projectDashboardCoreSync.status === 'ready')
+  );
   const renderAutonomousActionDecision = (decision, {
     testId = 'backend-autonomous-action-decision',
     dark = false,
@@ -3161,7 +3181,11 @@ export default function EngineWorkspace() {
   useEffect(() => {
     if (activeRoute !== 'project_initiation' || providerRuntimeStatus.running || !backendUrlConfigured) return;
     const startupReadiness = providerRuntimeStatus.localMvpStartupReadiness;
-    if (startupReadiness?.schemaVersion === 'local-mvp-startup-readiness/v1' && startupReadiness.readyForFirstProjectRun === true) return;
+    if (startupReadiness?.schemaVersion === 'local-mvp-startup-readiness/v1' && initiationStartupAllowsModelWork({
+      backendUrlConfigured,
+      startupReadiness,
+      modelProviderStatus: providerRuntimeStatus.modelProvider,
+    })) return;
     const baseUrl = committedBackendBaseUrl();
     const syncKey = `initiation-startup:${baseUrl}`;
     if (initiationStartupSyncRef.current[syncKey]) return;
@@ -3173,6 +3197,9 @@ export default function EngineWorkspace() {
     providerRuntimeStatus.running,
     providerRuntimeStatus.localMvpStartupReadiness?.schemaVersion,
     providerRuntimeStatus.localMvpStartupReadiness?.readyForFirstProjectRun,
+    providerRuntimeStatus.localMvpStartupReadiness?.readyForProviderSetup,
+    providerRuntimeStatus.modelProvider?.enabled,
+    providerRuntimeStatus.modelProvider?.configured,
     backendUrlConfigured,
   ]);
 
@@ -3312,22 +3339,25 @@ export default function EngineWorkspace() {
     silent = true,
     projectId = activeProject?.id,
     channelId = null,
+    timeoutMs = null,
+    indexOnly = false,
   } = {}) => {
     if (!projectId) return null;
     if (!silent) setBackendStation(prev => ({ ...prev, loading: true }));
     try {
       await ensureBackendProjectSeedForReadModelSync(projectId);
+      const requestTimeoutMs = timeoutMs ?? (silent ? 1200 : 3000);
       const transcriptIndex = await requestAgentBackend(`/projects/${encodeURIComponent(projectId)}/transcripts`, {
-        timeoutMs: silent ? 1200 : 3000,
+        timeoutMs: requestTimeoutMs,
       });
-      const channelIds = Array.from(new Set([
+      const channelIds = indexOnly ? [] : Array.from(new Set([
         channelId,
         ...(transcriptIndex.channels || []).map(channel => channel.channelId),
         ...PROJECT_CHANNELS.map(channel => channel.id),
       ].filter(Boolean))).slice(0, channelId ? 1 : 8);
       const channelResults = await Promise.allSettled(channelIds.map(id => (
         requestAgentBackend(`/projects/${encodeURIComponent(projectId)}/transcripts/${encodeURIComponent(id)}`, {
-          timeoutMs: silent ? 1200 : 3000,
+          timeoutMs: requestTimeoutMs,
         })
       )));
       const channelPayloads = channelResults
@@ -3798,6 +3828,7 @@ export default function EngineWorkspace() {
   const syncBackendTimelineAndEvents = async ({
     silent = true,
     projectId = activeProject?.id,
+    timeoutMs = null,
   } = {}) => {
     if (!projectId) return null;
     if (!silent) setBackendStation(prev => ({ ...prev, loading: true }));
@@ -3818,10 +3849,10 @@ export default function EngineWorkspace() {
       eventsResult,
     ] = await Promise.allSettled([
       requestAgentBackend(`/projects/${encodeURIComponent(projectId)}/timeline`, {
-        timeoutMs: silent ? 1200 : 3000,
+        timeoutMs: timeoutMs ?? (silent ? 1200 : 3000),
       }),
       requestAgentBackend(`/projects/${encodeURIComponent(projectId)}/events`, {
-        timeoutMs: silent ? 1200 : 3000,
+        timeoutMs: timeoutMs ?? (silent ? 1200 : 3000),
       }),
     ]);
     const timeline = timelineResult.status === 'fulfilled' ? timelineResult.value : null;
@@ -4274,13 +4305,18 @@ export default function EngineWorkspace() {
     return ensureBackendProjectSeed();
   };
 
-  const syncBackendManagerDashboard = async ({ silent = true, projectId = activeProject?.id } = {}) => {
+  const syncBackendManagerDashboard = async ({
+    silent = true,
+    projectId = activeProject?.id,
+    timeoutMs = null,
+  } = {}) => {
     if (!projectId) return null;
     if (!silent) setBackendStation(prev => ({ ...prev, loading: true }));
     try {
       await ensureBackendProjectSeedForReadModelSync(projectId);
+      const requestTimeoutMs = timeoutMs ?? (silent ? 1100 : 10000);
       const payload = await requestAgentBackend(`/projects/${encodeURIComponent(projectId)}/manager-dashboard`, {
-        timeoutMs: silent ? 1100 : 10000,
+        timeoutMs: requestTimeoutMs,
       });
       setBackendStation(prev => ({
         ...prev,
@@ -4342,7 +4378,7 @@ export default function EngineWorkspace() {
     } catch (error) {
       try {
         const fallbackDashboard = await requestAgentBackend(`/projects/${encodeURIComponent(projectId)}/manager-dashboard`, {
-          timeoutMs: silent ? 1100 : 10000,
+          timeoutMs: timeoutMs ?? (silent ? 1100 : 10000),
         });
         if (fallbackDashboard.managerScenarioTrail) {
           setBackendStation(prev => ({
@@ -9162,17 +9198,59 @@ export default function EngineWorkspace() {
   }, [activeRoute, projectMode, selectedProjectId, backendStation.connectionStatus]);
 
   useEffect(() => {
+    if (activeRoute !== 'project_detail' || projectMode !== 'dashboard' || !activeProject) return;
+    if (!projectDashboardAdvancedOpen || isManagerDemoProject(activeProject)) return;
+    if (!shouldAttemptBackendProjectWrite(activeProject) || backendStation.loading) return;
+    if (projectDashboardCoreSyncMatches && ['loading', 'ready'].includes(projectDashboardCoreSync.status)) return;
+
+    const projectId = activeProject.id;
+    setProjectDashboardCoreSync({ projectId, status: 'loading', error: null });
+    Promise.all([
+      syncBackendManagerDashboard({ silent: true, projectId, timeoutMs: 10_000 }),
+      syncBackendProjectTranscripts({ silent: true, projectId, timeoutMs: 10_000, indexOnly: true }),
+      syncBackendTimelineAndEvents({ silent: true, projectId, timeoutMs: 10_000 }),
+    ]).then(([managerDashboard, transcripts, timelineAndEvents]) => {
+      const complete = Boolean(
+        managerDashboard
+        && transcripts?.transcriptIndex
+        && timelineAndEvents?.timeline
+        && timelineAndEvents?.events
+      );
+      setProjectDashboardCoreSync(prev => (
+        String(prev.projectId || '').toLowerCase() !== String(projectId).toLowerCase()
+          ? prev
+          : {
+              projectId,
+              status: complete ? 'ready' : 'error',
+              error: complete ? null : 'Core project read models did not finish syncing.',
+            }
+      ));
+    });
+  }, [
+    activeRoute,
+    projectMode,
+    selectedProjectId,
+    projectDashboardAdvancedOpen,
+    projectDashboardCoreSync.projectId,
+    projectDashboardCoreSync.status,
+    backendStation.baseUrl,
+    backendStation.loading,
+  ]);
+
+  useEffect(() => {
     if (activeRoute !== 'project_detail' || !['dashboard', 'timeline'].includes(projectMode) || !activeProject) return;
+    if (projectMode === 'dashboard' && projectDashboardAdvancedOpen && !projectDashboardCoreReady) return;
     if (!shouldAttemptBackendProjectWrite(activeProject) || backendStation.loading) return;
     const baseUrl = committedBackendBaseUrl();
     const syncKey = `${activeProject.id}:${projectMode}:${baseUrl}`;
     if (managerAutoTimelineEventSyncRef.current[syncKey]) return;
     managerAutoTimelineEventSyncRef.current[syncKey] = true;
     syncBackendTimelineAndEvents({ silent: true, projectId: activeProject.id });
-  }, [activeRoute, projectMode, selectedProjectId, backendStation.baseUrl, backendStation.loading]);
+  }, [activeRoute, projectMode, selectedProjectId, projectDashboardAdvancedOpen, projectDashboardCoreReady, backendStation.baseUrl, backendStation.loading]);
 
   useEffect(() => {
     if (activeRoute !== 'project_detail' || !['dashboard', 'chat'].includes(projectMode) || !activeProject) return;
+    if (projectMode === 'dashboard' && projectDashboardAdvancedOpen && !projectDashboardCoreReady) return;
     if (!shouldAttemptBackendProjectWrite(activeProject) || backendStation.loading) return;
     const baseUrl = committedBackendBaseUrl();
     const syncKey = `${activeProject.id}:${projectMode}:${activeChannelId || 'main'}:${baseUrl}`;
@@ -9182,11 +9260,12 @@ export default function EngineWorkspace() {
       ? { silent: true, projectId: activeProject.id, channelId: activeChannelId || 'main' }
       : { silent: true, projectId: activeProject.id };
     syncBackendProjectTranscripts(transcriptSyncOptions);
-  }, [activeRoute, projectMode, selectedProjectId, activeChannelId, backendStation.baseUrl, backendStation.loading]);
+  }, [activeRoute, projectMode, selectedProjectId, activeChannelId, projectDashboardAdvancedOpen, projectDashboardCoreReady, backendStation.baseUrl, backendStation.loading]);
 
   useEffect(() => {
     if (activeRoute !== 'project_detail' || projectMode !== 'dashboard' || !activeProject) return;
     if (!projectDashboardAdvancedOpen && !isManagerDemoProject(activeProject)) return;
+    if (!projectDashboardCoreReady) return;
     if (!shouldAttemptBackendProjectWrite(activeProject) || backendStation.loading) return;
     const baseUrl = committedBackendBaseUrl();
     const syncKey = `${activeProject.id}:${baseUrl}`;
@@ -9196,11 +9275,12 @@ export default function EngineWorkspace() {
       syncBackendManagerReadyPackage({ silent: true, projectId: activeProject.id }),
       syncBackendReadinessProofMap({ silent: true, projectId: activeProject.id }),
     ]);
-  }, [activeRoute, projectMode, selectedProjectId, projectDashboardAdvancedOpen, backendStation.baseUrl, backendStation.loading]);
+  }, [activeRoute, projectMode, selectedProjectId, projectDashboardAdvancedOpen, projectDashboardCoreReady, backendStation.baseUrl, backendStation.loading]);
 
   useEffect(() => {
     if (activeRoute !== 'project_detail' || projectMode !== 'dashboard' || !activeProject) return;
     if (!projectDashboardAdvancedOpen && !isManagerDemoProject(activeProject)) return;
+    if (!projectDashboardCoreReady) return;
     if (!shouldAttemptBackendProjectWrite(activeProject) || backendStation.loading) return;
     const baseUrl = committedBackendBaseUrl();
     const syncKey = `${activeProject.id}:${baseUrl}`;
@@ -9212,11 +9292,12 @@ export default function EngineWorkspace() {
       syncBackendAutonomousControlBundle({ silent: true, projectId: activeProject.id }),
       syncBackendCollaborationIntentQueue({ silent: true, projectId: activeProject.id }),
     ]);
-  }, [activeRoute, projectMode, selectedProjectId, projectDashboardAdvancedOpen, backendStation.baseUrl, backendStation.loading]);
+  }, [activeRoute, projectMode, selectedProjectId, projectDashboardAdvancedOpen, projectDashboardCoreReady, backendStation.baseUrl, backendStation.loading]);
 
   useEffect(() => {
     if (activeRoute !== 'project_detail' || projectMode !== 'dashboard' || !activeProject) return;
     if (!projectDashboardAdvancedOpen && !isManagerDemoProject(activeProject)) return;
+    if (!projectDashboardCoreReady) return;
     if (!shouldAttemptBackendProjectWrite(activeProject) || backendStation.loading) return;
     const baseUrl = committedBackendBaseUrl();
     const syncKey = `${activeProject.id}:${baseUrl}`;
@@ -9230,14 +9311,15 @@ export default function EngineWorkspace() {
       syncBackendManagerUseCaseAudit({ silent: true, projectId: activeProject.id }),
       syncBackendCockpitReadModels({ silent: true, projectId: activeProject.id }),
     ]);
-  }, [activeRoute, projectMode, selectedProjectId, projectDashboardAdvancedOpen, backendStation.baseUrl, backendStation.loading]);
+  }, [activeRoute, projectMode, selectedProjectId, projectDashboardAdvancedOpen, projectDashboardCoreReady, backendStation.baseUrl, backendStation.loading]);
 
   useEffect(() => {
     if (activeRoute !== 'project_detail' || projectMode !== 'dashboard' || !activeProject) return;
     if (!projectDashboardAdvancedOpen && !isManagerDemoProject(activeProject)) return;
+    if (!projectDashboardCoreReady) return;
     if (!selectedAgentFocusId || !shouldAttemptBackendProjectWrite(activeProject)) return;
     syncBackendAgentDashboard(selectedAgentFocusId, { silent: true });
-  }, [activeRoute, projectMode, selectedProjectId, selectedAgentFocusId, projectDashboardAdvancedOpen, backendStation.connectionStatus]);
+  }, [activeRoute, projectMode, selectedProjectId, selectedAgentFocusId, projectDashboardAdvancedOpen, projectDashboardCoreReady, backendStation.connectionStatus]);
 
   useEffect(() => {
     const runDueCycles = () => {
@@ -9351,9 +9433,11 @@ export default function EngineWorkspace() {
       folderNameEdited: false,
       preparedPath: '',
       preparing: false,
+      pickingFolder: false,
       receipt: null,
       verification: null,
       browserHandleName: '',
+      notice: null,
       error: null,
     });
     setActiveRoute('project_initiation');
@@ -9960,11 +10044,16 @@ export default function EngineWorkspace() {
       }));
       return false;
     }
+    const startupAllowsConfiguredModel = (readiness) => initiationStartupAllowsModelWork({
+      backendUrlConfigured,
+      startupReadiness: readiness,
+      modelProviderStatus: providerRuntimeStatus.modelProvider,
+    });
     let startupReadiness = getLocalMvpStartupReadiness();
-    if (startupReadiness?.readyForFirstProjectRun !== true) {
+    if (!startupAllowsConfiguredModel(startupReadiness)) {
       startupReadiness = await refreshLocalMvpStartupReadiness({ silent: true });
     }
-    if (startupReadiness?.readyForFirstProjectRun === true || isDevelopmentInitiationFallbackEnabled()) {
+    if (startupAllowsConfiguredModel(startupReadiness) || isDevelopmentInitiationFallbackEnabled()) {
       if (!isDevelopmentInitiationFallbackEnabled()) {
         try {
           await requestAgentBackend('/llm/test', {
@@ -12133,11 +12222,17 @@ export default function EngineWorkspace() {
       ? providerRuntimeStatus.localMvpStartupReadiness
       : null;
     const initiationDevelopmentFallbackAllowed = isDevelopmentInitiationFallbackEnabled();
-    const initiationStartupReadyForFirstRun = backendUrlConfigured && initiationStartupReadiness?.readyForFirstProjectRun === true;
+    const initiationStartupReadyForFirstRun = initiationStartupAllowsModelWork({
+      backendUrlConfigured,
+      startupReadiness: initiationStartupReadiness,
+      modelProviderStatus: providerRuntimeStatus.modelProvider,
+    });
     const initiationStartupAllowsKickoff = initiationStartupReadyForFirstRun || initiationDevelopmentFallbackAllowed;
     const initiationStartupStatus = providerRuntimeStatus.running
       ? 'syncing'
-      : initiationStartupReadiness?.status || 'not synced';
+      : initiationStartupReadyForFirstRun
+        ? 'ready-for-local-mvp-session'
+        : initiationStartupReadiness?.status || 'not synced';
     const initiationStartupBlocker = initiationStartupReadyForFirstRun
       ? null
       : !backendUrlConfigured
@@ -12146,7 +12241,7 @@ export default function EngineWorkspace() {
     const initiationStartupSettingsTab = settingsTabForStartupReadiness(initiationStartupReadiness);
     const initiationStartupGateClass = initiationStartupReadyForFirstRun
       ? 'border-[#59684b] bg-[#eef5df] text-[#3f5136]'
-      : 'border-[#8f1e18] bg-red-50 text-[#8f1e18]';
+      : 'border-[#b9a55f] bg-[#fbf7df] text-[#75631d]';
     const initiationWorkspacePath = initiationWorkspaceDraft.preparedPath
       || joinWindowsPath(initiationWorkspaceDraft.basePath, initiationWorkspaceDraft.folderName);
     const initiationWorkspaceReady = Boolean(initiationWorkspaceDraft.receipt?.workspacePath || initiationWorkspaceDraft.preparedPath);
@@ -12160,7 +12255,8 @@ export default function EngineWorkspace() {
       try {
         setInitiationWorkspaceDraft(prev => ({
           ...prev,
-          preparing: true,
+          pickingFolder: true,
+          notice: null,
           error: null,
         }));
         const payload = await requestAgentBackend('/workspace/pick-folder', {
@@ -12172,10 +12268,24 @@ export default function EngineWorkspace() {
           },
           timeoutMs: 130_000,
         });
+        if (payload.unsupported) {
+          setInitiationWorkspaceDraft(prev => ({
+            ...prev,
+            pickingFolder: false,
+            notice: activeLanguage === 'zh'
+              ? '当前系统请直接填写上级文件夹，然后创建项目文件夹。'
+              : 'Enter the parent folder directly, then create the project folder.',
+            error: null,
+          }));
+          return;
+        }
         if (!payload.selected || !payload.folderPath) {
           setInitiationWorkspaceDraft(prev => ({
             ...prev,
-            preparing: false,
+            pickingFolder: false,
+            notice: activeLanguage === 'zh'
+              ? '未选择位置，你仍可直接填写上级文件夹。'
+              : 'No folder was selected. You can still enter the parent folder directly.',
             error: null,
           }));
           return;
@@ -12184,17 +12294,23 @@ export default function EngineWorkspace() {
           ...prev,
           basePath: payload.folderPath,
           preparedPath: '',
-          preparing: false,
+          pickingFolder: false,
           receipt: null,
           verification: null,
           browserHandleName: payload.folderPath.split(/[\\/]/).pop() || payload.folderPath,
+          notice: activeLanguage === 'zh'
+            ? '保存位置已更新。'
+            : 'The save location was updated.',
           error: null,
         }));
       } catch (error) {
         setInitiationWorkspaceDraft(prev => ({
           ...prev,
-          preparing: false,
-          error: error.message || String(error),
+          pickingFolder: false,
+          notice: null,
+          error: activeLanguage === 'zh'
+            ? '无法打开位置选择器。请直接填写上级文件夹，或稍后重试。'
+            : 'The folder picker could not be opened. Enter the parent folder directly or try again.',
         }));
       }
     };
@@ -12206,7 +12322,9 @@ export default function EngineWorkspace() {
           ...prev,
           receipt: null,
           verification: null,
-          error: 'Parent folder and project folder name are required.',
+          error: activeLanguage === 'zh'
+            ? '请填写上级文件夹和项目文件夹名称。'
+            : 'Parent folder and project folder name are required.',
         }));
         return null;
       }
@@ -12215,13 +12333,16 @@ export default function EngineWorkspace() {
           ...prev,
           receipt: null,
           verification: null,
-          error: 'Save the backend API URL before preparing a real local workspace.',
+          error: activeLanguage === 'zh'
+            ? '请先保存本地服务地址，再创建项目文件夹。'
+            : 'Save the local service address before creating the project folder.',
         }));
         return null;
       }
       setInitiationWorkspaceDraft(prev => ({
         ...prev,
         preparing: true,
+        notice: null,
         receipt: null,
         verification: null,
         error: null,
@@ -12267,7 +12388,9 @@ export default function EngineWorkspace() {
           preparing: false,
           receipt: null,
           verification: null,
-          error: error.name === 'AbortError' ? 'Backend workspace prepare timed out.' : error.message || String(error),
+          error: error.name === 'AbortError'
+            ? (activeLanguage === 'zh' ? '创建项目文件夹等待时间过长，请重试。' : 'Creating the project folder timed out. Try again.')
+            : (activeLanguage === 'zh' ? '无法创建项目文件夹。请检查保存位置后重试。' : 'The project folder could not be created. Check the save location and try again.'),
         }));
         setBackendStation(prev => ({
           ...prev,
@@ -12618,6 +12741,81 @@ export default function EngineWorkspace() {
             />
             </Suspense>
           </div>
+        </div>
+      );
+    }
+    const projectDashboardNeedsCoreSync = Boolean(
+      !isManagerDemoProject(activeProject)
+      && shouldAttemptBackendProjectWrite(activeProject)
+    );
+    if (projectDashboardNeedsCoreSync && !projectDashboardCoreReady) {
+      const coreSyncFailed = projectDashboardCoreSyncMatches && projectDashboardCoreSync.status === 'error';
+      const coreSyncCopy = activeLanguage === 'zh'
+        ? coreSyncFailed
+          ? {
+              eyebrow: '项目面板同步需要处理',
+              title: '核心项目数据尚未完成加载',
+              detail: '页面没有把缺失数据渲染成错误卡片。你可以重试核心同步，或先返回简洁视图。',
+              retry: '重新同步',
+              back: '返回简洁视图',
+            }
+          : {
+              eyebrow: '正在同步项目面板',
+              title: '正在加载最新项目数据…',
+              detail: '经理状态、频道、任务、时间线和事件记录同步完成后，完整面板会自动显示。',
+              retry: '重新同步',
+              back: '返回简洁视图',
+            }
+        : coreSyncFailed
+          ? {
+              eyebrow: 'Project dashboard sync needs attention',
+              title: 'The core project data did not finish loading.',
+              detail: 'The panel has not replaced missing data with error cards. Retry the core sync or return to the concise view.',
+              retry: 'Retry sync',
+              back: 'Return to concise view',
+            }
+          : {
+              eyebrow: 'Syncing project dashboard',
+              title: 'Loading the latest project data…',
+              detail: 'Manager status, channels, tasks, timeline, and event records are being synchronized before the full panel is shown.',
+              retry: 'Retry sync',
+              back: 'Return to concise view',
+            };
+      return (
+        <div data-testid="project-dashboard-view" className="relative flex-1 overflow-hidden bg-[#15110d] p-5 text-[#ead9a6] md:p-10">
+          <section
+            data-testid={coreSyncFailed ? 'project-dashboard-core-models-error' : 'project-dashboard-core-models-loading'}
+            className={`mx-auto mt-8 max-w-4xl border p-7 ${coreSyncFailed ? 'border-[#9e2f27] bg-[#241711]' : 'border-[#8d793d] bg-[#211b12]'}`}
+            role={coreSyncFailed ? 'alert' : 'status'}
+          >
+            <p className="font-mono text-xs uppercase tracking-[0.28em] text-[#bcae86]">
+              {coreSyncCopy.eyebrow}
+            </p>
+            <h2 className="mt-3 font-serif text-2xl text-[#f4e7bc]">
+              {coreSyncCopy.title}
+            </h2>
+            <p className="mt-3 max-w-2xl font-mono text-sm leading-relaxed text-[#bcae86]">
+              {coreSyncCopy.detail}
+            </p>
+            <div className="mt-6 flex flex-wrap gap-3">
+              {coreSyncFailed && (
+                <button
+                  type="button"
+                  onClick={() => setProjectDashboardCoreSync({ projectId: activeProject.id, status: 'idle', error: null })}
+                  className="border border-[#ead9a6] bg-[#ead9a6] px-5 py-2 font-mono text-xs uppercase tracking-widest text-[#251b13]"
+                >
+                  {coreSyncCopy.retry}
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => setProjectDashboardAdvancedOpen(false)}
+                className="border border-[#8d793d] px-5 py-2 font-mono text-xs uppercase tracking-widest text-[#ead9a6]"
+              >
+                {coreSyncCopy.back}
+              </button>
+            </div>
+          </section>
         </div>
       );
     }
@@ -20296,6 +20494,7 @@ export default function EngineWorkspace() {
                     onSyncManagerDashboard: () => syncBackendManagerDashboard({ silent: false, projectId: activeProject.id }),
                     projectDashboardNextRecommendationBackendRequired,
                     projectDashboardNextRecommendationSourceMeta,
+                    projectText,
                     t,
                   },
                   agentOverview: {
@@ -20433,6 +20632,7 @@ export default function EngineWorkspace() {
                     latestSchedulerRecord,
                     nextRunAt: autonomousWorkLoopNextRunAt,
                     onRunPulse: runProjectAutonomousPulse,
+                    projectText,
                     team: activeProject.team,
                     title: autonomousWorkLoopTitle,
                   },
@@ -21056,6 +21256,7 @@ export default function EngineWorkspace() {
                     lead: governanceLead,
                     onSyncGovernance: () => syncBackendGovernanceProtocol({ silent: false, projectId: activeProject.id }),
                     protocols: meetingFrames,
+                    projectText,
                     readModel: governanceProtocol,
                     reviewer: governanceReviewer,
                     sourceBadge: managerReadModelSourceBadge(governanceProtocol, 'governance-protocol-source'),
@@ -21066,6 +21267,7 @@ export default function EngineWorkspace() {
                     charter: kickoffCharter,
                     onOpenChatProof: () => openProjectChatProof(activeProject, kickoffCharterProofIds, 'main'),
                     proofIds: kickoffCharterProofIds,
+                    projectText,
                   },
                   kickoffMeetingFlow,
                   kickoffMeetingFlowView: {
@@ -22708,6 +22910,7 @@ export default function EngineWorkspace() {
   };
 
   const renderProjectTimeline = () => {
+    const projectText = (value) => localizeText(String(value ?? ''), activeLanguage);
     if (!projectDashboardAdvancedOpen) {
       return (
         <Suspense fallback={<LazyPanelFallback />}>
@@ -22734,6 +22937,7 @@ export default function EngineWorkspace() {
             isManagerDemoProject,
             openProjectChatProof,
             openProjectTimelineProof,
+            projectText,
             renderAutonomousActionDecision,
             sceneTransition,
             selectedTimelineEventId,

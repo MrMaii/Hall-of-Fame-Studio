@@ -2,6 +2,7 @@ import React from 'react';
 import { CheckCircle2, Loader2 } from 'lucide-react';
 
 export default function ProjectInitiationResultStep({
+  activeLanguage = 'zh',
   draft,
   workModeLabel,
   firstLead,
@@ -26,22 +27,24 @@ export default function ProjectInitiationResultStep({
   onSelectLeader,
   onApprove,
 }) {
+  const text = (chinese, english) => activeLanguage === 'zh' ? chinese : english;
+
   return (
     <div className="max-w-5xl mx-auto">
       <section className="bg-[#efe2bd] text-[#251b13] border border-[#7b6542] p-8">
-        <div className="font-mono text-[10px] uppercase tracking-[0.28em] text-[#8f1e18] mb-5">Step 06 / Initiation Result</div>
-        <h2 className="font-serif text-5xl leading-none mb-7">Initiation Result: Approved</h2>
+        <div className="font-mono text-[10px] uppercase tracking-[0.28em] text-[#8f1e18] mb-5">{text('第 6 步 / 立项结果', 'Step 06 / Initiation Result')}</div>
+        <h2 className="font-serif text-5xl leading-none mb-7">{text('立项结果：已批准', 'Initiation Result: Approved')}</h2>
         <div className="grid md:grid-cols-2 gap-4">
           {[
-            ['Project Name', draft.name],
-            ['Operating Mode', workModeLabel],
-            ['First Leader', firstLead.name],
-            ['Reviewer', reporter.name],
-            ['Execution Members', workingGroup.map(member => member.name).join(' / ') || firstLead.name],
-            ['Output Format', draft.output],
-            ['Source Meeting', 'Mandatory initiation roundtable'],
-            ['Local Workspace', workspaceDraft.verification?.workspacePath || workspaceDraft.receipt?.workspacePath || workspacePath],
-            ['Workspace Verification', workspaceDraft.verification ? `${workspaceDraft.verification.writePath} / read ${workspaceDraft.verification.readBytes} bytes` : 'pending project approval'],
+            [text('项目名称', 'Project Name'), draft.name],
+            [text('工作类型', 'Operating Mode'), workModeLabel],
+            [text('首任负责人', 'First Leader'), firstLead.name],
+            [text('复核人', 'Reviewer'), reporter.name],
+            [text('执行成员', 'Execution Members'), workingGroup.map(member => member.name).join(' / ') || firstLead.name],
+            [text('产出格式', 'Output Format'), draft.output],
+            [text('来源会议', 'Source Meeting'), text('必须完成的立项圆桌会议', 'Mandatory initiation roundtable')],
+            [text('本地工作区', 'Local Workspace'), workspaceDraft.verification?.workspacePath || workspaceDraft.receipt?.workspacePath || workspacePath],
+            [text('工作区验证', 'Workspace Verification'), workspaceDraft.verification ? `${workspaceDraft.verification.writePath} / ${text('读取', 'read')} ${workspaceDraft.verification.readBytes} ${text('字节', 'bytes')}` : text('等待项目批准', 'pending project approval')],
           ].map(([label, value]) => (
             <div key={label} className="border border-[#b8a57d] bg-[#f7edcf] p-4">
               <div className="font-mono text-[8px] uppercase tracking-widest text-[#7d6a49] mb-2">{label}</div>
@@ -50,10 +53,10 @@ export default function ProjectInitiationResultStep({
           ))}
         </div>
         <div data-testid="initiation-director-decisions" className="mt-6 border border-[#8f1e18] bg-[#251b13] text-[#efe2bd] p-5">
-          <div className="font-mono text-[10px] uppercase tracking-widest text-[#efe2bd] mb-4">Director Decisions</div>
+          <div className="font-mono text-[10px] uppercase tracking-widest text-[#efe2bd] mb-4">{text('总监决策', 'Director Decisions')}</div>
           <div className="grid md:grid-cols-3 gap-4">
             <div className="border border-[#7b6542] bg-[#1a120d] p-4">
-              <div className="font-mono text-[8px] uppercase tracking-widest text-[#d8c99f] mb-2">Confirmed Team</div>
+              <div className="font-mono text-[8px] uppercase tracking-widest text-[#d8c99f] mb-2">{text('确认团队', 'Confirmed Team')}</div>
               <div className="space-y-2">
                 {invitedMembers.map(member => (
                   <button
@@ -63,21 +66,21 @@ export default function ProjectInitiationResultStep({
                     onClick={() => onToggleConfirmedMember(member.id)}
                     className={`w-full border px-3 py-2 text-left font-mono text-[8px] uppercase tracking-widest leading-relaxed transition-colors ${confirmedMemberIds.includes(member.id) ? 'border-[#efe2bd] bg-[#251b13] text-[#efe2bd]' : 'border-[#7b6542] bg-[#1a120d] text-[#7d6a49]'} ${member.id === firstLead.id ? 'cursor-default' : 'hover:border-[#efe2bd] hover:text-[#efe2bd]'}`}
                   >
-                    {member.name} / {member.id === firstLead.id ? 'Leader marker required' : confirmedMemberIds.includes(member.id) ? (member.id === reporter.id ? 'Reviewer/reporting' : 'Execution Agent') : 'Removed after meeting'}
+                    {member.name} / {member.id === firstLead.id ? text('负责人，必须保留', 'Leader marker required') : confirmedMemberIds.includes(member.id) ? (member.id === reporter.id ? text('复核与汇报', 'Reviewer/reporting') : text('执行成员', 'Execution Agent')) : text('会议后移除', 'Removed after meeting')}
                   </button>
                 ))}
               </div>
               <div data-testid="confirmed-team-count" className="mt-3 font-mono text-[8px] uppercase tracking-widest text-[#d8c99f]">
-                {confirmedMembersCount} confirmed Agent{confirmedMembersCount === 1 ? '' : 's'}
+                {activeLanguage === 'zh' ? `已确认 ${confirmedMembersCount} 位 Agent` : `${confirmedMembersCount} confirmed Agent${confirmedMembersCount === 1 ? '' : 's'}`}
               </div>
             </div>
             <div className="border border-[#7b6542] bg-[#1a120d] p-4">
-              <div className="font-mono text-[8px] uppercase tracking-widest text-[#d8c99f] mb-2">Confirmed Leader Marker</div>
+              <div className="font-mono text-[8px] uppercase tracking-widest text-[#d8c99f] mb-2">{text('确认负责人', 'Confirmed Leader Marker')}</div>
               <div className="font-serif text-2xl leading-tight">{firstLead.name}</div>
-              <div className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#bcae86]">Director selected from the campaign slate</div>
+              <div className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#bcae86]">{text('由总监从候选成员中选定', 'Director selected from the campaign slate')}</div>
             </div>
             <div className="border border-[#7b6542] bg-[#1a120d] p-4">
-              <div className="font-mono text-[8px] uppercase tracking-widest text-[#d8c99f] mb-2">First Execution Plan</div>
+              <div className="font-mono text-[8px] uppercase tracking-widest text-[#d8c99f] mb-2">{text('首个执行计划', 'First Execution Plan')}</div>
               <div className="space-y-2">
                 {actionDrafts.map((action, index) => (
                   <input
@@ -95,27 +98,27 @@ export default function ProjectInitiationResultStep({
                 onClick={onAddAction}
                 className="mt-3 w-full border border-[#7b6542] px-3 py-2 font-mono text-[8px] uppercase tracking-widest text-[#d8c99f] hover:border-[#efe2bd] hover:text-[#efe2bd] transition-colors"
               >
-                Add next action
+                {text('添加下一项工作', 'Add next action')}
               </button>
             </div>
           </div>
           <div className="mt-4 font-mono text-[8px] uppercase tracking-widest text-[#d8c99f]">
-            Approval creates kickoff group chat evidence, assigns first work, starts the first autonomous pulse, and opens the manager dashboard.
+            {text('批准后会保存立项群聊记录、分配首项工作、启动首次自主执行，并打开项目看板。', 'Approval creates kickoff group chat evidence, assigns first work, starts the first autonomous pulse, and opens the manager dashboard.')}
           </div>
           {meetingSession && (
             <div data-testid="initiation-result-session-proof" className="mt-4 border border-[#7b6542] bg-[#1a120d] p-3">
-              <div className="font-mono text-[8px] uppercase tracking-widest text-[#d8c99f] mb-1">Meeting Session Evidence</div>
+              <div className="font-mono text-[8px] uppercase tracking-widest text-[#d8c99f] mb-1">{text('会议记录证据', 'Meeting Session Evidence')}</div>
               <div className="font-mono text-[8px] uppercase tracking-widest text-[#efe2bd]">
-                {meetingSession.id} / {meetingSession.status} / {meetingSession.evidence?.roleTranscriptIds?.length || 0} role turns / {meetingSession.evidence?.leaderCampaignIds?.length || 0} campaigns
+                {meetingSession.id} / {meetingSession.status} / {meetingSession.evidence?.roleTranscriptIds?.length || 0} {text('次角色发言', 'role turns')} / {meetingSession.evidence?.leaderCampaignIds?.length || 0} {text('位负责人候选', 'campaigns')}
               </div>
               <div data-testid="initiation-result-generation-source" className="mt-1 font-mono text-[7px] uppercase tracking-widest text-[#bcae86]">
-                SOURCE: {generationLabel} / {generationProvenance?.productionClaim || 'production blocked'}
+                {text('来源', 'SOURCE')}: {generationLabel} / {generationProvenance?.productionClaim || text('正式使用条件尚未完成', 'production blocked')}
               </div>
             </div>
           )}
         </div>
         <div className="mt-6 border border-[#b8a57d] bg-[#f7edcf] p-5">
-          <div className="font-mono text-[10px] uppercase tracking-widest text-[#8f1e18] mb-4">Leader Election</div>
+          <div className="font-mono text-[10px] uppercase tracking-widest text-[#8f1e18] mb-4">{text('负责人选择', 'Leader Election')}</div>
           <div className="grid md:grid-cols-2 gap-3">
             {leaderCandidates.slice(0, 4).map(candidate => {
               const selected = firstLead.id === candidate.agentId;
@@ -129,9 +132,9 @@ export default function ProjectInitiationResultStep({
                 >
                   <div className="flex items-center justify-between gap-3 mb-2">
                     <span className="font-serif text-2xl leading-none">{candidate.name}</span>
-                    <span className="font-mono text-[8px] uppercase tracking-widest">{candidate.score} pts</span>
+                    <span className="font-mono text-[8px] uppercase tracking-widest">{candidate.score} {text('分', 'pts')}</span>
                   </div>
-                  {selected && <div className="font-mono text-[8px] uppercase tracking-widest text-[#d8c99f] mb-2">Director selected</div>}
+                  {selected && <div className="font-mono text-[8px] uppercase tracking-widest text-[#d8c99f] mb-2">{text('总监已选择', 'Director selected')}</div>}
                   <div className="font-mono text-[8px] uppercase tracking-widest opacity-70 mb-2">{candidate.role}</div>
                   <p className="font-serif text-base leading-relaxed">{candidate.claim}</p>
                 </button>
@@ -149,9 +152,9 @@ export default function ProjectInitiationResultStep({
           {approvalRunning ? <Loader2 className="animate-spin" size={16} /> : <CheckCircle2 size={16} />}
           {approvalRunning ? (
             <span data-testid="initiation-approval-progress" role="status">
-              {approvalLabel || '正在创建项目并启动 Agent 团队'}
+              {approvalLabel || text('正在创建项目并启动 Agent 团队', 'Creating the project and starting the Agent team')}
             </span>
-          ) : '生成项目并进入 dashboard'}
+          ) : text('生成项目并进入看板', 'Create project and open dashboard')}
         </button>
       </section>
       <aside className="hidden">

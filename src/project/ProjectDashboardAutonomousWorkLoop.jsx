@@ -9,6 +9,7 @@ export default function ProjectDashboardAutonomousWorkLoop({ view = {} }) {
     latestSchedulerRecord,
     nextRunAt,
     onRunPulse,
+    projectText,
     team,
     title,
   } = view;
@@ -17,24 +18,24 @@ export default function ProjectDashboardAutonomousWorkLoop({ view = {} }) {
     <div className="bg-[#f7edcf]/70 border border-[#b8a57d] p-5 mb-6">
       <div className="flex items-start justify-between gap-4">
         <div>
-          <div className="font-mono text-[10px] uppercase tracking-widest text-[#8f1e18] mb-2">Autonomous Work Loop</div>
+          <div className="font-mono text-[10px] uppercase tracking-widest text-[#8f1e18] mb-2">{projectText('Autonomous Work Loop')}</div>
           <div className="font-serif text-xl leading-tight">
-            {title}
+            {projectText(title)}
           </div>
           <div className="font-mono text-[9px] uppercase tracking-widest text-[#7d6a49] mt-2">
-            Last run: {lastRunAt ? new Date(lastRunAt).toLocaleString() : backendRequired ? 'backend required' : 'not yet'}
+            {projectText('Last run')}: {lastRunAt ? new Date(lastRunAt).toLocaleString() : projectText(backendRequired ? 'backend required' : 'not yet')}
           </div>
           <div className="font-mono text-[9px] uppercase tracking-widest text-[#7d6a49] mt-1">
-            Next run: {nextRunAt ? new Date(nextRunAt).toLocaleString() : backendRequired ? 'backend required' : 'not scheduled'}
+            {projectText('Next run')}: {nextRunAt ? new Date(nextRunAt).toLocaleString() : projectText(backendRequired ? 'backend required' : 'not scheduled')}
           </div>
           {latestSchedulerRecord && (
             <div className="font-mono text-[8px] uppercase tracking-widest text-[#9b875c] mt-1">
-              {latestSchedulerRecord.trigger} / {latestSchedulerRecord.reason} / next {latestSchedulerRecord.nextRunAt ? new Date(latestSchedulerRecord.nextRunAt).toLocaleTimeString() : 'pending'}
+              {projectText(latestSchedulerRecord.trigger)} / {projectText(latestSchedulerRecord.reason)} / {projectText('next')} {latestSchedulerRecord.nextRunAt ? new Date(latestSchedulerRecord.nextRunAt).toLocaleTimeString() : projectText('pending')}
             </div>
           )}
           {backendRequired && (
             <div data-testid="autonomous-work-loop-backend-required" className="mt-2 border border-[#8f1e18] bg-red-50 px-3 py-2 font-mono text-[8px] uppercase tracking-widest text-[#8f1e18]">
-              Backend operations board is required before this real project can show scheduler or autonomous-cycle history.
+              {projectText('Backend operations board is required before this real project can show scheduler or autonomous-cycle history.')}
             </div>
           )}
         </div>
@@ -46,7 +47,7 @@ export default function ProjectDashboardAutonomousWorkLoop({ view = {} }) {
             disabled={commandDisabled}
             className="border border-[#7b6542] bg-[#251b13] px-3 py-2 font-mono text-[9px] uppercase tracking-widest text-[#efe2bd] hover:bg-[#8f1e18] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
           >
-            Hour Pulse
+            {projectText('Hour Pulse')}
           </button>
           <button
             type="button"
@@ -55,7 +56,7 @@ export default function ProjectDashboardAutonomousWorkLoop({ view = {} }) {
             disabled={commandDisabled}
             className="border border-[#7b6542] bg-[#efe2bd] px-3 py-2 font-mono text-[9px] uppercase tracking-widest text-[#251b13] hover:border-[#251b13] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
           >
-            Day Report
+            {projectText('Day Report')}
           </button>
         </div>
       </div>

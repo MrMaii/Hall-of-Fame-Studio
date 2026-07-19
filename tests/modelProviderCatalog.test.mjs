@@ -3,7 +3,9 @@ import test from 'node:test';
 
 import {
   MODEL_PROVIDERS,
+  STEPFUN_REGIONS,
   findModelProvider,
+  findStepfunRegion,
   modelsForProvider,
 } from '../src/settings/modelProviderCatalog.js';
 
@@ -35,4 +37,17 @@ test('provider helpers return provider-scoped models without sharing mutable cat
   const first = modelsForProvider('openai');
   first.pop();
   assert.notEqual(first.length, modelsForProvider('openai').length);
+});
+
+test('StepFun catalog keeps domestic and international API environments explicit', () => {
+  assert.deepEqual(
+    STEPFUN_REGIONS.map((region) => ({ id: region.id, baseURL: region.baseURL })),
+    [
+      { id: 'global', baseURL: 'https://api.stepfun.ai/v1' },
+      { id: 'china', baseURL: 'https://api.stepfun.com/v1' },
+    ],
+  );
+  assert.equal(findStepfunRegion('https://api.stepfun.ai/v1').id, 'global');
+  assert.equal(findStepfunRegion('https://api.stepfun.com/v1').id, 'china');
+  assert.equal(findStepfunRegion('https://custom.example/v1'), null);
 });

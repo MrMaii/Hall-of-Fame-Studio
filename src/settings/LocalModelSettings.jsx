@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { CheckCircle2, Play, RefreshCw, Search, Server } from 'lucide-react';
 import ModelProviderPicker from './ModelProviderPicker.jsx';
-import { findModelProvider } from './modelProviderCatalog.js';
+import { findModelProvider, findStepfunRegion } from './modelProviderCatalog.js';
 
 const statusLabel = (status, language = 'zh') => {
   const text = (chinese, english) => language === 'en' ? english : chinese;
@@ -13,7 +13,7 @@ const statusLabel = (status, language = 'zh') => {
       : text('尚未配置', 'Not configured');
 };
 
-const modelSettingsErrorMessage = (error, language = 'zh') => {
+const modelSettingsErrorMessage = (error, language = 'zh', context = {}) => {
   const text = (chinese, english) => language === 'en' ? english : chinese;
   const message = String(error || '');
   if (/Model API key|Base URL|Model ID/i.test(message)) return text('请完整填写模型服务地址、模型名称和模型密钥。', 'Enter the model service address, model name, and model key.');
@@ -23,6 +23,14 @@ const modelSettingsErrorMessage = (error, language = 'zh') => {
   if (/Secret vault|SECRET_VAULT/i.test(message)) return text('本地密钥存储尚未准备好。请重新启动本地服务后再试。', 'Local key storage is not ready. Restart the local service and try again.');
   if (/AbortError|timed out|timeout/i.test(message)) return text('检查等待时间过长，已经停止。请确认模型服务正在运行后重试。', 'The check timed out. Confirm that the model service is running and try again.');
   if (/fetch|connect|ECONNREFUSED|unreachable/i.test(message)) return text('无法连接模型服务。请检查地址以及模型服务是否正在运行。', 'Could not connect to the model service. Check the address and confirm that the service is running.');
+  if (context.providerId === 'stepfun') {
+    const region = findStepfunRegion(context.baseURL);
+    const regionLabel = region ? (language === 'en' ? region.englishLabel : region.label) : text('自定义地址', 'custom endpoint');
+    return text(
+      `阶跃星辰连接检查没有通过。当前选择：${regionLabel}（${context.baseURL || '未填写地址'}）。请确认 API Key 来自同一版本，然后重试。`,
+      `The Stepfun connection check failed. Current selection: ${regionLabel} (${context.baseURL || 'no endpoint'}). Confirm that the API key comes from the same region, then try again.`,
+    );
+  }
   return text('模型设置没有保存。请检查填写内容和本地服务状态后重试。', 'Model settings were not saved. Check the form and local service status, then try again.');
 };
 
@@ -111,6 +119,7 @@ export default function LocalModelSettings({
         <div className="mt-4 grid gap-4">
           <ModelProviderPicker
             providerId={selectedProvider.id}
+            baseURL={drafts.modelBaseUrl}
             modelId={customModelMode ? '__custom__' : drafts.modelName || selectedProvider.defaultModel}
             disabled={!secretInputReady}
             activeLanguage={activeLanguage}
@@ -183,7 +192,10 @@ export default function LocalModelSettings({
 
       {(drafts.lastReceipt || drafts.error) && (
         <div data-testid="settings-provider-seal-receipt" className={`border px-4 py-3 text-sm leading-relaxed ${drafts.error ? 'border-red-800 bg-red-50 text-red-800' : 'border-[#59684b] bg-[#eef5df] text-[#3f5136]'}`}>
-          {drafts.error ? modelSettingsErrorMessage(drafts.error, activeLanguage) : <span className="inline-flex items-center gap-2"><CheckCircle2 size={16} />{text('设置已经通过检查并保存在本机。', 'Settings passed the check and were saved locally.')}</span>}
+          {drafts.error ? modelSettingsErrorMessage(drafts.error, activeLanguage, {
+            providerId: selectedProvider.id,
+            baseURL: drafts.modelBaseUrl,
+          }) : <span className="inline-flex items-center gap-2"><CheckCircle2 size={16} />{text('设置已经通过检查并保存在本机。', 'Settings passed the check and were saved locally.')}</span>}
         </div>
       )}
 
@@ -192,6 +204,7 @@ export default function LocalModelSettings({
         <div className="space-y-2 border-t border-[#d1d0c9] p-4 font-mono text-xs text-[#5f5a50]">
           <div>{text('本地服务', 'Local service')}：{targetLabel || text('尚未设置', 'Not set')}</div>
           <div>{text('模型状态', 'Model status')}：{statusLabel(providerRuntimeStatus.modelProvider, activeLanguage)}</div>
+          {selectedProvider.id === 'stepfun' && <div data-testid="settings-stepfun-region-diagnostic">{text('阶跃星辰版本', 'Stepfun region')}：{activeLanguage === 'en' ? findStepfunRegion(drafts.modelBaseUrl)?.englishLabel : findStepfunRegion(drafts.modelBaseUrl)?.label} · {drafts.modelBaseUrl}</div>}
           <div>{text('调查资料搜索', 'Research search')}：{statusLabel(providerRuntimeStatus.searchProvider, activeLanguage)}</div>
           <div>{text('本地密钥存储', 'Local key storage')}：{sealReady ? text('可用', 'Ready') : text('尚未准备好', 'Not ready')}</div>
         </div>

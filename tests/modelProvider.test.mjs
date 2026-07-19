@@ -144,6 +144,7 @@ test('OpenAI-compatible suppliers use Bearer chat completions', async () => {
   for (const [providerName, baseURL] of [
     ['deepseek', 'https://api.deepseek.com'],
     ['stepfun', 'https://api.stepfun.com/v1'],
+    ['stepfun', 'https://api.stepfun.ai/v1'],
     ['qwen', 'https://dashscope.aliyuncs.com/compatible-mode/v1'],
   ]) {
     const { provider, calls } = makeProvider(

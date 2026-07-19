@@ -9,7 +9,7 @@ test('simple local model settings use Chinese primary actions and keep diagnosti
     assert.match(source, new RegExp(label));
   }
   assert.match(source, /<details className=/);
-  assert.match(source, /modelSettingsErrorMessage\(drafts\.error, activeLanguage\)/);
+  assert.match(source, /modelSettingsErrorMessage\(drafts\.error, activeLanguage, \{/);
   assert.match(source, /if \(checked\) update\('modelApiKey', ''\)/);
 });
 

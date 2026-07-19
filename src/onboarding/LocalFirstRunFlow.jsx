@@ -150,7 +150,10 @@ export default function LocalFirstRunFlow({
               <div className="mt-6 flex flex-wrap gap-3">
                 <button type="button" data-testid="first-run-open-model-settings" onClick={onOpenModelSettings} className="border border-[#251b13] bg-[#251b13] px-6 py-3 text-white">{text('打开模型设置', 'Open model settings')}</button>
                 {projectCount === 0 && (
-                  <button data-testid="first-run-skip-model" type="button" onClick={onStartProject} className="border border-[#8f1e18] px-6 py-3 text-[#8f1e18]">{text('稍后配置，先创建项目', 'Configure later and create a project')}</button>
+                  <div className="flex flex-col items-start gap-2">
+                    <button data-testid="first-run-skip-model" type="button" onClick={onStartProject} className="border border-[#8f1e18] px-6 py-3 text-[#8f1e18]">{text('暂不配置，先准备项目信息', 'Configure later and prepare project details')}</button>
+                    <p className="max-w-sm font-serif text-sm leading-relaxed text-[#75631d]">{text('开始 Agent 工作前仍需完成模型设置', 'Model setup is still required before Agent work can start')}</p>
+                  </div>
                 )}
               </div>
             </div>

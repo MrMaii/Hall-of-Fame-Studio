@@ -25,6 +25,14 @@ import {
   summarizeProjectEventLedger,
   verifyProjectEventLedger,
 } from './agentRuntime.js';
+import {
+  WORKFLOW_NODE_FAMILIES,
+  WORKFLOW_NODE_FAMILY_ORDER,
+  decorateWorkflowNode,
+  evaluateWorkflowNodeSubmissionQuality,
+  inferWorkflowNodeFamily,
+} from '../workflow/workflowNodeProtocol.js';
+import { evaluateAgentContributionOpportunity } from '../workflow/agentContributionPolicy.js';
 import { createAgentProjectMemoryStore } from './agentProjectStore.js';
 import {
   REDACTED,
@@ -209,6 +217,7 @@ import {
   buildModelKickoffOpeningLineMessages,
   buildModelKickoffTurnLineMessages,
   findMeetingAgent,
+  modelKickoffPayloadMatchesLanguage,
   modelKickoffPayloadMatchesTopic,
   modelKickoffPayloadText,
   normalizeModelArray,
@@ -219,6 +228,7 @@ import {
   parseModelTurnLinePayload,
   repairModelCompletionJson,
 } from './modelKickoffParsing.js';
+import { modelOutputMatchesLanguage } from './modelLanguagePolicy.js';
 import { compactPreview } from './textPreview.js';
 import { createTranslator, localizeText, normalizeLanguage } from '../i18n/runtime.js';
 import { appendLocalTraceGraphReceipt, buildLocalTraceGraph } from './localTraceGraph.js';
@@ -1276,6 +1286,7 @@ function buildAgentTimelineToolSubmission({
   artifactRecord = null,
   managementReasons = [],
   collaboratorIds = [],
+  contributionIntent = null,
   trigger = 'agent-worker',
   cadence = 'agent-pulse',
 } = {}) {
@@ -1289,7 +1300,23 @@ function buildAgentTimelineToolSubmission({
   const commitMessage = completed
     ? `${agent.name || 'Agent'} completed ${task?.text || workText || 'the assigned work'} and submitted the deliverable.`
     : `${agent.name || 'Agent'} published progress on ${task?.text || workText || 'the current work pulse'}.`;
-  return {
+  const participantIds = uniqueStrings([
+    agent.id,
+    ...collaboratorIds,
+    ...(contributionIntent?.participantIds || []),
+  ].filter(Boolean));
+  const relationshipRoles = {
+    ...Object.fromEntries(participantIds.map((participantId) => [
+      participantId,
+      participantId === agent.id ? 'primary-committer' : 'collaborator',
+    ])),
+    ...(contributionIntent?.relationshipRoles || {}),
+  };
+  const title = completed
+    ? `${agent.name || 'Agent'} completed ${task?.text || 'assigned work'}`
+    : `${agent.name || 'Agent'} work pulse`;
+  const description = workSummary || commitMessage;
+  const submission = {
     id: `timeline_submission_${agent.id || 'agent'}_${Date.parse(now) || Date.now()}`,
     tool: 'manager-flow-timeline',
     protocolVersion: 'agent-timeline-submit/v1',
@@ -1303,12 +1330,31 @@ function buildAgentTimelineToolSubmission({
     cycleId,
     trigger,
     cadence,
-    category: completed ? 'submission' : 'execution',
-    subtype: completed ? 'deliverable-submit' : 'work-pulse-submit',
-    intent: completed
-      ? 'Agent completed the task and self-published a timeline commit for manager/user review.'
-      : 'Agent used the timeline tool to publish a progress commit after its work pulse.',
+    category: contributionIntent?.proposedNode?.family || (completed ? 'submission' : 'execution'),
+    subtype: contributionIntent?.proposedNode?.subtype || (completed ? 'deliverable-submit' : 'work-pulse-submit'),
+    title,
+    description,
+    descriptionSource: 'agent-authored',
+    intent: contributionIntent?.decision === 'submit'
+      ? contributionIntent.whyNow
+      : contributionIntent?.whyNow || (completed
+        ? 'Agent completed the task and self-published a timeline commit for manager/user review.'
+        : 'Agent used the timeline tool to publish a progress commit after its work pulse.'),
     commitMessage,
+    committerIds: contributionIntent?.committerIds?.length ? contributionIntent.committerIds : [agent.id].filter(Boolean),
+    coAuthorIds: contributionIntent?.coAuthorIds || [],
+    participantIds,
+    relationshipRoles,
+    submissionMotivation: contributionIntent || {
+      schemaVersion: 'agent-workflow-node-intent/v1',
+      decision: 'submit',
+      whyNow: completed
+        ? 'The owned task reached a reviewable completion checkpoint.'
+        : 'The work pulse changed inspectable task state and should remain visible to collaborators.',
+      expectedValue: completed ? 'manager-reviewable-deliverable' : 'shared-progress-awareness',
+      trigger,
+      cadence,
+    },
     thinkingFrame,
     collaborationContext: {
       managerId: agent.managerId || null,
@@ -1320,6 +1366,24 @@ function buildAgentTimelineToolSubmission({
     attachmentIds: [artifactRecord?.id].filter(Boolean),
     attachments: artifactRecord ? [artifactRecord] : [],
     summary: workSummary || commitMessage,
+  };
+  const decorated = decorateWorkflowNode({
+    ...submission,
+    agentId: agent.id || null,
+    agentName: agent.name || 'Agent',
+    importance: completed ? 'major' : 'normal',
+    attachments: submission.attachments,
+  });
+  return {
+    ...submission,
+    semanticLevel: decorated.semanticLevel,
+    semanticLabel: decorated.semanticLabel,
+    visual: decorated.visual,
+    submissionQuality: evaluateWorkflowNodeSubmissionQuality({
+      node: decorated,
+      submission,
+      attachments: submission.attachments,
+    }),
   };
 }
 
@@ -1368,12 +1432,17 @@ function pendingSubmissionForReviewer({ project = {}, reviewer = {}, submissionI
   const reviewerLooksLikeReviewer = /review|evidence|qa|critic|risk/i.test(`${reviewer.role || ''} ${reviewer.title || ''} ${reviewer.skill || ''}`);
   const reviewableStatuses = new Set(['pending-review', 'under-review', 'submitted']);
   const submissions = project.agentSubmissions || [];
+  const reviews = project.submissionReviews || [];
   const candidates = submissionId
     ? submissions.filter((submission) => String(submission.id || '') === String(submissionId))
     : submissions;
   return candidates.find((submission) => {
     if (!submission?.id) return false;
     if (String(submission.agentId || '') === reviewerId) return false;
+    if (reviews.some((review) => (
+      String(review.submissionId || '') === String(submission.id)
+      && String(review.reviewerAgentId || '') === reviewerId
+    ))) return false;
     const status = String(submission.reviewStatus || submission.status || 'pending-review');
     if (!reviewableStatuses.has(status)) return false;
     const requestedIds = uniqueStrings([
@@ -4400,12 +4469,22 @@ export function runAgentWorkCycle({
   const resolvedEvidenceSearchProvider = strategyControls.evidenceSearchProvider || evidenceSearchProvider;
   const resolvedEvidenceSearchMode = strategyControls.evidenceSearchMode || evidenceSearchMode;
   const resolvedEvidenceSearchProviderReceipt = strategyControls.evidenceSearchProviderReceipt || evidenceSearchProviderReceipt;
-  const taskStatus = completed ? 'done' : task ? 'in-progress' : 'monitoring';
+  const completedThisPulse = Boolean(completed && (!strategyDecision || resolvedSubmitWorkArtifact));
+  const contributionIntent = evaluateAgentContributionOpportunity({
+    project,
+    agent,
+    task,
+    completed: completedThisPulse,
+    managementSignals,
+    strategyDecision,
+    now,
+  });
+  const taskStatus = completedThisPulse ? 'done' : task ? 'in-progress' : 'monitoring';
   const artifact = routine?.artifact || (currentLanguage === 'zh' ? '时间线证据' : 'timeline evidence');
   const messageId = `agent_work_${agent.id}_${timestamp}`;
   const logId = `log_${messageId}`;
   const progressEventId = `evt_${logId}`;
-  const workSummary = completed
+  const workSummary = completedThisPulse
     ? t('agent.workCompletedLog', { agent: agent.name, workText, artifact })
     : t('agent.workProgressLog', { agent: agent.name, workText, routine: routine?.label || (currentLanguage === 'zh' ? '固定工作例行程序' : 'their fixed work routine'), artifact });
   const managementLine = resolvedManagementReasons.length ? t('agent.managementPriority', { reasons: resolvedManagementReasons.join('; ') }) : '';
@@ -4420,15 +4499,15 @@ export function runAgentWorkCycle({
     id: messageId,
     projectId: project.id,
     channelId,
-    type: completed ? 'decision' : 'progress',
+    type: completedThisPulse ? 'decision' : 'progress',
     author: agent.name,
     role: agent.role,
     time: t('agent.agentPulse'),
-    text: completed
+    text: completedThisPulse
       ? t('agent.completed', { workText, artifact, managementLine, responseLine: managementResponseLine })
       : t('agent.progress', { workText, routine: routine?.label || (currentLanguage === 'zh' ? '我的固定例行程序' : 'my fixed routine'), artifact, managementLine, responseLine: managementResponseLine }),
     targets: [],
-    weight: completed ? t('agent.completedWeight') : t('agent.progressWeight'),
+    weight: completedThisPulse ? t('agent.completedWeight') : t('agent.progressWeight'),
     agentWorker: {
       cycleId,
       traceId: normalizedTraceId,
@@ -4451,11 +4530,11 @@ export function runAgentWorkCycle({
     workText,
     workSummary,
     now,
-    completed,
+    completed: completedThisPulse,
     cycleId,
   }));
   const writtenArtifact = typeof artifactWriter === 'function'
-    ? artifactWriter(artifactDraft, { project, agent, task, now, completed, cycleId })
+    ? artifactWriter(artifactDraft, { project, agent, task, now, completed: completedThisPulse, cycleId })
     : null;
   const redactedWrittenArtifact = redactSensitiveObject(writtenArtifact || {});
   const artifactRecord = {
@@ -4471,13 +4550,14 @@ export function runAgentWorkCycle({
     task,
     now,
     cycleId,
-    completed,
+    completed: completedThisPulse,
     workText,
     workSummary,
     routine,
     artifactRecord,
     managementReasons: resolvedManagementReasons,
     collaboratorIds: managementResponderTargetIds,
+    contributionIntent,
     trigger,
     cadence,
   });
@@ -4489,7 +4569,7 @@ export function runAgentWorkCycle({
     agentId: agent.id,
     log: workSummary,
     cadence,
-    eventType: completed ? 'agent-task-completed' : 'agent-work-pulse',
+    eventType: completedThisPulse ? 'agent-task-completed' : 'agent-work-pulse',
     taskId: task?.id || null,
     sourceChannelId: channelId,
     receiptCount: progressMessage.visibility?.receiptCount || 0,
@@ -4503,6 +4583,7 @@ export function runAgentWorkCycle({
     thinkingFrame: timelineSubmission.thinkingFrame,
     collaborationContext: timelineSubmission.collaborationContext,
     strategyDecision,
+    contributionIntent,
   };
   const managementResponseMessages = managementResponderTargets.map((target, index) => attachMessageReceipts({
     id: `agent_management_response_${agent.id}_${target.id}_${timestamp}_${index}`,
@@ -4608,10 +4689,10 @@ export function runAgentWorkCycle({
     if (!task || String(item.id) !== String(task.id)) return item;
     return {
       ...item,
-      status: completed ? 'done' : 'in-progress',
+      status: completedThisPulse ? 'done' : 'in-progress',
       lastTouchedAt: now,
       workPulseCount,
-      completedAt: completed ? now : item.completedAt,
+      completedAt: completedThisPulse ? now : item.completedAt,
       evidenceMessageIds: Array.from(new Set([...(item.evidenceMessageIds || []), progressMessage.id])),
       timelineLogIds: Array.from(new Set([...(item.timelineLogIds || []), progressLog.id])),
       attachments: [
@@ -4627,11 +4708,11 @@ export function runAgentWorkCycle({
     agentId: agent.id,
     name: previousState.name || agent.name,
     role: previousState.role || agent.role,
-    status: task ? (completed ? 'completed-task' : 'working') : 'monitoring',
+    status: task ? (completedThisPulse ? 'completed-task' : 'working') : 'monitoring',
     currentPlan: {
       ...(previousState.currentPlan || {}),
       focus: workText,
-      next: completed ? t('agent.waitNext') : t('agent.continueWork'),
+      next: completedThisPulse ? t('agent.waitNext') : t('agent.continueWork'),
       strategyNext: strategyDecision?.nextStep || null,
       strategySelectedAction: strategyDecision?.selectedAction || null,
       taskId: task?.id || previousState.currentPlan?.taskId || null,
@@ -4664,16 +4745,16 @@ export function runAgentWorkCycle({
       if (!matchesTask) return obligation;
       return {
         ...obligation,
-        status: completed ? 'done' : 'in-progress',
+        status: completedThisPulse ? 'done' : 'in-progress',
         lastWorkedAt: now,
-        completedAt: completed ? now : obligation.completedAt,
+        completedAt: completedThisPulse ? now : obligation.completedAt,
       };
     }),
     worklog: [
       {
         id: `worklog_${messageId}`,
         at: now,
-        kind: completed ? 'agent-task-completed' : 'agent-work-pulse',
+        kind: completedThisPulse ? 'agent-task-completed' : 'agent-work-pulse',
         source: 'agent-work-cycle',
         sourceMessageId: progressMessage.id,
         taskId: task?.id || null,
@@ -4685,6 +4766,7 @@ export function runAgentWorkCycle({
         thinkingFrame: timelineSubmission.thinkingFrame,
         strategyDecisionId: strategyDecision?.id || null,
         strategySelectedAction: strategyDecision?.selectedAction || null,
+        contributionIntent,
       },
       ...(managementSignals.length ? [{
         id: `worklog_management_response_${messageId}`,
@@ -4706,7 +4788,7 @@ export function runAgentWorkCycle({
   };
   const projectWithState = {
     ...project,
-    progress: Math.min(100, (project.progress || 0) + (completed ? 2 : task ? 1 : 0)),
+    progress: Math.min(100, (project.progress || 0) + (completedThisPulse ? 2 : task ? 1 : 0)),
     tasks: nextTasks,
     logs: [...managementResponseLogs, ...managementLogs, progressLog, ...(project.logs || [])],
     agentStates: {
@@ -4741,6 +4823,7 @@ export function runAgentWorkCycle({
         strategyDecision,
         strategyDecisionId: strategyDecision?.id || null,
         strategySelectedAction: strategyDecision?.selectedAction || null,
+        contributionIntent,
       }, { projectId: project.id, workerKind: 'agent-worker', now }),
       ...(project.agentWorkerLedger || []),
     ].slice(0, 100),
@@ -4767,7 +4850,7 @@ export function runAgentWorkCycle({
         cadence,
         dueAt,
         nextRunAt,
-        completed,
+        completed: completedThisPulse,
         managementPriority: resolvedManagementPriority,
         managementReasons: resolvedManagementReasons,
         managementSignalIds: managementSignals.map((item) => item.id).filter(Boolean),
@@ -4856,13 +4939,13 @@ export function runAgentWorkCycle({
     && (Boolean(task) || explicitProjectWorkArtifactRequested)
     && (
       resolvedSubmitWorkArtifactOn === 'always'
-      || (resolvedSubmitWorkArtifactOn === 'completion' && completed)
+      || (resolvedSubmitWorkArtifactOn === 'completion' && completedThisPulse)
       || (!task && explicitProjectWorkArtifactRequested)
     );
   const shouldRecordEvidenceSearch = Boolean(resolvedRecordEvidenceSearch)
     && (Boolean(task) || explicitEvidenceSearchRequested)
     && (
-      completed
+      completedThisPulse
       || resolvedSubmitWorkArtifactOn === 'always'
       || resolvedWorkArtifactType === 'evidence-packet'
     );
@@ -4926,6 +5009,7 @@ export function runAgentWorkCycle({
       artifactType: resolvedWorkArtifactType,
       title: `${agent.name || agent.id} autonomous ${resolvedWorkArtifactLabel}`,
       summary: `${agent.name || agent.id} completed a worker cycle for ${workText} and submitted a proofed ${resolvedWorkArtifactLabel}.`,
+      description: `${agent.name || agent.id} published this ${resolvedWorkArtifactLabel} because the current worker cycle reached a reviewable checkpoint for ${workText}. The requested reviewer should validate the linked chat, timeline, event, and artifact proof.`,
       body: [
         `# ${agent.name || agent.id} autonomous ${resolvedWorkArtifactLabel}`,
         '',
@@ -4946,6 +5030,10 @@ export function runAgentWorkCycle({
       status: 'submitted',
       reviewStatus: resolvedWorkArtifactReviewStatus,
       reviewerAgentId: resolvedWorkArtifactReviewerAgentId,
+      coAuthorIds: contributionIntent.coAuthorIds,
+      participantIds: contributionIntent.participantIds,
+      relationshipRoles: contributionIntent.relationshipRoles,
+      submissionMotivation: contributionIntent,
       dependsOn: [cycleId, progressMessage.id, progressLog.id, evidenceSearchResult?.evidenceSearch?.id].filter(Boolean),
       sourceRefs: [
         { type: 'agent-work-cycle', id: cycleId, trigger, cadence, dueAt, nextRunAt },
@@ -5132,6 +5220,7 @@ export function runAgentWorkCycle({
     reviewResponseArtifact: reviewResponseResult?.artifact || null,
     reviewResponseLog: reviewResponseResult?.log || null,
     strategyDecision,
+    contributionIntent,
   };
 }
 
@@ -5142,11 +5231,16 @@ export function submitAgentArtifact({
   artifactType = 'progress-brief',
   title = '',
   summary = '',
+  description = '',
   body = '',
   taskId = null,
   status = 'submitted',
   reviewStatus: requestedReviewStatus = 'pending-review',
   reviewerAgentId = null,
+  coAuthorIds = [],
+  participantIds = [],
+  relationshipRoles = {},
+  submissionMotivation = null,
   dependsOn = [],
   revisesSubmissionId = null,
   revisionOfSubmissionId = null,
@@ -5211,6 +5305,29 @@ export function submitAgentArtifact({
       ? member.id === (reviewerAgentId || taskReviewer?.id) || member.name === (reviewerAgentId || taskReviewer?.id)
       : (member.id !== agent.id && (/review|evidence|qa|critic|risk/i.test(`${member.role || ''} ${member.title || ''} ${member.skill || ''}`)))
   )) || team.find((member) => member.id !== agent.id && member.id !== leader?.id) || leader || null;
+  const resolveTeamIds = (refs = []) => uniqueStrings(Array.isArray(refs) ? refs : [refs]).map((ref) => {
+    const member = team.find((item) => item.id === ref || item.name === ref);
+    if (!member) throw new Error(`Submission participant not found: ${ref}`);
+    return member.id;
+  });
+  const normalizedCoAuthorIds = resolveTeamIds(coAuthorIds).filter((id) => id !== agent.id);
+  const normalizedCommitterIds = uniqueStrings([agent.id, ...normalizedCoAuthorIds]);
+  const normalizedParticipantIds = uniqueStrings([
+    ...normalizedCommitterIds,
+    ...resolveTeamIds(participantIds),
+    reviewer?.id,
+  ].filter(Boolean));
+  const normalizedRelationshipRoles = Object.fromEntries(normalizedParticipantIds.map((participantId) => [
+    participantId,
+    relationshipRoles?.[participantId]
+      || (participantId === agent.id
+        ? 'primary-committer'
+        : normalizedCoAuthorIds.includes(participantId)
+          ? 'co-committer'
+          : participantId === reviewer?.id
+            ? 'reviewer'
+            : 'participant'),
+  ]));
   const explicitReview = respondsToReviewId
     ? (project.submissionReviews || []).find((item) => String(item.id) === String(respondsToReviewId))
     : null;
@@ -5230,6 +5347,8 @@ export function submitAgentArtifact({
   const safeTitle = redactSensitiveText(String(title || '').trim() || `${agent.name || 'Agent'} ${normalizedType.replace(/-/g, ' ')}`);
   const safeSummary = redactSensitiveText(String(summary || '').trim()
     || `${agent.name || 'Agent'} submitted ${safeTitle} for manager review.`);
+  const hasAgentAuthoredDescription = Boolean(String(description || '').trim());
+  const safeDescription = redactSensitiveText(String(description || '').trim() || safeSummary);
   const content = redactSensitiveText(String(body || '').trim() || [
     `# ${safeTitle}`,
     '',
@@ -5372,8 +5491,23 @@ export function submitAgentArtifact({
     taskId: task?.id || null,
     category: 'submission',
     subtype: normalizedType,
+    title: safeTitle,
+    description: safeDescription,
+    descriptionSource: hasAgentAuthoredDescription ? 'agent-authored' : 'runtime-fallback',
     intent: 'Agent submitted a typed artifact node for manager review and proof-map traceability.',
     commitMessage: `${agent.name || 'Agent'} submitted ${safeTitle}.`,
+    committerIds: normalizedCommitterIds,
+    coAuthorIds: normalizedCoAuthorIds,
+    participantIds: normalizedParticipantIds,
+    relationshipRoles: normalizedRelationshipRoles,
+    submissionMotivation: submissionMotivation ? redactSensitiveObject(submissionMotivation) : {
+      schemaVersion: 'agent-workflow-node-intent/v1',
+      decision: 'submit',
+      whyNow: 'The Agent produced a typed artifact that is ready for independent review.',
+      expectedValue: normalizedType === 'final-deliverable' ? 'accepted-final-outcome' : 'reviewable-artifact',
+      trigger: 'agent-artifact-submission',
+      taskId: task?.id || null,
+    },
     thinkingFrame: {
       artifactType: normalizedType,
       reviewStatus,
@@ -5400,6 +5534,25 @@ export function submitAgentArtifact({
     artifactStorageProofChecksum: artifactStorageProof.checksum,
     summary: safeSummary,
   };
+  const decoratedTimelineNode = decorateWorkflowNode({
+    ...timelineSubmission,
+    id: timelineSubmission.id,
+    agentId: agent.id,
+    agentName: agent.name || agent.id,
+    importance: normalizedType === 'final-deliverable' ? 'critical' : 'major',
+    proofIds: [submissionMessage.id],
+    timelineLogIds: [logId],
+    eventIds: [eventId],
+    attachments: [artifactRecord],
+  });
+  timelineSubmission.semanticLevel = decoratedTimelineNode.semanticLevel;
+  timelineSubmission.semanticLabel = decoratedTimelineNode.semanticLabel;
+  timelineSubmission.visual = decoratedTimelineNode.visual;
+  timelineSubmission.submissionQuality = evaluateWorkflowNodeSubmissionQuality({
+    node: decoratedTimelineNode,
+    submission: timelineSubmission,
+    attachments: [artifactRecord],
+  });
   const submission = {
     id: submissionId,
     traceId: normalizedTraceId,
@@ -5410,6 +5563,8 @@ export function submitAgentArtifact({
     artifactType: normalizedType,
     title: safeTitle,
     summary: safeSummary,
+    description: safeDescription,
+    descriptionSource: hasAgentAuthoredDescription ? 'agent-authored' : 'runtime-fallback',
     body: content,
     workspacePath: artifactRecord.relativePath || artifactRecord.path || null,
     artifact: artifactRecord,
@@ -5450,6 +5605,10 @@ export function submitAgentArtifact({
     artifactDraftChecksum: normalizedOriginDraft?.checksum || null,
     requestedReviewAgentId: reviewer?.id || null,
     requestedReviewAgentName: reviewer?.name || null,
+    committerIds: normalizedCommitterIds,
+    coAuthorIds: normalizedCoAuthorIds,
+    participantIds: normalizedParticipantIds,
+    relationshipRoles: normalizedRelationshipRoles,
     channelId,
     messageId: submissionMessage.id,
     timelineLogId: logId,
@@ -42540,31 +42699,12 @@ function buildProductionProviderControlReceiptWorkflow({
   };
 }
 
-const MANAGER_FLOW_CATEGORIES = {
-  thinking: { label: 'Thinking', lane: 'Thinking' },
-  'self-marketing': { label: 'Self-Marketing', lane: 'Self-Marketing' },
-  submission: { label: 'Submission', lane: 'Submissions' },
-  review: { label: 'Review', lane: 'Reviews' },
-  decision: { label: 'Decision', lane: 'Decisions' },
-  execution: { label: 'Execution', lane: 'Execution' },
-  collaboration: { label: 'Collaboration', lane: 'Collaboration' },
-  communication: { label: 'Communication', lane: 'Communication' },
-  monitoring: { label: 'Monitoring', lane: 'Monitoring' },
-  evidence: { label: 'Evidence', lane: 'Evidence' },
-};
+const MANAGER_FLOW_CATEGORIES = Object.fromEntries(WORKFLOW_NODE_FAMILY_ORDER.map((id) => [
+  id,
+  { label: WORKFLOW_NODE_FAMILIES[id].label, lane: WORKFLOW_NODE_FAMILIES[id].lane },
+]));
 
-const MANAGER_FLOW_CATEGORY_ORDER = [
-  'thinking',
-  'self-marketing',
-  'decision',
-  'collaboration',
-  'execution',
-  'submission',
-  'review',
-  'communication',
-  'monitoring',
-  'evidence',
-];
+const MANAGER_FLOW_CATEGORY_ORDER = WORKFLOW_NODE_FAMILY_ORDER;
 
 const MANAGER_FLOW_EDGE_TYPES = {
   self_marketing: 'Self-marketing line',
@@ -42648,6 +42788,7 @@ function inferManagerFlowAttachmentType({ category, subtype, source } = {}) {
 }
 
 function buildManagerFlowSubmissionArtifacts(input = {}, node = {}) {
+  const sourceSubmission = input.submissionPacket || {};
   const baseAttachment = {
     id: `${node.id}_attachment_main`,
     type: input.attachmentType || inferManagerFlowAttachmentType(node),
@@ -42745,15 +42886,17 @@ function buildManagerFlowSubmissionArtifacts(input = {}, node = {}) {
     status: required && (value === null || value === undefined || value === '' || (Array.isArray(value) && !value.length)) ? 'missing' : 'filled',
   });
   const submission = {
-    id: input.submissionId || `submission_${node.id}`,
-    generatedBy: 'manager-flow-agent-protocol',
-    intent: input.submissionIntent || inferManagerFlowSubmissionIntent(node),
-    commitMessage: node.commitMessage,
-    submittedByAgentId: node.agentId || null,
-    submittedByAgentName: node.agentName || 'Project',
-    committerIds: node.committerIds || [],
-    coAuthorIds: node.coAuthorIds || [],
-    participantIds: node.participantIds || [],
+    id: sourceSubmission.id || input.submissionId || `submission_${node.id}`,
+    generatedBy: sourceSubmission.generatedBy || (input.submissionPacket ? 'agent-workflow-node-protocol' : 'manager-flow-projection'),
+    intent: sourceSubmission.intent || input.submissionIntent || inferManagerFlowSubmissionIntent(node),
+    commitMessage: sourceSubmission.commitMessage || node.commitMessage,
+    submittedByAgentId: sourceSubmission.submittedByAgentId || node.agentId || null,
+    submittedByAgentName: sourceSubmission.submittedByAgentName || node.agentName || 'Project',
+    committerIds: uniqueStrings(sourceSubmission.committerIds || node.committerIds || []),
+    coAuthorIds: uniqueStrings(sourceSubmission.coAuthorIds || node.coAuthorIds || []),
+    participantIds: uniqueStrings(sourceSubmission.participantIds || node.participantIds || []),
+    relationshipRoles: sourceSubmission.relationshipRoles || node.relationshipRoles || {},
+    submissionMotivation: sourceSubmission.submissionMotivation || node.submissionMotivation || null,
     attachmentIds: attachments.map((attachment) => attachment.id),
     requiredFields: [
       field('category', 'Category', 'agent', node.category),
@@ -42771,6 +42914,11 @@ function buildManagerFlowSubmissionArtifacts(input = {}, node = {}) {
       field('proofIds', 'Proof IDs', 'system', node.proofIds, false),
     ],
   };
+  submission.quality = sourceSubmission.submissionQuality || evaluateWorkflowNodeSubmissionQuality({
+    node,
+    submission,
+    attachments,
+  });
   return { submission, attachments };
 }
 
@@ -42822,19 +42970,21 @@ function buildManagerFlowGraphSnapshot({ project = {}, messages = [], managerRea
   const addNode = (input = {}) => {
     if (!input.id) return null;
     const id = String(input.id);
-    const category = MANAGER_FLOW_CATEGORIES[input.category] ? input.category : 'execution';
+    const category = inferWorkflowNodeFamily(input);
     const proofIds = makeProofIds(
       input.proofIds,
       input.timelineLogIds,
       input.eventIds,
       input.taskId ? [input.taskId] : [],
     );
-    const node = {
+    const node = decorateWorkflowNode({
       id,
       category,
       categoryLabel: MANAGER_FLOW_CATEGORIES[category].label,
       subtype: input.subtype || 'record',
       title: input.title || id,
+      description: input.description || input.agentDescription || '',
+      descriptionSource: input.descriptionSource || null,
       agentId: input.agentId || null,
       agentName: input.agentName || agentLabel(input.agentId),
       taskId: input.taskId || null,
@@ -42866,6 +43016,7 @@ function buildManagerFlowGraphSnapshot({ project = {}, messages = [], managerRea
       commitAreaKey: input.commitAreaKey || null,
       thinkingFrame: input.thinkingFrame || null,
       collaborationContext: input.collaborationContext || null,
+      submissionMotivation: input.submissionMotivation || input.submissionPacket?.submissionMotivation || null,
       sourceSafetySummary: input.sourceSafetySummary || null,
       timelineSubmissionId: input.submissionId || null,
       timelineLogIds: uniqueStrings(input.timelineLogIds || []),
@@ -42875,7 +43026,7 @@ function buildManagerFlowGraphSnapshot({ project = {}, messages = [], managerRea
       lane: input.lane || MANAGER_FLOW_CATEGORIES[category].lane,
       sourceLabel: input.sourceLabel || input.source || 'managerDashboard',
       confirmation: confirmations[id] || null,
-    };
+    });
 
     if (node.confirmation) {
       node.status = node.confirmation.valid === false ? 'superseded' : 'confirmed';
@@ -42901,6 +43052,7 @@ function buildManagerFlowGraphSnapshot({ project = {}, messages = [], managerRea
         commitAreaKey: existing.commitAreaKey || node.commitAreaKey,
         thinkingFrame: existing.thinkingFrame || node.thinkingFrame,
         collaborationContext: existing.collaborationContext || node.collaborationContext,
+        submissionMotivation: existing.submissionMotivation || node.submissionMotivation,
         sourceSafetySummary: existing.sourceSafetySummary || node.sourceSafetySummary,
         timelineSubmissionId: existing.timelineSubmissionId || node.timelineSubmissionId,
         attachments: [
@@ -43436,6 +43588,8 @@ function buildManagerFlowGraphSnapshot({ project = {}, messages = [], managerRea
       category: 'submission',
       subtype: submission.artifactType || 'artifact',
       title: submission.title || `${submission.agentName || submission.agentId || 'Agent'} submitted artifact`,
+      description: submission.description || '',
+      descriptionSource: submission.descriptionSource || null,
       agentId: submission.agentId,
       taskId: submission.taskId || null,
       submissionId: submission.id,
@@ -43460,13 +43614,24 @@ function buildManagerFlowGraphSnapshot({ project = {}, messages = [], managerRea
       proofIds: [submission.messageId].filter(Boolean),
       timelineLogIds: [submission.timelineLogId].filter(Boolean),
       eventIds: [submission.eventId].filter(Boolean),
-      affectedAgentIds: uniqueStrings([submission.agentId, reviewAgentId].filter(Boolean)),
+      affectedAgentIds: uniqueStrings([
+        ...(submission.committerIds || [submission.agentId]),
+        ...(submission.participantIds || []),
+        reviewAgentId,
+      ].filter(Boolean)),
       affectedTaskIds: [submission.taskId].filter(Boolean),
-      participantIds: uniqueStrings([submission.agentId, reviewAgentId].filter(Boolean)),
-      relationshipRoles: {
-        ...(submission.agentId ? { [submission.agentId]: 'submitter' } : {}),
+      committerIds: submission.committerIds || [submission.agentId].filter(Boolean),
+      coAuthorIds: submission.coAuthorIds || [],
+      participantIds: uniqueStrings([
+        ...(submission.participantIds || []),
+        ...(submission.committerIds || [submission.agentId]),
+        reviewAgentId,
+      ].filter(Boolean)),
+      relationshipRoles: submission.relationshipRoles || {
+        ...(submission.agentId ? { [submission.agentId]: 'primary-committer' } : {}),
         ...(reviewAgentId ? { [reviewAgentId]: 'reviewer' } : {}),
       },
+      submissionPacket: submission.timelineSubmission || submission,
       submissionIntent: `Submit ${submission.artifactType || 'artifact'} as a manager-visible product-team work node.`,
       attachmentType: submission.artifactType || 'artifact',
       attachmentTitle: submission.title || 'Agent submitted artifact',
@@ -46524,17 +46689,13 @@ function buildManagerFlowGraphSnapshot({ project = {}, messages = [], managerRea
 
   (project.logs || []).slice(0, 36).forEach((log, index) => {
     const lowerType = String(log.eventType || '').toLowerCase();
-    const category = /daily|report|summary|completed|test/.test(lowerType)
-      ? 'submission'
-      : /decision|confirmed|approved/.test(lowerType)
-        ? 'decision'
-      : /contract|roster|team/.test(lowerType)
-        ? 'collaboration'
-        : /management|review|sweep|scheduler|worker/.test(lowerType)
-          ? 'monitoring'
-          : /message|chat|meeting|handoff/.test(lowerType)
-            ? 'communication'
-            : 'execution';
+    const category = inferWorkflowNodeFamily({
+      eventType: lowerType,
+      subtype: lowerType,
+      title: log.agent || log.actor || log.eventType,
+      summary: log.log || log.text,
+      source: 'timeline logs',
+    });
     const subtype = /test/.test(lowerType)
       ? 'test-result'
       : /report|summary/.test(lowerType)
@@ -46551,6 +46712,8 @@ function buildManagerFlowGraphSnapshot({ project = {}, messages = [], managerRea
       category,
       subtype,
       title: log.agent || log.actor || log.eventType || 'Timeline log',
+      description: log.timelineSubmission?.description || '',
+      descriptionSource: log.timelineSubmission?.descriptionSource || null,
       agentId: log.agentId || agent?.id || null,
       taskId: log.taskId || null,
       time: log.time || fallbackTime,
@@ -46562,16 +46725,19 @@ function buildManagerFlowGraphSnapshot({ project = {}, messages = [], managerRea
       proofIds: [String(log.id || '').startsWith('log_') ? String(log.id).slice(4) : null].filter(Boolean),
       affectedAgentIds: uniqueStrings([log.agentId, log.targetAgentId, ...(log.directTargetIds || [])]),
       affectedTaskIds: uniqueStrings([log.taskId, ...(log.taskIds || [])]),
-      participantIds: uniqueStrings([log.agentId, log.targetAgentId, ...(log.directTargetIds || [])]),
-      relationshipRoles: Object.fromEntries(uniqueStrings([log.agentId, log.targetAgentId, ...(log.directTargetIds || [])]).map((agentId) => [
-        agentId,
-        agentId === log.agentId ? 'timeline-submitter' : 'timeline-target',
-      ])),
       commitAreaKey: log.commitAreaKey || log.timelineSubmission?.commitAreaKey || timelineCommitAreaKey(log.time || fallbackTime),
       commitMessage: log.commitMessage || log.timelineSubmission?.commitMessage || log.log || log.text || 'Timeline commit',
       thinkingFrame: log.thinkingFrame || log.timelineSubmission?.thinkingFrame || null,
       collaborationContext: log.collaborationContext || log.timelineSubmission?.collaborationContext || null,
+      committerIds: log.timelineSubmission?.committerIds || [log.agentId].filter(Boolean),
+      coAuthorIds: log.timelineSubmission?.coAuthorIds || [],
+      participantIds: log.timelineSubmission?.participantIds || uniqueStrings([log.agentId, log.targetAgentId, ...(log.directTargetIds || [])]),
+      relationshipRoles: log.timelineSubmission?.relationshipRoles || Object.fromEntries(uniqueStrings([log.agentId, log.targetAgentId, ...(log.directTargetIds || [])]).map((agentId) => [
+        agentId,
+        agentId === log.agentId ? 'timeline-submitter' : 'timeline-target',
+      ])),
       submissionId: log.timelineSubmission?.id || null,
+      submissionPacket: log.timelineSubmission || null,
       submissionIntent: log.timelineSubmission?.intent || (category === 'submission'
         ? 'Submit a timeline deliverable record.'
         : 'Submit a timeline workflow record generated by Agent activity.'),
@@ -49991,7 +50157,7 @@ export function createAgentProjectService({
     const providerRedactionReady = providerVaultBindings.redaction?.rawLeakCount === 0;
     const readyForSettingsEntry = true;
     const readyForProviderSetup = Boolean(canSealSecrets && providerRedactionReady);
-    const readyForFirstProjectRun = Boolean(readyForProviderSetup && modelRuntimeReady && searchRuntimeReady);
+    const readyForFirstProjectRun = Boolean(readyForProviderSetup && modelRuntimeReady);
     const nextAction = !canSealSecrets
       ? {
         id: 'start-agents-server-with-secret-vault',
@@ -50006,19 +50172,12 @@ export function createAgentProjectService({
           detail: 'Open Settings Keys and seal model.apiKey through /secret-vault/seal.',
           route: '/secret-vault/seal',
         }
-        : !searchRuntimeReady
-          ? {
-            id: 'seal-search-provider',
-            label: 'Seal evidence search endpoint and key',
-            detail: 'Open Settings Keys and seal search.endpoint plus search.apiKey, then verify /search/test.',
-            route: '/secret-vault/seal',
-          }
-          : {
-            id: 'start-product-team-mission',
-            label: 'Start a product-team mission',
-            detail: 'The backend startup boundary is ready for the local MVP path. Start from /product-team-missions or the Workspace Hub initiation flow.',
-            route: '/product-team-missions',
-          };
+        : {
+          id: 'start-product-team-mission',
+          label: 'Start a product-team mission',
+          detail: 'The backend startup boundary is ready for the local MVP path. Start from /product-team-missions or the Workspace Hub initiation flow.',
+          route: '/product-team-missions',
+        };
     const gates = [
       {
         id: 'backend-api-reachable',
@@ -50048,10 +50207,11 @@ export function createAgentProjectService({
       {
         id: 'search-provider-runtime-ready',
         label: 'Evidence search provider runtime is callable',
+        required: false,
         passed: searchRuntimeReady,
         detail: searchRuntimeReady
           ? `${searchStatus.provider || 'search'} is configured and enabled.`
-          : 'Seal a search endpoint/key or configure deterministic search before provider-backed evidence work.',
+          : 'Optional. Configure a search endpoint/key only when provider-backed evidence work needs external search.',
         apiPath: '/search/status',
       },
       {
@@ -50069,7 +50229,7 @@ export function createAgentProjectService({
         apiPath: '/projects',
       },
     ];
-    const failedGateCount = gates.filter((gate) => !gate.passed).length;
+    const failedGateCount = gates.filter((gate) => gate.required !== false && !gate.passed).length;
     const snapshot = {
       schemaVersion: 'local-mvp-startup-readiness/v1',
       generatedAt: nowIso(),
@@ -51852,7 +52012,6 @@ export function createAgentProjectService({
     const localQueueReady = Boolean(queueStatus.configured && !queueStatus.unsupportedDriver);
     const runtimeReadyForLocalMvp = Boolean(
       modelRuntimeReady
-      && searchRuntimeReady
       && providerVaultRedacted
       && localPersistenceReady
       && localQueueReady
@@ -53402,6 +53561,9 @@ export function createAgentProjectService({
         timeoutMs: input.timeoutMs || 45_000,
       });
       let modelPayload = completion.ok ? parseModelOpeningLinePayload(completion.content, { ...input, meetingId, now }) : null;
+      if (modelPayload && !modelKickoffPayloadMatchesLanguage({ ...input, meetingId, now }, modelPayload)) {
+        modelPayload = null;
+      }
 
       if (!modelPayload) {
         completion = await llmProvider.createChatCompletion({
@@ -53423,6 +53585,7 @@ export function createAgentProjectService({
           llmProvider,
           completion,
           purpose: 'create kickoff meeting',
+          language: input.language || 'en',
           expectedShape: {
             roleTurns: [{ agentId: 'agent id from team', type: 'role-question or role-volunteer', text: 'opening clarification turn', hears: ['agent ids'] }],
             leaderCampaigns: [],
@@ -53438,7 +53601,10 @@ export function createAgentProjectService({
       if (!modelPayload || typeof modelPayload !== 'object') {
         throw new Error(`model-kickoff-meeting-invalid-json:${compactPreview(completion.content || '', 240)}`);
       }
-      if (!modelKickoffPayloadMatchesTopic({ ...input, meetingId, now }, modelPayload)) {
+      if (
+        !modelKickoffPayloadMatchesTopic({ ...input, meetingId, now }, modelPayload)
+        || !modelKickoffPayloadMatchesLanguage({ ...input, meetingId, now }, modelPayload)
+      ) {
         completion = await llmProvider.createChatCompletion({
           messages: buildModelKickoffMeetingMessages({
             ...input,
@@ -53458,6 +53624,7 @@ export function createAgentProjectService({
             llmProvider,
             completion,
             purpose: 'create kickoff meeting strict topic retry',
+            language: input.language || 'en',
             expectedShape: {
               roleTurns: [{ agentId: 'agent id from team', type: 'role-question or role-volunteer', text: 'opening clarification turn about the exact project brief', hears: ['agent ids'] }],
               leaderCampaigns: [],
@@ -53475,6 +53642,9 @@ export function createAgentProjectService({
         }
         if (!modelKickoffPayloadMatchesTopic({ ...input, meetingId, now }, modelPayload)) {
           throw new Error(`model-kickoff-meeting-off-topic:${compactPreview(modelKickoffPayloadText(modelPayload), 240)}`);
+        }
+        if (!modelKickoffPayloadMatchesLanguage({ ...input, meetingId, now }, modelPayload)) {
+          throw new Error(`model-kickoff-meeting-language-mismatch:${compactPreview(modelKickoffPayloadText(modelPayload), 240)}`);
         }
       }
       const meeting = createModelKickoffMeetingSession({
@@ -53538,6 +53708,10 @@ export function createAgentProjectService({
         timeoutMs: input.timeoutMs || 30_000,
       });
       let modelPayload = completion.ok ? parseModelTurnLinePayload(completion.content, clarifiedMeeting) : null;
+      const meetingLanguage = input.language || clarifiedMeeting.language || 'en';
+      if (modelPayload && !modelKickoffPayloadMatchesLanguage({ ...clarifiedMeeting, language: meetingLanguage }, modelPayload)) {
+        modelPayload = null;
+      }
 
       if (!modelPayload) {
         completion = await llmProvider.createChatCompletion({
@@ -53560,6 +53734,7 @@ export function createAgentProjectService({
           llmProvider,
           completion,
           purpose: 'continue kickoff meeting after Director input',
+          language: meetingLanguage,
           expectedShape: {
             agentTurns: [{ agentId: 'agent id from team', type: 'clarifying-question or role-volunteer or task-decomposition or leader-campaign or adjustment or next-action', text: 'natural meeting turn', score: 8 }],
             recommendedLeaderId: 'optional agent id from team',
@@ -53572,6 +53747,9 @@ export function createAgentProjectService({
         });
       if (!modelPayload || typeof modelPayload !== 'object') {
         throw new Error(`model-kickoff-meeting-turn-invalid-json:${compactPreview(completion.content || '', 240)}`);
+      }
+      if (!modelKickoffPayloadMatchesLanguage({ ...clarifiedMeeting, language: meetingLanguage }, modelPayload)) {
+        throw new Error(`model-kickoff-meeting-turn-language-mismatch:${compactPreview(modelKickoffPayloadText(modelPayload), 240)}`);
       }
       const nextMeeting = appendModelKickoffMeetingTurns({
         meeting: clarifiedMeeting,
@@ -65385,6 +65563,31 @@ export function createAgentProjectService({
                 ...(modelAttempt.result || {}),
                 retry: modelAttempt.retry,
               };
+              if (modelResult.ok) {
+                const languagePayload = modelResult.json || { body: modelResult.content || '' };
+                const languageMatches = modelOutputMatchesLanguage({
+                  text: [languagePayload.title, languagePayload.summary, languagePayload.body].filter(Boolean).join('\n'),
+                  language: project.language || 'en',
+                  allowedTerms: [
+                    project.name,
+                    agent.id,
+                    agent.name,
+                    ...(project.team || []).flatMap((member) => [member.id, member.name]),
+                    'Agent',
+                    'Hall of Fame Studio',
+                  ],
+                });
+                if (!languageMatches) {
+                  modelResult = {
+                    ...modelResult,
+                    ok: false,
+                    error: 'model-output-language-mismatch',
+                    reason: 'language-policy-violation',
+                    json: null,
+                    content: '',
+                  };
+                }
+              }
               const providerOperationSettlement = settleProviderIdempotentOperation({
                 projectId,
                 operationId: providerOperation.operation.id,

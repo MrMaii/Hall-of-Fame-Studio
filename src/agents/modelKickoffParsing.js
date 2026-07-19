@@ -1,6 +1,8 @@
 // Kickoff meeting model I/O: prompts, line/JSON parsing, topic matching (TD-004).
 // Extracted verbatim from agentProjectService.js — behavior must stay identical.
 
+import { modelOutputLanguageInstruction, modelOutputMatchesLanguage } from './modelLanguagePolicy.js';
+
 const nowIso = () => new Date().toISOString();
 
 export function buildModelKickoffMeetingMessages({
@@ -21,6 +23,7 @@ export function buildModelKickoffMeetingMessages({
       role: 'system',
       content: [
         'You are the real kickoff meeting engine for Hall of Fame Studio.',
+        modelOutputLanguageInstruction(language),
         'Return the final JSON immediately. Do not reason step by step.',
         'Generate only the opening clarification stage of a project-initiation meeting.',
         'The project topic is fixed. Never replace it with another research topic or generic AI/model-performance work.',
@@ -61,6 +64,7 @@ export function buildModelKickoffMeetingTurnMessages({
       role: 'system',
       content: [
         'You are the live kickoff meeting engine for Hall of Fame Studio.',
+        modelOutputLanguageInstruction(language),
         'Return the final JSON immediately. Do not reason step by step.',
         'Continue the meeting as a natural multi-agent conversation. Do not turn leader selection, role split, or next actions into dashboard controls.',
         'Agents should ask clarifying questions, decompose the work, volunteer for responsibility areas, and self-nominate for leader only when the conversation is ready.',
@@ -134,6 +138,7 @@ export function buildModelKickoffOpeningLineMessages({
       role: 'system',
       content: [
         'You open a project kickoff meeting.',
+        modelOutputLanguageInstruction(language),
         'Return only 2 or 3 lines. No markdown. No JSON.',
         'Each line format: agentId | type | text',
         'type must be role-question or role-volunteer.',
@@ -165,6 +170,7 @@ export function buildModelKickoffTurnLineMessages({
       role: 'system',
       content: [
         'Continue a live project kickoff meeting.',
+        modelOutputLanguageInstruction(language),
         'Return only 1 to 3 lines. No markdown. No JSON.',
         'Each line format: agentId | type | text',
         'type must be clarifying-question, role-volunteer, task-decomposition, leader-campaign, adjustment, or next-action.',
@@ -319,7 +325,7 @@ export function parseModelOpeningLinePayload(content = '', input = {}) {
     roleTurns,
     leaderCampaigns: [],
     nextActions: [],
-    decisionSummary: 'Opening clarification started.',
+    decisionSummary: String(input.language || '').toLowerCase().startsWith('zh') ? '已开始启动澄清。' : 'Opening clarification started.',
     risks: [],
   };
 }
@@ -402,11 +408,25 @@ export function modelKickoffPayloadMatchesTopic(input = {}, modelPayload = {}) {
   return hits.length >= Math.min(2, terms.length);
 }
 
+export function modelKickoffPayloadMatchesLanguage(input = {}, modelPayload = {}) {
+  return modelOutputMatchesLanguage({
+    text: modelKickoffPayloadText(modelPayload),
+    language: input.language || 'en',
+    allowedTerms: [
+      input.name,
+      ...(input.team || []).flatMap((agent) => [agent.id, agent.name]),
+      'Agent',
+      'Hall of Fame Studio',
+    ],
+  });
+}
+
 export async function repairModelCompletionJson({
   llmProvider,
   completion = {},
   expectedShape = {},
   purpose = 'kickoff meeting',
+  language = 'en',
   timeoutMs = 20_000,
   maxTokens = 1200,
 } = {}) {
@@ -418,6 +438,7 @@ export async function repairModelCompletionJson({
         role: 'system',
         content: [
           'You repair malformed model output into strict JSON.',
+          modelOutputLanguageInstruction(language),
           'Return exactly one valid JSON object and no markdown.',
           'Do not add facts that are not present in the raw output unless needed to satisfy required keys.',
         ].join('\n'),

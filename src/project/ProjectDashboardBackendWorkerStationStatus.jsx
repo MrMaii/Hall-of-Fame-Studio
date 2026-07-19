@@ -64,13 +64,13 @@ export default function ProjectDashboardBackendWorkerStationStatus({
       </div>
       <div className="font-mono text-[8px] uppercase tracking-widest text-[#9b875c] mt-1">
         {/* Compatibility proof anchor: Immediate Start */}
-        IMMEDIATE START: {(backendScheduler.lastStartedRunImmediately || /Started backend scheduler/i.test(backendStation.lastAction || '')) ? 'YES' : 'NO'} / RUNNING: {backendScheduler.running ? 'YES' : 'NO'}
+        {projectText('IMMEDIATE START')}: {projectText((backendScheduler.lastStartedRunImmediately || /Started backend scheduler/i.test(backendStation.lastAction || '')) ? 'YES' : 'NO')} / {projectText('RUNNING')}: {projectText(backendScheduler.running ? 'YES' : 'NO')}
       </div>
       <div data-testid="backend-scheduler-agent-controls" className="font-mono text-[8px] uppercase tracking-widest text-[#9b875c] mt-1 break-words">
-        AGENT CONTROL: STRATEGY {backendSchedulerAgentControls.useAgentAutonomousStrategy ? 'YES' : 'NO'} / SUBMISSIONS {backendSchedulerAgentControls.submitAgentWorkArtifacts ? 'YES' : 'NO'} / REVIEW RESPONSES {backendSchedulerAgentControls.respondToReviewObligations ? 'YES' : 'NO'} / ARTIFACT {backendSchedulerAgentControls.workArtifactType || 'none'}
+        {projectText('AGENT CONTROL')}: {projectText('STRATEGY')} {projectText(backendSchedulerAgentControls.useAgentAutonomousStrategy ? 'YES' : 'NO')} / {projectText('SUBMISSIONS')} {projectText(backendSchedulerAgentControls.submitAgentWorkArtifacts ? 'YES' : 'NO')} / {projectText('REVIEW RESPONSES')} {projectText(backendSchedulerAgentControls.respondToReviewObligations ? 'YES' : 'NO')} / {projectText('ARTIFACT')} {projectText(backendSchedulerAgentControls.workArtifactType || 'none')}
       </div>
       <div data-testid="backend-scheduler-autopilot-controls" className="font-mono text-[8px] uppercase tracking-widest text-[#9b875c] mt-1 break-words">
-        AUTOPILOT CONTROL: {backendSchedulerAutopilotControls.enabled ? 'ENABLED' : 'OFF'} / LOOP {backendSchedulerAutopilotControls.loopCount || 'none'} / SESSIONS {backendScheduler.autopilotSessionTickCount ?? 0} / TARGET {backendSchedulerAutopilotControls.targetKind || 'product-team-delivery-trace'}
+        {projectText('AUTOPILOT CONTROL')}: {projectText(backendSchedulerAutopilotControls.enabled ? 'ENABLED' : 'OFF')} / {projectText('LOOP')} {projectText(backendSchedulerAutopilotControls.loopCount || 'none')} / {projectText('SESSIONS')} {backendScheduler.autopilotSessionTickCount ?? 0} / {projectText('TARGET')} {backendSchedulerAutopilotControls.targetKind || 'product-team-delivery-trace'}
       </div>
       {(backendScheduler.startupAgentControlSummary || backendScheduler.scheduledAgentControlSummary) && (
         <div className="font-mono text-[8px] uppercase tracking-widest text-[#9b875c] mt-1 break-words">
@@ -99,54 +99,54 @@ export default function ProjectDashboardBackendWorkerStationStatus({
         </div>
       )}
       <div data-testid="backend-project-catalog-sync-status" className="font-mono text-[8px] uppercase tracking-widest text-[#9b875c] mt-1">
-        Project catalog sync: {backendStation.lastProjectCatalogSyncAt ? new Date(backendStation.lastProjectCatalogSyncAt).toLocaleString() : 'not synced'} / {backendStation.projectCatalogSyncCount || 0} pulls / {(backendStation.projectCatalog || []).length} projects
+        {projectText('Project catalog sync')}: {backendStation.lastProjectCatalogSyncAt ? new Date(backendStation.lastProjectCatalogSyncAt).toLocaleString() : projectText('not synced')} / {backendStation.projectCatalogSyncCount || 0} {projectText('pulls')} / {(backendStation.projectCatalog || []).length} {projectText('projects')}
       </div>
       <div className="font-mono text-[8px] uppercase tracking-widest text-[#9b875c] mt-1">
-        Ready package sync: {backendStation.lastManagerReadyPackageSyncAt ? new Date(backendStation.lastManagerReadyPackageSyncAt).toLocaleString() : 'not synced'} / {backendStation.managerReadyPackageSyncCount || 0} pulls
+        {projectText('Ready package sync')}: {backendStation.lastManagerReadyPackageSyncAt ? new Date(backendStation.lastManagerReadyPackageSyncAt).toLocaleString() : projectText('not synced')} / {backendStation.managerReadyPackageSyncCount || 0} {projectText('pulls')}
       </div>
       {backendStation.lastManagerReadyPackageSyncAt && (
         <div className="font-mono text-[8px] uppercase tracking-widest text-[#9b875c] mt-1">
-          BACKEND MANAGER READY PACKAGE SYNCED
+          {projectText('BACKEND MANAGER READY PACKAGE SYNCED')}
         </div>
       )}
       <div className="font-mono text-[8px] uppercase tracking-widest text-[#9b875c] mt-1">
-        Manager dashboard sync: {backendStation.lastManagerDashboardSyncAt ? new Date(backendStation.lastManagerDashboardSyncAt).toLocaleString() : 'not synced'} / {backendStation.managerDashboardSyncCount || 0} pulls
+        {projectText('Manager dashboard sync')}: {backendStation.lastManagerDashboardSyncAt ? new Date(backendStation.lastManagerDashboardSyncAt).toLocaleString() : projectText('not synced')} / {backendStation.managerDashboardSyncCount || 0} {projectText('pulls')}
       </div>
       <div className="font-mono text-[8px] uppercase tracking-widest text-[#9b875c] mt-1">
-        Command center sync: {backendStation.lastManagerCommandCenterSyncAt ? new Date(backendStation.lastManagerCommandCenterSyncAt).toLocaleString() : 'not synced'} / {backendStation.managerCommandCenterSyncCount || 0} pulls
+        {projectText('Command center sync')}: {backendStation.lastManagerCommandCenterSyncAt ? new Date(backendStation.lastManagerCommandCenterSyncAt).toLocaleString() : projectText('not synced')} / {backendStation.managerCommandCenterSyncCount || 0} {projectText('pulls')}
       </div>
       <div className="font-mono text-[8px] uppercase tracking-widest text-[#9b875c] mt-1">
-        Scenario walkthrough sync: {backendStation.lastManagerScenarioWalkthroughSyncAt ? new Date(backendStation.lastManagerScenarioWalkthroughSyncAt).toLocaleString() : 'not synced'} / {backendStation.managerScenarioWalkthroughSyncCount || 0} pulls
+        {projectText('Scenario walkthrough sync')}: {backendStation.lastManagerScenarioWalkthroughSyncAt ? new Date(backendStation.lastManagerScenarioWalkthroughSyncAt).toLocaleString() : projectText('not synced')} / {backendStation.managerScenarioWalkthroughSyncCount || 0} {projectText('pulls')}
       </div>
       <div className="font-mono text-[8px] uppercase tracking-widest text-[#9b875c] mt-1">
-        Scenario trail sync: {backendStation.lastManagerScenarioTrailSyncAt ? new Date(backendStation.lastManagerScenarioTrailSyncAt).toLocaleString() : 'not synced'} / {backendStation.managerScenarioTrailSyncCount || 0} pulls
+        {projectText('Scenario trail sync')}: {backendStation.lastManagerScenarioTrailSyncAt ? new Date(backendStation.lastManagerScenarioTrailSyncAt).toLocaleString() : projectText('not synced')} / {backendStation.managerScenarioTrailSyncCount || 0} {projectText('pulls')}
       </div>
       <div className="font-mono text-[8px] uppercase tracking-widest text-[#9b875c] mt-1">
-        Requirement matrix sync: {backendStation.lastManagerRequirementMatrixSyncAt ? new Date(backendStation.lastManagerRequirementMatrixSyncAt).toLocaleString() : 'not synced'} / {backendStation.managerRequirementMatrixSyncCount || 0} pulls
+        {projectText('Requirement matrix sync')}: {backendStation.lastManagerRequirementMatrixSyncAt ? new Date(backendStation.lastManagerRequirementMatrixSyncAt).toLocaleString() : projectText('not synced')} / {backendStation.managerRequirementMatrixSyncCount || 0} {projectText('pulls')}
       </div>
       <div className="font-mono text-[8px] uppercase tracking-widest text-[#9b875c] mt-1">
-        Sync protocol audit sync: {backendStation.lastSyncProtocolAuditSyncAt ? new Date(backendStation.lastSyncProtocolAuditSyncAt).toLocaleString() : 'not synced'} / {backendStation.syncProtocolAuditSyncCount || 0} pulls
+        {projectText('Sync protocol audit sync')}: {backendStation.lastSyncProtocolAuditSyncAt ? new Date(backendStation.lastSyncProtocolAuditSyncAt).toLocaleString() : projectText('not synced')} / {backendStation.syncProtocolAuditSyncCount || 0} {projectText('pulls')}
       </div>
       <div className="font-mono text-[8px] uppercase tracking-widest text-[#9b875c] mt-1">
-        Use case audit sync: {backendStation.lastManagerUseCaseAuditSyncAt ? new Date(backendStation.lastManagerUseCaseAuditSyncAt).toLocaleString() : 'not synced'} / {backendStation.managerUseCaseAuditSyncCount || 0} pulls
+        {projectText('Use case audit sync')}: {backendStation.lastManagerUseCaseAuditSyncAt ? new Date(backendStation.lastManagerUseCaseAuditSyncAt).toLocaleString() : projectText('not synced')} / {backendStation.managerUseCaseAuditSyncCount || 0} {projectText('pulls')}
       </div>
       <div className="font-mono text-[8px] uppercase tracking-widest text-[#9b875c] mt-1">
-        Action queue sync: {backendStation.lastManagerActionQueueSyncAt ? new Date(backendStation.lastManagerActionQueueSyncAt).toLocaleString() : 'not synced'} / {backendStation.managerActionQueueSyncCount || 0} pulls
+        {projectText('Action queue sync')}: {backendStation.lastManagerActionQueueSyncAt ? new Date(backendStation.lastManagerActionQueueSyncAt).toLocaleString() : projectText('not synced')} / {backendStation.managerActionQueueSyncCount || 0} {projectText('pulls')}
       </div>
       <div className="font-mono text-[8px] uppercase tracking-widest text-[#9b875c] mt-1">
-        Agent autonomous queue sync: {backendStation.lastAgentAutonomousActionQueueSyncAt ? new Date(backendStation.lastAgentAutonomousActionQueueSyncAt).toLocaleString() : 'not synced'} / {backendStation.agentAutonomousActionQueueSyncCount || 0} pulls
+        {projectText('Agent autonomous queue sync')}: {backendStation.lastAgentAutonomousActionQueueSyncAt ? new Date(backendStation.lastAgentAutonomousActionQueueSyncAt).toLocaleString() : projectText('not synced')} / {backendStation.agentAutonomousActionQueueSyncCount || 0} {projectText('pulls')}
       </div>
       <div className="font-mono text-[8px] uppercase tracking-widest text-[#9b875c] mt-1">
-        Collaboration intent queue sync: {backendStation.lastCollaborationIntentQueueSyncAt ? new Date(backendStation.lastCollaborationIntentQueueSyncAt).toLocaleString() : 'not synced'} / {backendStation.collaborationIntentQueueSyncCount || 0} pulls
+        {projectText('Collaboration intent queue sync')}: {backendStation.lastCollaborationIntentQueueSyncAt ? new Date(backendStation.lastCollaborationIntentQueueSyncAt).toLocaleString() : projectText('not synced')} / {backendStation.collaborationIntentQueueSyncCount || 0} {projectText('pulls')}
       </div>
       <div className="font-mono text-[8px] uppercase tracking-widest text-[#9b875c] mt-1">
-        Autonomous run control sync: {backendStation.lastAutonomousRunControlSyncAt ? new Date(backendStation.lastAutonomousRunControlSyncAt).toLocaleString() : 'not synced'} / {backendStation.autonomousRunControlSyncCount || 0} pulls
+        {projectText('Autonomous run control sync')}: {backendStation.lastAutonomousRunControlSyncAt ? new Date(backendStation.lastAutonomousRunControlSyncAt).toLocaleString() : projectText('not synced')} / {backendStation.autonomousRunControlSyncCount || 0} {projectText('pulls')}
       </div>
       <div data-testid="backend-runtime-autonomy-status-sync" className="font-mono text-[8px] uppercase tracking-widest text-[#9b875c] mt-1">
-        Runtime autonomy sync: {backendStation.lastRuntimeAutonomyStatusSyncAt ? new Date(backendStation.lastRuntimeAutonomyStatusSyncAt).toLocaleString() : 'not synced'} / {backendStation.runtimeAutonomyStatusSyncCount || 0} pulls
+        {projectText('Runtime autonomy sync')}: {backendStation.lastRuntimeAutonomyStatusSyncAt ? new Date(backendStation.lastRuntimeAutonomyStatusSyncAt).toLocaleString() : projectText('not synced')} / {backendStation.runtimeAutonomyStatusSyncCount || 0} {projectText('pulls')}
       </div>
       {backendStation.lastAction && (
-        <div className="font-mono text-[8px] uppercase tracking-widest text-[#6b5a3d] mt-1">{backendStation.lastAction}</div>
+        <div className="font-mono text-[8px] uppercase tracking-widest text-[#6b5a3d] mt-1">{projectText(backendStation.lastAction)}</div>
       )}
     </>
   );

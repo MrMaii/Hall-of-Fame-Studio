@@ -1,10 +1,10 @@
 {
   "schemaVersion": "local-runtime-shutdown-receipt/v1",
-  "id": "shutdown_e9f21b849555f86b546cfcef",
+  "id": "shutdown_348d47486f849bc937c98ba9",
   "status": "drained",
   "complete": true,
-  "shutdownStartedAt": "2026-07-17T11:48:46.836Z",
-  "shutdownCompletedAt": "2026-07-17T11:48:46.837Z",
+  "shutdownStartedAt": "2026-07-19T00:15:32.571Z",
+  "shutdownCompletedAt": "2026-07-19T00:15:32.571Z",
   "drainTimeoutMs": 5000,
   "schedulerDrain": {
     "drained": true,
@@ -26,5 +26,5 @@
   },
   "storesRequestContent": false,
   "localOnly": true,
-  "checksum": "eabd0c9d28f58e76aea22556286f56ba94d778a3d8b503ba331cd1bb4edc4ba6"
+  "checksum": "7cb13a2248307f0d7d08e3e2947bbd4641dca28719b1bf716c061cb108bd0075"
 }

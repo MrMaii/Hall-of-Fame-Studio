@@ -217,7 +217,12 @@ export function createLocalProjectRuntime({
     },
     pickWorkspaceBaseFolder({ title = 'Choose project workspace folder', initialPath = '' } = {}) {
       if (process.platform !== 'win32') {
-        throw new Error('Native folder picker is only implemented for Windows local runtime.');
+        return Promise.resolve({
+          selected: false,
+          folderPath: null,
+          unsupported: true,
+          platform: process.platform,
+        });
       }
       const powershell = `${process.env.SystemRoot || 'C:\\Windows'}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`;
       const escapedTitle = String(title || 'Choose project workspace folder').replace(/'/g, "''");

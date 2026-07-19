@@ -1015,9 +1015,10 @@ const initiationStartupGuardSection = sliceBetween(
 assertIncludes(initiationStartupGuardSection, [
   "if (!backendUrlConfigured && !isDevelopmentInitiationFallbackEnabled()) {",
   'Save the backend API URL in Settings Deployment before ${actionLabel}. No backend kickoff or local fallback project was created.',
-  'startupReadiness?.readyForFirstProjectRun !== true',
+  'const startupAllowsConfiguredModel = (readiness) => initiationStartupAllowsModelWork({',
+  'if (!startupAllowsConfiguredModel(startupReadiness))',
   'refreshLocalMvpStartupReadiness({ silent: true })',
-  'startupReadiness?.readyForFirstProjectRun === true || isDevelopmentInitiationFallbackEnabled()',
+  'startupAllowsConfiguredModel(startupReadiness) || isDevelopmentInitiationFallbackEnabled()',
   'Project initiation startup blocked',
   'No backend kickoff or local fallback project was created.',
 ], 'Initiation startup readiness command guard');
@@ -1028,7 +1029,8 @@ const initiationStartupRenderSection = sliceBetween(
   'const updateDraft =',
 );
 assertIncludes(initiationStartupRenderSection, [
-  'const initiationStartupReadyForFirstRun = backendUrlConfigured && initiationStartupReadiness?.readyForFirstProjectRun === true;',
+  'const initiationStartupReadyForFirstRun = initiationStartupAllowsModelWork({',
+  'modelProviderStatus: providerRuntimeStatus.modelProvider,',
   'const initiationStartupAllowsKickoff = initiationStartupReadyForFirstRun || initiationDevelopmentFallbackAllowed;',
   'const initiationWorkspaceReady = Boolean(initiationWorkspaceDraft.receipt?.workspacePath || initiationWorkspaceDraft.preparedPath);',
   'const initiationCanStartKickoff = initiationStartupAllowsKickoff && initiationWorkspaceReady;',
@@ -3010,10 +3012,12 @@ assertIncludes(`${appSource}\n${settingsModalViewSource}\n${settingsDialogShellS
   "|| settingsHealthRows.some(row => ['fail', 'blocked'].includes(String(row.status || '').toLowerCase()));",
   'const settingsHealthPassedForTarget = settingsHealthCheckedForTarget && !settingsHealthHasFailure;',
   'const settingsBackendFooterReady = settingsBackendReady && settingsHealthPassedForTarget;',
+  '本地服务地址已保存；首次创建项目前请运行健康检查',
   'Backend target saved; run Health check before first project',
+  '健康检查未通过；请先完成本地服务设置',
   'Health check failed or blocked; backend setup required before first project',
   'const settingsFooterConnectionLabel = backendUrlConfigured && !settingsHealthPassedForTarget',
-  "? 'Run Health Check'",
+  "? (activeLanguage === 'zh' ? '运行健康检查' : 'Run Health Check')",
   'connectionLabel={settingsFooterConnectionLabel}',
   "footerReady ? 'text-green-700' : 'text-[#75631d]'",
 ], 'Settings footer must not mark backend saved until Health has run for the configured target');

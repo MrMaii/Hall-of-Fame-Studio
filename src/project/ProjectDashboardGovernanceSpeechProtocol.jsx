@@ -6,6 +6,7 @@ export default function ProjectDashboardGovernanceSpeechProtocol({ view = {} }) 
     lead,
     onSyncGovernance,
     protocols = [],
+    projectText,
     readModel = {},
     reviewer,
     sourceBadge = null,
@@ -15,7 +16,7 @@ export default function ProjectDashboardGovernanceSpeechProtocol({ view = {} }) 
   return (
     <div className="bg-[#f7edcf]/70 border border-[#b8a57d] p-5 mb-6">
       <div className="mb-4 flex items-start justify-between gap-4">
-        <div className="font-mono text-[10px] uppercase tracking-widest text-[#8f1e18]">Governance & Speech Protocol</div>
+        <div className="font-mono text-[10px] uppercase tracking-widest text-[#8f1e18]">{projectText('Governance & Speech Protocol')}</div>
         {sourceBadge}
       </div>
       {readModel.frontendMockSuppressed && (
@@ -34,29 +35,29 @@ export default function ProjectDashboardGovernanceSpeechProtocol({ view = {} }) 
       )}
       <div className="grid md:grid-cols-2 gap-4 mb-4">
         <div className="border border-[#d8c99f] bg-[#efe2bd]/60 p-4">
-          <div className="font-mono text-[9px] uppercase tracking-widest text-[#7d6a49] mb-2">Lead decides</div>
+          <div className="font-mono text-[9px] uppercase tracking-widest text-[#7d6a49] mb-2">{projectText('Lead decides')}</div>
           <div className="font-serif text-2xl leading-tight">{lead?.name || 'Unassigned'}</div>
           <div className="font-serif text-sm leading-relaxed text-[#6b5a3d] mt-2">
-            Owns agenda, owners, dependencies, deadlines, and Director escalation.
+            {projectText('Owns agenda, owners, dependencies, deadlines, and Director escalation.')}
           </div>
         </div>
         <div className="border border-[#d8c99f] bg-[#efe2bd]/60 p-4">
-          <div className="font-mono text-[9px] uppercase tracking-widest text-[#7d6a49] mb-2">Reviewer challenges</div>
+          <div className="font-mono text-[9px] uppercase tracking-widest text-[#7d6a49] mb-2">{projectText('Reviewer challenges')}</div>
           <div className="font-serif text-2xl leading-tight">{reviewer?.name || 'Unassigned'}</div>
           <div className="font-serif text-sm leading-relaxed text-[#6b5a3d] mt-2">
-            Checks evidence, risk, acceptance criteria, and whether the Lead is overreaching.
+            {projectText('Checks evidence, risk, acceptance criteria, and whether the Lead is overreaching.')}
           </div>
         </div>
       </div>
       <div className="space-y-3">
         {protocols.map(protocol => (
           <div key={protocol.id} className="border-t border-[#d8c99f] pt-3">
-            <div className="font-serif text-lg leading-tight">{protocol.label}</div>
+            <div className="font-serif text-lg leading-tight">{projectText(protocol.label)}</div>
             <div className="mt-1 font-mono text-[9px] uppercase tracking-widest text-[#7d6a49]">
-              Lead: {protocol.leadFrame.join(' / ')}
+              {projectText('Lead')}: {protocol.leadFrame.map(projectText).join(' / ')}
             </div>
             <div className="mt-1 font-mono text-[9px] uppercase tracking-widest text-[#7d6a49]">
-              Members: {protocol.memberFrame.join(' / ')}
+              {projectText('Members')}: {protocol.memberFrame.map(projectText).join(' / ')}
             </div>
           </div>
         ))}

@@ -370,20 +370,32 @@ export default function SettingsModalView({ view }) {
       || settingsHealthRows.some(row => ['fail', 'blocked'].includes(String(row.status || '').toLowerCase()));
     const settingsHealthPassedForTarget = settingsHealthCheckedForTarget && !settingsHealthHasFailure;
     const settingsBackendFooterReady = settingsBackendReady && settingsHealthPassedForTarget;
-    const settingsBackendStatusLabel = !backendUrlConfigured
-      ? 'Save and sync the backend URL before entering provider secrets'
-      : !settingsHealthCheckedForTarget
-        ? 'Backend target saved; run Health check before first project'
-        : settingsHealthHasFailure
-          ? 'Health check failed or blocked; backend setup required before first project'
-        : settingsBackendReady
-          ? 'Backend-backed controls save on change for this project'
-          : providerRuntimeStatus.lastRunAt || backendStation.connectionStatus === 'offline'
-            ? 'Provider drafts are in-memory only until backend Secret Vault readiness is synced'
-            : 'Sync backend readiness before entering provider secrets';
+    const settingsBackendStatusLabel = activeLanguage === 'zh'
+      ? !backendUrlConfigured
+        ? '请先保存并同步本地服务地址，再填写模型密钥'
+        : !settingsHealthCheckedForTarget
+          ? '本地服务地址已保存；首次创建项目前请运行健康检查'
+          : settingsHealthHasFailure
+            ? '健康检查未通过；请先完成本地服务设置'
+            : settingsBackendReady
+              ? '本地服务已就绪，本项目的设置会自动保存'
+              : providerRuntimeStatus.lastRunAt || backendStation.connectionStatus === 'offline'
+                ? '本地安全存储尚未就绪，模型密钥暂未保存'
+                : '请先同步本地服务状态，再填写模型密钥'
+      : !backendUrlConfigured
+        ? 'Save and sync the backend URL before entering provider secrets'
+        : !settingsHealthCheckedForTarget
+          ? 'Backend target saved; run Health check before first project'
+          : settingsHealthHasFailure
+            ? 'Health check failed or blocked; backend setup required before first project'
+            : settingsBackendReady
+              ? 'Backend-backed controls save on change for this project'
+              : providerRuntimeStatus.lastRunAt || backendStation.connectionStatus === 'offline'
+                ? 'Provider drafts are in-memory only until backend Secret Vault readiness is synced'
+                : 'Sync backend readiness before entering provider secrets';
     const SettingsBackendStatusIcon = settingsBackendFooterReady ? CheckCircle2 : Server;
     const settingsFooterConnectionLabel = backendUrlConfigured && !settingsHealthPassedForTarget
-      ? 'Run Health Check'
+      ? (activeLanguage === 'zh' ? '运行健康检查' : 'Run Health Check')
       : t('settings.testConnection');
     const settingsProviderApiEntryRows = [
       ['API input fields', settingsProviderSecretInputReady ? 'enabled as transient draft after backend URL' : 'locked until backend URL is saved'],
@@ -1023,4 +1035,3 @@ export default function SettingsModalView({ view }) {
     );
   
 }
-

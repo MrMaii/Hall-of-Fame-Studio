@@ -35,13 +35,13 @@ export default function ProjectDashboardHeader({ view = {} }) {
             {projectDashboardSnapshotSourceMeta.detail}
           </div>
           <div className="mt-5 flex flex-wrap gap-2">
-            <button type="button" onClick={onOpenMeeting} className="border border-[#251b13] bg-[#251b13] px-4 py-2 text-sm text-[#efe2bd] hover:bg-[#8f1e18]">
+            <button type="button" data-testid="project-open-meeting" onClick={onOpenMeeting} className="border border-[#251b13] bg-[#251b13] px-4 py-2 text-sm text-[#efe2bd] hover:bg-[#8f1e18]">
               {projectText('Open project meeting')}
             </button>
-            <button type="button" onClick={onOpenChat} className="border border-[#251b13] px-4 py-2 text-sm hover:bg-[#efe2bd]">
+            <button type="button" data-testid="project-open-chat" onClick={onOpenChat} className="border border-[#251b13] px-4 py-2 text-sm hover:bg-[#efe2bd]">
               {projectText('Open project chat')}
             </button>
-            <button type="button" onClick={onOpenTimeline} className="border border-[#251b13] px-4 py-2 text-sm hover:bg-[#efe2bd]">
+            <button type="button" data-testid="project-open-timeline" onClick={onOpenTimeline} className="border border-[#251b13] px-4 py-2 text-sm hover:bg-[#efe2bd]">
               {projectText('View full timeline')}
             </button>
             {showSimpleViewButton && (

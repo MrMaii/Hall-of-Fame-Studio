@@ -87,6 +87,33 @@ try {
     secretVault,
   });
 
+  const modelOnlyApi = createFileBackedAgentProjectApi({
+    filePath: resolve(tempRoot, 'model-only-store.json'),
+    replaceWithSeed: true,
+    secretVault,
+    llmProvider: {
+      status: () => ({
+        provider: 'stepfun',
+        enabled: true,
+        configured: true,
+        model: 'step-3.5-flash',
+        hasApiKey: true,
+        apiKeySource: 'local-secret-vault',
+      }),
+    },
+  });
+
+  response = modelOnlyApi.handle({
+    method: 'GET',
+    path: '/local-mvp-startup-readiness',
+  });
+  assert(response.status === 200, `Model-only startup readiness returned ${response.status}.`);
+  const modelOnlyReadiness = response.body.localMvpStartupReadiness;
+  assert(modelOnlyReadiness.readyForFirstProjectRun === true, 'A configured language model must allow the first project run when optional evidence search is absent.');
+  assert(modelOnlyReadiness.status === 'ready-for-local-mvp-session', 'Model-only startup readiness must enter the ready state.');
+  assert(modelOnlyReadiness.nextAction?.id === 'start-product-team-mission', 'Optional evidence search must not replace the start-project next action.');
+  assert(modelOnlyReadiness.gates?.some((gate) => gate.id === 'search-provider-runtime-ready' && gate.required === false && gate.passed === false), 'Startup readiness must expose missing evidence search as an optional capability, not a blocker.');
+
   response = readyApi.handle({
     method: 'GET',
     path: '/local-mvp-startup-readiness',

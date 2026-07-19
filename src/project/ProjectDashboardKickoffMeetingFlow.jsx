@@ -15,8 +15,8 @@ export default function ProjectDashboardKickoffMeetingFlow({ view = {} }) {
     <div data-testid="kickoff-meeting-flow" className="bg-[#f7edcf]/70 border border-[#b8a57d] p-5 mb-6">
       <div className="flex items-start justify-between gap-4 mb-4">
         <div>
-          <div className="font-mono text-[10px] uppercase tracking-widest text-[#8f1e18] mb-2">Kickoff Meeting Flow</div>
-          <div className="font-serif text-2xl leading-tight">Role negotiation to Director-confirmed Leader marker</div>
+          <div className="font-mono text-[10px] uppercase tracking-widest text-[#8f1e18] mb-2">{text('Kickoff Meeting Flow')}</div>
+          <div className="font-serif text-2xl leading-tight">{text('Role negotiation to Director-confirmed Leader marker')}</div>
         </div>
         {proofIds.length > 0 && (
           <button
@@ -24,22 +24,22 @@ export default function ProjectDashboardKickoffMeetingFlow({ view = {} }) {
             onClick={() => onOpenChatProof(proofIds, 'main')}
             className="inline-flex shrink-0 items-center gap-1 border border-[#d8c99f] px-2 py-1 font-mono text-[8px] uppercase tracking-widest text-[#6b5a3d] hover:border-[#8f1e18] hover:text-[#8f1e18] transition-colors"
           >
-            <MessageSquare size={10} /> Kickoff meeting proof
+            <MessageSquare size={10} /> {text('Kickoff meeting proof')}
           </button>
         )}
       </div>
       <div className="grid grid-cols-1 md:grid-cols-6 gap-2">
         <div className="border border-[#d8c99f] bg-[#efe2bd]/55 px-2 py-2">
-          <div className="font-mono text-[7px] uppercase tracking-widest text-[#8f1e18]">Role Clarification</div>
-          <div className="font-serif text-base leading-tight">{flow.roleQuestionCount} question{flow.roleQuestionCount === 1 ? '' : 's'}</div>
+          <div className="font-mono text-[7px] uppercase tracking-widest text-[#8f1e18]">{text('Role Clarification')}</div>
+          <div className="font-serif text-base leading-tight">{flow.roleQuestionCount} {text(flow.roleQuestionCount === 1 ? 'question' : 'questions')}</div>
         </div>
         <div className="border border-[#d8c99f] bg-[#efe2bd]/55 px-2 py-2">
-          <div className="font-mono text-[7px] uppercase tracking-widest text-[#8f1e18]">Self Nominations</div>
-          <div className="font-serif text-base leading-tight">{flow.selfNominationCount} volunteer{flow.selfNominationCount === 1 ? '' : 's'}</div>
+          <div className="font-mono text-[7px] uppercase tracking-widest text-[#8f1e18]">{text('Self Nominations')}</div>
+          <div className="font-serif text-base leading-tight">{flow.selfNominationCount} {text(flow.selfNominationCount === 1 ? 'volunteer' : 'volunteers')}</div>
         </div>
         <div className="border border-[#d8c99f] bg-[#efe2bd]/55 px-2 py-2">
-          <div className="font-mono text-[7px] uppercase tracking-widest text-[#8f1e18]">Peer Hearing</div>
-          <div className="font-serif text-base leading-tight">{flow.roleHearingCount + flow.leaderHearingCount} edges</div>
+          <div className="font-mono text-[7px] uppercase tracking-widest text-[#8f1e18]">{text('Peer Hearing')}</div>
+          <div className="font-serif text-base leading-tight">{flow.roleHearingCount + flow.leaderHearingCount} {text('edges')}</div>
         </div>
         <div className="border border-[#d8c99f] bg-[#efe2bd]/55 px-2 py-2">
           <div className="font-mono text-[7px] uppercase tracking-widest text-[#8f1e18]">Leader Campaign</div>

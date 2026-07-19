@@ -21,8 +21,8 @@ export default function ProjectDashboardOperationsBoard({ view = {} }) {
     <div data-testid="operations-board-24-7" className="bg-[#f7edcf]/70 border border-[#b8a57d] p-5 mb-6">
       <div className="flex items-start justify-between gap-4 mb-4">
         <div>
-          <div className="font-mono text-[10px] uppercase tracking-widest text-[#8f1e18] mb-2">24/7 Operations Board</div>
-          <div className="font-serif text-xl leading-tight">Project cadence, backend worker state, and every Agent run queue in one view.</div>
+          <div className="font-mono text-[10px] uppercase tracking-widest text-[#8f1e18] mb-2">{projectText('24/7 Operations Board')}</div>
+          <div className="font-serif text-xl leading-tight">{projectText('Project cadence, backend worker state, and every Agent run queue in one view.')}</div>
         </div>
         <div className="flex flex-wrap items-center justify-end gap-2">
           {managerReadModelSourceBadge(agentStateSummary, 'agent-state-summary-source')}
@@ -47,15 +47,15 @@ export default function ProjectDashboardOperationsBoard({ view = {} }) {
       )}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-2 mb-4">
         <div className="border border-[#d8c99f] bg-[#efe2bd]/55 px-3 py-2">
-          <div className="font-mono text-[7px] uppercase tracking-widest text-[#8f1e18]">Project Next Run</div>
+          <div className="font-mono text-[7px] uppercase tracking-widest text-[#8f1e18]">{projectText('Project Next Run')}</div>
           <div className="font-serif text-base leading-tight">{projectNextRunLabel}</div>
         </div>
         <div className="border border-[#d8c99f] bg-[#efe2bd]/55 px-3 py-2">
-          <div className="font-mono text-[7px] uppercase tracking-widest text-[#8f1e18]">Project Last Run</div>
+          <div className="font-mono text-[7px] uppercase tracking-widest text-[#8f1e18]">{projectText('Project Last Run')}</div>
           <div className="font-serif text-base leading-tight">{projectLastRunLabel}</div>
         </div>
         <div className="border border-[#d8c99f] bg-[#efe2bd]/55 px-3 py-2">
-          <div className="font-mono text-[7px] uppercase tracking-widest text-[#8f1e18]">Backend Worker</div>
+          <div className="font-mono text-[7px] uppercase tracking-widest text-[#8f1e18]">{projectText('Backend Worker')}</div>
           <div className="font-serif text-base leading-tight">{backendStatusText}</div>
         </div>
         <div className="border border-[#d8c99f] bg-[#efe2bd]/55 px-3 py-2">

@@ -29,6 +29,7 @@ const SHOULD_WRITE_PROGRESS_LOG = process.env.HOFS_PROGRESS_LOG === '1';
 const REQUESTED_STEP = String(process.env.HOFS_LANGUAGE_STEP || '').trim();
 const DEFAULT_PORTS = [4191, 4192, 4193, 4194, 4195];
 const LANGUAGE_STORAGE_KEY = 'hall_of_fame_studio.language.v1';
+const LANGUAGE_PRESERVE_SESSION_KEY = 'hall_of_fame_studio.language_validation_preserve.v1';
 const BACKEND_STORAGE_KEY = 'hall_of_fame_studio.agent_backend_url.v1';
 const LOCAL_AUTH_STORAGE_KEY = 'hall_of_fame_studio.local_auth_session.v1';
 const VIEWPORT = { width: 1440, height: 1100 };
@@ -251,15 +252,18 @@ async function openWithLanguage(browser, url, language) {
     validationBackendStore.deleteProject('p_manager_demo_001');
   }
   const page = await browser.newPage({ viewport: VIEWPORT });
-  await page.addInitScript(([key, value, backendKey, backendUrl, authKey, authSession]) => {
-    window.localStorage.removeItem('hall_of_fame_studio.projects.v1');
-    window.localStorage.removeItem('hall_of_fame_studio.chat_messages.v1');
-    window.localStorage.setItem(key, value);
+  await page.addInitScript(([key, value, preserveKey, backendKey, backendUrl, authKey, authSession]) => {
+    if (window.sessionStorage.getItem(preserveKey) !== '1') {
+      window.localStorage.removeItem('hall_of_fame_studio.projects.v1');
+      window.localStorage.removeItem('hall_of_fame_studio.chat_messages.v1');
+      window.localStorage.setItem(key, value);
+    }
     window.localStorage.setItem(backendKey, JSON.stringify(backendUrl));
     window.sessionStorage.setItem(authKey, JSON.stringify(authSession));
   }, [
     LANGUAGE_STORAGE_KEY,
     language,
+    LANGUAGE_PRESERVE_SESSION_KEY,
     BACKEND_STORAGE_KEY,
     validationBackendUrl,
     LOCAL_AUTH_STORAGE_KEY,
@@ -328,16 +332,26 @@ async function validateProjectLanguageOverride(browser, url) {
   const page = await openWithLanguage(browser, url, 'en');
   await openManagerDemoProject(page);
   await openSettings(page);
-  await page.getByTestId('settings-tab-workspace').click({ timeout: 5000 });
+  await page.getByTestId('settings-tab-workspace').evaluate((button) => button.click());
   const initialProjectLanguage = await page.getByTestId('settings-project-language').inputValue();
   assert(initialProjectLanguage === 'en', `Manager demo should start in English before project override; settings reported ${initialProjectLanguage}.`);
   await page.getByLabel(/Close|关闭/).last().evaluate((button) => button.click());
   await page.waitForTimeout(400);
   await assertVisibleLanguage(page, 'en', 'project before language override');
   await openSettings(page);
-  await page.getByTestId('settings-tab-workspace').click({ timeout: 5000 });
+  await page.getByTestId('settings-tab-workspace').evaluate((button) => button.click());
   await page.getByTestId('settings-project-language').selectOption('zh');
   await page.waitForTimeout(800);
+  let persistedProjectLanguage = null;
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    persistedProjectLanguage = validationBackendStore?.getProject?.('p_manager_demo_001')?.language || null;
+    if (persistedProjectLanguage === 'zh') break;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  assert(
+    persistedProjectLanguage === 'zh',
+    `Project language override should persist through project-settings; backend reported ${persistedProjectLanguage || 'missing'}.`,
+  );
   await page.evaluate(() => {
     const buttons = [...document.querySelectorAll('button')];
     const close = buttons.reverse().find((button) => /Close|关闭/.test(button.getAttribute('aria-label') || ''));
@@ -387,14 +401,36 @@ async function validateMarket(browser, url, language) {
 }
 
 async function clickSurfaceByText(page, labels) {
-  await page.evaluate((items) => {
-    const candidates = [...document.querySelectorAll('button, [role="button"], a')];
-    const target = candidates.find((element) => (
-      items.some((label) => (element.textContent || '').includes(label))
-    ));
-    target?.click();
-  }, labels);
-  await page.waitForTimeout(500);
+  const labelText = labels.join(' ');
+  const route = /Group Channels|Chat/.test(labelText)
+    ? { launch: '[data-testid="project-open-chat"]', target: '[data-testid="project-chat-panel"]' }
+    : /Manager Flow Graph|Timeline/.test(labelText)
+      ? { launch: '[data-testid="project-open-timeline"]', target: '[data-testid="manager-flow-graph"]' }
+      : /Roundtable|Meeting/.test(labelText)
+        ? { launch: '[data-testid="project-open-meeting"]', target: '[data-testid="project-meeting-room-stage"], [data-testid="project-simple-meeting"]' }
+        : null;
+  const launch = route ? page.locator(route.launch).first() : null;
+  const launchVisible = launch
+    ? await launch.waitFor({ state: 'visible', timeout: 3000 }).then(() => true).catch(() => false)
+    : false;
+  if (launchVisible) {
+    await launch.click();
+  } else {
+    await page.evaluate((items) => {
+      const candidates = [...document.querySelectorAll('button, [role="button"], a')];
+      const target = candidates.find((element) => (
+        items.some((label) => (element.textContent || '').includes(label))
+      ));
+      target?.click();
+    }, labels);
+  }
+  const targetSelector = route?.target || null;
+  if (targetSelector) {
+    await page.locator(targetSelector).first().waitFor({ state: 'visible', timeout: 10000 }).catch(async (error) => {
+      const body = await page.locator('body').innerText().catch(() => '');
+      throw new Error(`${error.message}\nSurface body after launch:\n${body.slice(0, 1800)}`);
+    });
+  }
 }
 
 async function openManagerDemoProject(page) {
@@ -407,11 +443,12 @@ async function openManagerDemoProject(page) {
     const body = await page.locator('body').innerText({ timeout: 3000 }).catch(() => '');
     throw new Error(`${error.message}\nBody after opening manager demo:\n${body.slice(0, 1200)}`);
   });
-  await page.waitForTimeout(500);
+  await page.getByTestId('project-open-chat').waitFor({ state: 'visible', timeout: 10000 });
 }
 
 async function openSettings(page) {
-  await page.getByTestId('open-settings-button').click({ timeout: 5000 });
+  await page.getByTestId('open-settings-button').waitFor({ state: 'visible', timeout: 5000 });
+  await page.getByTestId('open-settings-button').evaluate((button) => button.click());
   await page.waitForFunction(() => /Workspace Preferences|工作区偏好|Hall of Fame Studio Settings|名人堂工作室设置/.test(document.body.innerText), null, { timeout: 5000 });
 }
 
@@ -425,7 +462,7 @@ function assertTextLanguage(text, language, scope, allowedEnglish = null) {
     const unexpectedChinese = uniqueLinesMatching(text, /[\u4e00-\u9fff]/);
     assert(unexpectedChinese.length === 0, `English ${scope} has unexpected Chinese UI text:\n${unexpectedChinese.slice(0, 20).join('\n')}`);
   } else {
-    const allow = allowedEnglish || /Hall of Fame|Agent|API|OpenAI|Google Chat|BYOK|MCP|ID:|P_\d|P_MANAGER|Steve Jobs|Alan Turing|Marie Curie|Elon Musk|Confucius|You|Apollo Neural|Manager Demo|Autonomous Agent Studio|Auth Middleware|Timeline|Chat|Roundtable|War Room|Flow Graph|URL|Gateway|Gemini|Cursor|OAuth|JWT|Docs|Skill|First Pulse|Daily|Hourly|Leader|Reviewer|Product Visionary|System Architect|Evidence Reviewer|Consensus Steward|Execution Driver/i;
+    const allow = allowedEnglish || /Hall of Fame|Agent|API|OpenAI|Google Chat|BYOK|MCP|ID:|P_\d|P_MANAGER|SAMPLE-FIXTURE|PRODUCT-TEAM-DELIVERY-TRACE|ASSIGNMENT-ACKNOWLEDGED|AUTO-\d+|PEER-HANDOFF|WEEK-COMMIT-CLUSTER|SECURITY-ACCESS|ACCESS CONTROL|ACCESS-CONTROL|#SECURITY|HTTP:\/\/127\.0\.0\.1|\/(?:PROJECTS|WORKERS|KICKOFF-MEETINGS)\b|Steve Jobs|Alan Turing|Marie Curie|Elon Musk|Confucius|You|Apollo Neural|Manager Demo|Autonomous Agent Studio|Auth Middleware|Timeline|Chat|Roundtable|War Room|Flow Graph|URL|Gateway|Gemini|Cursor|OAuth|JWT|Docs|Skill|First Pulse|Daily|Hourly|Leader|Reviewer|Product Visionary|System Architect|Evidence Reviewer|Consensus Steward|Execution Driver/i;
     const unexpectedEnglish = uniqueLinesMatching(text, /[A-Za-z]{4,}/, allow);
     assert(unexpectedEnglish.length === 0, `Chinese ${scope} has unexpected English UI text:\n${unexpectedEnglish.slice(0, 20).join('\n')}`);
   }
@@ -469,6 +506,8 @@ async function validateProjectSurfaces(browser, url, language) {
       const unexpectedEnglish = uniqueLinesMatching(text, /[A-Za-z]{4,}/, allowedEnglish);
       assert(unexpectedEnglish.length === 0, `Chinese ${name} surface has unexpected English UI text:\n${unexpectedEnglish.slice(0, 20).join('\n')}`);
     }
+    await page.getByTestId('project-scene-back').first().click();
+    await page.getByTestId('project-open-chat').waitFor({ state: 'visible', timeout: 5000 });
   }
   assert(!duplicateKeyWarnings.length, `${language} project surfaces must not emit duplicate React key warnings. First warning: ${duplicateKeyWarnings[0] || ''}`);
   await page.close();
@@ -495,6 +534,8 @@ async function validateChatAndTimelineDetails(browser, url, language) {
   await page.waitForTimeout(800);
   await assertVisibleLanguage(page, language, 'chat after send');
 
+  await page.getByTestId('project-scene-back').first().click();
+  await page.getByTestId('project-open-timeline').waitFor({ state: 'visible', timeout: 5000 });
   await clickSurfaceByText(page, language === 'en' ? ['Manager Flow Graph', 'Timeline'] : ['贡献时间线', 'Timeline']);
   await page.waitForTimeout(800);
   await assertVisibleLanguage(page, language, 'timeline surface');
@@ -578,7 +619,7 @@ async function validateInitiationEntry(browser, url, language) {
 async function validateLiveSwitch(browser, url) {
   const page = await openWithLanguage(browser, url, 'zh');
   await openSettings(page);
-  await page.getByTestId('settings-tab-workspace').click({ timeout: 5000 });
+  await page.getByTestId('settings-tab-workspace').evaluate((button) => button.click());
   await page.getByTestId('settings-global-language').waitFor({ timeout: 8000 }).catch(async (error) => {
     const text = await page.locator('body').innerText({ timeout: 3000 }).catch(() => '');
     throw new Error(`${error.message}\nBody after settings click:\n${text.slice(0, 1200)}`);
@@ -591,6 +632,14 @@ async function validateLiveSwitch(browser, url) {
   const text = await pageText(page);
   assert(/default language/i.test(text), 'Switching language should update settings without refresh.');
   assert(text.includes('Workspace Hub'), 'Switching language should update navigation without refresh.');
+  const storedLanguage = await page.evaluate((key) => window.localStorage.getItem(key), LANGUAGE_STORAGE_KEY);
+  assert(storedLanguage === 'en', `Global language should persist in browser storage; found ${storedLanguage || 'missing'}.`);
+  await page.evaluate((key) => window.sessionStorage.setItem(key, '1'), LANGUAGE_PRESERVE_SESSION_KEY);
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  const reloadedText = await pageText(page);
+  assert(reloadedText.includes('Workspace Hub'), 'Saved global language should remain English after reload.');
+  const reloadedLanguage = await page.evaluate((key) => window.localStorage.getItem(key), LANGUAGE_STORAGE_KEY);
+  assert(reloadedLanguage === 'en', `Reload should retain the saved global language; found ${reloadedLanguage || 'missing'}.`);
   await page.close();
 }
 

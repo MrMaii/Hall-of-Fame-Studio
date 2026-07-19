@@ -140,6 +140,7 @@ try {
   await page.getByTestId('settings-local-model-simple').waitFor({ state: 'visible', timeout: 10_000 });
   await page.getByTestId('settings-model-provider-trigger').click();
   await page.getByTestId('settings-model-provider-option-stepfun').click();
+  await page.getByTestId('settings-stepfun-region-option-global').click();
   await page.getByTestId('settings-model-name-trigger').click();
   await page.getByTestId('settings-model-name-option-step-3.5-flash').click();
   await page.getByTestId('settings-provider-model-key-input').fill('LOCAL_AUTH_UI_FAKE_MODEL_KEY');

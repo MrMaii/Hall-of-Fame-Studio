@@ -20,6 +20,10 @@ test('complete Timeline display loads independently while node and proof operati
     'managerFlowGraph',
     'visibleNodes',
     'nodeLayout',
+    'buildWorkflowTimelineDisplayNodes',
+    'planWorkflowTimelineLayout',
+    'preserveTimelineViewportAnchor',
+    'clampTimelinePan',
     'relationshipGraph',
     'selectedNodeProofMapRoutes',
   ]) {

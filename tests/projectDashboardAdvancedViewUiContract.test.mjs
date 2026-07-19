@@ -40,3 +40,13 @@ test('complete Dashboard page shell stays lazy while original layout, loading, c
     assert.ok(appSource.includes(operation), `App must retain ${operation}`);
   }
 });
+
+test('real advanced dashboard waits for core backend models instead of rendering missing data as seven errors', () => {
+  assert.ok(appSource.includes('projectDashboardCoreSync'));
+  assert.ok(appSource.includes("'project-dashboard-core-models-loading'"));
+  assert.ok(appSource.includes("'project-dashboard-core-models-error'"));
+  assert.ok(appSource.includes('timeoutMs: 10_000'));
+  assert.ok(appSource.includes('indexOnly: true'));
+  assert.ok(appSource.includes('if (!projectDashboardCoreReady) return;'));
+  assert.ok(appSource.includes("eyebrow: '正在同步项目面板'"));
+});

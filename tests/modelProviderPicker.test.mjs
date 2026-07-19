@@ -30,3 +30,18 @@ test('model settings select a provider before model and keep API key as the only
   assert.match(appSource, /name: 'model\.provider'/);
   assert.match(appSource, /secretKind: 'provider'/);
 });
+
+test('StepFun selection requires an explicit animated domestic or international environment choice', () => {
+  for (const contract of [
+    'settings-stepfun-region-dialog',
+    'settings-stepfun-region-option-global',
+    'settings-stepfun-region-option-china',
+    'stepfun-region-dialog-in',
+    'stepfunRegionForBaseUrl',
+  ]) assert.match(pickerSource, new RegExp(contract));
+
+  assert.match(pickerSource, /baseURL/);
+  assert.match(settingsSource, /baseURL=\{drafts\.modelBaseUrl\}/);
+  assert.match(settingsSource, /providerId: selectedProvider\.id/);
+  assert.match(settingsSource, /baseURL: drafts\.modelBaseUrl/);
+});

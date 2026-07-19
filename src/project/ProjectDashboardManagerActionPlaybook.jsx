@@ -18,8 +18,8 @@ export default function ProjectDashboardManagerActionPlaybook({ view = {} }) {
     <div data-testid="manager-action-playbook" className="bg-[#f7edcf]/70 border border-[#b8a57d] p-5 mb-6">
       <div className="flex items-start justify-between gap-4 mb-4">
         <div>
-          <div className="font-mono text-[10px] uppercase tracking-widest text-[#8f1e18] mb-2">Manager Action Playbook</div>
-          <div className="font-serif text-2xl leading-tight">Operational next steps mapped to runnable backend routes and exact proof exits.</div>
+          <div className="font-mono text-[10px] uppercase tracking-widest text-[#8f1e18] mb-2">{projectText('Manager Action Playbook')}</div>
+          <div className="font-serif text-2xl leading-tight">{projectText('Operational next steps mapped to runnable backend routes and exact proof exits.')}</div>
         </div>
         <div className="flex shrink-0 flex-col items-end gap-2">
           {managerReadModelSourceBadge(managerActionPlaybook, 'manager-action-playbook-source')}
@@ -36,8 +36,8 @@ export default function ProjectDashboardManagerActionPlaybook({ view = {} }) {
           ['Next', managerActionPlaybook.frontendMockSuppressed ? projectText('backend required') : managerActionPlaybook.nextAction?.label || 'All complete'],
         ].map(([label, value]) => (
           <div key={`manager-action-playbook-stat-${label}`} className="border border-[#d8c99f] bg-[#efe2bd]/55 px-2 py-1">
-            <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">{label}</div>
-            <div className="font-serif text-base leading-tight break-words">{value}</div>
+            <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">{projectText(label)}</div>
+            <div className="font-serif text-base leading-tight break-words">{projectText(value)}</div>
           </div>
         ))}
       </div>
@@ -69,7 +69,7 @@ export default function ProjectDashboardManagerActionPlaybook({ view = {} }) {
                     {row.phase} / {row.status} / {row.evidence || row.description}
                   </span>
                   <span className="mt-1 block font-mono text-[8px] uppercase tracking-widest text-[#9b875c] leading-relaxed break-words">
-                    {row.method} {row.apiPath} / {row.routeResolved === false ? 'needs context' : 'route resolved'}{row.rerunnable ? ' / rerunnable' : ''}
+                    {row.method} {row.apiPath} / {projectText(row.routeResolved === false ? 'needs context' : 'route resolved')}{row.rerunnable ? ` / ${projectText('rerunnable')}` : ''}
                   </span>
                   {row.runApiPath && row.method !== 'GET' && (
                     <span className="mt-1 block font-mono text-[8px] uppercase tracking-widest text-[#9b875c] leading-relaxed break-words">

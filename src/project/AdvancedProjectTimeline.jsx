@@ -1,4 +1,4 @@
-import { useLayoutEffect } from 'react';
+import { useLayoutEffect, useRef } from 'react';
 
 const AdvancedProjectTimeline = ({ view }) => {
   const {
@@ -14,7 +14,6 @@ const AdvancedProjectTimeline = ({ view }) => {
     agentDisplay,
     backendCommandAvailable,
     backendStation,
-    branchGuides,
     canvasH,
     canvasW,
     categoryMeta,
@@ -29,19 +28,26 @@ const AdvancedProjectTimeline = ({ view }) => {
     edgeMeta,
     exitProjectScene,
     focusedTimelineProofIds,
+    fitGraphView,
+    focusGraphNode,
+    focusLatestNode,
+    focusSelectedNode,
     getAnchor,
     graphTime,
     handleGraphMouseDown,
     handleGraphMouseMove,
     handleGraphWheel,
+    handleGraphZoomChange,
     isProofFocused,
     managerFlowGraph,
     managerFlowGraphSourceLabel,
+    laneGuides,
     nodeCommitters,
     nodeLayout,
     nodeMap,
     openProjectChatProof,
     openProjectTimelineProof,
+    projectText,
     openSelectedNodeProofMapRoute,
     openSelectedNodeSubmissionRecord,
     relatedEdges,
@@ -49,6 +55,7 @@ const AdvancedProjectTimeline = ({ view }) => {
     relationshipGraph,
     renderAutonomousActionDecision,
     resetGraphView,
+    rulerHeight,
     scaleProfiles,
     sceneTransition,
     selectedChatProofIds,
@@ -64,9 +71,7 @@ const AdvancedProjectTimeline = ({ view }) => {
     setSelectedTimelineEventId,
     setTlDragging,
     setTlPan,
-    setTlZoom,
     syncBackendManagerFlowGraph,
-    timeAxisY,
     timeTicks,
     timelineViewportRef,
     tlDragging,
@@ -101,23 +106,38 @@ const AdvancedProjectTimeline = ({ view }) => {
     tlZoom,
   ]);
 
+  const previousZoomScaleRef = useRef(zoomScale);
+  useLayoutEffect(() => {
+    if (previousZoomScaleRef.current === zoomScale) return;
+    previousZoomScaleRef.current = zoomScale;
+    const targetNode = selectedNode || [...visibleNodes].sort((a, b) => (
+      (Date.parse(b.time) || 0) - (Date.parse(a.time) || 0) || (b.sequence || 0) - (a.sequence || 0)
+    ))[0];
+    if (targetNode) focusGraphNode(targetNode.id);
+  }, [zoomScale]);
+
+  const selectedNodeMeta = selectedNode ? (categoryMeta[selectedNode.category] || categoryMeta.execution) : categoryMeta.execution;
+  const SelectedNodeIcon = selectedNodeMeta?.Icon || CircleDot;
+  const selectedSubmissionQuality = selectedNode?.submission?.quality || selectedNode?.submissionQuality || null;
+  const selectedContributionIntent = selectedNode?.submission?.submissionMotivation || selectedNode?.submissionMotivation || null;
+
   return (
         <div className="project-room relative h-screen overflow-hidden text-[#efe2bd] flex flex-col">
           {sceneTransition && <div className="absolute right-16 top-1/2 z-50 w-32 h-32 -translate-y-1/2 bg-[#8f1e18] scene-bubble" />}
           <div className="absolute inset-0 dotgrid-bg--dark tl-breath" />
   
           <div className="relative z-20 flex-shrink-0 border-b border-[#2a2118]/70 bg-[#0d0c0b]/72 px-6 py-3">
-            <div className="flex items-center justify-between gap-4">
+            <div className="flex items-start justify-between gap-4">
               <div>
-                <h1 className="font-serif text-xl text-[#efe2bd]">最近工作记录</h1>
+                <h1 className="font-serif text-xl text-[#efe2bd]">{projectText('Recent Work Log')}</h1>
                 <div className="breadcrumb-bar mt-1 text-[#7d6a49]">
-                  <button data-testid="project-scene-back" aria-label="返回项目" onClick={exitProjectScene} className="hover:text-[#efe2bd] transition-colors">{activeProject.name}</button>
+                  <button data-testid="project-scene-back" aria-label={projectText('Back to project')} onClick={exitProjectScene} className="hover:text-[#efe2bd] transition-colors">{activeProject.name}</button>
                   <span className="sep">/</span>
                   <span className="text-[#efe2bd]">Manager Flow Graph</span>
                   <span className="ml-3 text-[#7d6a49]">Single-Axis Timeline</span>
                 </div>
               </div>
-              <div className="flex items-center gap-3">
+              <div className="flex max-w-[70%] flex-wrap items-center justify-end gap-2">
                 <span
                   data-testid="manager-flow-source-label"
                   className={`node-status-tag ${managerFlowGraph.frontendMockSuppressed ? 'bg-[#8f1e18] text-white' : managerFlowGraph.dataSource === 'frontend-fallback' ? 'bg-[#b9782b] text-white' : 'bg-[#59684b] text-white'}`}
@@ -137,15 +157,43 @@ const AdvancedProjectTimeline = ({ view }) => {
                   <input
                     data-testid="manager-flow-zoom"
                     type="range"
-                    min="52"
+                    min="36"
                     max="220"
                     step="4"
                     value={Math.round(tlZoom * 100)}
-                    onChange={(event) => setTlZoom(Number(event.target.value) / 100)}
+                    onChange={(event) => handleGraphZoomChange(Number(event.target.value) / 100)}
                     className="w-32 accent-[#bcae86]"
                   />
-                  <span className="w-16 text-right font-mono text-[8px] uppercase tracking-widest text-[#bcae86]">{Math.round(tlZoom * 100)}% / {scaleProfiles[zoomScale]?.label}</span>
+                  <span className="w-16 text-right font-mono text-[8px] uppercase tracking-widest text-[#bcae86]">{Math.round(tlZoom * 100)}% / {projectText(scaleProfiles[zoomScale]?.label)}</span>
                 </label>
+                <div role="group" aria-label={projectText('Timeline scale presets')} className="flex border border-[#3a2a1c] bg-[#141210]/85">
+                  {[
+                    ['manager-flow-zoom-outcome', 'month', 0.68, 'Outcome'],
+                    ['manager-flow-zoom-phase', 'week', 0.88, 'Phase'],
+                    ['manager-flow-zoom-activity', 'day', 1.2, 'Activity'],
+                    ['manager-flow-zoom-trace', 'hour', 1.68, 'Trace'],
+                  ].map(([testId, scale, zoom, label]) => (
+                    <button
+                      key={testId}
+                      data-testid={testId}
+                      type="button"
+                      aria-pressed={zoomScale === scale}
+                      onClick={() => handleGraphZoomChange(zoom)}
+                      className={`border-r border-[#3a2a1c] px-2 py-1.5 font-mono text-[8px] uppercase tracking-widest last:border-r-0 ${zoomScale === scale ? 'bg-[#bcae86] text-[#141210]' : 'text-[#7d6a49] hover:text-[#efe2bd]'}`}
+                    >
+                      {projectText(label)}
+                    </button>
+                  ))}
+                </div>
+                <button data-testid="manager-flow-fit-view" type="button" onClick={fitGraphView} className="border border-[#3a2a1c] px-3 py-1.5 font-mono text-[9px] uppercase tracking-widest text-[#bcae86] hover:border-[#7b6542] hover:text-[#efe2bd]">
+                  {projectText('Fit View')}
+                </button>
+                <button data-testid="manager-flow-focus-selected" type="button" onClick={focusSelectedNode} disabled={!selectedNode} className="border border-[#3a2a1c] px-3 py-1.5 font-mono text-[9px] uppercase tracking-widest text-[#bcae86] hover:border-[#7b6542] hover:text-[#efe2bd] disabled:opacity-35">
+                  {projectText('Focus Selected')}
+                </button>
+                <button data-testid="manager-flow-focus-latest" type="button" onClick={focusLatestNode} disabled={!visibleNodes.length} className="border border-[#3a2a1c] px-3 py-1.5 font-mono text-[9px] uppercase tracking-widest text-[#bcae86] hover:border-[#7b6542] hover:text-[#efe2bd] disabled:opacity-35">
+                  {projectText('Latest Commit')}
+                </button>
                 <button type="button" onClick={resetGraphView} className="border border-[#3a2a1c] px-3 py-1.5 font-mono text-[9px] uppercase tracking-widest text-[#7d6a49] hover:border-[#7b6542] hover:text-[#efe2bd]">
                   Reset
                 </button>
@@ -162,6 +210,11 @@ const AdvancedProjectTimeline = ({ view }) => {
                   </span>
                 );
               })}
+            </div>
+            <div data-testid="manager-flow-semantic-scale-guide" className="mt-2 flex flex-wrap items-center justify-between gap-2 border-t border-[#2a2118] pt-2 font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">
+              <span className="text-[#bcae86]">{projectText(`${scaleProfiles[zoomScale]?.label} View`)}</span>
+              <span>{scaleProfiles[zoomScale]?.description}</span>
+              <span>{visibleNodes.length} / {(managerFlowGraph.nodes || []).length} nodes visible</span>
             </div>
           </div>
   
@@ -225,28 +278,29 @@ const AdvancedProjectTimeline = ({ view }) => {
                   transition: tlDragging ? 'none' : 'transform 0.24s cubic-bezier(0.25,0.8,0.25,1)',
                 }}
               >
-                <div className="absolute left-0 right-0" style={{ top: timeAxisY }}>
-                  <div className="absolute border-t border-[#7b6542]/65" style={{ left: xOffset - 32, top: 0, width: canvasW - xOffset + 4 }} />
-                  <div className="absolute left-5 top-[-8px] font-mono text-[9px] uppercase tracking-widest text-[#7d6a49]">Time Axis</div>
+                <div data-testid="manager-flow-time-ruler" className="absolute left-0 right-0 top-0 border-b border-[#3a2a1c] bg-[#0d0c0b]/88" style={{ height: rulerHeight }}>
+                  <div className="absolute left-5 top-5 font-mono text-[9px] uppercase tracking-[0.24em] text-[#bcae86]">{projectText('Commit Timeline')}</div>
+                  <div className="absolute border-t border-[#7b6542]/75" style={{ left: xOffset - 32, top: 72, width: canvasW - xOffset + 4 }} />
                   {timeTicks.map(tick => (
-                    <div key={`flow-time-tick-${tick.key}`} className="absolute" style={{ left: tick.x, top: -6 }}>
+                    <div key={`flow-time-tick-${tick.key}`} className="absolute" style={{ left: tick.x, top: 66 }}>
                       <div className="h-3 border-l border-[#7b6542]" />
-                      <div className="mt-1 -translate-x-1/2 whitespace-nowrap font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">
-                        {graphTime(tick.time)}
-                        {tick.count > 1 ? ` / ${tick.count} branches` : ''}
+                      <div className="mt-1 -translate-x-1/2 whitespace-nowrap border border-[#3a2a1c] bg-[#141210]/92 px-2 py-1 text-center font-mono text-[7px] uppercase tracking-widest text-[#bcae86]">
+                        <span className="block text-[#efe2bd]">{tick.dateLabel} · {tick.timeLabel}</span>
+                        <span className="block text-[#7d6a49]">{tick.count} {projectText('commits')}</span>
                       </div>
                     </div>
                   ))}
                 </div>
-  
-                {branchGuides.map(guide => (
-                  <div key={`flow-branch-guide-${guide.key}`} className="absolute pointer-events-none" style={{ left: guide.left, top: guide.y }}>
-                    <div className="border-t border-dashed border-[#7b6542]/65" style={{ width: Math.max(0, guide.right - guide.left) }} />
-                    <div className="absolute left-1/2 top-[-24px] -translate-x-1/2 whitespace-nowrap border border-[#3a2a1c] bg-[#141210]/80 px-2 py-1 font-mono text-[7px] uppercase tracking-widest text-[#bcae86]">
-                      {guide.count} parallel commits
+
+                <div data-testid="manager-flow-timeline-lanes" className="absolute inset-0 pointer-events-none">
+                  {laneGuides.map(lane => (
+                    <div key={`timeline-lane-${lane.id}`} className="absolute left-0 right-0 border-t border-[#2a2118]/85" style={{ top: lane.y, height: lane.height }}>
+                      <div className="absolute left-5 top-3 w-44 border-l-2 border-[#7b6542] bg-[#141210]/82 px-3 py-2 font-mono text-[8px] uppercase tracking-[0.2em] text-[#bcae86]">
+                        {projectText(lane.label)}
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  ))}
+                </div>
   
                 <svg className="absolute left-0 top-0 pointer-events-none" style={{ width: canvasW, height: canvasH }}>
                   <defs>
@@ -317,30 +371,37 @@ const AdvancedProjectTimeline = ({ view }) => {
                       className={`absolute flex flex-col overflow-hidden text-left border bg-[#141210]/96 shadow-[7px_7px_0_rgba(0,0,0,0.22)] transition-all ${isSelected ? 'z-30 border-[#efe2bd]' : isRelated ? 'z-20 border-[#7b6542]' : 'z-10 border-[#3a2a1c]'} ${isDimmed ? 'opacity-35' : 'opacity-100'} ${isFocused ? 'ring-2 ring-[#b9782b] ring-offset-2 ring-offset-[#0d0c0b]' : ''}`}
                       style={{ left: box.x, top: box.y, width: box.w, height: box.h, borderColor: isSelected ? '#efe2bd' : meta.color }}
                     >
-                      <div className="flex h-8 shrink-0 items-center justify-between gap-2 px-3 font-mono text-[8px] uppercase tracking-widest text-white" style={{ background: meta.color }}>
+                      <div className="flex h-7 shrink-0 items-center justify-between gap-2 px-3 font-mono text-[8px] uppercase tracking-widest text-white" style={{ background: meta.color }}>
                         <span className="flex min-w-0 items-center gap-1.5">
-                          <Icon size={13} className="shrink-0" />
+                          <span data-testid={`manager-flow-node-logo-${node.id}`} className="inline-flex shrink-0"><Icon size={13} /></span>
                           <span className="truncate">{compactText(node.categoryLabel || meta.label, 18)}</span>
                         </span>
-                        <span className="max-w-[46%] shrink-0 truncate opacity-85">{compactText(node.subtype, 24)}</span>
+                        {node.clusterCount > 1 ? (
+                          <span data-testid={`manager-flow-cluster-count-${node.id}`} className="shrink-0 border border-white/45 px-1.5 py-0.5">{node.clusterCount} {projectText('commits')}</span>
+                        ) : (
+                          <span className="max-w-[46%] shrink-0 truncate opacity-85">{compactText(node.subtype, 24)}</span>
+                        )}
                       </div>
-                      <div className="min-h-0 flex-1 overflow-hidden px-3 py-2">
-                        <div className="max-h-[46px] overflow-hidden break-words font-serif text-sm leading-snug text-[#efe2bd]">{commitMessage}</div>
+                      <div className="min-h-0 flex-1 overflow-hidden px-3 py-1.5">
+                        <div className="max-h-[34px] overflow-hidden break-words font-serif text-sm leading-snug text-[#efe2bd]">{projectText(commitMessage)}</div>
+                        <div data-testid={`manager-flow-node-time-${node.id}`} className="mt-1 truncate font-mono text-[7px] uppercase tracking-widest text-[#bcae86]">
+                          {graphTime(node.time)}
+                        </div>
                         {showDetail && (
                           <div className="mt-1 truncate font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">
-                            {compactText(node.title, 38)} / {node.status} / {graphTime(node.time)}
+                            {compactText(node.title, 38)} / {node.status}
                           </div>
                         )}
                       </div>
-                      <div className="flex shrink-0 items-center justify-between gap-2 border-t border-[#2a2118] bg-[#0d0c0b]/78 px-3 py-2">
+                      <div className="flex shrink-0 items-center justify-between gap-2 border-t border-[#2a2118] bg-[#0d0c0b]/78 px-3 py-1.5">
                         <div className="min-w-0">
                           <div className="truncate font-mono text-[8px] uppercase tracking-widest text-[#bcae86]">{committersLabel(node)}</div>
                           <div className="truncate font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">
-                            {artifactTypeLabel ? `${artifactTypeLabel} / ` : ''}{primarySubmitter.role} / {attachmentCount} attachments
+                            {artifactTypeLabel ? `${artifactTypeLabel} / ` : ''}{projectText(primarySubmitter.role)} / {attachmentCount} {projectText('ATTACHMENTS')}
                           </div>
                         </div>
                         <span className={`node-status-tag shrink-0 ${node.status === 'blocked' ? 'bg-[#8f1e18] text-white' : node.status === 'confirmed' ? 'bg-green-700 text-white' : node.status === 'resolved' ? 'bg-[#59684b] text-white' : 'bg-[#3a2a1c] text-[#bcae86]'}`}>
-                          {node.importance}
+                          {projectText(node.importance)}
                         </span>
                       </div>
                     </button>
@@ -354,13 +415,27 @@ const AdvancedProjectTimeline = ({ view }) => {
                 <>
                   <div className="flex-1 overflow-y-auto px-5 pt-5 pb-4">
                     <div className="flex items-start justify-between gap-3 mb-4">
-                      <div className="min-w-0">
-                        <div className="font-mono text-[9px] uppercase tracking-widest text-[#7d6a49]">{selectedNode.categoryLabel || selectedNode.category} / {selectedNode.subtype}</div>
-                        <h3 className="mt-2 font-serif text-2xl leading-tight text-[#efe2bd]">{selectedNode.title}</h3>
+                      <div className="flex min-w-0 items-start gap-3">
+                        <div
+                          data-testid={`manager-flow-node-logo-${selectedNode.id}-detail`}
+                          className="flex h-12 w-12 shrink-0 items-center justify-center border text-white shadow-[4px_4px_0_rgba(0,0,0,0.3)]"
+                          style={{ backgroundColor: selectedNodeMeta.color, borderColor: selectedNode.visual?.color || selectedNodeMeta.color }}
+                        >
+                          <SelectedNodeIcon size={22} />
+                        </div>
+                        <div className="min-w-0">
+                          <div className="font-mono text-[9px] uppercase tracking-widest text-[#7d6a49]">{projectText(selectedNode.categoryLabel || selectedNode.category)} / {projectText(selectedNode.subtype)}</div>
+                          <h3 className="mt-2 font-serif text-2xl leading-tight text-[#efe2bd]">{projectText(selectedNode.title)}</h3>
+                        </div>
                       </div>
                       <button type="button" data-testid="manager-flow-detail-close" onClick={() => setSelectedTimelineEventId(null)} className="text-[#7d6a49] hover:text-[#efe2bd]"><X size={16} /></button>
                     </div>
-                    <p className="font-serif text-sm leading-relaxed text-[#bcae86]">{selectedNode.summary}</p>
+                    <div data-testid="timeline-node-agent-description" className="border-l-2 pl-3" style={{ borderColor: selectedNode.visual?.color || selectedNodeMeta.color }}>
+                      <div className="font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">
+                        Agent Description / {selectedNode.descriptionSource === 'runtime-fallback' ? 'runtime fallback' : 'agent authored'}
+                      </div>
+                      <p className="mt-1 font-serif text-sm leading-relaxed text-[#bcae86]">{projectText(selectedNode.description || selectedNode.summary)}</p>
+                    </div>
   
                     <div data-testid="timeline-node-metadata-detail" className="tl-detail-section">
                       <div className="tl-detail-section-title">Node Metadata</div>
@@ -369,6 +444,7 @@ const AdvancedProjectTimeline = ({ view }) => {
                           ['ID', selectedNode.id],
                           ['Status', selectedNode.status],
                           ['Importance', selectedNode.importance],
+                          ['Semantic Level', selectedNode.semanticLabel || selectedNode.semanticLevel],
                           ['Submitted By', committersLabel(selectedNode)],
                           ['Submitter Role', nodeCommitters(selectedNode)[0]?.role || 'Project'],
                           ['Task', selectedNode.taskId || 'none'],
@@ -380,8 +456,8 @@ const AdvancedProjectTimeline = ({ view }) => {
                           ['Proof IDs', (selectedNode.proofIds || []).length],
                         ].map(([label, value]) => (
                           <div key={label} className="min-w-0">
-                            <div className="font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">{label}</div>
-                            <div className="font-mono text-[9px] uppercase tracking-widest text-[#bcae86] break-words">{value}</div>
+                            <div className="font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">{projectText(label)}</div>
+                            <div className="font-mono text-[9px] uppercase tracking-widest text-[#bcae86] break-words">{projectText(value)}</div>
                           </div>
                         ))}
                       </div>
@@ -428,14 +504,59 @@ const AdvancedProjectTimeline = ({ view }) => {
   
                     <div className="tl-detail-section">
                       <div className="tl-detail-section-title">Submission Packet</div>
+                      <div data-testid="timeline-node-submission-quality" className="mb-3 grid grid-cols-2 gap-2">
+                        <div className="border border-[#2a2118] bg-[#0d0c0b]/45 p-3">
+                          <div className="font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">Completeness</div>
+                          <div className="mt-1 font-serif text-2xl text-[#efe2bd]">{selectedSubmissionQuality?.completenessScore ?? 0}%</div>
+                          <div className={`mt-1 font-mono text-[8px] uppercase tracking-widest ${selectedSubmissionQuality?.readyForTimeline ? 'text-[#59684b]' : 'text-[#8f1e18]'}`}>
+                            {selectedSubmissionQuality?.readyForTimeline ? 'Ready for Timeline' : 'Needs fields'}
+                          </div>
+                        </div>
+                        <div data-testid="timeline-node-authorship-mode" className="border border-[#2a2118] bg-[#0d0c0b]/45 p-3">
+                          <div className="font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">Authorship</div>
+                          <div className="mt-1 font-serif text-lg capitalize text-[#efe2bd]">{selectedSubmissionQuality?.authorshipMode || 'projected'}</div>
+                          <div className="mt-1 font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">
+                            {(selectedSubmissionQuality?.missingFieldIds || []).join(' / ') || 'all required fields filled'}
+                          </div>
+                        </div>
+                      </div>
                       <div className="border border-[#2a2118] bg-[#0d0c0b]/45 p-3">
                         <div className="font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">Agent Intent</div>
                         <p className="mt-1 font-serif text-sm leading-relaxed text-[#d8c99f]">
-                          {selectedNode.submission?.intent || 'Agent submitted this workflow commit for manager review.'}
+                          {projectText(selectedNode.submission?.intent || 'Agent submitted this workflow commit for manager review.')}
                         </p>
+                        {selectedContributionIntent && (
+                          <div data-testid="timeline-node-contribution-intent" className="mt-3 border border-[#3a2a1c] bg-[#141210]/75 p-3">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <div className="font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">Publication Decision</div>
+                              <span className={`node-status-tag ${selectedContributionIntent.decision === 'submit' ? 'bg-[#59684b] text-white' : selectedContributionIntent.decision === 'defer' ? 'bg-[#b9782b] text-white' : 'bg-[#3a2a1c] text-[#bcae86]'}`}>
+                                {selectedContributionIntent.decision || 'projected'}
+                              </span>
+                            </div>
+                            <div className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#bcae86]">
+                              {selectedContributionIntent.reasonCode || 'runtime-publication'}
+                            </div>
+                            <p className="mt-2 font-serif text-sm leading-relaxed text-[#d8c99f]">
+                              {selectedContributionIntent.whyNow || 'No explicit publication rationale was recorded.'}
+                            </p>
+                            <div className="mt-2 grid grid-cols-2 gap-2 font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">
+                              <span>Value: {selectedContributionIntent.expectedValue || 'not recorded'}</span>
+                              <span>Duplicate risk: {selectedContributionIntent.duplicationRisk?.level || 'not evaluated'}</span>
+                            </div>
+                            {(selectedContributionIntent.evidencePlan || []).length > 0 && (
+                              <div className="mt-2 flex flex-wrap gap-1.5">
+                                {selectedContributionIntent.evidencePlan.map(item => (
+                                  <span key={item} className="border border-[#3a2a1c] px-2 py-1 font-mono text-[7px] uppercase tracking-widest text-[#bcae86]">
+                                    {item}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        )}
                         <div className="mt-3 font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">Commit Message</div>
                         <p className="mt-1 font-serif text-sm leading-relaxed text-[#efe2bd]">
-                          {selectedNode.submission?.commitMessage || selectedNode.commitMessage || selectedNode.summary}
+                          {projectText(selectedNode.submission?.commitMessage || selectedNode.commitMessage || selectedNode.summary)}
                         </p>
                         {selectedThinkingFrame && (
                           <div className="mt-3 border-t border-[#2a2118] pt-3">
@@ -459,8 +580,8 @@ const AdvancedProjectTimeline = ({ view }) => {
                           <div className="space-y-1">
                             {(selectedNode.submission?.requiredFields || []).map(field => (
                               <div key={field.id} className="flex items-center justify-between gap-2 font-mono text-[8px] uppercase tracking-widest">
-                                <span className="truncate text-[#bcae86]">{field.label}</span>
-                                <span className={field.status === 'missing' ? 'text-[#8f1e18]' : 'text-[#59684b]'}>{field.status}</span>
+                                <span className="truncate text-[#bcae86]">{projectText(field.label)}</span>
+                                <span className={field.status === 'missing' ? 'text-[#8f1e18]' : 'text-[#59684b]'}>{projectText(field.status)}</span>
                               </div>
                             ))}
                           </div>
@@ -470,14 +591,14 @@ const AdvancedProjectTimeline = ({ view }) => {
                           <div className="space-y-1">
                             {(selectedNode.submission?.autoFields || []).map(field => (
                               <div key={field.id} className="flex items-center justify-between gap-2 font-mono text-[8px] uppercase tracking-widest">
-                                <span className="truncate text-[#bcae86]">{field.label}</span>
-                                <span className="text-[#59684b]">{field.status}</span>
+                                <span className="truncate text-[#bcae86]">{projectText(field.label)}</span>
+                                <span className="text-[#59684b]">{projectText(field.status)}</span>
                               </div>
                             ))}
                           </div>
                         </div>
                       </div>
-                      <div className="mt-3 space-y-2">
+                      <div data-testid="timeline-node-attachments" className="mt-3 space-y-2">
                         {(selectedNode.attachments || []).map(attachment => {
                           const attachmentChatProofIds = chatProofIdsFromAttachment(attachment);
                           const attachmentChannelId = attachment.providerEvidenceTranscriptRoute?.match(/\/transcripts\/([^#/?]+)/)?.[1]
@@ -492,14 +613,14 @@ const AdvancedProjectTimeline = ({ view }) => {
                             >
                               <div className="flex items-start justify-between gap-3">
                                 <div className="min-w-0">
-                                  <div className="font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">{attachment.type}</div>
-                                  <div className="mt-1 font-serif text-sm leading-tight text-[#efe2bd]">{attachment.title}</div>
+                                  <div className="font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">{projectText(attachment.type)}</div>
+                                  <div className="mt-1 font-serif text-sm leading-tight text-[#efe2bd]">{projectText(attachment.title)}</div>
                                 </div>
                                 <span className={`node-status-tag shrink-0 ${attachment.autoGenerated ? 'bg-[#3a2a1c] text-[#bcae86]' : 'bg-[#59684b] text-white'}`}>
-                                  {attachment.autoGenerated ? 'auto' : 'agent'}
+                                  {projectText(attachment.autoGenerated ? 'auto' : 'agent')}
                                 </span>
                               </div>
-                              <p className="mt-2 font-serif text-xs leading-relaxed text-[#bcae86]">{attachment.summary}</p>
+                              <p className="mt-2 font-serif text-xs leading-relaxed text-[#bcae86]">{projectText(attachment.summary)}</p>
                               {renderAutonomousActionDecision(attachment.autonomousActionDecision, {
                                 testId: `manager-flow-autonomous-action-decision-${String(attachment.id || attachment.type || 'attachment').replace(/[^a-zA-Z0-9_-]/g, '-')}`,
                                 dark: true,
@@ -555,7 +676,7 @@ const AdvancedProjectTimeline = ({ view }) => {
                       </div>
                     </div>
   
-                    <div className="tl-detail-section">
+                    <div data-testid="timeline-node-relationship-graph" className="tl-detail-section">
                       <div className="tl-detail-section-title">Task Relationship Graph</div>
                       {connectedPeople.length ? (
                         <div className="border border-[#2a2118] bg-[#0d0c0b]/45 p-2">
@@ -581,7 +702,7 @@ const AdvancedProjectTimeline = ({ view }) => {
                                     opacity="0.82"
                                   />
                                   <text x={mx} y={my - 5} textAnchor="middle" className="fill-[#bcae86] font-mono text-[8px] uppercase tracking-widest">
-                                    {person.relation}
+                                    {projectText(person.relation)}
                                   </text>
                                 </g>
                               );
@@ -589,10 +710,10 @@ const AdvancedProjectTimeline = ({ view }) => {
                             <g>
                               <rect x={relationshipGraph.center.x - 58} y={relationshipGraph.center.y - 28} width="116" height="56" fill="#141210" stroke="#efe2bd" />
                               <text x={relationshipGraph.center.x} y={relationshipGraph.center.y - 4} textAnchor="middle" className="fill-[#efe2bd] font-serif text-[13px]">
-                                Commit
+                                {projectText('Commit')}
                               </text>
                               <text x={relationshipGraph.center.x} y={relationshipGraph.center.y + 13} textAnchor="middle" className="fill-[#7d6a49] font-mono text-[7px] uppercase tracking-widest">
-                                {selectedNode.category}
+                                {projectText(selectedNode.category)}
                               </text>
                             </g>
                             {relationshipGraph.people.map(person => (
@@ -602,7 +723,7 @@ const AdvancedProjectTimeline = ({ view }) => {
                                   {person.name}
                                 </text>
                                 <text x={person.x} y={person.y + 13} textAnchor="middle" className="fill-[#7d6a49] font-mono text-[7px] uppercase tracking-widest">
-                                  {person.role}
+                                  {projectText(person.role)}
                                 </text>
                               </g>
                             ))}
@@ -700,8 +821,8 @@ const AdvancedProjectTimeline = ({ view }) => {
                               onClick={() => otherNode && setSelectedTimelineEventId(otherNode.id)}
                               className="w-full border border-[#2a2118] bg-[#0d0c0b]/45 p-2 text-left hover:border-[#7b6542]"
                             >
-                              <div className="font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">{edgeMeta[edge.type]?.label || edge.type}</div>
-                              <div className="font-serif text-sm leading-tight text-[#d8c99f]">{otherNode?.title || otherId}</div>
+                              <div className="font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">{projectText(edgeMeta[edge.type]?.label || edge.type)}</div>
+                              <div className="font-serif text-sm leading-tight text-[#d8c99f]">{projectText(otherNode?.title || otherId)}</div>
                             </button>
                           );
                         })}

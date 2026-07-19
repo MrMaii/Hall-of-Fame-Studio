@@ -6,14 +6,15 @@ export default function ProjectDashboardKickoffCharter({ view = {} }) {
     charter = {},
     onOpenChatProof,
     proofIds = [],
+    projectText,
   } = view;
 
   return (
     <div className="bg-[#f7edcf]/70 border border-[#b8a57d] p-5 mb-6">
       <div className="flex items-start justify-between gap-4 mb-4">
         <div>
-          <div className="font-mono text-[10px] uppercase tracking-widest text-[#8f1e18] mb-2">Kickoff Charter</div>
-          <div className="font-serif text-2xl leading-tight">{charter.title}</div>
+          <div className="font-mono text-[10px] uppercase tracking-widest text-[#8f1e18] mb-2">{projectText('Kickoff Charter')}</div>
+          <div className="font-serif text-2xl leading-tight">{projectText(charter.title)}</div>
           <div className="font-mono text-[9px] uppercase tracking-widest text-[#7d6a49] mt-2">
             {charter.meeting?.result} / {charter.meeting?.leaderCandidateCount || 0} leader candidates
           </div>
@@ -46,7 +47,7 @@ export default function ProjectDashboardKickoffCharter({ view = {} }) {
           <div key={action.id || action.text} className="flex items-start gap-3 border-t border-[#d8c99f] pt-2">
             <CircleDot size={13} className={action.status === 'done' ? 'text-green-700 mt-1' : 'text-[#8f1e18] mt-1'} />
             <div className="min-w-0 flex-1 pr-4">
-              <div className="font-serif text-base leading-tight">{action.text}</div>
+              <div className="font-serif text-base leading-tight">{projectText(action.text)}</div>
               <div className="font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">{action.ownerName || action.ownerId || 'unassigned'} / {action.status}</div>
             </div>
           </div>
