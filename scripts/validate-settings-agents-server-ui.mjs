@@ -666,8 +666,6 @@ try {
   await page.goto(staticRuntime.url, { waitUntil: 'networkidle' });
   await page.getByTestId(`project-nav-${projectId}`).waitFor({ state: 'visible', timeout: 10000 });
   await page.getByTestId(`project-nav-${projectId}`).click();
-  await page.getByTestId('project-overview').waitFor({ state: 'visible', timeout: 10000 });
-  await page.getByRole('button', { name: '查看完整项目控制台', exact: true }).click();
   await page.getByTestId('project-dashboard-view').waitFor({ state: 'visible', timeout: 10000 });
   await page.getByTestId('open-settings-button').click();
   await page.getByTestId('settings-tab-keys').click();

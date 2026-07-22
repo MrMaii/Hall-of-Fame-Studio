@@ -41,4 +41,21 @@ test('complete meeting room localizes visible meeting status and controls', () =
   }
   assert.ok(initiationFlowSource.includes("activeLanguage === 'zh' ? '立项内容生成来源' : 'Kickoff Generation Source'"));
   assert.ok(appSource.includes("activeLanguage === 'zh' ? '模型测试运行' : 'model rehearsal'"));
+  assert.ok(roomSource.includes("import { meetingMessageStatusLabel } from './meetingMessageState.js';"));
+  assert.ok(roomSource.includes('data-testid={`meeting-message-status-${log.id}`}'));
+  assert.ok(roomSource.includes('meetingMessageStatusLabel(log.deliveryStatus, activeLanguage)'));
+});
+
+test('meeting diagnostics preserve technical node ids and natural Chinese queue labels', () => {
+  for (const technicalNode of [
+    '<span data-no-localize="" className="node-id-tag bg-[#8f1e18]">INT</span>',
+    '<span data-no-localize="" className="node-id-tag bg-[#8f1e18]">LOG</span>',
+    '<span data-no-localize="" className="node-id-tag" style={{ fontSize: \'7px\' }}>INT-',
+    '<span data-no-localize="" className="node-id-tag" style={{ fontSize: \'7px\' }}>LOG-',
+  ]) {
+    assert.ok(roomSource.includes(technicalNode), `missing protected meeting diagnostic: ${technicalNode}`);
+  }
+  assert.ok(roomSource.includes("text('智能体发言意图', 'Agent Intent')"));
+  assert.ok(roomSource.includes("text('智能体发言队列已就绪', 'Agent intent queue ready')"));
+  assert.ok(!roomSource.includes("text('Agent 发言意图', 'Agent Intent')"));
 });

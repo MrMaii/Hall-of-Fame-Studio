@@ -192,6 +192,16 @@ export default function LocalAccountSettings({
               <input data-testid="settings-local-auth-display-name" value={localAuthDraft.displayName} onChange={(event) => setLocalAuthDraft(previous => ({ ...previous, displayName: event.target.value }))} autoComplete="name" className="mt-2 block w-full border border-[#d1d0c9] bg-[#f5f4f0] px-3 py-2 font-mono text-[11px] text-[#1a1a1a] outline-none focus:border-[#1a1a1a]" />
             </label>
           )}
+          <label className="flex items-start gap-3 font-mono text-xs text-[#5f5a50] md:col-span-2">
+            <input
+              data-testid="settings-local-auth-keep-signed-in"
+              type="checkbox"
+              checked={Boolean(localAuthDraft.keepSignedIn)}
+              onChange={(event) => setLocalAuthDraft(previous => ({ ...previous, keepSignedIn: event.target.checked }))}
+              className="mt-0.5 h-4 w-4"
+            />
+            <span><span className="block text-[#1a1a1a]">在这台电脑上保持登录</span><span className="mt-1 block leading-relaxed">会话令牌会保存到到期或退出登录；共用电脑请勿选择。</span></span>
+          </label>
           <div className="flex items-end">
             <button type="submit" data-testid={localAuthStatus.bootstrapRequired ? 'settings-local-auth-bootstrap' : 'settings-local-auth-login'} disabled={localAuthDraft.pending} className="w-full border border-[#1a1a1a] bg-[#1a1a1a] px-3 py-2 font-mono text-xs uppercase tracking-widest text-[#f5f4f0] hover:bg-[#3b3933] disabled:cursor-not-allowed disabled:opacity-50">
               {localAuthDraft.pending ? '正在处理……' : localAuthStatus.bootstrapRequired ? '创建本地管理员' : '登录本地账户'}

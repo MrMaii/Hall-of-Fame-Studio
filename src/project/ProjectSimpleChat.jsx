@@ -15,9 +15,9 @@ export default function ProjectSimpleChat({
   onSelectChannel,
   onSend,
   project,
-  restoring,
   sendBlocked,
   sending,
+  transcriptPresentation,
 }) {
   return (
     <div data-testid="project-simple-chat">
@@ -30,7 +30,7 @@ export default function ProjectSimpleChat({
         canSend={canSend}
         sendBlocked={sendBlocked}
         sending={sending}
-        restoring={restoring}
+        transcriptPresentation={transcriptPresentation}
         onBack={onBack}
         onSelectChannel={onSelectChannel}
         onInputChange={onInputChange}

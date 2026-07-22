@@ -58,7 +58,6 @@ for (const path of [
   'src/project/ProjectHub.jsx',
   'src/workspace/WorkspaceView.jsx',
   'src/workspace/AdvancedWorkspaceView.jsx',
-  'src/project/ProjectOverview.jsx',
   'src/project/ProjectSimpleChat.jsx',
   'src/project/ProjectChatPanel.jsx',
   'src/project/ProjectChatRouteView.jsx',
@@ -107,7 +106,7 @@ assert(scripts['ui:real-user-zero-to-autonomy']?.includes('validate-primary-user
 assert(scripts['ui:real-user-zero-to-autonomy']?.includes('validate-primary-project-flow-ui.mjs'), 'The release UI command must run the real local project browser flow.');
 assert(scripts['ui:real-user-zero-to-autonomy']?.includes('validate-real-user-zero-to-autonomy-agents-server-api.mjs'), 'The release UI command must retain the real local backend autonomy gate.');
 
-for (const component of ['AgentMarketRouteView', 'AgentDossierRouteView', 'WorkspaceView', 'ProjectInitiationFlowView', 'ProjectOverview', 'ProjectSimpleChat', 'ProjectChatRouteView', 'ProjectTimelineRouteView', 'ProjectDashboardAdvancedView', 'ProjectDashboardManagerBody', 'ProjectDashboardManagerProofRoutePanels', 'ProjectSimpleMeetingRouteView', 'AdvancedMeetingRoomRouteView', 'SettingsModalView']) {
+for (const component of ['AgentMarketRouteView', 'AgentDossierRouteView', 'WorkspaceView', 'ProjectInitiationFlowView', 'ProjectSimpleChat', 'ProjectChatRouteView', 'ProjectTimelineRouteView', 'ProjectDashboardAdvancedView', 'ProjectDashboardManagerBody', 'ProjectDashboardManagerProofRoutePanels', 'ProjectSimpleMeetingRouteView', 'AdvancedMeetingRoomRouteView', 'SettingsModalView']) {
   assert(app.includes(component), `App must use ${component}.`);
 }
 assert(projectChatRouteView.includes('AdvancedProjectChat'), 'ProjectChatRouteView must retain the complete Group Chat.');

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { appendFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { appendFileSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -37,6 +37,40 @@ test('reports malformed local audit JSONL lines without hiding the valid audit c
     assert.equal(stream.auditLogIntegrity.malformedLineCount, 1);
     assert.equal(stream.hashChainReady, false);
     assert.equal(stream.count, 2);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('high-volume access auditing appends its dedicated log without rewriting the project snapshot', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'hofs-audit-append-only-'));
+  const filePath = join(directory, 'projects.json');
+  const projectId = 'audit_append_only_project';
+  try {
+    const store = createAgentProjectFileStore({
+      filePath,
+      projects: [{ id: projectId, name: 'Audit append-only project', team: [], tasks: [], logs: [], eventLedger: [] }],
+      replaceWithSeed: true,
+    });
+    const service = createAgentProjectService({ store });
+    const snapshotBefore = readFileSync(filePath, 'utf8');
+    service.recordAccessDecision({
+      projectId,
+      method: 'GET',
+      path: `/projects/${projectId}`,
+      decision: {
+        allowed: true,
+        status: 'allowed',
+        enforced: true,
+        mode: 'enforced',
+        route: { routeKey: 'project-read', projectId },
+        actor: { role: 'security-admin', userId: 'local-admin' },
+      },
+      now: '2026-07-10T10:05:00.000Z',
+    });
+
+    assert.equal(readFileSync(filePath, 'utf8'), snapshotBefore);
+    assert.equal(createAgentProjectService({ store: createAgentProjectFileStore({ filePath }) }).getSecurityAuditStream(projectId).count, 1);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

@@ -2,12 +2,19 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  buildWorkflowTimelineCurvePath,
   buildWorkflowTimelineDisplayNodes,
+  buildWorkflowTimelineStemPath,
   centerTimelineNodePan,
   clampTimelinePan,
   fitTimelineCanvasZoom,
   planWorkflowTimelineLayout,
   preserveTimelineViewportAnchor,
+  reprojectTimelineWorldPoint,
+  timelineAxisCenteredPanY,
+  timelinePanXForTimestamp,
+  timelinePixelsPerMinuteForDensity,
+  timelineTimestampAtViewportX,
 } from '../src/workflow/workflowTimelineLayout.js';
 
 const SAME_MINUTE = '2026-07-18T17:21:00.000Z';
@@ -38,38 +45,158 @@ const denseNodes = Array.from({ length: 120 }, (_, index) => ({
   proofIds: [`proof-${index}`],
 }));
 
-test('phase and outcome views collapse dense same-time work into one time bucket instead of repeating node type on a y axis', () => {
-  const phase = buildWorkflowTimelineDisplayNodes({ nodes: denseNodes, scale: 'week' });
+test('real timestamps determine arbitrary x coordinates and earlier density cannot push later time anchors', () => {
+  const baseNodes = [
+    { ...denseNodes[0], id: 'early', time: '2026-07-18T09:00:00.000Z' },
+    { ...denseNodes[1], id: 'middle', time: '2026-07-18T09:17:00.000Z' },
+    { ...denseNodes[2], id: 'late', time: '2026-07-18T10:00:00.000Z' },
+  ];
+  const base = planWorkflowTimelineLayout({ nodes: baseNodes, scale: 'hour', detail: 'expanded' });
+  const denseEarlierTime = Array.from({ length: 18 }, (_, index) => ({
+    ...denseNodes[index],
+    id: `same-early-${index}`,
+    time: baseNodes[0].time,
+  }));
+  const withEarlierDensity = planWorkflowTimelineLayout({
+    nodes: [...baseNodes, ...denseEarlierTime],
+    scale: 'hour',
+    detail: 'expanded',
+  });
 
-  assert.equal(phase.nodes.length, 1);
-  assert.equal(phase.memberToDisplayId.size, denseNodes.length);
-  assert.ok(phase.nodes.every(node => node.isCluster));
-  assert.equal(phase.nodes[0].clusterCount, denseNodes.length);
-  assert.equal('timelineLaneId' in phase.nodes[0], false);
+  assert.equal(withEarlierDensity.nodeLayout.late.timeAnchorX, base.nodeLayout.late.timeAnchorX);
+  const elapsedRatio = (
+    (base.nodeLayout.middle.timeAnchorX - base.nodeLayout.early.timeAnchorX)
+    / (base.nodeLayout.late.timeAnchorX - base.nodeLayout.early.timeAnchorX)
+  );
+  assert.ok(Math.abs(elapsedRatio - (17 / 60)) < 0.001, `expected a real-time ratio, got ${elapsedRatio}`);
 });
 
-test('trace layout keeps every node in bounded collision slots around one time axis', () => {
-  const trace = buildWorkflowTimelineDisplayNodes({ nodes: denseNodes, scale: 'hour' });
-  const layout = planWorkflowTimelineLayout({ nodes: trace.nodes, scale: 'hour', detail: 'expanded' });
+test('timeline density stretches real time horizontally without changing node or line geometry size', () => {
+  const nodes = [
+    { ...denseNodes[0], id: 'start', time: '2026-07-18T09:00:00.000Z' },
+    { ...denseNodes[1], id: 'finish', time: '2026-07-18T09:20:00.000Z' },
+  ];
+  const coarse = planWorkflowTimelineLayout({ nodes, scale: 'month', detail: 'medium', timeDensity: 0.68 });
+  const fine = planWorkflowTimelineLayout({ nodes, scale: 'hour', detail: 'medium', timeDensity: 1.68 });
+  const coarseDistance = coarse.nodeLayout.finish.timeAnchorX - coarse.nodeLayout.start.timeAnchorX;
+  const fineDistance = fine.nodeLayout.finish.timeAnchorX - fine.nodeLayout.start.timeAnchorX;
 
-  assert.equal(trace.nodes.length, denseNodes.length);
-  assert.equal(layout.lanes, undefined);
-  assert.ok(Number.isFinite(layout.timeAxisY));
-  assert.ok(layout.canvasH <= 1500, `expected bounded canvas height, got ${layout.canvasH}`);
-  assert.ok(layout.canvasW <= 5000, `expected wrapped same-time density, got ${layout.canvasW}`);
+  assert.deepEqual(
+    { width: coarse.nodeWidth, height: coarse.nodeHeight },
+    { width: fine.nodeWidth, height: fine.nodeHeight },
+  );
+  assert.deepEqual(
+    { width: coarse.nodeLayout.start.w, height: coarse.nodeLayout.start.h },
+    { width: fine.nodeLayout.start.w, height: fine.nodeLayout.start.h },
+  );
+  assert.ok(fineDistance > coarseDistance * 10, `${fineDistance} must substantially exceed ${coarseDistance}`);
+  assert.ok(Math.abs(
+    fineDistance / coarseDistance
+    - timelinePixelsPerMinuteForDensity(1.68) / timelinePixelsPerMinuteForDensity(0.68)
+  ) < 1e-9);
+});
 
-  const boxes = Object.values(layout.nodeLayout);
-  const verticalSlots = new Set(boxes.map(box => box.y));
-  assert.ok(verticalSlots.size <= 8, `expected at most eight collision slots, got ${verticalSlots.size}`);
-  assert.ok(boxes.every(box => !('laneId' in box)));
-  for (let index = 0; index < boxes.length; index += 1) {
-    for (let otherIndex = index + 1; otherIndex < boxes.length; otherIndex += 1) {
-      const a = boxes[index];
-      const b = boxes[otherIndex];
-      const overlaps = a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
-      assert.equal(overlaps, false, `layout overlap between ${a.nodeId} and ${b.nodeId}`);
-    }
+test('time-density changes keep the timestamp under the pointer fixed in viewport pixels', () => {
+  const nodes = [
+    { ...denseNodes[0], id: 'start', time: '2026-07-18T09:00:00.000Z' },
+    { ...denseNodes[1], id: 'finish', time: '2026-07-18T10:00:00.000Z' },
+  ];
+  const coarse = planWorkflowTimelineLayout({ nodes, scale: 'day', detail: 'medium', timeDensity: 1 });
+  const fine = planWorkflowTimelineLayout({ nodes, scale: 'hour', detail: 'medium', timeDensity: 1.8 });
+  const viewportX = 640;
+  const coarsePanX = -420;
+  const anchoredTimestamp = timelineTimestampAtViewportX({ layout: coarse, panX: coarsePanX, viewportX });
+  const finePanX = timelinePanXForTimestamp({ layout: fine, timestamp: anchoredTimestamp, viewportX });
+
+  assert.equal(timelineTimestampAtViewportX({ layout: fine, panX: finePanX, viewportX }), anchoredTimestamp);
+});
+
+test('the main time axis stays at the vertical center of the viewport after entry and resize', () => {
+  const timeAxisY = 820;
+  const entryPanY = timelineAxisCenteredPanY({ timeAxisY, viewportHeight: 900 });
+  const resizedPanY = timelineAxisCenteredPanY({ timeAxisY, viewportHeight: 1200 });
+
+  assert.equal(entryPanY, -370);
+  assert.equal(timeAxisY + entryPanY, 450);
+  assert.equal(resizedPanY, -220);
+  assert.equal(timeAxisY + resizedPanY, 600);
+});
+
+test('semantic scales retain eligible commits as inspectable nodes instead of collapsing a whole time bucket into one card', () => {
+  const eligibleNodes = denseNodes.slice(0, 6).map((node, index) => ({
+    ...node,
+    time: `2026-07-18T09:${String(index * 5).padStart(2, '0')}:00.000Z`,
+  }));
+
+  for (const scale of ['month', 'week', 'day', 'hour']) {
+    const display = buildWorkflowTimelineDisplayNodes({ nodes: eligibleNodes, scale });
+    assert.deepEqual(display.nodes.map(node => node.id), eligibleNodes.map(node => node.id));
+    assert.ok(display.nodes.every(node => node.isCluster === false && node.clusterCount === 1));
+    assert.deepEqual([...display.memberToDisplayId.entries()], eligibleNodes.map(node => [node.id, node.id]));
   }
+});
+
+test('dense nearby commits stay inside the viewport and expose the remainder through overflow markers', () => {
+  const viewportHeight = 900;
+  const nearbyNodes = denseNodes.slice(0, 24).map((node, index) => ({
+    ...node,
+    time: new Date(Date.parse(SAME_MINUTE) + index * 2_000).toISOString(),
+  }));
+  const layout = planWorkflowTimelineLayout({
+    nodes: nearbyNodes,
+    scale: 'hour',
+    detail: 'medium',
+    timeDensity: 1.44,
+    viewportHeight,
+  });
+
+  assert.ok(layout.maxRowsPerSide >= 1 && layout.maxRowsPerSide <= 3);
+  assert.ok(layout.overflowGroups.length > 0);
+  const viewportTop = layout.timeAxisY - viewportHeight / 2;
+  const viewportBottom = layout.timeAxisY + viewportHeight / 2;
+  const boxes = Object.values(layout.nodeLayout);
+  assert.ok(boxes.length < nearbyNodes.length);
+  assert.ok(boxes.every(box => box.y >= viewportTop && box.y + box.h <= viewportBottom));
+
+  const accountedNodeIds = new Set([
+    ...Object.keys(layout.nodeLayout),
+    ...layout.overflowGroups.flatMap(group => group.nodeIds),
+  ]);
+  assert.deepEqual([...accountedNodeIds].sort(), nearbyNodes.map(node => node.id).sort());
+  assert.ok(layout.overflowGroups.every(group => group.count === group.nodeIds.length && group.count > 0));
+});
+
+test('opening an overflow marker reveals its real nodes without adding vertical rows', () => {
+  const viewportHeight = 900;
+  const nearbyNodes = denseNodes.slice(0, 24).map((node, index) => ({
+    ...node,
+    time: new Date(Date.parse(SAME_MINUTE) + index * 2_000).toISOString(),
+  }));
+  const collapsed = planWorkflowTimelineLayout({
+    nodes: nearbyNodes,
+    scale: 'hour',
+    detail: 'medium',
+    timeDensity: 1.44,
+    viewportHeight,
+  });
+  const target = collapsed.overflowGroups[0];
+  const expanded = planWorkflowTimelineLayout({
+    nodes: nearbyNodes,
+    scale: 'hour',
+    detail: 'medium',
+    timeDensity: 1.44,
+    viewportHeight,
+    expandedOverflowGroupId: target.id,
+  });
+
+  assert.equal(expanded.expandedOverflowGroup.id, target.id);
+  assert.ok(target.nodeIds.every(nodeId => expanded.nodeLayout[nodeId]));
+  assert.equal(expanded.maxRowsPerSide, collapsed.maxRowsPerSide);
+  const viewportTop = expanded.timeAxisY - viewportHeight / 2;
+  const viewportBottom = expanded.timeAxisY + viewportHeight / 2;
+  assert.ok(Object.values(expanded.nodeLayout).every(box => (
+    box.y >= viewportTop && box.y + box.h <= viewportBottom
+  )));
 });
 
 test('later timestamps never drift farther away from the single time axis', () => {
@@ -98,7 +225,39 @@ test('time moves left-to-right and every node keeps an inspectable timestamp', (
   assert.equal(layout.nodeLayout.early.timestamp, nodes[0].time);
   assert.equal(layout.nodeLayout.late.timestamp, nodes[1].time);
   assert.deepEqual(layout.timeTicks.map(tick => tick.dateLabel), ['2026-07-18', '2026-07-18']);
-  assert.deepEqual(layout.timeTicks.map(tick => tick.timeLabel), ['09:00', '11:00']);
+  assert.deepEqual(layout.timeTicks.map(tick => tick.timeLabel), ['09:05', '11:35']);
+});
+
+test('dense real-time data uses readable adaptive axis ticks instead of one table column label per commit', () => {
+  const start = Date.parse('2026-07-18T08:00:00.000Z');
+  const nodes = Array.from({ length: 180 }, (_, index) => ({
+    ...denseNodes[index % denseNodes.length],
+    id: `minute-${index}`,
+    time: new Date(start + index * 60_000).toISOString(),
+  }));
+  const layout = planWorkflowTimelineLayout({ nodes, scale: 'day', detail: 'medium' });
+
+  assert.ok(layout.timeTicks.length < 30, `expected a readable tick count, got ${layout.timeTicks.length}`);
+  assert.equal(layout.timeTicks.reduce((sum, tick) => sum + tick.count, 0), nodes.length);
+  assert.ok(layout.timeTicks.every((tick, index) => index === 0 || tick.x > layout.timeTicks[index - 1].x));
+});
+
+test('timeline relationships and time branches are curved paths anchored to real node positions', () => {
+  const above = { x: 240, y: 80, w: 224, h: 108, timeAnchorX: 352, branchSide: 'above' };
+  const below = { x: 780, y: 440, w: 224, h: 108, timeAnchorX: 892, branchSide: 'below' };
+  const relationship = buildWorkflowTimelineCurvePath({ fromBox: above, toBox: below });
+  const aboveStem = buildWorkflowTimelineStemPath({ box: above, timeAxisY: 350 });
+  const belowStem = buildWorkflowTimelineStemPath({ box: below, timeAxisY: 350 });
+
+  for (const path of [relationship.path, aboveStem.path, belowStem.path]) {
+    assert.match(path, /^M\s/);
+    assert.match(path, /\sC\s/);
+    assert.doesNotMatch(path, /\s[HV]\s/);
+    assert.doesNotMatch(path, /NaN|undefined/);
+  }
+  assert.deepEqual({ x: aboveStem.sx, y: aboveStem.sy }, { x: above.timeAnchorX, y: 350 });
+  assert.equal(aboveStem.ey, above.y + above.h);
+  assert.equal(belowStem.ey, below.y);
 });
 
 test('zoom preserves its chosen viewport anchor and clamping cannot leave an empty canvas', () => {
@@ -137,4 +296,26 @@ test('zoom preserves its chosen viewport anchor and clamping cannot leave an emp
     minZoom: 0.2,
     maxZoom: 1,
   }), 0.43333333333333335);
+});
+
+test('semantic layout changes preserve the same real-time point and distance from the main axis', () => {
+  const fromLayout = {
+    xOffset: 260,
+    timeAxisY: 420,
+    timeScale: { minimumTime: Date.parse('2026-07-18T09:00:00.000Z'), pixelsPerMillisecond: 0.002 },
+  };
+  const toLayout = {
+    xOffset: 210,
+    timeAxisY: 680,
+    timeScale: { minimumTime: Date.parse('2026-07-18T08:30:00.000Z'), pixelsPerMillisecond: 0.0005 },
+  };
+  const timestamp = Date.parse('2026-07-18T09:17:00.000Z');
+  const worldPoint = {
+    x: fromLayout.xOffset + (timestamp - fromLayout.timeScale.minimumTime) * fromLayout.timeScale.pixelsPerMillisecond,
+    y: fromLayout.timeAxisY - 165,
+  };
+  const reprojected = reprojectTimelineWorldPoint({ worldPoint, fromLayout, toLayout });
+
+  assert.equal(reprojected.x, toLayout.xOffset + (timestamp - toLayout.timeScale.minimumTime) * toLayout.timeScale.pixelsPerMillisecond);
+  assert.equal(reprojected.y - toLayout.timeAxisY, -165);
 });

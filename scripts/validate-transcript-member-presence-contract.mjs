@@ -10,6 +10,7 @@ function assert(condition, message) {
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const appSource = readFileSync(resolve(repoRoot, 'src/App.jsx'), 'utf8');
+const advancedProjectChatSource = readFileSync(resolve(repoRoot, 'src/project/AdvancedProjectChat.jsx'), 'utf8');
 const projectId = 'transcript_member_presence_contract_project';
 const service = createAgentProjectService({ messageLimit: 160 });
 const api = createAgentProjectApi({ service });
@@ -74,7 +75,7 @@ assert(response.status === 200, 'Manager Flow Graph must be readable after membe
 const flowGraph = response.body;
 assert(flowGraph.nodes?.some((node) => node.subtype === 'transcript-member-presence' && node.route === `/projects/${projectId}/transcripts/main/members`), 'Manager Flow Graph must expose a transcript-member-presence node.');
 
-assert(appSource.includes('project-chat-tool-members') && appSource.includes('project-chat-member-presence-panel'), 'React Group Chat must expose the backend member presence control and panel.');
-assert(!appSource.includes('project-chat-tool-members-backend-required'), 'React Group Chat must not keep the member presence button as a backend-required mock.');
+assert(advancedProjectChatSource.includes('project-chat-tool-members') && advancedProjectChatSource.includes('project-chat-member-presence-panel'), 'React Group Chat must expose the backend member presence control and panel.');
+assert(!advancedProjectChatSource.includes('project-chat-tool-members-backend-required'), 'React Group Chat must not keep the member presence button as a backend-required mock.');
 
 console.log('Transcript member presence contract validation passed.');

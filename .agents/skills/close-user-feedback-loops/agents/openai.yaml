@@ -1,0 +1,4 @@
+interface:
+  display_name: "用户反馈闭环"
+  short_description: "把用户体验反馈转化为系统性修复，并以真实用户路径完成可用性验收"
+  default_prompt: "Use $close-user-feedback-loops to turn this user feedback into a systemic fix with real-user verification."

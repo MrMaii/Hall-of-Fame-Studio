@@ -71,8 +71,25 @@ function behaviorText(node = {}) {
   ].filter(Boolean).join(' ').toLowerCase();
 }
 
+const DIRECTIONAL_DECISION_PATTERN = /product[- ]direction|strategic[- ]direction|strategy[- ]choice|scope[- ]change|architecture[- ](?:decision|direction)|market[- ]positioning|target[- ]customer|pricing[- ]decision|go[- ]no[- ]go|launch[- ](?:approval|decision)|release[- ]approval|final[- ]acceptance|selected[- ]option|major[- ]tradeoff/;
+
+export function isDirectionalWorkflowDecision(node = {}) {
+  return DIRECTIONAL_DECISION_PATTERN.test(behaviorText(node));
+}
+
+function operationalFamilyForDecision(node = {}) {
+  const text = behaviorText(node);
+  if (/personnel[- ]assignment|team[- ]roster|acknowledge|confirmed|confirmation|sign[- ]?off/.test(text)) return 'confirmation';
+  if (/leader[- ](?:election|decision|elected)|governance|authority|permission|policy/.test(text)) return 'governance';
+  if (/command[- ]center|readiness|status|matrix|audit|operating[- ]loop|state[- ]machine|heartbeat|monitor|trace/.test(text)) return 'monitoring';
+  return 'thinking';
+}
+
 export function inferWorkflowNodeFamily(node = {}) {
   const explicit = String(node.category || node.family || '').toLowerCase();
+  if (explicit === 'decision') {
+    return isDirectionalWorkflowDecision(node) ? 'decision' : operationalFamilyForDecision(node);
+  }
   if (WORKFLOW_NODE_FAMILIES[explicit]) return explicit;
 
   const text = behaviorText(node);
@@ -87,7 +104,7 @@ export function inferWorkflowNodeFamily(node = {}) {
     ['self-marketing', /self-marketing|self-nomination|leader-campaign|capability-claim|ownership-pitch/],
     ['collaboration', /collaboration|co-author|joint-|handoff|peer-|pair-|teamwork|agent-contracted|joined the .* team/],
     ['thinking', /idea|hypothesis|question|analysis|reasoning|brainstorm|plan|proposal/],
-    ['decision', /decision|approve|reject|escalation|resolution|chosen/],
+    ['decision', DIRECTIONAL_DECISION_PATTERN],
     ['monitoring', /monitor|heartbeat|health|watch|alert|risk-check|quality-check|scheduler/],
     ['communication', /message|chat|mention|announcement|meeting-turn|transcript|conversation/],
   ];
@@ -99,13 +116,12 @@ export function semanticLevelForWorkflowNode(node = {}, family = inferWorkflowNo
   if (Number.isInteger(explicit) && explicit >= 0 && explicit <= 3) return explicit;
 
   const text = behaviorText(node);
-  if (String(node.importance || '').toLowerCase() === 'critical') return 0;
+  const explicitFamily = String(node.category || node.family || '').toLowerCase();
+  if (family === 'decision' && isDirectionalWorkflowDecision(node)) return 0;
+  if (explicitFamily === 'decision' && family === 'thinking') return 3;
   if (/milestone|launch-decision|final-report|final-deliverable|project-complete|governance-gate|release-candidate/.test(text)) return 0;
 
-  const familyDefault = WORKFLOW_NODE_FAMILIES[family]?.defaultSemanticLevel ?? 2;
-  if (String(node.importance || '').toLowerCase() === 'major') return Math.min(familyDefault, 1);
-  if (String(node.importance || '').toLowerCase() === 'minor') return Math.max(familyDefault, 3);
-  return familyDefault;
+  return WORKFLOW_NODE_FAMILIES[family]?.defaultSemanticLevel ?? 2;
 }
 
 export function decorateWorkflowNode(node = {}) {
@@ -137,6 +153,76 @@ export function workflowNodeVisibleAtScale(node = {}, scale = 'day') {
   const profile = WORKFLOW_NODE_SCALES[scale] || WORKFLOW_NODE_SCALES.day;
   const decorated = decorateWorkflowNode(node);
   return decorated.semanticLevel <= profile.maxSemanticLevel;
+}
+
+function workflowNodePublicationScore(node = {}) {
+  const text = behaviorText(node);
+  let score = 0;
+  if (isDirectionalWorkflowDecision(node)) score += 1000;
+  if (/final[- ]deliverable|final[- ]report|project[- ]complete|release[- ]candidate|milestone/.test(text)) score += 800;
+  if (['submission', 'summary', 'review', 'governance', 'confirmation'].includes(node.category)) score += 400;
+  score += (3 - (Number.isInteger(node.semanticLevel) ? node.semanticLevel : 3)) * 50;
+  if (/confirmed|resolved|approved|complete|accepted/.test(String(node.status || '').toLowerCase())) score += 30;
+  score += ({ critical: 20, major: 15, high: 15, normal: 5, minor: 0 }[String(node.importance || '').toLowerCase()] || 0);
+  if (uniqueStrings([...(node.proofIds || []), ...(node.timelineLogIds || []), ...(node.eventIds || [])]).length) score += 5;
+  return score;
+}
+
+function workflowNodeReferenceIds(node = {}) {
+  return uniqueStrings([
+    node.id,
+    ...(node.proofIds || []),
+    ...(node.timelineLogIds || []),
+    ...(node.eventIds || []),
+  ]);
+}
+
+export function selectWorkflowTimelinePublications({ nodes = [], scale = 'day', pinnedReferenceIds = [] } = {}) {
+  const pinned = new Set(uniqueStrings(pinnedReferenceIds));
+  const eligible = nodes
+    .map((node, inputIndex) => ({ ...decorateWorkflowNode(node), inputIndex }))
+    .filter((node) => workflowNodeVisibleAtScale(node, scale));
+  const groups = new Map();
+
+  eligible.forEach((node) => {
+    const parsed = Date.parse(node.time || node.submittedAt || node.createdAt || node.updatedAt);
+    const timestampKey = Number.isFinite(parsed) ? new Date(parsed).toISOString() : `unscheduled:${node.id || node.inputIndex}`;
+    if (!groups.has(timestampKey)) groups.set(timestampKey, []);
+    groups.get(timestampKey).push(node);
+  });
+
+  const selectedIds = new Set();
+  groups.forEach((group) => {
+    const ranked = [...group].sort((left, right) => (
+      workflowNodePublicationScore(right) - workflowNodePublicationScore(left)
+      || left.inputIndex - right.inputIndex
+    ));
+    ranked.slice(0, 2).forEach((node) => selectedIds.add(node.inputIndex));
+    const pinnedOverflow = group.find((node) => (
+      !selectedIds.has(node.inputIndex)
+      && workflowNodeReferenceIds(node).some((referenceId) => pinned.has(referenceId))
+    ));
+    if (pinnedOverflow) selectedIds.add(pinnedOverflow.inputIndex);
+  });
+
+  const selectedNodes = eligible
+    .filter((node) => selectedIds.has(node.inputIndex))
+    .sort((left, right) => {
+      const leftTime = Date.parse(left.time || left.submittedAt || left.createdAt || left.updatedAt);
+      const rightTime = Date.parse(right.time || right.submittedAt || right.createdAt || right.updatedAt);
+      if (Number.isFinite(leftTime) && Number.isFinite(rightTime) && leftTime !== rightTime) return leftTime - rightTime;
+      if (Number.isFinite(leftTime) !== Number.isFinite(rightTime)) return Number.isFinite(leftTime) ? -1 : 1;
+      return left.inputIndex - right.inputIndex;
+    })
+    .map(({ inputIndex, ...node }) => node);
+  const suppressedNodes = eligible.filter((node) => !selectedIds.has(node.inputIndex));
+
+  return {
+    nodes: selectedNodes,
+    suppressedNodeCount: suppressedNodes.length,
+    suppressedNodeIds: suppressedNodes.map((node) => node.id).filter(Boolean),
+    maxNodesPerTimestamp: 2,
+  };
 }
 
 export function workflowNodeTimeBucket(node = {}, scale = 'day') {

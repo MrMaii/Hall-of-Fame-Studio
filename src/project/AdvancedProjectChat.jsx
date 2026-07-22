@@ -93,6 +93,7 @@ export default function AdvancedProjectChat({ view }) {
     transcriptReplyRowsByReplyMessageId,
     transcriptSearchDraft,
     transcriptSearchResult,
+    transcriptPresentation,
     triggerBackendTranscriptAttachmentPicker,
     visibleMessages,
     visibleProofCount,
@@ -101,6 +102,29 @@ export default function AdvancedProjectChat({ view }) {
     'change-discussion': activeLanguage === 'zh' ? '变更讨论' : 'Change Discussion',
     'change-confirmed': activeLanguage === 'zh' ? '变更已确认' : 'Change Confirmed',
   }[role] || chatText(role));
+  const isUserMessage = (message = {}) => (
+    message.userAuthored === true
+    || ['user', 'user-input', 'director-input'].includes(String(message.source || '').toLowerCase())
+    || /^director_brief_/i.test(String(message.id || ''))
+    || /^meeting_.+_director_clarification_/i.test(String(message.id || ''))
+    || [message.authorId, message.author, message.speakerId]
+      .filter(Boolean)
+      .some((value) => ['you', 'user'].includes(String(value).toLowerCase()))
+  );
+  const messageText = (message = {}) => isUserMessage(message) ? message.text : chatText(message.text);
+  const renderMessageText = (message = {}) => {
+    const value = message.text || '';
+    if (isUserMessage(message)) return value;
+    const userFragment = visibleMessages
+      .filter(isUserMessage)
+      .map(item => String(item.text || '').trim())
+      .filter(fragment => fragment && value.includes(fragment))
+      .sort((a, b) => b.length - a.length)[0];
+    if (!userFragment) return messageText(message);
+    const start = value.indexOf(userFragment);
+    const end = start + userFragment.length;
+    return <>{chatText(value.slice(0, start))}<span data-user-content="">{userFragment}</span>{chatText(value.slice(end))}</>;
+  };
 
   return (
       <div data-testid="project-chat-panel" className="project-room relative h-screen overflow-hidden text-[#efe2bd]">
@@ -292,21 +316,25 @@ export default function AdvancedProjectChat({ view }) {
             )}
 
             <div className="flex-1 overflow-y-auto px-5 py-4">
-              {backendChannelTranscriptRequired && !backendChannelTranscript && (
-                <div data-testid="project-chat-transcript-backend-required" className="mb-4 border border-[#8f1e18] bg-[#251b13] px-4 py-3 text-[#efe2bd]">
-                  <div className="font-mono text-[9px] uppercase tracking-widest">{chatText('Backend transcript required')}</div>
-                  <div className="mt-2 font-mono text-[10px] leading-relaxed text-[#bcae86]">
-                    {chatText('This real backend project requires the channel transcript route before local messages can be shown as collaboration proof.')}
-                  </div>
-                  <button
-                    type="button"
-                    data-testid="project-chat-transcript-sync"
-                    onClick={() => syncBackendProjectTranscripts({ silent: false, projectId: activeProject.id, channelId: activeChannelId })}
-                    disabled={!canSyncBackendTranscriptMembers}
-                    className="mt-3 border border-[#bcae86] px-3 py-1.5 font-mono text-[9px] uppercase tracking-widest text-[#efe2bd] hover:bg-[#3a2a1c] disabled:opacity-40"
-                  >
-                    {chatText('Sync transcript')}
-                  </button>
+              {((visibleMessages.length === 0 && transcriptPresentation.state !== 'ready') || transcriptPresentation.state === 'local-recovery') && (
+                <div
+                  data-testid={`project-chat-transcript-${transcriptPresentation.state}`}
+                  role={transcriptPresentation.state === 'empty' ? undefined : 'status'}
+                  className={`mb-4 bg-[#251b13] px-4 py-4 text-[#efe2bd] ${transcriptPresentation.state === 'empty' ? 'border border-dashed border-[#3a2a1c]' : 'border border-[#7b6542]'}`}
+                >
+                  <div className="font-serif text-lg">{transcriptPresentation.title}</div>
+                  <div className="mt-2 font-mono text-[10px] leading-relaxed text-[#bcae86]">{transcriptPresentation.detail}</div>
+                  {transcriptPresentation.state !== 'empty' && (
+                    <button
+                      type="button"
+                      data-testid="project-chat-transcript-sync"
+                      onClick={() => syncBackendProjectTranscripts({ silent: false, projectId: activeProject.id, channelId: activeChannelId })}
+                      disabled={!canSyncBackendTranscriptMembers}
+                      className="mt-3 border border-[#bcae86] px-3 py-1.5 font-mono text-[9px] uppercase tracking-widest text-[#efe2bd] hover:bg-[#3a2a1c] disabled:opacity-40"
+                    >
+                      {chatText('Sync transcript')}
+                    </button>
+                  )}
                 </div>
               )}
               {transcriptSearchResult && (
@@ -391,7 +419,7 @@ export default function AdvancedProjectChat({ view }) {
                       className={`flex items-center gap-3 my-4 chat-msg-enter ${isFocusedProof ? 'ring-2 ring-[#b9782b] ring-offset-2 ring-offset-[#171411]' : ''}`}
                     >
                       <div className="flex-1 h-px bg-[#3a2a1c]" />
-                      <span className="font-mono text-[9px] uppercase tracking-widest text-[#7d6a49] px-3 shrink-0">{message.text}</span>
+                      <span data-no-localize="" className="font-mono text-[9px] uppercase tracking-widest text-[#7d6a49] px-3 shrink-0">{renderMessageText(message)}</span>
                       <div className="flex-1 h-px bg-[#3a2a1c]" />
                     </div>
                   );
@@ -409,7 +437,7 @@ export default function AdvancedProjectChat({ view }) {
                         <span className="node-id-tag">{message.decisionId || 'DEC-000'}</span>
                         <span className="node-status-tag bg-[#59684b] text-white">{chatText('Confirmed')}</span>
                       </div>
-                      <p className="font-serif text-lg leading-relaxed text-[#efe2bd]">{message.text}</p>
+                      <p data-no-localize="" data-user-content={isUserMessage(message) ? '' : undefined} className="font-serif text-lg leading-relaxed text-[#efe2bd]">{renderMessageText(message)}</p>
                       <div className="flex items-center gap-2 mt-2 font-mono text-[9px] uppercase tracking-widest text-[#7d6a49]">
                         <span>{message.author}</span>
                         {message.role && <><span className="opacity-40">/</span><span>{messageRoleLabel(message.role)}</span></>}
@@ -441,17 +469,17 @@ export default function AdvancedProjectChat({ view }) {
                       <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
                         <div className="min-w-0">
                           <div className="flex flex-wrap items-center gap-1 mb-2">
-                            <span className="node-status-tag bg-[#d8c99f] text-[#251b13]">{collaborationMeta.label}</span>
-                            <span className="node-status-tag bg-[#251b13] text-[#efe2bd]">{String(collaborationMeta.status || 'recorded')}</span>
-                            <span className="node-status-tag bg-[#59684b] text-white">{String(collaborationMeta.subject || 'proof')}</span>
+                            <span className="node-status-tag bg-[#d8c99f] text-[#251b13]">{chatText(collaborationMeta.label)}</span>
+                            <span className="node-status-tag bg-[#251b13] text-[#efe2bd]">{chatText(String(collaborationMeta.status || 'recorded'))}</span>
+                            <span className="node-status-tag bg-[#59684b] text-white">{chatText(String(collaborationMeta.subject || 'proof'))}</span>
                           </div>
-                          <div className="font-serif text-lg leading-tight text-[#efe2bd]">{String(collaborationMeta.title || message.text || 'Collaboration node')}</div>
-                          <p className="mt-1 font-serif text-sm leading-relaxed text-[#d8c99f]">{chatText(message.text)}</p>
+                          <div data-no-localize="" className="font-serif text-lg leading-tight text-[#efe2bd]">{collaborationMeta.title && collaborationMeta.title !== message.text ? chatText(collaborationMeta.title) : renderMessageText(message)}</div>
+                          <p data-no-localize="" className="mt-1 font-serif text-sm leading-relaxed text-[#d8c99f]">{renderMessageText(message)}</p>
                           <div className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#7d6a49] break-words">
                             Route: {collaborationMeta.route || 'backend route pending'}
                           </div>
-                          <div className="mt-1 font-mono text-[8px] uppercase tracking-widest text-[#7d6a49] break-words">
-                            {String(collaborationMeta.detail || '')}
+                          <div data-no-localize="" className="mt-1 font-mono text-[8px] uppercase tracking-widest text-[#7d6a49] break-words">
+                            {chatText(String(collaborationMeta.detail || ''))}
                           </div>
                         </div>
                         <div className="flex shrink-0 flex-wrap gap-1 md:justify-end">
@@ -551,7 +579,7 @@ export default function AdvancedProjectChat({ view }) {
                             {chatText('Mention from')} {mentionTranscriptRow.sourceAuthor || mentionTranscriptRow.sourceMessage?.author || 'message'} / {mentionTranscriptRow.sourceMessageId}
                           </div>
                         )}
-                        <p className="font-serif text-[17px] leading-relaxed text-[#d8c99f]">{chatText(message.text)}</p>
+                        <p data-no-localize="" data-user-content={isUserMessage(message) ? '' : undefined} className="font-serif text-[17px] leading-relaxed text-[#d8c99f]">{renderMessageText(message)}</p>
                         {isPinnedTranscriptMessage && (
                           <span data-testid={`project-chat-message-pinned-${message.id}`} className="inline-flex mt-1.5 items-center gap-1 bg-[#b9782b] text-[#1a130e] font-mono text-[8px] uppercase tracking-widest px-2 py-0.5">
                             <Pin size={10} />

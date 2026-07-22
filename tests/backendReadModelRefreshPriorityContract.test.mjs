@@ -7,7 +7,6 @@ const appSource = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8
 test('every interactive backend operation cancels pending cross-operation read-model refreshes', () => {
   assert.match(appSource, /const cancelPendingBackendReadModelRefreshes = \(\) => \{/);
   for (const timerRef of [
-    'backendProjectCommandRefreshTimerRef',
     'backendSchedulerRefreshTimerRef',
     'backendAgentPulseRefreshTimerRef',
     'backendAgentAutonomousActionRefreshTimerRef',
@@ -31,7 +30,6 @@ test('every interactive backend operation cancels pending cross-operation read-m
   }
 
   for (const timerRef of [
-    'backendProjectCommandRefreshTimerRef',
     'backendSchedulerRefreshTimerRef',
     'backendAgentPulseRefreshTimerRef',
   ]) {
@@ -46,26 +44,40 @@ test('every interactive backend operation cancels pending cross-operation read-m
   }
 });
 
-test('interactive operations cancel queued and active background project reads', () => {
-  assert.match(
-    appSource,
-    /projectReadCoordinatorRef = useRef\(\{ active: 0, queue: \[\], inFlight: new Map\(\), running: new Set\(\) \}\)/,
-  );
+test('interactive operations cancel only background project reads', () => {
+  assert.match(appSource, /import \{ createProjectReadCoordinator \} from '\.\/project\/projectReadCoordinator\.js';/);
+  assert.match(appSource, /projectReadCoordinatorRef\.current = createProjectReadCoordinator\(\{ maxConcurrent: 4 \}\)/);
 
   const cancelSource = appSource.slice(
     appSource.indexOf('const cancelPendingBackendReadModelRefreshes = () => {'),
     appSource.indexOf('const readyPackageSubmodelSyncInFlightRef', appSource.indexOf('const cancelPendingBackendReadModelRefreshes = () => {')),
   );
   assert.match(cancelSource, /projectReadCoordinatorRef\.current/);
-  assert.match(cancelSource, /coordinator\.queue\.splice\(0\)/);
-  assert.match(cancelSource, /job\.controller\.abort\(\)/);
-  assert.match(cancelSource, /coordinator\.running/);
+  assert.match(cancelSource, /coordinator\.cancelBackground\(\)/);
+  assert.doesNotMatch(cancelSource, /coordinator\.cancelAll\(\)/);
 
   const requestSource = appSource.slice(
     appSource.indexOf('const requestAgentBackend = async'),
     appSource.indexOf('const persistLocalAuthSession', appSource.indexOf('const requestAgentBackend = async')),
   );
-  assert.match(requestSource, /const jobController = new AbortController\(\)/);
-  assert.match(requestSource, /controller: jobController/);
-  assert.match(requestSource, /run: \(\) => runRequest\(jobController\.signal\)/);
+  assert.match(requestSource, /priority = 'background'/);
+  assert.match(requestSource, /coordinator\.schedule\(\{/);
+  assert.match(requestSource, /run: \(\{ signal, timeoutMs: remainingMs \}\) => runRequest\(signal, remainingMs\)/);
+  assert.doesNotMatch(requestSource, /isInteractiveProjectRead/);
+});
+
+test('opening a project always enters the complete console and gives its core dashboard read user-visible priority', () => {
+  const navigationSource = appSource.slice(
+    appSource.indexOf('const navToProject = (id) =>'),
+    appSource.indexOf('const navToInitiation', appSource.indexOf('const navToProject = (id) =>')),
+  );
+  assert.match(navigationSource, /cancelPendingBackendReadModelRefreshes\(\);/);
+  assert.match(navigationSource, /setProjectDashboardAdvancedOpen\(true\);/);
+  assert.ok(!appSource.includes('project-simple-dashboard'));
+  assert.ok(!appSource.includes("ProjectOverview.jsx"));
+
+  const coreSyncEffectStart = appSource.indexOf('shouldStartProjectDashboardCoreSync(projectDashboardCoreSync, activeProject.id)');
+  const coreSyncStart = appSource.indexOf('Promise.all([', coreSyncEffectStart);
+  const coreSyncSource = appSource.slice(coreSyncStart, appSource.indexOf(']).then', coreSyncStart) + 2);
+  assert.equal(coreSyncSource.match(/priority: 'user-visible'/g)?.length, 3);
 });

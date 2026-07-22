@@ -67,6 +67,8 @@ export default function SettingsModalView({ view }) {
     setProjectToolGrantSetting,
     setProviderSecretDrafts,
     setSettingsOpen,
+    focusedModelSetup,
+    setFocusedModelSetup,
     setSettingsTab,
     setWorkspaceBindDraft,
     settingsTab,
@@ -90,7 +92,14 @@ export default function SettingsModalView({ view }) {
     workspacePolicySaving,
   } = view;
 
-    const closeSettingsDialog = () => setSettingsOpen(false);
+    const closeSettingsDialog = () => {
+      setSettingsOpen(false);
+      setFocusedModelSetup(false);
+    };
+    const openLocalServiceSettings = () => {
+      setFocusedModelSetup(false);
+      setSettingsTab('deployment');
+    };
     const navItems = [
       { id: 'keys', label: t('settings.keys'), icon: KeyRound },
       { id: 'account', label: activeLanguage === 'zh' ? '本地账户' : 'Local account', icon: UserCircle },
@@ -239,7 +248,9 @@ export default function SettingsModalView({ view }) {
       </button>
     );
 
-    const tabTitle = settingsTab === 'models'
+    const tabTitle = focusedModelSetup
+      ? (activeLanguage === 'zh' ? '配置模型' : 'Configure model')
+      : settingsTab === 'models'
       ? (activeLanguage === 'zh' ? '模型技术状态' : 'Model technical status')
       : navItems.find(item => item.id === settingsTab)?.label;
     const healthRows = healthCheck.rows.length ? healthCheck.rows : [
@@ -439,8 +450,10 @@ export default function SettingsModalView({ view }) {
           connectionLabel={settingsFooterConnectionLabel}
           onConnectionTest={runSettingsFooterConnectionTest}
           connectionDisabled={healthCheck.running || !backendUrlConfigured}
+          focused={focusedModelSetup}
+          showFooter={!focusedModelSetup}
         >
-            <div className="flex-1 overflow-y-auto px-7 py-6">
+            <div className="flex-1 overflow-y-auto px-4 py-5 sm:px-7 sm:py-6">
               {settingsTab === 'account' && (
                 <Suspense fallback={<LazyPanelFallback />}>
                 <LocalAccountSettings
@@ -496,7 +509,13 @@ export default function SettingsModalView({ view }) {
               )}
 
               {settingsTab === 'keys' && (
-                <div className="space-y-5">
+                <div className="space-y-5" data-testid={focusedModelSetup ? 'first-run-model-setup' : undefined}>
+                  {focusedModelSetup && (
+                    <div className="border border-[#b9a55f] bg-[#fff8e7] p-4">
+                      <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-[#8f1e18]">{activeLanguage === 'zh' ? '首次设置 · 唯一任务' : 'First setup · One task'}</div>
+                      <p className="mt-2 text-sm leading-relaxed text-[#5c574d]">{activeLanguage === 'zh' ? '选择模型提供商，填写所需连接信息并保存。健康检查、部署和其他管理功能可稍后从“设置”进入。' : 'Choose a model provider, enter the required connection details, and save. Health, deployment, and other administration remain available later in Settings.'}</p>
+                    </div>
+                  )}
                   <Suspense fallback={<LazyPanelFallback />}>
                   <LocalModelSettings
                     backendUrlConfigured={backendUrlConfigured}
@@ -511,14 +530,19 @@ export default function SettingsModalView({ view }) {
                     onTest={() => syncSettingsProviderRuntime({ runTests: true })}
                     onSaveModel={(options) => sealSettingsProviderSecret('model', options)}
                     onSaveSearch={() => sealSettingsProviderSecret('search')}
-                    onOpenLocalService={() => setSettingsTab('deployment')}
+                    onOpenLocalService={openLocalServiceSettings}
                   />
                   </Suspense>
-                  <div className="border border-[#d1d0c9] bg-[#f8f6ee] p-4">
+                  {!focusedModelSetup && <div className="border border-[#d1d0c9] bg-[#f8f6ee] p-4">
                     <button type="button" data-testid="settings-open-model-technical-status" onClick={() => setSettingsTab('models')} className="text-sm underline underline-offset-4">
                       {activeLanguage === 'zh' ? '查看模型技术状态' : 'View model technical status'}
                     </button>
-                  </div>
+                  </div>}
+                  {focusedModelSetup && providerRuntimeStatus.modelProvider?.configured && (
+                    <button type="button" data-testid="first-run-model-setup-complete" onClick={closeSettingsDialog} className="w-full border border-[#251b13] bg-[#251b13] px-6 py-3 text-white">
+                      {activeLanguage === 'zh' ? '完成并返回' : 'Finish and return'}
+                    </button>
+                  )}
                 </div>
               )}
 

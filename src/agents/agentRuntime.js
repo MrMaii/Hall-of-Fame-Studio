@@ -7,8 +7,11 @@ import {
 } from '../skills/personSkillSystem.js';
 import { createTranslator, localizeText, normalizeLanguage } from '../i18n/runtime.js';
 import { meetingTurnDelayMs } from './meetingQueueProtocol.js';
+import { MEETING_MAX_PEER_EXCHANGES } from './meetingInteractionProtocol.js';
 import { evaluateLocalIntervalSchedule } from './localScheduleGovernance.js';
 import { createHash } from 'node:crypto';
+import { normalizeOutcomeWorkContract } from './outcomeDrivenExecution.js';
+import { describeTaskAsset } from '../project/workOutputSemantics.js';
 
 export const DIRECTOR_AGENT_ID = 'director';
 export const EVENT_LEDGER_RETAINED_LIMIT = 5000;
@@ -209,18 +212,33 @@ const GENERATED_TEXT_KEYS = new Set([
   'due',
 ]);
 
-function localizeGeneratedObject(value, language = 'en') {
+function localizeGeneratedText(text, language, preservedFragments = []) {
+  const fragments = [...new Set(preservedFragments.filter(Boolean))].sort((a, b) => b.length - a.length);
+  let protectedText = text;
+  const tokens = fragments.map((fragment, index) => {
+    const token = `\uE000${index}\uE001`;
+    protectedText = protectedText.split(fragment).join(token);
+    return { fragment, token };
+  });
+  let localized = localizeText(protectedText, language);
+  tokens.forEach(({ fragment, token }) => {
+    localized = localized.split(token).join(fragment);
+  });
+  return localized;
+}
+
+function localizeGeneratedObject(value, language = 'en', preservedFragments = []) {
   const normalizedLanguage = normalizeLanguage(language);
   if (normalizedLanguage === 'en') return value;
   if (Array.isArray(value)) {
-    return value.map((item) => localizeGeneratedObject(item, normalizedLanguage));
+    return value.map((item) => localizeGeneratedObject(item, normalizedLanguage, preservedFragments));
   }
   if (!value || typeof value !== 'object') return value;
   return Object.fromEntries(Object.entries(value).map(([key, item]) => {
     if (typeof item === 'string' && GENERATED_TEXT_KEYS.has(key)) {
-      return [key, localizeText(item, normalizedLanguage)];
+      return [key, localizeGeneratedText(item, normalizedLanguage, preservedFragments)];
     }
-    return [key, localizeGeneratedObject(item, normalizedLanguage)];
+    return [key, localizeGeneratedObject(item, normalizedLanguage, preservedFragments)];
   }));
 }
 
@@ -1010,12 +1028,22 @@ export function runRoundtableExchange(team = [], directive = '', context = {}) {
   const intentById = new Map(intentions.map((intent) => [intent.id, intent]));
   const maxSpeakers = Math.max(1, Math.min(
     intentions.length,
-    Number(context.maxSpeakers) || intentions.length,
+    Number(context.maxSpeakers) || MEETING_MAX_PEER_EXCHANGES + 1,
   ));
-  const speakers = intentions.slice(0, maxSpeakers);
+  const selectedSpeakers = intentions.slice(0, maxSpeakers);
   const protocol = getMeetingProtocol(context.meetingType || 'sync', language);
   const lead = getLead(network);
   const reviewer = getReviewer(network);
+  if (lead && !selectedSpeakers.some((intent) => intent.id === lead.id)) {
+    const leadIntent = intentById.get(lead.id);
+    if (leadIntent) selectedSpeakers[selectedSpeakers.length - 1] = leadIntent;
+  }
+  const speakers = selectedSpeakers.length > 1 && lead
+    ? [...selectedSpeakers.filter((intent) => intent.id !== lead.id), ...selectedSpeakers.filter((intent) => intent.id === lead.id)]
+    : selectedSpeakers;
+  const timestamp = Date.parse(context.now || '') || Date.now();
+  const sourceTurnId = context.sourceTurnId || context.sourceMessageId || null;
+  const responseIds = speakers.map((intent, index) => `${intent.id}_${timestamp}_${index}`);
 
   return {
     network,
@@ -1023,22 +1051,51 @@ export function runRoundtableExchange(team = [], directive = '', context = {}) {
     intentions,
     responses: speakers.map((intent, index) => {
       const agent = getAgent(network, intent.id);
+      const previousIntent = index > 0 ? speakers[index - 1] : null;
+      const isLast = index === speakers.length - 1;
+      const interactionIntent = index === 0
+        ? (context.meetingType === 'kickoff' ? 'compete' : 'clarify')
+        : isLast
+          ? 'synthesize'
+          : index === 1
+            ? 'challenge'
+            : 'clarify';
+      const baseText = buildAgentReply(agent, directive, {
+        network,
+        lead,
+        reviewer,
+        intent: intentById.get(intent.id),
+        isLead: lead?.id === agent.id,
+        meetingType: protocol.id,
+        language,
+      });
+      const text = !previousIntent
+        ? baseText
+        : language === 'zh'
+          ? interactionIntent === 'challenge'
+            ? `${agent.name}：我回应 ${previousIntent.name}，并质疑这项提议。${baseText}`
+            : interactionIntent === 'synthesize'
+              ? `${agent.name}：我综合前述观点，向总监汇报共识、分歧与待决问题。${baseText}`
+              : `${agent.name}：回应 ${previousIntent.name}，${baseText}`
+          : interactionIntent === 'challenge'
+            ? `${agent.name}: I am responding to ${previousIntent.name} and challenging this proposal. ${baseText}`
+            : interactionIntent === 'synthesize'
+              ? `${agent.name}: I am synthesizing the discussion for the Director: consensus, disagreement, and the open question. ${baseText}`
+              : `${agent.name}: Responding to ${previousIntent.name}, ${baseText}`;
       return {
-        id: `${intent.id}_${Date.now()}_${index}`,
+        id: responseIds[index],
         speakerId: intent.id,
         speaker: intent.name,
         role: intent.role,
         score: intent.score,
         delayMs: meetingTurnDelayMs(index),
-        text: buildAgentReply(agent, directive, {
-          network,
-          lead,
-          reviewer,
-          intent: intentById.get(intent.id),
-          isLead: lead?.id === agent.id,
-          meetingType: protocol.id,
-          language,
-        }),
+        text,
+        replyToTurnId: index === 0 ? sourceTurnId : responseIds[index - 1],
+        targetSpeakerId: previousIntent?.id || (sourceTurnId ? 'director' : null),
+        addressedAgentIds: previousIntent ? [previousIntent.id] : [],
+        interactionIntent,
+        topicId: context.topicId || `${context.projectId || 'meeting'}_topic`,
+        exchangeIndex: index,
       };
     }),
   };
@@ -1430,8 +1487,8 @@ function buildManagementEvents({ network, project = {}, cadence = 'hourly', lang
           taskIds: ownedTasks.map((task) => task.id).filter(Boolean).slice(0, 3),
           channel: 'team-management',
           text: currentLanguage === 'zh'
-            ? `${lead.name}：@${managedAgent.name} 管理检查：当前有 ${ownedTasks.length} 个开放任务。${blockedCount ? `${blockedCount} 个阻塞需要升级；` : ''}请在下一次 ${cadence} 脉冲前确认下一项产物和时间线证据。`
-            : `${lead.name}: @${managedAgent.name} management check-in for ${ownedTasks.length} open task${ownedTasks.length === 1 ? '' : 's'}. ${blockedCount ? `${blockedCount} blocker${blockedCount === 1 ? '' : 's'} need escalation; ` : ''}confirm next artifact and timeline proof before the next ${cadence} pulse.`,
+            ? `${lead.name}：@${managedAgent.name}，你目前有 ${ownedTasks.length} 项工作待完成。${blockedCount ? `其中 ${blockedCount} 项遇到阻碍，请直接说明需要什么帮助；` : ''}请确认下一项要交付的结果和预计完成时间。`
+            : `${lead.name}: @${managedAgent.name}, you have ${ownedTasks.length} open task${ownedTasks.length === 1 ? '' : 's'}. ${blockedCount ? `${blockedCount} blocker${blockedCount === 1 ? '' : 's'} need help; ` : ''}please confirm the next result and when you expect to finish it.`,
         });
       });
   }
@@ -1448,8 +1505,8 @@ function buildManagementEvents({ network, project = {}, cadence = 'hourly', lang
       taskIds: evidencedTasks.map((task) => task.id).filter(Boolean),
       channel: 'evidence-review',
       text: currentLanguage === 'zh'
-        ? `${reviewer.name}：@${lead.name} 复核扫描已启动。我正在检查 ${evidencedTasks.length || '当前'} 条证据线，确认分配证据、负责人确认和时间线连续性。`
-        : `${reviewer.name}: @${lead.name} review sweep is active. I am checking ${evidencedTasks.length || 'the current'} evidence thread${evidencedTasks.length === 1 ? '' : 's'} for assignment proof, owner acknowledgement, and timeline continuity.`,
+        ? `${reviewer.name}：@${lead.name}，我正在复核 ${evidencedTasks.length || '当前'} 项工作，重点检查任务是否明确、负责人是否确认，以及结果是否完整。`
+        : `${reviewer.name}: @${lead.name}, I am reviewing ${evidencedTasks.length || 'the current'} item${evidencedTasks.length === 1 ? '' : 's'} for clear ownership, confirmation, and a complete result.`,
     });
   }
 
@@ -1698,7 +1755,6 @@ export function advanceAutonomousProjectCycle({
   const currentLanguage = normalizeLanguage(language);
   const t = createTranslator(currentLanguage);
   const cycle = planAutonomousWorkCycle({ team, project, cadence, messages, now, language: currentLanguage });
-  const progressDelta = cadence === 'daily' ? 4 : 1;
   const publishEvents = cycle.events.filter((event) => event.text);
   const cycleId = `cycle_${cadence}_${Date.parse(now) || Date.now()}`;
   const intervalMs = intervalMsForCadence(cadence);
@@ -1732,8 +1788,6 @@ export function advanceAutonomousProjectCycle({
       professionalSkill: event.professionalSkill || null,
     };
   });
-  const completedTaskLogs = [];
-  const completionThreshold = cadence === 'daily' ? 1 : 3;
   const nextTasks = (project.tasks || []).map((task) => {
     if (task.status === 'done') return task;
     const ownerPlan = cycle.agentPlans.find((plan) => plan.name === task.assignee || plan.agentId === task.assignee);
@@ -1741,34 +1795,18 @@ export function advanceAutonomousProjectCycle({
     const workPulseCount = (task.workPulseCount || 0) + (ownerPlan.publish ? 1 : 0);
     const nextStatus = ownerPlan.obligations.length
       ? 'blocked'
-      : workPulseCount >= completionThreshold
-        ? 'done'
-        : task.status === 'pending'
-          ? 'in-progress'
-          : task.status;
-    if (nextStatus === 'done' && task.status !== 'done') {
-      completedTaskLogs.push({
-        id: `${cycleId}_task_${task.id || completedTaskLogs.length}`,
-        time: now,
-        agent: ownerPlan.name,
-        agentId: ownerPlan.agentId,
-        log: currentLanguage === 'zh'
-          ? `${ownerPlan.name} 完成了“${task.text}”，并把结果发布到项目时间线。`
-          : `${ownerPlan.name} completed "${task.text}" and published the result to the project timeline.`,
-        cadence,
-        eventType: 'task-completed',
-        taskId: task.id || null,
-      });
-    }
+      : task.status === 'pending'
+        ? 'in-progress'
+        : task.status;
     return {
       ...task,
       status: nextStatus,
       lastTouchedAt: now,
       workPulseCount,
-      completedAt: nextStatus === 'done' ? now : task.completedAt,
+      completedAt: task.completedAt,
     };
   });
-  const combinedLogs = [...completedTaskLogs, ...nextLogs];
+  const combinedLogs = nextLogs;
   const nextAgentStates = updateAgentStates({
     project,
     cycle,
@@ -1783,7 +1821,7 @@ export function advanceAutonomousProjectCycle({
   });
   const nextProjectState = {
     ...project,
-    progress: Math.min(100, (project.progress || 0) + (publishEvents.length ? progressDelta : 0) + (completedTaskLogs.length * 2)),
+    progress: project.progress || 0,
     tasks: nextTasks,
     logs: [...combinedLogs, ...(project.logs || [])],
     agentStates: nextAgentStates,
@@ -1853,7 +1891,7 @@ export function advanceAutonomousProjectCycle({
   return {
     cycle: {
       ...cycle,
-      taskCompletionEvents: completedTaskLogs,
+      taskCompletionEvents: [],
       agentStates: nextAgentStates,
     },
     project: projectWithLedger,
@@ -2350,19 +2388,217 @@ export function createKickoffRoleNegotiation(team = [], projectBrief = '', conte
   };
 }
 
+function leaderWorkPlanLanguage(project = {}, tasks = []) {
+  const configuredLanguage = String(project.language || project.projectSettings?.language || '').toLowerCase();
+  if (configuredLanguage === 'zh' || configuredLanguage === 'en') return configuredLanguage;
+  if (configuredLanguage !== 'inherit') {
+    const effectiveLanguage = String(project.effectiveLanguage || '').toLowerCase();
+    if (effectiveLanguage === 'zh' || effectiveLanguage === 'en') return effectiveLanguage;
+  }
+  const languageSignal = [
+    project.name,
+    project.brief,
+    project.objective,
+    project.currentObjective,
+    ...tasks.flatMap((task) => [task.text, task.title, task.label]),
+  ].filter(Boolean).join(' ');
+  return /[\u3400-\u9fff]/u.test(languageSignal) ? 'zh' : 'en';
+}
+
+function leaderGeneratedTaskText({ project = {}, assignee = {}, leader = {}, language = 'en' } = {}) {
+  const currentLanguage = normalizeLanguage(language);
+  return describeTaskAsset({ project, agent: { ...assignee, isLeader: assignee.id === leader?.id || assignee.isLeader }, language: currentLanguage }).taskText;
+}
+
+function isGenericKickoffPlaceholder(task = {}) {
+  if (task.status === 'done' || task.source !== 'kickoff-leader-assignment') return false;
+  return /^(将立项共识转化为首个执行产物|准备第一份项目报告格式|审批后发布第一包时间线证据|turn kickoff consensus into the first execution artifact|prepare the first project report format|publish the first timeline evidence package after approval)$/i
+    .test(String(task.text || task.title || task.label || '').trim());
+}
+
+function leaderWorkDefinition({ project = {}, task = {}, assignee = {}, leader = {}, language = 'en' } = {}) {
+  const currentLanguage = normalizeLanguage(language);
+  const role = assignee.role || assignee.title || assignee.skill || (currentLanguage === 'zh' ? '项目成员' : 'project team member');
+  const descriptor = describeTaskAsset({
+    project,
+    task,
+    agent: { ...assignee, isLeader: assignee.id === leader?.id || assignee.isLeader },
+    language: currentLanguage,
+  });
+  return {
+    schemaVersion: 'leader-work-definition/v1',
+    language: currentLanguage,
+    outcome: descriptor.taskText,
+    role,
+    deliverable: descriptor.title,
+    artifactTitle: descriptor.title,
+    artifactPurpose: descriptor.purpose,
+    artifactFileName: descriptor.fileName,
+    finalOutcomeTitle: descriptor.finalOutcomeTitle,
+    approach: currentLanguage === 'zh'
+      ? [`先明确《${descriptor.title}》要解决的问题和读者。`, `持续更新工作区中的 ${descriptor.fileName}。`, '内容完整后交给指定审阅人，按意见修改。']
+      : [`Clarify the reader and decision served by “${descriptor.title}”.`, `Keep ${descriptor.fileName} materially updated in the workspace.`, 'Hand it to the assigned reviewer and revise from feedback.'],
+    acceptanceCriteria: currentLanguage === 'zh'
+      ? [`工作区中存在可打开的 ${descriptor.fileName}。`, descriptor.purpose, '审阅人已明确给出通过结论，或逐条列出必须修改的内容。']
+      : [`${descriptor.fileName} exists and can be opened in the workspace.`, descriptor.purpose, 'The reviewer has accepted it or listed concrete required changes.'],
+    steps: currentLanguage === 'zh'
+      ? [`建立 ${descriptor.fileName}`, '补齐正文与依据', '提交审阅并完成修改']
+      : [`Create ${descriptor.fileName}`, 'Complete its content and support', 'Submit for review and resolve feedback'],
+    projectId: project.id || null,
+    leaderId: leader?.id || null,
+  };
+}
+
+export function buildLeaderTodos({ task = {}, leaderId = null, now = nowIso() } = {}) {
+  const steps = Array.isArray(task.workDefinition?.steps) ? task.workDefinition.steps : [];
+  const workPulseCount = Math.max(0, Number(task.workPulseCount) || 0);
+  const completed = /^(done|completed|complete|cancelled)$/i.test(String(task.status || ''));
+  const activeIndex = completed ? -1 : Math.min(Math.max(0, workPulseCount - 1), Math.max(0, steps.length - 1));
+  return steps.map((text, index) => ({
+    id: `${task.id || 'task'}_leader_todo_${index + 1}`,
+    text,
+    status: completed
+      ? 'completed'
+      : index < activeIndex
+        ? 'completed'
+        : index === activeIndex
+          ? 'in-progress'
+          : 'pending',
+    order: index + 1,
+    setBy: leaderId || task.deadlineSetBy || task.assignedBy || null,
+    setAt: task.deadlineSetAt || now,
+    dueAt: task.dueAt || null,
+  }));
+}
+
+export function createLeaderManagedTaskPlan({ project = {}, leaderId, now = nowIso() } = {}) {
+  const team = project.team || [];
+  const leader = team.find((agent) => agent.id === leaderId || agent.name === leaderId)
+    || team.find((agent) => agent.isLeader)
+    || team[0];
+  const sourceTasks = (project.tasks || []).map((task) => ({ ...task }));
+  const currentLanguage = leaderWorkPlanLanguage(project, sourceTasks);
+  const assignmentCounts = new Map(team.map((agent) => [agent.id, 0]));
+  const memberByReference = (value) => team.find((agent) => agent.id === value || agent.name === value) || null;
+  const leastAssigned = () => [...team].sort((a, b) => (
+    (assignmentCounts.get(a.id) || 0) - (assignmentCounts.get(b.id) || 0)
+    || Number(a.id === leader?.id) - Number(b.id === leader?.id)
+  ))[0] || leader;
+  const normalizedTasks = sourceTasks.map((task) => {
+    const requested = memberByReference(task.ownerId || task.assignee);
+    const requestedCount = requested ? assignmentCounts.get(requested.id) || 0 : 0;
+    const assignee = requested && (task.status === 'done' || requested.id !== leader?.id || requestedCount === 0)
+      ? requested
+      : leastAssigned();
+    if (task.status !== 'done') {
+      assignmentCounts.set(assignee?.id, (assignmentCounts.get(assignee?.id) || 0) + 1);
+    }
+    return { task, assignee };
+  });
+  const projectIsComplete = /^(done|completed|complete|archived)$/i.test(String(project.status || ''));
+  const hasConfirmedDeliverableContract = project.deliverableResolution?.schemaVersion === 'kickoff-deliverable-resolution/v1'
+    && project.deliverableResolution.managerConfirmed === true;
+  if (!projectIsComplete && !hasConfirmedDeliverableContract) team.forEach((agent) => {
+    if ((assignmentCounts.get(agent.id) || 0) > 0) return;
+    normalizedTasks.push({
+      task: {
+        id: `leader_work_${project.id || 'project'}_${agent.id}`,
+        text: leaderGeneratedTaskText({ project, assignee: agent, leader, language: currentLanguage }),
+        status: 'pending',
+        source: 'leader-work-plan',
+      },
+      assignee: agent,
+    });
+    assignmentCounts.set(agent.id, 1);
+  });
+  const nowMs = Date.parse(now) || Date.now();
+  const tasks = normalizedTasks.map(({ task, assignee }, index) => {
+    const normalizedTask = task.source === 'leader-work-plan' || isGenericKickoffPlaceholder(task)
+      ? { ...task, text: leaderGeneratedTaskText({ project, assignee, leader, language: currentLanguage }) }
+      : task;
+    const requestedDueAt = Date.parse(task.dueAt || '');
+    const completedAt = Date.parse(task.completedAt || '');
+    const dueAt = task.status === 'done' && Number.isFinite(completedAt)
+      ? new Date(completedAt).toISOString()
+      : Number.isFinite(requestedDueAt) && requestedDueAt > nowMs
+        ? new Date(requestedDueAt).toISOString()
+        : new Date(nowMs + (24 + index * 6) * 60 * 60 * 1000).toISOString();
+    const workDefinition = normalizedTask.workDefinition?.schemaVersion === 'leader-work-definition/v1'
+      && normalizedTask.workDefinition.language === currentLanguage
+      && normalizedTask.workDefinition.outcome === (normalizedTask.text || normalizedTask.title || normalizedTask.label)
+      && normalizedTask.workDefinition.artifactTitle
+      && normalizedTask.workDefinition.artifactPurpose
+      && normalizedTask.workDefinition.artifactFileName
+      ? normalizedTask.workDefinition
+      : leaderWorkDefinition({ project, task: normalizedTask, assignee, leader, language: currentLanguage });
+    const governedWorkMode = project.workModeContract?.schemaVersion === 'super-agent-work-mode-team/v1';
+    const requestedReviewer = team.find((agent) => agent.id === normalizedTask.reviewerId || agent.name === normalizedTask.reviewerId);
+    const reviewer = requestedReviewer && requestedReviewer.id !== assignee?.id
+      ? requestedReviewer
+      : team.find((agent) => agent.id !== assignee?.id && agent.id !== leader?.id)
+        || team.find((agent) => agent.id !== assignee?.id)
+        || null;
+    const governedTask = {
+      ...normalizedTask,
+      assignee: assignee?.name || task.assignee,
+      ownerId: assignee?.id || task.ownerId || null,
+      ownerName: assignee?.name || task.ownerName || null,
+      assignedBy: leader?.id || task.assignedBy || null,
+      deadlineSetBy: leader?.id || task.deadlineSetBy || null,
+      deadlineSetAt: task.deadlineSetAt || now,
+      dueAt,
+      workDefinition,
+      requiredWorkPulses: Math.max(2, workDefinition.steps?.length || 2),
+      ...(governedWorkMode ? {
+        dependsOn: Array.isArray(normalizedTask.dependsOn) ? normalizedTask.dependsOn : [],
+        reviewerId: reviewer?.id || normalizedTask.reviewerId || null,
+      } : {}),
+    };
+    governedTask.outcomeWorkContract = normalizeOutcomeWorkContract({
+      project,
+      task: governedTask,
+      agent: assignee || {},
+    });
+    return {
+      ...governedTask,
+      leaderTodos: buildLeaderTodos({ task: governedTask, leaderId: leader?.id, now }),
+    };
+  });
+  return {
+    schemaVersion: 'leader-managed-task-plan/v1',
+    projectId: project.id || null,
+    leaderId: leader?.id || null,
+    leaderName: leader?.name || null,
+    createdAt: now,
+    tasks,
+    coverage: {
+      agentCount: team.length,
+      assignedAgentCount: new Set(tasks.filter((task) => task.status !== 'done').map((task) => task.ownerId).filter(Boolean)).size,
+      taskCount: tasks.length,
+    },
+  };
+}
+
 export function createLeaderAssignmentPackage({ project = {}, leaderId, now = nowIso() }) {
   const team = project.team || [];
   const leader = team.find((agent) => agent.id === leaderId || agent.name === leaderId)
     || team.find((agent) => agent.isLeader)
     || team[0];
-  const members = team.filter((agent) => agent.id !== leader?.id);
-  const tasks = project.tasks || [];
+  const plan = createLeaderManagedTaskPlan({ project, leaderId: leader?.id, now });
+  const tasks = plan.tasks;
+  const originalTaskById = new Map((project.tasks || []).map((task) => [task.id, task]));
 
   const assignmentMessages = attachReceiptsToMessages(tasks
-    .filter((task) => task.status !== 'done')
+    .filter((task) => {
+      if (task.status === 'done') return false;
+      const originalTask = originalTaskById.get(task.id);
+      return !originalTask
+        || originalTask.ownerId !== task.ownerId
+        || !originalTask.assignmentMessageId
+        || !originalTask.acknowledgementMessageId;
+    })
     .map((task, index) => {
-      const assignee = team.find((agent) => agent.name === task.assignee || agent.id === task.assignee)
-        || members[index % Math.max(1, members.length)]
+      const assignee = team.find((agent) => agent.name === task.assignee || agent.id === task.ownerId)
         || leader;
       return {
         id: `assign_${Date.parse(now) || Date.now()}_${task.id || index}`,
@@ -2371,7 +2607,7 @@ export function createLeaderAssignmentPackage({ project = {}, leaderId, now = no
         author: leader?.name || 'Leader',
         role: leader?.role || 'Leader',
         time: 'Now',
-        text: `@${assignee?.name || 'team'} please take ownership of "${task.text}". Report progress in the work stream and push every meaningful update to the timeline.`,
+        text: `@${assignee?.name || 'team'} please take ownership of "${task.text}". Deliver ${task.workDefinition?.deliverable || 'the formal work product'} by ${task.dueAt}. Follow the Leader work definition, report material progress, and publish only reviewable work to the timeline.`,
         targets: [assignee?.name || assignee?.id].filter(Boolean),
         weight: 'Assigned',
         assignment: {
@@ -2379,6 +2615,8 @@ export function createLeaderAssignmentPackage({ project = {}, leaderId, now = no
           ownerId: assignee?.id || null,
           ownerName: assignee?.name || null,
           assignedBy: leader?.id || null,
+          dueAt: task.dueAt,
+          workDefinition: task.workDefinition,
         },
       };
     }), team, { seenAt: now });
@@ -2446,8 +2684,7 @@ export function createLeaderAssignmentPackage({ project = {}, leaderId, now = no
     ledgerEvents: ledgerEventsFromLogs([...assignmentLogs, ...acknowledgementLogs], 'kickoff-leader-assignment'),
     tasks: tasks.map((task, index) => {
       if (task.status === 'done') return task;
-      const assignee = team.find((agent) => agent.name === task.assignee || agent.id === task.assignee)
-        || members[index % Math.max(1, members.length)]
+      const assignee = team.find((agent) => agent.name === task.assignee || agent.id === task.ownerId)
         || leader;
       const evidence = assignmentEvidenceByTaskId.get(task.id) || {};
       return {
@@ -2455,7 +2692,7 @@ export function createLeaderAssignmentPackage({ project = {}, leaderId, now = no
         assignee: assignee?.name || task.assignee,
         ownerId: assignee?.id || task.ownerId || null,
         assignedBy: leader?.id || task.assignedBy || null,
-        assignedAt: now,
+        assignedAt: evidence.assignmentMessageId ? now : task.assignedAt || now,
         source: task.source || 'kickoff-leader-assignment',
         sourceChannelId: task.sourceChannelId || 'main',
         assignmentMessageId: evidence.assignmentMessageId || task.assignmentMessageId || null,
@@ -2468,6 +2705,7 @@ export function createLeaderAssignmentPackage({ project = {}, leaderId, now = no
         status: task.status === 'pending' ? 'in-progress' : task.status,
       };
     }),
+    plan,
   };
 }
 
@@ -3022,13 +3260,23 @@ export function createKickoffCharter({
       role: agent.role || agent.title || 'Agent',
       isLeader: Boolean(agent.isLeader || agent.id === leader?.id),
     })),
-    nextActions: (assignmentPackage.tasks || project.tasks || []).map((task) => ({
+    nextActions: (project.initiation?.nextActionResolution?.tasks || assignmentPackage.tasks || project.tasks || []).map((task) => ({
       id: task.id,
       text: task.text,
       ownerId: task.ownerId || team.find((agent) => agent.name === task.assignee)?.id || null,
       ownerName: task.assignee || null,
       status: task.status || 'pending',
       assignedBy: task.assignedBy || leader?.id || null,
+    })),
+    deliverables: (project.deliverableResolution?.deliverables || project.initiation?.deliverableResolution?.deliverables || []).map((deliverable) => ({
+      id: deliverable.id,
+      title: deliverable.title,
+      fileName: deliverable.fileName,
+      formatLabel: deliverable.formatLabel,
+      ownerId: deliverable.ownerId,
+      ownerName: deliverable.ownerName,
+      purpose: deliverable.purpose,
+      acceptanceCriteria: deliverable.acceptanceCriteria || [],
     })),
     communicationRules: [
       'Leader assigns work in group chat with @mentions.',
@@ -3042,6 +3290,7 @@ export function createKickoffCharter({
       leaderCampaignIds: (leaderElection.transcript || []).map((item) => item.id),
       assignmentMessageIds: assignments.map((message) => message.id),
       acknowledgementMessageIds: acknowledgements.map((message) => message.id),
+      deliverableIds: project.deliverableResolution?.deliverableIds || project.initiation?.deliverableResolution?.deliverableIds || [],
       briefHearingEdges: [{
         speakerId: 'director',
         hears: team.map((agent) => agent.id),
@@ -3107,6 +3356,7 @@ export function createKickoffCharter({
       ...(charter.evidence.leaderCampaignIds || []),
       ...(charter.evidence.assignmentMessageIds || []),
       ...(charter.evidence.acknowledgementMessageIds || []),
+      ...(charter.evidence.deliverableIds || []),
     ],
     entityIds: { leaderId: leader?.id || null, reviewerId: reviewer?.id || null },
     payload: {
@@ -3448,7 +3698,7 @@ export function handleFeatureChangeRequest({
         explanation: reading.explanation,
         obligationCount: reading.obligations.length,
       })),
-    }, currentLanguage),
+    }, currentLanguage, [text]),
     project: projectWithDiscussionDelivery,
   };
 }

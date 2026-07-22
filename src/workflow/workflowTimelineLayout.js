@@ -1,7 +1,28 @@
 import { workflowNodeTimeBucket } from './workflowNodeProtocol.js';
 
 const importanceRank = { minor: 0, normal: 1, major: 2, critical: 3 };
-const MAX_COLLISION_SLOTS = 8;
+const timePixelsPerMinute = { month: 0.45, week: 1.5, day: 6, hour: 24 };
+const timeDensityAnchors = [
+  { density: 0.36, pixelsPerMinute: 0.2 },
+  { density: 0.68, pixelsPerMinute: 0.45 },
+  { density: 0.88, pixelsPerMinute: 1.5 },
+  { density: 1, pixelsPerMinute: 3.4 },
+  { density: 1.2, pixelsPerMinute: 6 },
+  { density: 1.68, pixelsPerMinute: 24 },
+  { density: 2.2, pixelsPerMinute: 64 },
+];
+
+export function timelinePixelsPerMinuteForDensity(value = 1) {
+  const density = Math.min(2.2, Math.max(0.36, Number(value) || 1));
+  const upperIndex = timeDensityAnchors.findIndex(anchor => anchor.density >= density);
+  if (upperIndex <= 0) return timeDensityAnchors[0].pixelsPerMinute;
+  const upper = timeDensityAnchors[upperIndex];
+  const lower = timeDensityAnchors[upperIndex - 1];
+  const progress = (density - lower.density) / (upper.density - lower.density);
+  const lowerLog = Math.log(lower.pixelsPerMinute);
+  const upperLog = Math.log(upper.pixelsPerMinute);
+  return Math.exp(lowerLog + (upperLog - lowerLog) * progress);
+}
 
 function unique(values) {
   return Array.from(new Set((values || []).filter(Boolean).map(value => String(value))));
@@ -30,7 +51,7 @@ export function buildWorkflowTimelineDisplayNodes({ nodes = [], scale = 'day' } 
   });
   const memberToDisplayId = new Map();
 
-  if (scale === 'hour') {
+  if (['month', 'week', 'day', 'hour'].includes(scale)) {
     const displayNodes = sortedNodes.map((node) => {
       const displayNode = {
         ...node,
@@ -119,25 +140,69 @@ function isoTickLabels(value) {
   };
 }
 
-export function planWorkflowTimelineLayout({ nodes = [], scale = 'day', detail = 'medium' } = {}) {
+function adaptiveTimeTicks(columns, { minimumTime, pixelsPerMillisecond }) {
+  if (columns.length <= 12) {
+    return columns.map(column => ({
+      key: column.key,
+      x: column.centerX,
+      count: column.count,
+      ...isoTickLabels(column.key),
+    }));
+  }
+  const parsedTimes = columns.map(column => Date.parse(column.key)).filter(Number.isFinite);
+  const maximumTime = parsedTimes.length ? Math.max(...parsedTimes) : minimumTime;
+  const span = Math.max(0, maximumTime - minimumTime);
+  const minimumStep = Math.max(180 / pixelsPerMillisecond, span / 23);
+  const minute = 60_000;
+  const candidates = [
+    minute, 5 * minute, 15 * minute, 30 * minute,
+    60 * minute, 3 * 60 * minute, 6 * 60 * minute, 12 * 60 * minute,
+    24 * 60 * minute, 2 * 24 * 60 * minute, 7 * 24 * 60 * minute,
+    14 * 24 * 60 * minute, 30 * 24 * 60 * minute, 90 * 24 * 60 * minute,
+    365 * 24 * 60 * minute,
+  ];
+  const step = candidates.find(candidate => candidate >= minimumStep) || candidates.at(-1);
+  const buckets = new Map();
+  columns.forEach((column) => {
+    const parsedTime = Date.parse(column.key);
+    const bucketTime = Number.isFinite(parsedTime)
+      ? minimumTime + Math.floor((parsedTime - minimumTime) / step) * step
+      : minimumTime;
+    buckets.set(bucketTime, (buckets.get(bucketTime) || 0) + column.count);
+  });
+  return [...buckets.entries()].map(([time, count]) => {
+    const key = new Date(time).toISOString();
+    return {
+      key,
+      x: columns[0].centerX + (time - minimumTime) * pixelsPerMillisecond,
+      count,
+      ...isoTickLabels(key),
+    };
+  });
+}
+
+export function planWorkflowTimelineLayout({
+  nodes = [],
+  scale = 'day',
+  detail = 'medium',
+  timeDensity,
+  viewportHeight = 920,
+  expandedOverflowGroupId = null,
+  pinnedNodeIds = [],
+} = {}) {
   const { width: nodeWidth, height: nodeHeight } = nodeDimensions(detail);
   const rowGap = detail === 'compact' ? 14 : 18;
   const nodeGap = detail === 'compact' ? 14 : 18;
   const timeGap = detail === 'expanded' ? 104 : detail === 'medium' ? 92 : 80;
   const axisGap = 40;
-  const xOffset = 160;
-  const halfSlotCount = MAX_COLLISION_SLOTS / 2;
-  const axisHalfHeight = axisGap + halfSlotCount * nodeHeight + (halfSlotCount - 1) * rowGap + 60;
-  const timeAxisY = axisHalfHeight;
-  const collisionSlotYs = Array.from({ length: halfSlotCount }, (_, layer) => {
-    const above = timeAxisY - axisGap - nodeHeight - layer * (nodeHeight + rowGap);
-    const below = timeAxisY + axisGap + layer * (nodeHeight + rowGap);
-    return [above, below];
-  }).flat();
+  const horizontalStride = nodeWidth + nodeGap;
+  const xOffset = 160 + nodeWidth / 2 + horizontalStride;
 
   const groupedByTime = new Map();
   nodes.forEach((node) => {
-    const key = node.timeBucket || workflowNodeTimeBucket(node, scale);
+    const rawTime = node.time || node.submittedAt || node.createdAt || node.updatedAt;
+    const parsedTime = Date.parse(rawTime);
+    const key = Number.isFinite(parsedTime) ? new Date(parsedTime).toISOString() : String(rawTime || node.id || 'unscheduled');
     if (!groupedByTime.has(key)) groupedByTime.set(key, []);
     groupedByTime.get(key).push(node);
   });
@@ -153,71 +218,254 @@ export function planWorkflowTimelineLayout({ nodes = [], scale = 'day', detail =
     }))
     .sort((a, b) => (Date.parse(a.key) || 0) - (Date.parse(b.key) || 0) || a.key.localeCompare(b.key));
 
-  let columnCursor = xOffset;
+  const parsedColumnTimes = columns.map(column => Date.parse(column.key)).filter(Number.isFinite);
+  const minimumTime = parsedColumnTimes.length ? Math.min(...parsedColumnTimes) : 0;
+  const pixelsPerMinute = Number.isFinite(Number(timeDensity))
+    ? timelinePixelsPerMinuteForDensity(timeDensity)
+    : (timePixelsPerMinute[scale] || timePixelsPerMinute.day);
+  const pixelsPerMillisecond = pixelsPerMinute / 60_000;
+  let fallbackColumnCursor = xOffset;
   const timeColumnLayouts = columns.map((column) => {
-    const stackColumns = Math.max(1, Math.ceil(column.nodes.length / MAX_COLLISION_SLOTS));
-    const width = stackColumns * nodeWidth + Math.max(0, stackColumns - 1) * nodeGap;
+    const parsedTime = Date.parse(column.key);
+    const centerX = Number.isFinite(parsedTime)
+      ? xOffset + (parsedTime - minimumTime) * pixelsPerMillisecond
+      : fallbackColumnCursor;
     const layout = {
       ...column,
-      x: columnCursor,
-      width,
-      centerX: columnCursor + width / 2,
+      x: centerX - nodeWidth / 2,
+      width: nodeWidth,
+      centerX,
       count: column.nodes.reduce((sum, node) => sum + (node.clusterCount || 1), 0),
     };
-    columnCursor += width + timeGap;
+    fallbackColumnCursor = Math.max(fallbackColumnCursor, layout.x + nodeWidth + timeGap);
     return layout;
   });
 
+  const columnByNodeId = new Map(timeColumnLayouts.flatMap(column => (
+    column.nodes.map(node => [node.id, column])
+  )));
+  const resolvedViewportHeight = Number.isFinite(Number(viewportHeight)) && Number(viewportHeight) >= 320
+    ? Number(viewportHeight)
+    : 920;
+  const verticalPadding = 12;
+  const maxRowsPerSide = Math.max(1, Math.min(3, Math.floor(
+    (resolvedViewportHeight / 2 - verticalPadding - axisGap + rowGap) / (nodeHeight + rowGap),
+  )));
+  const maximumSlots = maxRowsPerSide * 2;
+  const pinnedIds = new Set((pinnedNodeIds || []).filter(Boolean).map(String));
+  const placementPriority = (expandedIds = new Set()) => [...nodes].sort((a, b) => (
+    Number(expandedIds.has(String(b.id))) - Number(expandedIds.has(String(a.id)))
+    || Number(pinnedIds.has(String(b.id))) - Number(pinnedIds.has(String(a.id)))
+    || (a.semanticLevel ?? 2) - (b.semanticLevel ?? 2)
+    || (importanceRank[b.importance] || 0) - (importanceRank[a.importance] || 0)
+    || (Date.parse(a.time) || 0) - (Date.parse(b.time) || 0)
+    || (a.sequence || 0) - (b.sequence || 0)
+    || String(a.id).localeCompare(String(b.id))
+  ));
+  const horizontalOffsets = (expanded, expandedSteps) => {
+    const offsets = [0, horizontalStride, -horizontalStride];
+    if (expanded) {
+      for (let step = 2; step <= expandedSteps; step += 1) offsets.push(step * horizontalStride);
+    }
+    return offsets;
+  };
+  const placeNodes = ({ expandedIds = new Set(), expandedSteps = 1 } = {}) => {
+    const slotIntervals = Array.from({ length: maximumSlots }, () => []);
+    const placements = new Map();
+    const hiddenNodes = [];
+    placementPriority(expandedIds).forEach((node) => {
+      const column = columnByNodeId.get(node.id);
+      if (!column) return;
+      let placement = null;
+      for (const offset of horizontalOffsets(expandedIds.has(String(node.id)), expandedSteps)) {
+        const left = column.centerX - nodeWidth / 2 + offset;
+        const right = left + nodeWidth;
+        const collisionSlot = slotIntervals.findIndex(intervals => intervals.every(interval => (
+          right + nodeGap <= interval.left || left >= interval.right + nodeGap
+        )));
+        if (collisionSlot === -1) continue;
+        placement = { collisionSlot, left };
+        slotIntervals[collisionSlot].push({ left, right });
+        break;
+      }
+      if (placement) placements.set(node.id, placement);
+      else hiddenNodes.push(node);
+    });
+    return { hiddenNodes, placements };
+  };
+  const overflowGroupsFor = (hiddenNodes, timeAxisY) => {
+    const hiddenEntries = hiddenNodes.map(node => ({
+      node,
+      anchorX: columnByNodeId.get(node.id)?.centerX ?? xOffset,
+    })).sort((a, b) => a.anchorX - b.anchorX || String(a.node.id).localeCompare(String(b.node.id)));
+    const groups = [];
+    hiddenEntries.forEach((entry) => {
+      const latestGroup = groups.at(-1);
+      if (!latestGroup || entry.anchorX - latestGroup.lastAnchorX > horizontalStride) {
+        groups.push({ entries: [entry], lastAnchorX: entry.anchorX });
+        return;
+      }
+      latestGroup.entries.push(entry);
+      latestGroup.lastAnchorX = entry.anchorX;
+    });
+    return groups.map(({ entries }) => {
+      const first = entries[0];
+      const last = entries.at(-1);
+      const timeAnchorX = entries.reduce((sum, entry) => sum + entry.anchorX, 0) / entries.length;
+      const nodeIds = entries.map(entry => entry.node.id);
+      return {
+        id: `timeline-overflow-${safeClusterId(first.node.id)}-${safeClusterId(last.node.id)}`,
+        count: nodeIds.length,
+        nodeIds,
+        timeAnchorX,
+        timeStart: first.node.time,
+        timeEnd: last.node.time,
+        x: timeAnchorX - 48,
+        y: timeAxisY - 14,
+        w: 96,
+        h: 28,
+        expanded: false,
+      };
+    });
+  };
+  const branchHeight = depth => depth > 0 ? depth * nodeHeight + (depth - 1) * rowGap : 0;
+  const timeAxisY = verticalPadding + branchHeight(maxRowsPerSide) + axisGap;
+  const basePlacement = placeNodes();
+  const baseOverflowGroups = overflowGroupsFor(basePlacement.hiddenNodes, timeAxisY);
+  const expandedOverflowGroup = baseOverflowGroups.find(group => group.id === expandedOverflowGroupId) || null;
+  const expandedIds = new Set(expandedOverflowGroup?.nodeIds.map(String) || []);
+  const finalPlacement = expandedOverflowGroup
+    ? placeNodes({ expandedIds, expandedSteps: Math.max(2, expandedOverflowGroup.count) })
+    : basePlacement;
+  const currentOverflowGroups = overflowGroupsFor(finalPlacement.hiddenNodes, timeAxisY)
+    .filter(group => !group.nodeIds.some(nodeId => expandedIds.has(String(nodeId))));
+  const overflowGroups = expandedOverflowGroup
+    ? [...currentOverflowGroups, { ...expandedOverflowGroup, expanded: true }]
+    : currentOverflowGroups;
+
   const nodeLayout = {};
   timeColumnLayouts.forEach((column, timeColumnIndex) => {
-    column.nodes.forEach((node, nodeIndex) => {
-      const stackColumn = Math.floor(nodeIndex / MAX_COLLISION_SLOTS);
-      const baseSlot = nodeIndex % MAX_COLLISION_SLOTS;
-      const collisionSlot = timeColumnIndex % 2 === 0
-        ? baseSlot
-        : (baseSlot % 2 === 0 ? baseSlot + 1 : baseSlot - 1);
+    column.nodes.forEach((node) => {
+      const placement = finalPlacement.placements.get(node.id);
+      if (!placement) return;
+      const { collisionSlot, left } = placement;
+      const branchDepth = Math.floor(collisionSlot / 2) + 1;
+      const branchSide = collisionSlot % 2 === 0 ? 'above' : 'below';
+      const y = branchSide === 'above'
+        ? timeAxisY - axisGap - nodeHeight - (branchDepth - 1) * (nodeHeight + rowGap)
+        : timeAxisY + axisGap + (branchDepth - 1) * (nodeHeight + rowGap);
       nodeLayout[node.id] = {
         nodeId: node.id,
-        x: column.x + stackColumn * (nodeWidth + nodeGap),
-        y: collisionSlotYs[collisionSlot],
+        x: left,
+        y,
         w: nodeWidth,
         h: nodeHeight,
         timestamp: node.time,
         timeAnchorX: column.centerX,
+        branchDepth,
+        branchSide,
         collisionSlot,
         timeColumnIndex,
       };
     });
   });
 
-  const timeTicks = timeColumnLayouts.map((column) => ({
-    key: column.key,
-    x: column.centerX,
-    count: column.count,
-    ...isoTickLabels(column.key),
-  }));
-  const canvasW = Math.max(1280, columnCursor + 80);
-  const canvasH = Math.max(760, timeAxisY * 2);
+  const timeTicks = adaptiveTimeTicks(timeColumnLayouts, { minimumTime, pixelsPerMillisecond });
+  const canvasW = Math.max(
+    1280,
+    ...Object.values(nodeLayout).map(box => box.x + box.w + 80),
+    ...overflowGroups.map(group => group.x + group.w + 80),
+  );
+  const canvasH = Math.max(760, timeAxisY + axisGap + branchHeight(maxRowsPerSide) + verticalPadding);
+  const collisionSlotYs = [...new Set(Object.values(nodeLayout).map(box => box.y))].sort((a, b) => a - b);
 
   return {
     canvasH,
     canvasW,
     collisionSlotYs,
-    maxCollisionSlots: MAX_COLLISION_SLOTS,
+    expandedOverflowGroup,
+    maxCollisionSlots: maximumSlots,
+    maxRowsPerSide,
     nodeHeight,
     nodeLayout,
     nodeWidth,
+    overflowGroups,
     timeAxisY,
     timeColumnLayouts,
     timeTicks,
+    timeScale: { minimumTime, pixelsPerMillisecond },
     xOffset,
   };
+}
+
+export function timelineTimestampAtViewportX({ layout, panX = 0, viewportX = 0 } = {}) {
+  const timeScale = layout?.timeScale;
+  if (!Number.isFinite(timeScale?.minimumTime) || !Number.isFinite(timeScale?.pixelsPerMillisecond) || timeScale.pixelsPerMillisecond <= 0) return null;
+  return timeScale.minimumTime + ((viewportX - panX) - layout.xOffset) / timeScale.pixelsPerMillisecond;
+}
+
+export function timelinePanXForTimestamp({ layout, timestamp, viewportX = 0 } = {}) {
+  const timeScale = layout?.timeScale;
+  const parsedTimestamp = Number(timestamp);
+  if (!Number.isFinite(parsedTimestamp) || !Number.isFinite(timeScale?.minimumTime) || !Number.isFinite(timeScale?.pixelsPerMillisecond) || timeScale.pixelsPerMillisecond <= 0) return 0;
+  const worldX = layout.xOffset + (parsedTimestamp - timeScale.minimumTime) * timeScale.pixelsPerMillisecond;
+  return viewportX - worldX;
+}
+
+export function buildWorkflowTimelineCurvePath({ fromBox, toBox } = {}) {
+  if (!fromBox || !toBox) return null;
+  const fromCenterX = fromBox.x + fromBox.w / 2;
+  const toCenterX = toBox.x + toBox.w / 2;
+  const forward = toCenterX >= fromCenterX;
+  const sx = forward ? fromBox.x + fromBox.w : fromBox.x;
+  const sy = fromBox.y + fromBox.h / 2;
+  const ex = forward ? toBox.x : toBox.x + toBox.w;
+  const ey = toBox.y + toBox.h / 2;
+  const horizontalDistance = Math.abs(ex - sx);
+  const curveReach = Math.max(56, horizontalDistance * 0.42);
+  const direction = forward ? 1 : -1;
+  const c1x = sx + curveReach * direction;
+  const c2x = ex - curveReach * direction;
+  return { sx, sy, ex, ey, path: `M ${sx} ${sy} C ${c1x} ${sy}, ${c2x} ${ey}, ${ex} ${ey}` };
+}
+
+export function buildWorkflowTimelineStemPath({ box, timeAxisY } = {}) {
+  if (!box || !Number.isFinite(timeAxisY)) return null;
+  const sx = Number.isFinite(box.timeAnchorX) ? box.timeAnchorX : box.x + box.w / 2;
+  const sy = timeAxisY;
+  const ex = box.x + box.w / 2;
+  const ey = box.branchSide === 'below' ? box.y : box.y + box.h;
+  const verticalDistance = Math.abs(ey - sy);
+  const curveReach = Math.max(24, verticalDistance * 0.45);
+  const direction = ey >= sy ? 1 : -1;
+  const c1y = sy + curveReach * direction;
+  const c2y = ey - curveReach * direction;
+  return { sx, sy, ex, ey, path: `M ${sx} ${sy} C ${sx} ${c1y}, ${ex} ${c2y}, ${ex} ${ey}` };
 }
 
 export function preserveTimelineViewportAnchor({ worldPoint, viewportPoint, zoom }) {
   return {
     x: viewportPoint.x - worldPoint.x * zoom,
     y: viewportPoint.y - worldPoint.y * zoom,
+  };
+}
+
+export function reprojectTimelineWorldPoint({ worldPoint, fromLayout, toLayout } = {}) {
+  const fromScale = fromLayout?.timeScale;
+  const toScale = toLayout?.timeScale;
+  if (
+    !worldPoint
+    || !Number.isFinite(fromScale?.minimumTime)
+    || !Number.isFinite(fromScale?.pixelsPerMillisecond)
+    || fromScale.pixelsPerMillisecond <= 0
+    || !Number.isFinite(toScale?.minimumTime)
+    || !Number.isFinite(toScale?.pixelsPerMillisecond)
+    || toScale.pixelsPerMillisecond <= 0
+  ) return worldPoint;
+  const timestamp = fromScale.minimumTime + (worldPoint.x - fromLayout.xOffset) / fromScale.pixelsPerMillisecond;
+  return {
+    x: toLayout.xOffset + (timestamp - toScale.minimumTime) * toScale.pixelsPerMillisecond,
+    y: toLayout.timeAxisY + (worldPoint.y - fromLayout.timeAxisY),
   };
 }
 
@@ -228,6 +476,11 @@ export function centerTimelineNodePan({ box, viewport, zoom }) {
     viewportPoint: { x: viewport.width / 2, y: viewport.height / 2 },
     zoom,
   });
+}
+
+export function timelineAxisCenteredPanY({ timeAxisY, viewportHeight } = {}) {
+  if (!Number.isFinite(timeAxisY) || !Number.isFinite(viewportHeight)) return 0;
+  return viewportHeight / 2 - timeAxisY;
 }
 
 export function clampTimelinePan({ pan, zoom, canvas, viewport, padding = 72 }) {

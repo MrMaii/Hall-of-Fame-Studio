@@ -48,7 +48,7 @@ export default defineConfig({
         manualChunks(id) {
           if (id.includes('/node_modules/react/') || id.includes('/node_modules/react-dom/')) return 'react-vendor';
           if (id.includes('/node_modules/lucide-react/')) return 'icons-vendor';
-          if (id.includes('/src/agents/agentRuntime.js') || id.includes('/src/agents/agentProjectService.js')) return 'agent-runtime';
+          if (id.includes('/src/agents/agentRuntime.js')) return 'agent-runtime-core';
         },
       },
     },

@@ -78,7 +78,7 @@ export default function AgentDossierScene({
               <div className="font-mono text-[10px] uppercase tracking-[0.28em] text-[#6b241e] mb-4 ink-reveal">{dossierText('Personnel Visual Record')}</div>
               <div className="bg-[#241b14] p-3 rotate-[-1.6deg] shadow-2xl mb-7">
                 <div className="aspect-[4/5] bg-[#eee1bd] overflow-hidden border border-[#675139]">
-                  {imageSrc ? <img src={imageSrc} alt={agent.name} className="archive-photo w-full h-full object-cover object-top" /> : (
+                  {imageSrc ? <img src={imageSrc} alt={dossierText(agent.name)} className="archive-photo w-full h-full object-cover object-top" /> : (
                     <div className="w-full h-full flex items-center justify-center text-[#241b14] font-serif text-7xl">{avatar?.mark || agentCardInitial(agent)}</div>
                   )}
                 </div>

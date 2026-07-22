@@ -29,12 +29,12 @@ test('Latest Backend Work stays lazy and read-only while scheduler controls rema
   assert.ok(!latestWorkSource.includes('onClick='));
 
   const latestWorkUsage = assemblySource.indexOf('<ProjectDashboardLatestBackendWork');
-  const backendError = assemblySource.indexOf('view.backendError &&', latestWorkUsage);
   const activityPanels = parentAssemblySource.indexOf('<ProjectDashboardManagerBackendActivityPanels');
   const readModelPanels = stationContentSource.indexOf('<ProjectDashboardManagerBackendReadModelPanels');
   const stationContent = regionSource.indexOf('<ProjectDashboardManagerBackendStationContent');
   const schedulerControls = regionSource.indexOf('<ProjectDashboardBackendSchedulerControls', stationContent);
-  assert.ok(latestWorkUsage !== -1 && backendError > latestWorkUsage);
+  assert.ok(latestWorkUsage !== -1);
+  assert.equal(assemblySource.includes('view.backendError &&'), false);
   assert.ok(activityPanels !== -1);
   assert.ok(readModelPanels !== -1 && stationContent !== -1 && schedulerControls > stationContent);
 });

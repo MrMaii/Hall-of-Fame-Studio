@@ -12,7 +12,7 @@ test('manager demo waits for the focused graph transform to settle before assert
   assert.ok(validationSource.includes('stableForMs >= 320'));
 });
 
-test('timeline proof focus uses absolute graph coordinates instead of accumulating animated screen offsets', () => {
+test('timeline proof focus uses absolute graph x coordinates while preserving the centered time axis', () => {
   const focusEffectStart = appSource.indexOf("if (projectMode !== 'timeline' || !focusedTimelineProofIds.length) return;");
   const focusEffectEnd = appSource.indexOf('// Auto-scroll transcript', focusEffectStart);
   assert.notEqual(focusEffectStart, -1);
@@ -21,8 +21,8 @@ test('timeline proof focus uses absolute graph coordinates instead of accumulati
 
   assert.ok(focusEffect.includes('node.offsetLeft'));
   assert.ok(focusEffect.includes('viewport.clientWidth / 2'));
-  assert.ok(focusEffect.includes('setTlPan({'));
-  assert.ok(!focusEffect.includes('setTlPan(prev =>'));
+  assert.ok(focusEffect.includes('setTlPan(previousPan =>'));
+  assert.ok(focusEffect.includes('y: previousPan.y'));
   assert.ok(!focusEffect.includes('node.getBoundingClientRect()'));
 });
 
@@ -37,4 +37,19 @@ test('timeline proof focus retries when the asynchronous manager graph has not r
   assert.ok(focusEffect.includes('focusRetryTimer = window.setTimeout(focusTimelineProofNode, 100)'));
   assert.ok(focusEffect.includes('Date.now() < focusDeadline'));
   assert.ok(focusEffect.includes('window.clearTimeout(focusRetryTimer)'));
+});
+
+test('manager flow loading is deduplicated and does not feed back through connection status', () => {
+  const syncStart = appSource.indexOf('const syncBackendManagerFlowGraph =');
+  const syncEnd = appSource.indexOf('const confirmBackendManagerFlowGraphNode =', syncStart);
+  const syncSource = appSource.slice(syncStart, syncEnd);
+  assert.ok(syncSource.includes('managerFlowGraphSyncInFlightRef.current.get(syncKey)'));
+  assert.ok(syncSource.includes('managerFlowGraphSyncInFlightRef.current.set(syncKey, syncPromise)'));
+  assert.ok(syncSource.includes("String(activeProjectIdRef.current || '').toLowerCase() !== String(projectId).toLowerCase()"));
+
+  const effectStart = appSource.indexOf("if (activeRoute !== 'project_detail' || projectMode !== 'timeline' || !activeProject) return;");
+  const effectEnd = appSource.indexOf('\n\n  useEffect(() => {', effectStart + 20);
+  const effectSource = appSource.slice(effectStart, effectEnd);
+  assert.ok(effectSource.includes('backendStation.baseUrl'));
+  assert.ok(!effectSource.includes('backendStation.connectionStatus'));
 });

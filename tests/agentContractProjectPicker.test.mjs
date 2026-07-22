@@ -19,6 +19,22 @@ test('talent contract project picker is a named modal with a reachable close act
   assert.match(source, /aria-label="关闭项目选择"/);
 });
 
+test('talent contract project picker traps focus, closes with Escape, restores focus, and hides its backdrop', () => {
+  for (const contract of [
+    "import { useEffect, useRef } from 'react'",
+    'const overlayRef = useRef(null)',
+    'const dialogRef = useRef(null)',
+    "event.key === 'Escape'",
+    "event.key !== 'Tab'",
+    "sibling.setAttribute('inert', '')",
+    'previousFocus?.focus()',
+    'ref={overlayRef}',
+    'ref={dialogRef}',
+    'tabIndex={-1}',
+    'aria-hidden="true"',
+  ]) assert.ok(source.includes(contract), `missing accessible contract picker behavior: ${contract}`);
+});
+
 test('the application uses the ordinary contract picker without losing contract eligibility checks', () => {
   assert.match(appSource, /lazy\(\(\) => import\('\.\/project\/AgentContractProjectPicker\.jsx'\)\)/);
   assert.match(appSource, /<AgentContractProjectPicker/);

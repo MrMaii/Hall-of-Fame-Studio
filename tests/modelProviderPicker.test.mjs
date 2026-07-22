@@ -18,6 +18,26 @@ test('provider picker exposes an accessible scrollable supplier drawer and depen
   assert.match(pickerSource, /role="dialog"/);
   assert.match(pickerSource, /max-h-\[min\(520px,70vh\)\].*overflow-y-auto/);
   assert.match(pickerSource, /prefers-reduced-motion/);
+  assert.match(pickerSource, /data-user-content=\{!selectedModel && modelId \? '' : undefined\}/);
+});
+
+test('provider picker dialogs trap focus, hide background content, close with Escape, and restore the trigger', () => {
+  for (const contract of [
+    "import { useEffect, useRef, useState } from 'react'",
+    'const overlayRef = useRef(null)',
+    'const dialogRef = useRef(null)',
+    "event.key === 'Escape'",
+    'event.stopPropagation()',
+    "event.key !== 'Tab'",
+    "sibling.setAttribute('inert', '')",
+    "sibling.setAttribute('aria-hidden', 'true')",
+    'previousFocus?.focus()',
+    "document.addEventListener('keydown', handleKeyDown, true)",
+    "document.removeEventListener('keydown', handleKeyDown, true)",
+    'ref={overlayRef}',
+    'ref={dialogRef}',
+    'tabIndex={-1}',
+  ]) assert.ok(pickerSource.includes(contract), `missing accessible dialog contract: ${contract}`);
 });
 
 test('model settings select a provider before model and keep API key as the only required manual secret', () => {

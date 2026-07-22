@@ -40,7 +40,11 @@ const workspaceRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
   resolve(workspaceRoot, '.env.local'),
 ].forEach(loadEnvFile);
 
-const envFlag = (name) => /^(1|true|yes)$/i.test(process.env[name] || '');
+const envFlag = (name, defaultValue = false) => (
+  process.env[name] === undefined
+    ? Boolean(defaultValue)
+    : /^(1|true|yes)$/i.test(process.env[name] || '')
+);
 const optionalNumberEnv = (name) => {
   const value = Number(process.env[name] || '');
   return Number.isFinite(value) && value > 0 ? value : undefined;
@@ -87,12 +91,14 @@ if (!process.env.SECRET_VAULT_KEY) process.env.SECRET_VAULT_KEY = localUserRunti
 if (!process.env.SECRET_VAULT_KEY_ID) process.env.SECRET_VAULT_KEY_ID = localUserRuntimeSettings.secretVaultKeyId;
 const port = Number(process.env.AGENT_PROJECT_PORT || 8787);
 const host = process.env.AGENT_PROJECT_HOST || '127.0.0.1';
-const autonomousSchedulerEnabled = envFlag('AGENT_AUTONOMOUS_SCHEDULER');
+const autonomousSchedulerEnabled = envFlag('AGENT_AUTONOMOUS_SCHEDULER', true);
 const autonomousSchedulerIntervalMs = Number(process.env.AGENT_AUTONOMOUS_INTERVAL_MS || 60_000);
-const autonomousAgentStrategyEnabled = envFlag('AGENT_AUTONOMOUS_AGENT_STRATEGY');
-const autonomousAgentSubmissionsEnabled = envFlag('AGENT_AUTONOMOUS_AGENT_SUBMISSIONS');
-const autonomousAgentReviewsEnabled = envFlag('AGENT_AUTONOMOUS_AGENT_REVIEWS');
-const autonomousAgentReviewResponsesEnabled = envFlag('AGENT_AUTONOMOUS_AGENT_REVIEW_RESPONSES');
+const autonomousAgentStrategyEnabled = envFlag('AGENT_AUTONOMOUS_AGENT_STRATEGY', true);
+const autonomousAgentSubmissionsEnabled = envFlag('AGENT_AUTONOMOUS_AGENT_SUBMISSIONS', true);
+const autonomousAgentReviewsEnabled = envFlag('AGENT_AUTONOMOUS_AGENT_REVIEWS', true);
+const autonomousAgentReviewResponsesEnabled = envFlag('AGENT_AUTONOMOUS_AGENT_REVIEW_RESPONSES', true);
+const autonomousProjectCoordinationEnabled = envFlag('AGENT_AUTONOMOUS_PROJECT_COORDINATION', false);
+const autonomousLegacyAutopilotEnabled = envFlag('AGENT_AUTONOMOUS_LEGACY_AUTOPILOT', false);
 const accessControlMode = process.env.AGENT_ACCESS_CONTROL_MODE || 'prototype-open';
 const accessSigningSecret = process.env.AGENT_ACCESS_SIGNING_SECRET || '';
 const accessReplayProtection = envFlag('AGENT_ACCESS_REPLAY_PROTECTION');
@@ -181,7 +187,10 @@ const httpServer = createAgentProjectHttpServer({
     enabled: autonomousSchedulerEnabled,
     intervalMs: autonomousSchedulerIntervalMs,
     runImmediately: autonomousSchedulerEnabled,
-    resumeAutopilotSessions: autonomousSchedulerEnabled,
+    runProjectCoordinationCycles: autonomousProjectCoordinationEnabled,
+    runLegacyAgentPulseCycles: false,
+    runAgentOutcomeActions: autonomousSchedulerEnabled,
+    resumeAutopilotSessions: autonomousSchedulerEnabled && autonomousLegacyAutopilotEnabled,
     includeReadModels: false,
     useAgentAutonomousStrategy: autonomousAgentStrategyEnabled,
     submitAgentWorkArtifacts: autonomousAgentSubmissionsEnabled,

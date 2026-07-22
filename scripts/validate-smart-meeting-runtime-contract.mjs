@@ -30,6 +30,9 @@ assert(exchange.intentions.length === team.length, 'Every Agent must produce a s
 assert(exchange.responses.length === team.length, 'Every queued Agent must eventually receive a meeting response turn.');
 assert(exchange.responses.every((turn, index) => turn.delayMs === meetingTurnDelayMs(index)), 'Meeting response delays must follow the shared queue grace protocol.');
 assert(exchange.responses[0].delayMs >= MEETING_TURN_GRACE_PERIOD_MS, 'The first Agent must wait for the configured grace period before speaking.');
+assert(exchange.responses.slice(1).every((turn, index) => turn.replyToTurnId === exchange.responses[index].id), 'Every later Agent response must causally reply to the prior peer turn.');
+assert(exchange.responses[1].interactionIntent === 'challenge', 'The second speaker must be able to challenge the opening proposal.');
+assert(exchange.responses.at(-1).interactionIntent === 'synthesize', 'The bounded exchange must end with synthesis instead of unbounded peer contention.');
 
 const meetingResult = submitProjectMeetingMessage({
   project: {
@@ -51,6 +54,8 @@ assert(meetingResult.messages[0]?.id === 'smart_meeting_user_message', 'The Dire
 assert(meetingResult.meetingAgentTurns.length === team.length, 'Backend meeting service must persist every queued Agent turn.');
 assert(meetingResult.meetingAgentTurns.every((turn, index) => turn.delayMs === meetingTurnDelayMs(index)), 'Backend meeting turns must expose the same queue grace delays as the runtime.');
 assert(meetingResult.meetingAgentTurns.every((turn) => turn.timelineLogIds?.length >= 1), 'Backend meeting turns must retain timeline proof ids.');
+assert(meetingResult.meetingAgentTurns.slice(1).every((turn, index) => turn.replyToTurnId === meetingResult.meetingAgentTurns[index].messageId), 'Backend meeting persistence must retain causal peer reply edges.');
+assert(meetingResult.meetingAgentTurns.at(-1).interactionIntent === 'synthesize', 'Backend meeting persistence must retain the convergence intent.');
 
 const loadInitialProjectsStart = appSource.indexOf('const loadInitialProjects = () =>');
 const loadInitialProjectsEnd = appSource.indexOf('const INITIATION_MEMBERS', loadInitialProjectsStart);
@@ -69,9 +74,10 @@ const stageMeetingIndex = submitRoomInputSource.indexOf('stageMeetingUserTurn');
 const backendMeetingIndex = submitRoomInputSource.indexOf("await runBackendProjectCommand('meeting'");
 assert(stageMeetingIndex >= 0 && stageMeetingIndex < backendMeetingIndex, 'Meeting input must render the Director message before awaiting the backend Agent turns.');
 assert(submitRoomInputSource.includes('queueMeetingIntentPreview'), 'Meeting input must queue visible Agent intent before awaiting backend turns.');
-assert(appSource.includes('const roomUserIntentActiveRef = useRef(false);'), 'Meeting runtime must keep a ref for Director speaking or typing intent.');
+assert(appSource.includes('const roomTurnQueueRef = useRef(null);'), 'Meeting runtime must keep the shared floor-control queue for Director speaking or typing intent.');
 assert(appSource.includes('const scheduleRoomAgentTurn = ({'), 'Meeting runtime must schedule Agent turns through the Director-precedence gate.');
-assert(appSource.includes('if (roomUserIntentActiveRef.current)'), 'Queued Agent turns must defer while the Director is speaking or typing.');
+assert(appSource.includes('roomTurnQueueRef.current.setUserActive(nextActive);'), 'Queued Agent turns must defer through shared floor control while the Director is speaking or typing.');
+assert(appSource.includes('roomTurnQueueRef.current.schedule({'), 'Agent turns must enter the shared floor-control queue before speaking.');
 assert(appSource.includes('setRoomUserIntentActive(true)'), 'Meeting input and voice controls must mark Director intent active.');
 assert(appSource.includes("status: 'paused'"), 'An Agent that is already visibly speaking must be paused when Director intent begins.');
 

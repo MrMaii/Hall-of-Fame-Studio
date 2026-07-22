@@ -1,4 +1,6 @@
-import { useLayoutEffect, useRef } from 'react';
+import { useCallback, useLayoutEffect } from 'react';
+import { localizeManagerFlowDisplayText } from '../i18n/managerFlowChinese.js';
+import { timelineAxisCenteredPanY } from '../workflow/workflowTimelineLayout.js';
 
 const AdvancedProjectTimeline = ({ view }) => {
   const {
@@ -10,6 +12,7 @@ const AdvancedProjectTimeline = ({ view }) => {
     Network,
     ScrollText,
     X,
+    activeLanguage,
     activeProject,
     agentDisplay,
     backendCommandAvailable,
@@ -33,6 +36,7 @@ const AdvancedProjectTimeline = ({ view }) => {
     focusLatestNode,
     focusSelectedNode,
     getAnchor,
+    getTimeBranch,
     graphTime,
     handleGraphMouseDown,
     handleGraphMouseMove,
@@ -40,22 +44,24 @@ const AdvancedProjectTimeline = ({ view }) => {
     handleGraphZoomChange,
     isProofFocused,
     managerFlowGraph,
+    managerFlowGraphLoadError,
+    managerFlowGraphLoading,
     managerFlowGraphSourceLabel,
-    laneGuides,
     nodeCommitters,
     nodeLayout,
     nodeMap,
     openProjectChatProof,
     openProjectTimelineProof,
+    overflowGroups,
     projectText,
     openSelectedNodeProofMapRoute,
     openSelectedNodeSubmissionRecord,
     relatedEdges,
     relatedNodeIds,
+    reportGraphViewportHeight,
     relationshipGraph,
     renderAutonomousActionDecision,
     resetGraphView,
-    rulerHeight,
     scaleProfiles,
     sceneTransition,
     selectedChatProofIds,
@@ -72,8 +78,11 @@ const AdvancedProjectTimeline = ({ view }) => {
     setTlDragging,
     setTlPan,
     syncBackendManagerFlowGraph,
+    timeAxisY,
     timeTicks,
     timelineViewportRef,
+    timelinePublication,
+    toggleTimelineOverflowGroup,
     tlDragging,
     tlPan,
     tlZoom,
@@ -81,10 +90,36 @@ const AdvancedProjectTimeline = ({ view }) => {
     visibleNodes,
     visibleNodesByPosition,
     visibleTimelineProofCount,
-    xOffset,
     zoomDetail,
     zoomScale,
   } = view;
+
+  const graphText = (value, fallback = '系统记录') => localizeManagerFlowDisplayText(value, {
+    language: activeLanguage,
+    fallback,
+    userAuthoredFragments: [
+      activeProject.name,
+      activeProject.objective,
+      activeProject.currentObjective,
+      activeProject.initiation?.summary,
+      ...(activeProject.initiation?.managerClarifications || []).map(item => item?.text),
+    ],
+  });
+
+  const lockGraphAxisToViewport = useCallback(() => {
+    const viewport = timelineViewportRef.current;
+    if (!viewport) return;
+    const centeredPanY = timelineAxisCenteredPanY({
+      timeAxisY,
+      viewportHeight: viewport.clientHeight,
+    });
+    reportGraphViewportHeight(viewport.clientHeight);
+    setTlPan(previousPan => (
+      Math.abs(previousPan.y - centeredPanY) < 0.5
+        ? previousPan
+        : { ...previousPan, y: centeredPanY }
+    ));
+  }, [reportGraphViewportHeight, setTlPan, timeAxisY, timelineViewportRef]);
 
   useLayoutEffect(() => {
     if (
@@ -106,15 +141,14 @@ const AdvancedProjectTimeline = ({ view }) => {
     tlZoom,
   ]);
 
-  const previousZoomScaleRef = useRef(zoomScale);
   useLayoutEffect(() => {
-    if (previousZoomScaleRef.current === zoomScale) return;
-    previousZoomScaleRef.current = zoomScale;
-    const targetNode = selectedNode || [...visibleNodes].sort((a, b) => (
-      (Date.parse(b.time) || 0) - (Date.parse(a.time) || 0) || (b.sequence || 0) - (a.sequence || 0)
-    ))[0];
-    if (targetNode) focusGraphNode(targetNode.id);
-  }, [zoomScale]);
+    lockGraphAxisToViewport();
+    const viewport = timelineViewportRef.current;
+    if (!viewport || typeof ResizeObserver === 'undefined') return undefined;
+    const observer = new ResizeObserver(lockGraphAxisToViewport);
+    observer.observe(viewport);
+    return () => observer.disconnect();
+  }, [activeProject.id, lockGraphAxisToViewport, timelineViewportRef]);
 
   const selectedNodeMeta = selectedNode ? (categoryMeta[selectedNode.category] || categoryMeta.execution) : categoryMeta.execution;
   const SelectedNodeIcon = selectedNodeMeta?.Icon || CircleDot;
@@ -133,8 +167,8 @@ const AdvancedProjectTimeline = ({ view }) => {
                 <div className="breadcrumb-bar mt-1 text-[#7d6a49]">
                   <button data-testid="project-scene-back" aria-label={projectText('Back to project')} onClick={exitProjectScene} className="hover:text-[#efe2bd] transition-colors">{activeProject.name}</button>
                   <span className="sep">/</span>
-                  <span className="text-[#efe2bd]">Manager Flow Graph</span>
-                  <span className="ml-3 text-[#7d6a49]">Single-Axis Timeline</span>
+                  <span className="text-[#efe2bd]">{projectText('Manager Flow Graph')}</span>
+                  <span className="ml-3 text-[#7d6a49]">{projectText('Single-Axis Timeline')}</span>
                 </div>
               </div>
               <div className="flex max-w-[70%] flex-wrap items-center justify-end gap-2">
@@ -142,18 +176,18 @@ const AdvancedProjectTimeline = ({ view }) => {
                   data-testid="manager-flow-source-label"
                   className={`node-status-tag ${managerFlowGraph.frontendMockSuppressed ? 'bg-[#8f1e18] text-white' : managerFlowGraph.dataSource === 'frontend-fallback' ? 'bg-[#b9782b] text-white' : 'bg-[#59684b] text-white'}`}
                 >
-                  {managerFlowGraphSourceLabel}
+                  {graphText(managerFlowGraphSourceLabel, '后台数据')}
                 </span>
                 <button
                   type="button"
                   onClick={() => syncBackendManagerFlowGraph({ silent: false })}
-                  disabled={!backendCommandAvailable || backendStation.loading}
+                  disabled={!backendCommandAvailable || backendStation.loading || managerFlowGraphLoading}
                   className="inline-flex items-center gap-1.5 border border-[#3a2a1c] px-3 py-1.5 font-mono text-[9px] uppercase tracking-widest text-[#bcae86] hover:border-[#7b6542] hover:text-[#efe2bd] disabled:opacity-40"
                 >
-                  <Database size={12} /> Sync Graph
+                  <Database size={12} /> {projectText('Sync Graph')}
                 </button>
                 <label className="flex items-center gap-2 border border-[#3a2a1c] bg-[#141210]/85 px-3 py-1.5">
-                  <span className="font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">Zoom</span>
+                  <span className="font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">{projectText('Time Scale')}</span>
                   <input
                     data-testid="manager-flow-zoom"
                     type="range"
@@ -164,7 +198,7 @@ const AdvancedProjectTimeline = ({ view }) => {
                     onChange={(event) => handleGraphZoomChange(Number(event.target.value) / 100)}
                     className="w-32 accent-[#bcae86]"
                   />
-                  <span className="w-16 text-right font-mono text-[8px] uppercase tracking-widest text-[#bcae86]">{Math.round(tlZoom * 100)}% / {projectText(scaleProfiles[zoomScale]?.label)}</span>
+                  <span className="w-20 text-right font-mono text-[8px] uppercase tracking-widest text-[#bcae86]">{Math.round(tlZoom * 100)}% / {projectText(scaleProfiles[zoomScale]?.label)}</span>
                 </label>
                 <div role="group" aria-label={projectText('Timeline scale presets')} className="flex border border-[#3a2a1c] bg-[#141210]/85">
                   {[
@@ -195,7 +229,7 @@ const AdvancedProjectTimeline = ({ view }) => {
                   {projectText('Latest Commit')}
                 </button>
                 <button type="button" onClick={resetGraphView} className="border border-[#3a2a1c] px-3 py-1.5 font-mono text-[9px] uppercase tracking-widest text-[#7d6a49] hover:border-[#7b6542] hover:text-[#efe2bd]">
-                  Reset
+                  {projectText('Reset')}
                 </button>
               </div>
             </div>
@@ -206,21 +240,24 @@ const AdvancedProjectTimeline = ({ view }) => {
                 return (
                   <span key={`flow-category-legend-${category}`} className="inline-flex items-center gap-1.5 border border-[#2a2118] bg-[#141210]/88 px-2 py-1 font-mono text-[7px] uppercase tracking-widest text-[#bcae86]">
                     <Icon size={10} style={{ color: meta.color }} />
-                    {meta.label}
+                    {graphText(meta.label, '流程记录')}
                   </span>
                 );
               })}
             </div>
             <div data-testid="manager-flow-semantic-scale-guide" className="mt-2 flex flex-wrap items-center justify-between gap-2 border-t border-[#2a2118] pt-2 font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">
               <span className="text-[#bcae86]">{projectText(`${scaleProfiles[zoomScale]?.label} View`)}</span>
-              <span>{scaleProfiles[zoomScale]?.description}</span>
-              <span>{visibleNodes.length} / {(managerFlowGraph.nodes || []).length} nodes visible</span>
+              <span>{projectText(scaleProfiles[zoomScale]?.description)}</span>
+              <span>{visibleNodes.length} / {(managerFlowGraph.nodes || []).length} {projectText('nodes visible')}</span>
+              <span data-testid="manager-flow-suppressed-node-count">
+                {timelinePublication.suppressedNodeCount} {projectText('low-signal records kept in proof only')}
+              </span>
             </div>
           </div>
   
           <div className="relative z-10 flex-1 flex overflow-hidden">
             <div
-              className={`relative flex-1 overflow-hidden ${tlDragging ? '' : 'tl-canvas-grab'}`}
+              className={`manager-flow-viewport relative flex-1 overflow-hidden ${tlDragging ? '' : 'tl-canvas-grab'}`}
               ref={timelineViewportRef}
               onWheel={handleGraphWheel}
               onMouseDown={handleGraphMouseDown}
@@ -237,32 +274,45 @@ const AdvancedProjectTimeline = ({ view }) => {
                   ['Blocked', visibleNodes.filter(node => node.status === 'blocked').length],
                 ].map(([label, value]) => (
                   <div key={label} className="border border-[#3a2a1c] bg-[#141210]/92 px-3 py-2">
-                    <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">{label}</div>
+                    <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">{projectText(label)}</div>
                     <div className="font-serif text-xl leading-tight">{value}</div>
                   </div>
                 ))}
               </div>
               {focusedTimelineProofIds.length > 0 && (
                 <div data-testid="timeline-evidence-detail" className="absolute left-5 top-[118px] z-40 border border-[#b9782b] bg-[#251b13]/95 px-4 py-3 font-mono text-[9px] uppercase tracking-widest text-[#efe2bd] shadow-lg">
-                  Timeline proof focus: {visibleTimelineProofCount}/{focusedTimelineProofIds.length}
-                  <span className="sr-only">Source Channel Receipts Direct Targets</span>
-                  <button type="button" onClick={() => setFocusedTimelineProofIds([])} className="ml-3 text-[#bcae86] hover:text-white">Clear</button>
+                  {projectText('Timeline proof focus')}: {visibleTimelineProofCount}/{focusedTimelineProofIds.length}
+                  <span className="sr-only">{projectText('Source Channel Receipts Direct Targets')}</span>
+                  <button type="button" onClick={() => setFocusedTimelineProofIds([])} className="ml-3 text-[#bcae86] hover:text-white">{projectText('Clear')}</button>
                 </div>
               )}
               {managerFlowGraph.frontendMockSuppressed && (
                 <div data-testid="manager-flow-backend-required" className="absolute left-5 top-[118px] z-40 max-w-xl border border-[#8f1e18] bg-[#251b13]/95 px-4 py-3 shadow-lg">
-                  <div className="font-mono text-[9px] uppercase tracking-widest text-[#efe2bd]">Backend flow graph missing</div>
-                  <div className="mt-2 font-serif text-sm leading-relaxed text-[#d8c99f]">
-                    This real project is connected to the backend, so frontend-generated flow nodes are suppressed until `/manager-flow-graph` returns a read model.
-                  </div>
+                  {managerFlowGraphLoading ? (
+                    <div data-testid="manager-flow-loading" role="status" className="font-serif text-sm leading-relaxed text-[#d8c99f]">
+                      {projectText('Loading the project timeline…')}
+                    </div>
+                  ) : (
+                    <>
+                      <div className="font-mono text-[9px] uppercase tracking-widest text-[#efe2bd]">{projectText('Backend flow graph missing')}</div>
+                      <div className="mt-2 font-serif text-sm leading-relaxed text-[#d8c99f]">
+                        {projectText('This real project is connected to the backend, so frontend-generated flow nodes are suppressed until the manager flow graph returns a read model.')}
+                      </div>
+                      {managerFlowGraphLoadError && (
+                        <div data-testid="manager-flow-load-error" role="alert" className="mt-2 font-mono text-[8px] text-[#e7a49f]">
+                          {projectText(managerFlowGraphLoadError)}
+                        </div>
+                      )}
+                    </>
+                  )}
                   <button
                     type="button"
                     data-testid="manager-flow-backend-required-sync"
                     onClick={() => syncBackendManagerFlowGraph({ silent: false })}
-                    disabled={!backendCommandAvailable || backendStation.loading}
+                    disabled={!backendCommandAvailable || backendStation.loading || managerFlowGraphLoading}
                     className="mt-3 inline-flex items-center gap-1.5 border border-[#8f1e18] px-3 py-1.5 font-mono text-[8px] uppercase tracking-widest text-[#efe2bd] hover:border-[#d8c99f] disabled:opacity-40 disabled:cursor-not-allowed"
                   >
-                    <Database size={11} /> Sync Graph
+                    <Database size={11} /> {projectText('Sync Graph')}
                   </button>
                 </div>
               )}
@@ -270,33 +320,26 @@ const AdvancedProjectTimeline = ({ view }) => {
               <div
                 className="relative"
                 data-testid="manager-flow-graph"
+                data-timeline-density={tlZoom}
                 style={{
                   width: canvasW,
                   height: canvasH,
-                  transform: `translate(${tlPan.x}px, ${tlPan.y}px) scale(${tlZoom})`,
+                  top: tlPan.y,
+                  transform: `translate3d(${tlPan.x}px, 0px, 0)`,
                   transformOrigin: '0 0',
-                  transition: tlDragging ? 'none' : 'transform 0.24s cubic-bezier(0.25,0.8,0.25,1)',
+                  transition: tlDragging
+                    ? 'none'
+                    : 'transform 0.28s cubic-bezier(0.16,1,0.3,1), width 0.28s cubic-bezier(0.16,1,0.3,1), height 0.28s cubic-bezier(0.16,1,0.3,1)',
                 }}
               >
-                <div data-testid="manager-flow-time-ruler" className="absolute left-0 right-0 top-0 border-b border-[#3a2a1c] bg-[#0d0c0b]/88" style={{ height: rulerHeight }}>
-                  <div className="absolute left-5 top-5 font-mono text-[9px] uppercase tracking-[0.24em] text-[#bcae86]">{projectText('Commit Timeline')}</div>
-                  <div className="absolute border-t border-[#7b6542]/75" style={{ left: xOffset - 32, top: 72, width: canvasW - xOffset + 4 }} />
+                <div data-testid="manager-flow-time-axis" className="absolute left-0 right-0 border-t border-[#7b6542]/75" style={{ top: timeAxisY }}>
+                  <div className="absolute left-5 top-3 font-mono text-[9px] uppercase tracking-[0.24em] text-[#bcae86]">{projectText('Commit Timeline')}</div>
                   {timeTicks.map(tick => (
-                    <div key={`flow-time-tick-${tick.key}`} className="absolute" style={{ left: tick.x, top: 66 }}>
-                      <div className="h-3 border-l border-[#7b6542]" />
+                    <div key={`flow-time-tick-${tick.key}`} className="manager-flow-tick absolute top-0" style={{ left: tick.x }}>
+                      <div className="h-2 -translate-y-1 border-l border-[#7b6542]" />
                       <div className="mt-1 -translate-x-1/2 whitespace-nowrap border border-[#3a2a1c] bg-[#141210]/92 px-2 py-1 text-center font-mono text-[7px] uppercase tracking-widest text-[#bcae86]">
                         <span className="block text-[#efe2bd]">{tick.dateLabel} · {tick.timeLabel}</span>
                         <span className="block text-[#7d6a49]">{tick.count} {projectText('commits')}</span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-
-                <div data-testid="manager-flow-timeline-lanes" className="absolute inset-0 pointer-events-none">
-                  {laneGuides.map(lane => (
-                    <div key={`timeline-lane-${lane.id}`} className="absolute left-0 right-0 border-t border-[#2a2118]/85" style={{ top: lane.y, height: lane.height }}>
-                      <div className="absolute left-5 top-3 w-44 border-l-2 border-[#7b6542] bg-[#141210]/82 px-3 py-2 font-mono text-[8px] uppercase tracking-[0.2em] text-[#bcae86]">
-                        {projectText(lane.label)}
                       </div>
                     </div>
                   ))}
@@ -308,31 +351,68 @@ const AdvancedProjectTimeline = ({ view }) => {
                       <path d="M 0 0 L 10 4 L 0 8 z" fill="#7b6542" />
                     </marker>
                   </defs>
-                  {visibleEdges.map(edge => {
-                    const anchor = getAnchor(edge);
-                    if (!anchor) return null;
-                    const isSelected = selectedNode && (edge.fromNodeId === selectedNode.id || edge.toNodeId === selectedNode.id);
-                    const meta = edgeMeta[edge.type] || edgeMeta.task_dependency;
-                    return (
-                      <g key={edge.id}>
+                  <g data-testid="manager-flow-time-branches">
+                    {visibleNodesByPosition.map((node) => {
+                      const branch = getTimeBranch(node.id);
+                      if (!branch) return null;
+                      return (
                         <path
-                          d={anchor.path}
+                          key={`time-branch-${node.id}`}
+                          className="manager-flow-path-transition"
+                          d={branch.path}
                           fill="none"
-                          stroke={isSelected ? meta.color : '#3a2a1c'}
-                          strokeWidth={isSelected ? 2 : 1}
-                          strokeDasharray={edge.type === 'evidence' ? '5 5' : undefined}
-                          markerEnd="url(#flow-arrow)"
-                          opacity={selectedNode && !isSelected ? 0.18 : 0.78}
+                          stroke="#7b6542"
+                          strokeWidth="1"
+                          opacity={selectedNode && selectedNode.id !== node.id ? 0.16 : 0.58}
                         />
-                        {isSelected && (
-                          <circle r="3" fill="#efe2bd" opacity="0.85">
-                            <animateMotion dur="2.6s" repeatCount="indefinite" path={anchor.path} />
-                          </circle>
-                        )}
-                      </g>
-                    );
-                  })}
+                      );
+                    })}
+                  </g>
+                  <g data-testid="manager-flow-relationships">
+                    {visibleEdges.map(edge => {
+                      const anchor = getAnchor(edge);
+                      if (!anchor) return null;
+                      const isSelected = selectedNode && (edge.fromNodeId === selectedNode.id || edge.toNodeId === selectedNode.id);
+                      const meta = edgeMeta[edge.type] || edgeMeta.task_dependency;
+                      return (
+                        <g key={edge.id}>
+                          <path
+                            className={`manager-flow-path-transition ${edge.type === 'evidence' ? 'manager-flow-evidence-path' : ''}`}
+                            d={anchor.path}
+                            fill="none"
+                            stroke={isSelected ? meta.color : '#3a2a1c'}
+                            strokeWidth={isSelected ? 2 : 1}
+                            strokeDasharray={edge.type === 'evidence' ? '5 5' : undefined}
+                            markerEnd="url(#flow-arrow)"
+                            opacity={selectedNode && !isSelected ? 0.18 : 0.78}
+                          />
+                          {isSelected && (
+                            <circle className="manager-flow-transfer-pulse" r="3" fill="#efe2bd" opacity="0.85">
+                              <animateMotion dur="2.6s" repeatCount="indefinite" path={anchor.path} />
+                            </circle>
+                          )}
+                        </g>
+                      );
+                    })}
+                  </g>
                 </svg>
+
+                {overflowGroups.map(group => (
+                  <button
+                    key={group.id}
+                    type="button"
+                    data-testid={`manager-flow-overflow-${group.id}`}
+                    data-overflow-count={group.count}
+                    data-expanded={group.expanded ? 'true' : 'false'}
+                    aria-label={`${group.expanded ? projectText('Collapse') : projectText('More')} ${group.count}`}
+                    onClick={() => toggleTimelineOverflowGroup(group)}
+                    className={`manager-flow-overflow-marker absolute z-40 flex items-center justify-center gap-2 border px-3 font-mono text-[8px] uppercase tracking-widest shadow-[4px_4px_0_rgba(0,0,0,0.28)] ${group.expanded ? 'border-[#efe2bd] bg-[#efe2bd] text-[#141210]' : 'border-[#b9782b] bg-[#251b13] text-[#efe2bd]'}`}
+                    style={{ left: group.x, top: group.y, width: group.w, height: group.h }}
+                  >
+                    <span>{projectText(group.expanded ? 'Collapse' : 'More')}</span>
+                    <strong>{group.count}</strong>
+                  </button>
+                ))}
   
                 {visibleNodesByPosition.map(node => {
                   const box = nodeLayout[node.id];
@@ -345,8 +425,8 @@ const AdvancedProjectTimeline = ({ view }) => {
                   const showDetail = zoomDetail === 'expanded';
                   const submitters = nodeCommitters(node);
                   const primarySubmitter = submitters[0] || agentDisplay(node.agentId);
-                  const commitMessage = compactText(node.commitMessage || node.summary || node.title, zoomDetail === 'compact' ? 72 : zoomDetail === 'medium' ? 92 : 118);
-                  const fullCommitMessage = node.commitMessage || node.summary || node.title;
+                  const commitMessage = compactText(node.displayTitle || node.commitMessage || node.summary || node.title, zoomDetail === 'compact' ? 72 : zoomDetail === 'medium' ? 92 : 118);
+                  const fullCommitMessage = node.displayTitle || node.commitMessage || node.summary || node.title;
                   const attachmentCount = node.attachments?.length || node.submission?.attachmentIds?.length || 0;
                   const artifactTypeLabel = node.artifactType
                     || node.submission?.artifactType
@@ -360,6 +440,9 @@ const AdvancedProjectTimeline = ({ view }) => {
                       type="button"
                       data-testid={`manager-flow-node-${node.id}`}
                       data-timeline-event-id={node.id}
+                      data-timeline-time={node.time || ''}
+                      data-timeline-category={node.category}
+                      data-timeline-directional-decision={node.category === 'decision' ? 'true' : 'false'}
                       data-timeline-proof-ids={JSON.stringify([
                         node.id,
                         ...(node.proofIds || []),
@@ -367,41 +450,41 @@ const AdvancedProjectTimeline = ({ view }) => {
                         ...(node.eventIds || []),
                       ])}
                       onClick={() => setSelectedTimelineEventId(isSelected ? null : node.id)}
-                      title={fullCommitMessage}
-                      className={`absolute flex flex-col overflow-hidden text-left border bg-[#141210]/96 shadow-[7px_7px_0_rgba(0,0,0,0.22)] transition-all ${isSelected ? 'z-30 border-[#efe2bd]' : isRelated ? 'z-20 border-[#7b6542]' : 'z-10 border-[#3a2a1c]'} ${isDimmed ? 'opacity-35' : 'opacity-100'} ${isFocused ? 'ring-2 ring-[#b9782b] ring-offset-2 ring-offset-[#0d0c0b]' : ''}`}
+                      title={graphText(fullCommitMessage, '流程记录')}
+                      className={`manager-flow-node-card absolute flex flex-col overflow-hidden text-left border bg-[#141210]/96 shadow-[7px_7px_0_rgba(0,0,0,0.22)] ${isSelected ? 'z-30 border-[#efe2bd]' : isRelated ? 'z-20 border-[#7b6542]' : 'z-10 border-[#3a2a1c]'} ${isDimmed ? 'opacity-35' : 'opacity-100'} ${isFocused ? 'ring-2 ring-[#b9782b] ring-offset-2 ring-offset-[#0d0c0b]' : ''}`}
                       style={{ left: box.x, top: box.y, width: box.w, height: box.h, borderColor: isSelected ? '#efe2bd' : meta.color }}
                     >
                       <div className="flex h-7 shrink-0 items-center justify-between gap-2 px-3 font-mono text-[8px] uppercase tracking-widest text-white" style={{ background: meta.color }}>
                         <span className="flex min-w-0 items-center gap-1.5">
                           <span data-testid={`manager-flow-node-logo-${node.id}`} className="inline-flex shrink-0"><Icon size={13} /></span>
-                          <span className="truncate">{compactText(node.categoryLabel || meta.label, 18)}</span>
+                          <span className="truncate">{compactText(graphText(node.categoryLabel || meta.label, '流程记录'), 18)}</span>
                         </span>
                         {node.clusterCount > 1 ? (
                           <span data-testid={`manager-flow-cluster-count-${node.id}`} className="shrink-0 border border-white/45 px-1.5 py-0.5">{node.clusterCount} {projectText('commits')}</span>
                         ) : (
-                          <span className="max-w-[46%] shrink-0 truncate opacity-85">{compactText(node.subtype, 24)}</span>
+                          <span className="max-w-[46%] shrink-0 truncate opacity-85">{compactText(graphText(node.subtypeLabel || node.subtype, '记录'), 24)}</span>
                         )}
                       </div>
                       <div className="min-h-0 flex-1 overflow-hidden px-3 py-1.5">
-                        <div className="max-h-[34px] overflow-hidden break-words font-serif text-sm leading-snug text-[#efe2bd]">{projectText(commitMessage)}</div>
+                        <div className="max-h-[34px] overflow-hidden break-words font-serif text-sm leading-snug text-[#efe2bd]">{graphText(commitMessage, graphText(node.title, '流程记录'))}</div>
                         <div data-testid={`manager-flow-node-time-${node.id}`} className="mt-1 truncate font-mono text-[7px] uppercase tracking-widest text-[#bcae86]">
                           {graphTime(node.time)}
                         </div>
                         {showDetail && (
                           <div className="mt-1 truncate font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">
-                            {compactText(node.title, 38)} / {node.status}
+                            {compactText(graphText(node.displayTitle || node.title, ''), 38)} / {graphText(node.statusLabel || node.status, '已记录')}
                           </div>
                         )}
                       </div>
                       <div className="flex shrink-0 items-center justify-between gap-2 border-t border-[#2a2118] bg-[#0d0c0b]/78 px-3 py-1.5">
                         <div className="min-w-0">
-                          <div className="truncate font-mono text-[8px] uppercase tracking-widest text-[#bcae86]">{committersLabel(node)}</div>
+                          <div className="truncate font-mono text-[8px] uppercase tracking-widest text-[#bcae86]">{graphText(committersLabel(node), '项目成员')}</div>
                           <div className="truncate font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">
-                            {artifactTypeLabel ? `${artifactTypeLabel} / ` : ''}{projectText(primarySubmitter.role)} / {attachmentCount} {projectText('ATTACHMENTS')}
+                            {artifactTypeLabel ? `${graphText(artifactTypeLabel, '项目产物')} / ` : ''}{graphText(primarySubmitter.role, '项目成员')} / {attachmentCount} {projectText('ATTACHMENTS')}
                           </div>
                         </div>
                         <span className={`node-status-tag shrink-0 ${node.status === 'blocked' ? 'bg-[#8f1e18] text-white' : node.status === 'confirmed' ? 'bg-green-700 text-white' : node.status === 'resolved' ? 'bg-[#59684b] text-white' : 'bg-[#3a2a1c] text-[#bcae86]'}`}>
-                          {projectText(node.importance)}
+                          {graphText(node.importanceLabel || node.importance, '普通')}
                         </span>
                       </div>
                     </button>
@@ -424,40 +507,42 @@ const AdvancedProjectTimeline = ({ view }) => {
                           <SelectedNodeIcon size={22} />
                         </div>
                         <div className="min-w-0">
-                          <div className="font-mono text-[9px] uppercase tracking-widest text-[#7d6a49]">{projectText(selectedNode.categoryLabel || selectedNode.category)} / {projectText(selectedNode.subtype)}</div>
-                          <h3 className="mt-2 font-serif text-2xl leading-tight text-[#efe2bd]">{projectText(selectedNode.title)}</h3>
+                          <div className="font-mono text-[9px] uppercase tracking-widest text-[#7d6a49]">{graphText(selectedNode.categoryLabel || selectedNode.category, '流程记录')} / {graphText(selectedNode.subtypeLabel || selectedNode.subtype, '记录')}</div>
+                          <h3 className="mt-2 font-serif text-2xl leading-tight text-[#efe2bd]">{graphText(selectedNode.displayTitle || selectedNode.title, '')}</h3>
                         </div>
                       </div>
                       <button type="button" data-testid="manager-flow-detail-close" onClick={() => setSelectedTimelineEventId(null)} className="text-[#7d6a49] hover:text-[#efe2bd]"><X size={16} /></button>
                     </div>
                     <div data-testid="timeline-node-agent-description" className="border-l-2 pl-3" style={{ borderColor: selectedNode.visual?.color || selectedNodeMeta.color }}>
                       <div className="font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">
-                        Agent Description / {selectedNode.descriptionSource === 'runtime-fallback' ? 'runtime fallback' : 'agent authored'}
+                        {projectText('Agent Description')} / {projectText(selectedNode.descriptionSource === 'runtime-fallback' ? 'runtime fallback' : 'agent authored')}
                       </div>
-                      <p className="mt-1 font-serif text-sm leading-relaxed text-[#bcae86]">{projectText(selectedNode.description || selectedNode.summary)}</p>
+                      <p className="mt-1 font-serif text-sm leading-relaxed text-[#bcae86]">{graphText(selectedNode.description || selectedNode.summary, `此${graphText(selectedNode.categoryLabel || selectedNode.category, '流程')}记录的详细说明`)}</p>
                     </div>
   
                     <div data-testid="timeline-node-metadata-detail" className="tl-detail-section">
-                      <div className="tl-detail-section-title">Node Metadata</div>
+                      <div className="tl-detail-section-title">{projectText('Node Metadata')}</div>
                       <div className="grid grid-cols-2 gap-x-4 gap-y-2">
                         {[
                           ['ID', selectedNode.id],
-                          ['Status', selectedNode.status],
-                          ['Importance', selectedNode.importance],
+                          ['Status', selectedNode.statusLabel || selectedNode.status, '已记录'],
+                          ['Importance', selectedNode.importanceLabel || selectedNode.importance, '普通'],
                           ['Semantic Level', selectedNode.semanticLabel || selectedNode.semanticLevel],
-                          ['Submitted By', committersLabel(selectedNode)],
-                          ['Submitter Role', nodeCommitters(selectedNode)[0]?.role || 'Project'],
-                          ['Task', selectedNode.taskId || 'none'],
-                          ['Source', selectedNode.source],
-                          ['Source Channel', channelNameById[selectedNode.sourceChannelId] || selectedNode.sourceChannelId || 'timeline'],
-                          ['Receipts', selectedNode.receiptCount ? `${selectedNode.receiptCount} seen` : 'no receipt count'],
+                          ['Submitted By', committersLabel(selectedNode) === 'Project' ? 'Project role' : committersLabel(selectedNode)],
+                          ['Submitter Role', nodeCommitters(selectedNode)[0]?.role === 'Project'
+                            ? 'Project role'
+                            : nodeCommitters(selectedNode)[0]?.role || 'Project role'],
+                          ['Task', selectedNode.taskId || 'none', selectedNode.taskId ? selectedNode.taskId : '无'],
+                          ['Source', selectedNode.sourceLabel || selectedNode.source, '系统来源'],
+                          ['Source Channel', channelNameById[selectedNode.sourceChannelId] || selectedNode.sourceChannelId || 'timeline', '时间线'],
+                          ['Receipts', selectedNode.receiptCount ? `${selectedNode.receiptCount} seen` : 'no receipt count', selectedNode.receiptCount ? `${selectedNode.receiptCount} 条已读回执` : '无回执计数'],
                           ['Direct Targets', (selectedNode.directTargetIds || []).map(id => activeProject.team.find(agent => agent.id === id)?.name || id).join(' / ') || 'none'],
                           ['Time', graphTime(selectedNode.time)],
                           ['Proof IDs', (selectedNode.proofIds || []).length],
-                        ].map(([label, value]) => (
+                        ].map(([label, value, fallback]) => (
                           <div key={label} className="min-w-0">
                             <div className="font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">{projectText(label)}</div>
-                            <div className="font-mono text-[9px] uppercase tracking-widest text-[#bcae86] break-words">{projectText(value)}</div>
+                            <div className="font-mono text-[9px] uppercase tracking-widest text-[#bcae86] break-words">{graphText(value, fallback || '系统记录')}</div>
                           </div>
                         ))}
                       </div>
@@ -466,16 +551,16 @@ const AdvancedProjectTimeline = ({ view }) => {
                     <div data-testid="manager-flow-selected-proof-route" className="tl-detail-section border border-[#2a2118] bg-[#0d0c0b]/55 p-3">
                       <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
                         <div className="min-w-0">
-                          <div className="font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">Proof Map / API Route</div>
+                          <div className="font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">{projectText('Proof Map / API Route')}</div>
                           <div className="mt-1 break-words font-mono text-[8px] uppercase tracking-widest text-[#bcae86]">
-                            {selectedNodeProofRoute || 'Backend proof route not linked yet'}
+                            {selectedNodeProofRoute || projectText('Backend proof route not linked yet')}
                           </div>
                           <div data-testid="manager-flow-selected-proof-map-coverage" className="mt-1 font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">
-                            Coverage: {selectedNodeProofMapKey} / matches {selectedNodeProofMapRoutes.length} / chat {selectedChatProofIds.length} / timeline {(selectedNode.timelineLogIds || []).length} / ledger {(selectedNode.eventIds || []).length}
+                            {projectText('Coverage')}: {graphText(selectedNodeProofMapKey, '路由')} / {projectText('matches')} {selectedNodeProofMapRoutes.length} / {projectText('chat')} {selectedChatProofIds.length} / {projectText('timeline')} {(selectedNode.timelineLogIds || []).length} / {projectText('ledger')} {(selectedNode.eventIds || []).length}
                           </div>
                           {selectedNodeHasSubmissionRecord && (
                             <div data-testid="manager-flow-selected-submission-route" className="mt-1 break-words font-mono text-[7px] uppercase tracking-widest text-[#59684b]">
-                              Submission: {selectedNodeSubmissionRoute || `/projects/${activeProject.id}/submissions/${selectedNodeSubmissionId}`}
+                              {projectText('Submission')}: {selectedNodeSubmissionRoute || `/projects/${activeProject.id}/submissions/${selectedNodeSubmissionId}`}
                             </div>
                           )}
                         </div>
@@ -487,7 +572,7 @@ const AdvancedProjectTimeline = ({ view }) => {
                             disabled={!selectedNodeHasSubmissionRecord}
                             className="inline-flex items-center gap-1 border border-[#3a2a1c] px-3 py-2 font-mono text-[8px] uppercase tracking-widest text-[#bcae86] hover:border-[#7b6542] hover:text-[#efe2bd] disabled:opacity-40"
                           >
-                            <FileText size={11} /> Submission Record
+                            <FileText size={11} /> {projectText('Submission Record')}
                           </button>
                           <button
                             type="button"
@@ -496,78 +581,78 @@ const AdvancedProjectTimeline = ({ view }) => {
                             disabled={!selectedNodeProofRoute}
                             className="inline-flex items-center gap-1 border border-[#3a2a1c] px-3 py-2 font-mono text-[8px] uppercase tracking-widest text-[#bcae86] hover:border-[#7b6542] hover:text-[#efe2bd] disabled:opacity-40"
                           >
-                            <Network size={11} /> Proof Map
+                            <Network size={11} /> {projectText('Proof Map')}
                           </button>
                         </div>
                       </div>
                     </div>
   
                     <div className="tl-detail-section">
-                      <div className="tl-detail-section-title">Submission Packet</div>
+                      <div className="tl-detail-section-title">{projectText('Submission Packet')}</div>
                       <div data-testid="timeline-node-submission-quality" className="mb-3 grid grid-cols-2 gap-2">
                         <div className="border border-[#2a2118] bg-[#0d0c0b]/45 p-3">
-                          <div className="font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">Completeness</div>
+                          <div className="font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">{projectText('Completeness')}</div>
                           <div className="mt-1 font-serif text-2xl text-[#efe2bd]">{selectedSubmissionQuality?.completenessScore ?? 0}%</div>
                           <div className={`mt-1 font-mono text-[8px] uppercase tracking-widest ${selectedSubmissionQuality?.readyForTimeline ? 'text-[#59684b]' : 'text-[#8f1e18]'}`}>
-                            {selectedSubmissionQuality?.readyForTimeline ? 'Ready for Timeline' : 'Needs fields'}
+                            {projectText(selectedSubmissionQuality?.readyForTimeline ? 'Ready for Timeline' : 'Needs fields')}
                           </div>
                         </div>
                         <div data-testid="timeline-node-authorship-mode" className="border border-[#2a2118] bg-[#0d0c0b]/45 p-3">
-                          <div className="font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">Authorship</div>
-                          <div className="mt-1 font-serif text-lg capitalize text-[#efe2bd]">{selectedSubmissionQuality?.authorshipMode || 'projected'}</div>
+                          <div className="font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">{projectText('Authorship')}</div>
+                          <div className="mt-1 font-serif text-lg capitalize text-[#efe2bd]">{graphText(selectedSubmissionQuality?.authorshipMode || 'projected', '预计')}</div>
                           <div className="mt-1 font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">
-                            {(selectedSubmissionQuality?.missingFieldIds || []).join(' / ') || 'all required fields filled'}
+                            {graphText((selectedSubmissionQuality?.missingFieldIds || []).join(' / ') || 'all required fields filled', '所有必填字段均已填写')}
                           </div>
                         </div>
                       </div>
                       <div className="border border-[#2a2118] bg-[#0d0c0b]/45 p-3">
-                        <div className="font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">Agent Intent</div>
+                        <div className="font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">{projectText('Agent Intent')}</div>
                         <p className="mt-1 font-serif text-sm leading-relaxed text-[#d8c99f]">
-                          {projectText(selectedNode.submission?.intent || 'Agent submitted this workflow commit for manager review.')}
+                          {graphText(selectedNode.submission?.intent || 'Agent submitted this workflow commit for manager review.', '智能体已提交此流程记录，等待经理复核。')}
                         </p>
                         {selectedContributionIntent && (
                           <div data-testid="timeline-node-contribution-intent" className="mt-3 border border-[#3a2a1c] bg-[#141210]/75 p-3">
                             <div className="flex flex-wrap items-center justify-between gap-2">
-                              <div className="font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">Publication Decision</div>
+                              <div className="font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">{projectText('Publication Decision')}</div>
                               <span className={`node-status-tag ${selectedContributionIntent.decision === 'submit' ? 'bg-[#59684b] text-white' : selectedContributionIntent.decision === 'defer' ? 'bg-[#b9782b] text-white' : 'bg-[#3a2a1c] text-[#bcae86]'}`}>
-                                {selectedContributionIntent.decision || 'projected'}
+                                {graphText(selectedContributionIntent.decision || 'projected', '预计')}
                               </span>
                             </div>
                             <div className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#bcae86]">
-                              {selectedContributionIntent.reasonCode || 'runtime-publication'}
+                              {graphText(selectedContributionIntent.reasonCode || 'runtime-publication', '运行时发布')}
                             </div>
                             <p className="mt-2 font-serif text-sm leading-relaxed text-[#d8c99f]">
-                              {selectedContributionIntent.whyNow || 'No explicit publication rationale was recorded.'}
+                              {graphText(selectedContributionIntent.whyNow || 'No explicit publication rationale was recorded.', '尚未记录明确的发布理由。')}
                             </p>
                             <div className="mt-2 grid grid-cols-2 gap-2 font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">
-                              <span>Value: {selectedContributionIntent.expectedValue || 'not recorded'}</span>
-                              <span>Duplicate risk: {selectedContributionIntent.duplicationRisk?.level || 'not evaluated'}</span>
+                              <span>{projectText('Value')}: {graphText(selectedContributionIntent.expectedValue || 'not recorded', '未记录')}</span>
+                              <span>{projectText('Duplicate risk')}: {graphText(selectedContributionIntent.duplicationRisk?.level || 'not evaluated', '未评估')}</span>
                             </div>
                             {(selectedContributionIntent.evidencePlan || []).length > 0 && (
                               <div className="mt-2 flex flex-wrap gap-1.5">
                                 {selectedContributionIntent.evidencePlan.map(item => (
                                   <span key={item} className="border border-[#3a2a1c] px-2 py-1 font-mono text-[7px] uppercase tracking-widest text-[#bcae86]">
-                                    {item}
+                                    {graphText(item, '证据计划')}
                                   </span>
                                 ))}
                               </div>
                             )}
                           </div>
                         )}
-                        <div className="mt-3 font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">Commit Message</div>
+                        <div className="mt-3 font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">{projectText('Commit Message')}</div>
                         <p className="mt-1 font-serif text-sm leading-relaxed text-[#efe2bd]">
-                          {projectText(selectedNode.submission?.commitMessage || selectedNode.commitMessage || selectedNode.summary)}
+                          {graphText(selectedNode.displayTitle || selectedNode.submission?.commitMessage || selectedNode.commitMessage || selectedNode.summary, graphText(selectedNode.title, ''))}
                         </p>
                         {selectedThinkingFrame && (
                           <div className="mt-3 border-t border-[#2a2118] pt-3">
-                            <div className="font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">Thinking Framework</div>
+                            <div className="font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">{projectText('Thinking Framework')}</div>
                             <div className="mt-1 font-serif text-sm leading-tight text-[#d8c99f]">
-                              {selectedThinkingFrame.routineLabel || selectedThinkingFrame.routineId || 'Agent work routine'}
+                              {graphText(selectedThinkingFrame.routineLabel || selectedThinkingFrame.routineId || 'Agent work routine', '智能体工作流程')}
                             </div>
                             <div className="mt-2 flex flex-wrap gap-1.5">
                               {(selectedThinkingFrame.checklist || []).slice(0, 5).map(item => (
                                 <span key={item} className="border border-[#3a2a1c] px-2 py-1 font-mono text-[7px] uppercase tracking-widest text-[#bcae86]">
-                                  {item}
+                                  {graphText(item, '流程检查项')}
                                 </span>
                               ))}
                             </div>
@@ -576,23 +661,23 @@ const AdvancedProjectTimeline = ({ view }) => {
                       </div>
                       <div className="mt-3 grid grid-cols-2 gap-2">
                         <div className="border border-[#2a2118] bg-[#0d0c0b]/45 p-2">
-                          <div className="mb-2 font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">Filled By Agent</div>
+                          <div className="mb-2 font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">{projectText('Filled By Agent')}</div>
                           <div className="space-y-1">
                             {(selectedNode.submission?.requiredFields || []).map(field => (
                               <div key={field.id} className="flex items-center justify-between gap-2 font-mono text-[8px] uppercase tracking-widest">
-                                <span className="truncate text-[#bcae86]">{projectText(field.label)}</span>
-                                <span className={field.status === 'missing' ? 'text-[#8f1e18]' : 'text-[#59684b]'}>{projectText(field.status)}</span>
+                                <span className="truncate text-[#bcae86]">{graphText(field.label, '字段')}</span>
+                                <span className={field.status === 'missing' ? 'text-[#8f1e18]' : 'text-[#59684b]'}>{graphText(field.status, '已填写')}</span>
                               </div>
                             ))}
                           </div>
                         </div>
                         <div className="border border-[#2a2118] bg-[#0d0c0b]/45 p-2">
-                          <div className="mb-2 font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">Auto Generated</div>
+                          <div className="mb-2 font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">{projectText('Auto Generated')}</div>
                           <div className="space-y-1">
                             {(selectedNode.submission?.autoFields || []).map(field => (
                               <div key={field.id} className="flex items-center justify-between gap-2 font-mono text-[8px] uppercase tracking-widest">
-                                <span className="truncate text-[#bcae86]">{projectText(field.label)}</span>
-                                <span className="text-[#59684b]">{projectText(field.status)}</span>
+                                <span className="truncate text-[#bcae86]">{graphText(field.label, '字段')}</span>
+                                <span className="text-[#59684b]">{graphText(field.status, '已填写')}</span>
                               </div>
                             ))}
                           </div>
@@ -613,17 +698,18 @@ const AdvancedProjectTimeline = ({ view }) => {
                             >
                               <div className="flex items-start justify-between gap-3">
                                 <div className="min-w-0">
-                                  <div className="font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">{projectText(attachment.type)}</div>
-                                  <div className="mt-1 font-serif text-sm leading-tight text-[#efe2bd]">{projectText(attachment.title)}</div>
+                                  <div className="font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">{graphText(attachment.type, '证据附件')}</div>
+                                  <div className="mt-1 font-serif text-sm leading-tight text-[#efe2bd]">{graphText(attachment.title, '证据附件')}</div>
                                 </div>
                                 <span className={`node-status-tag shrink-0 ${attachment.autoGenerated ? 'bg-[#3a2a1c] text-[#bcae86]' : 'bg-[#59684b] text-white'}`}>
                                   {projectText(attachment.autoGenerated ? 'auto' : 'agent')}
                                 </span>
                               </div>
-                              <p className="mt-2 font-serif text-xs leading-relaxed text-[#bcae86]">{projectText(attachment.summary)}</p>
+                              <p className="mt-2 font-serif text-xs leading-relaxed text-[#bcae86]">{graphText(attachment.summary, '此附件提供该流程记录的支撑证据。')}</p>
                               {renderAutonomousActionDecision(attachment.autonomousActionDecision, {
                                 testId: `manager-flow-autonomous-action-decision-${String(attachment.id || attachment.type || 'attachment').replace(/[^a-zA-Z0-9_-]/g, '-')}`,
                                 dark: true,
+                                text: (value) => graphText(value, '智能体动作'),
                               })}
                               {(attachment.url || attachment.absolutePath || attachment.path || attachment.relativePath || attachment.route || attachmentChatProofIds.length) && (
                                 <div className="mt-2 flex flex-wrap gap-2">
@@ -638,7 +724,7 @@ const AdvancedProjectTimeline = ({ view }) => {
                                         }}
                                         className="border border-[#3a2a1c] px-2 py-1 font-mono text-[7px] uppercase tracking-widest text-[#bcae86] hover:border-[#7b6542] hover:text-[#efe2bd]"
                                       >
-                                        Open artifact
+                                        {projectText('Open artifact')}
                                       </button>
                                       <button
                                         type="button"
@@ -646,7 +732,7 @@ const AdvancedProjectTimeline = ({ view }) => {
                                         onClick={() => navigator.clipboard?.writeText(attachment.absolutePath || attachment.path || attachment.relativePath || attachment.route || '')}
                                         className="border border-[#3a2a1c] px-2 py-1 font-mono text-[7px] uppercase tracking-widest text-[#bcae86] hover:border-[#7b6542] hover:text-[#efe2bd]"
                                       >
-                                        Locate artifact
+                                        {projectText('Locate artifact')}
                                       </button>
                                     </>
                                   )}
@@ -657,18 +743,18 @@ const AdvancedProjectTimeline = ({ view }) => {
                                       onClick={() => openProjectChatProof(activeProject, attachmentChatProofIds, attachmentChannelId)}
                                       className="inline-flex items-center gap-1 border border-[#3a2a1c] px-2 py-1 font-mono text-[7px] uppercase tracking-widest text-[#bcae86] hover:border-[#7b6542] hover:text-[#efe2bd]"
                                     >
-                                      <MessageSquare size={9} /> Transcript proof
+                                      <MessageSquare size={9} /> {projectText('Transcript proof')}
                                     </button>
                                   )}
                                 </div>
                               )}
                               {attachment.providerEvidenceTranscriptRoute && (
                                 <div className="mt-2 break-words font-mono text-[7px] uppercase tracking-widest text-[#59684b]">
-                                  Transcript route: {attachment.providerEvidenceTranscriptRoute}
+                                  {projectText('Transcript route')}: {attachment.providerEvidenceTranscriptRoute}
                                 </div>
                               )}
                               <div className="mt-2 font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">
-                                proof {(attachment.proofIds || []).length} / timeline {(attachment.timelineLogIds || []).length} / ledger {(attachment.eventIds || []).length}
+                                {projectText('proof')} {(attachment.proofIds || []).length} / {projectText('timeline')} {(attachment.timelineLogIds || []).length} / {projectText('ledger')} {(attachment.eventIds || []).length}
                               </div>
                             </div>
                           );
@@ -677,7 +763,7 @@ const AdvancedProjectTimeline = ({ view }) => {
                     </div>
   
                     <div data-testid="timeline-node-relationship-graph" className="tl-detail-section">
-                      <div className="tl-detail-section-title">Task Relationship Graph</div>
+                      <div className="tl-detail-section-title">{projectText('Task Relationship Graph')}</div>
                       {connectedPeople.length ? (
                         <div className="border border-[#2a2118] bg-[#0d0c0b]/45 p-2">
                           <svg viewBox={`0 0 ${relationshipGraph.width} ${relationshipGraph.height}`} className="h-[250px] w-full">
@@ -702,7 +788,7 @@ const AdvancedProjectTimeline = ({ view }) => {
                                     opacity="0.82"
                                   />
                                   <text x={mx} y={my - 5} textAnchor="middle" className="fill-[#bcae86] font-mono text-[8px] uppercase tracking-widest">
-                                    {projectText(person.relation)}
+                                    {graphText(person.relation, '关联')}
                                   </text>
                                 </g>
                               );
@@ -713,17 +799,17 @@ const AdvancedProjectTimeline = ({ view }) => {
                                 {projectText('Commit')}
                               </text>
                               <text x={relationshipGraph.center.x} y={relationshipGraph.center.y + 13} textAnchor="middle" className="fill-[#7d6a49] font-mono text-[7px] uppercase tracking-widest">
-                                {projectText(selectedNode.category)}
+                                {graphText(selectedNode.categoryLabel || selectedNode.category, '流程')}
                               </text>
                             </g>
                             {relationshipGraph.people.map(person => (
                               <g key={`relation-person-${person.id}`}>
                                 <rect x={person.x - 48} y={person.y - 22} width="96" height="44" fill="#141210" stroke={person.accent} />
                                 <text x={person.x} y={person.y - 3} textAnchor="middle" className="fill-[#efe2bd] font-serif text-[12px]">
-                                  {person.name}
+                                  {graphText(person.name, '项目成员')}
                                 </text>
                                 <text x={person.x} y={person.y + 13} textAnchor="middle" className="fill-[#7d6a49] font-mono text-[7px] uppercase tracking-widest">
-                                  {projectText(person.role)}
+                                  {graphText(person.role, '项目成员')}
                                 </text>
                               </g>
                             ))}
@@ -731,13 +817,13 @@ const AdvancedProjectTimeline = ({ view }) => {
                         </div>
                       ) : (
                         <div className="border border-dashed border-[#2a2118] p-3 font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">
-                          No connected employee recorded for this node.
+                          {projectText('No connected employee recorded for this node.')}
                         </div>
                       )}
                     </div>
   
                     <div className="tl-detail-section">
-                      <div className="tl-detail-section-title">Evidence</div>
+                      <div className="tl-detail-section-title">{projectText('Evidence')}</div>
                       <div className="grid grid-cols-3 gap-2">
                         {[
                           ['Chat', selectedChatProofIds.length],
@@ -745,7 +831,7 @@ const AdvancedProjectTimeline = ({ view }) => {
                           ['Ledger', (selectedNode.eventIds || []).length],
                         ].map(([label, value]) => (
                           <div key={label} className="border border-[#2a2118] bg-[#0d0c0b]/55 px-2 py-2">
-                            <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">{label}</div>
+                            <div className="font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">{projectText(label)}</div>
                             <div className="font-serif text-lg leading-tight">{value}</div>
                           </div>
                         ))}
@@ -753,16 +839,16 @@ const AdvancedProjectTimeline = ({ view }) => {
                       <div data-testid="manager-flow-selected-proof-route-evidence" className="mt-3 border border-[#2a2118] bg-[#0d0c0b]/55 p-3">
                         <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
                           <div className="min-w-0">
-                            <div className="font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">Proof Map / API Route</div>
+                            <div className="font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">{projectText('Proof Map / API Route')}</div>
                             <div className="mt-1 break-words font-mono text-[8px] uppercase tracking-widest text-[#bcae86]">
-                              {selectedNodeProofRoute || 'Backend proof route not linked yet'}
+                              {selectedNodeProofRoute || projectText('Backend proof route not linked yet')}
                             </div>
                             <div data-testid="manager-flow-selected-proof-map-coverage" className="mt-1 font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">
-                              Coverage: {selectedNodeProofMapKey} / matches {selectedNodeProofMapRoutes.length} / chat {selectedChatProofIds.length} / timeline {(selectedNode.timelineLogIds || []).length} / ledger {(selectedNode.eventIds || []).length}
+                              {projectText('Coverage')}: {graphText(selectedNodeProofMapKey, '路由')} / {projectText('matches')} {selectedNodeProofMapRoutes.length} / {projectText('chat')} {selectedChatProofIds.length} / {projectText('timeline')} {(selectedNode.timelineLogIds || []).length} / {projectText('ledger')} {(selectedNode.eventIds || []).length}
                             </div>
                             {selectedNodeHasSubmissionRecord && (
                               <div data-testid="manager-flow-selected-submission-route-evidence" className="mt-1 break-words font-mono text-[7px] uppercase tracking-widest text-[#59684b]">
-                                Submission: {selectedNodeSubmissionRoute || `/projects/${activeProject.id}/submissions/${selectedNodeSubmissionId}`}
+                                {projectText('Submission')}: {selectedNodeSubmissionRoute || `/projects/${activeProject.id}/submissions/${selectedNodeSubmissionId}`}
                               </div>
                             )}
                           </div>
@@ -774,7 +860,7 @@ const AdvancedProjectTimeline = ({ view }) => {
                               disabled={!selectedNodeHasSubmissionRecord}
                               className="inline-flex items-center gap-1 border border-[#3a2a1c] px-3 py-2 font-mono text-[8px] uppercase tracking-widest text-[#bcae86] hover:border-[#7b6542] hover:text-[#efe2bd] disabled:opacity-40"
                             >
-                              <FileText size={11} /> Submission Record
+                              <FileText size={11} /> {projectText('Submission Record')}
                             </button>
                             <button
                               type="button"
@@ -783,7 +869,7 @@ const AdvancedProjectTimeline = ({ view }) => {
                               disabled={!selectedNodeProofRoute}
                               className="inline-flex items-center gap-1 border border-[#3a2a1c] px-3 py-2 font-mono text-[8px] uppercase tracking-widest text-[#bcae86] hover:border-[#7b6542] hover:text-[#efe2bd] disabled:opacity-40"
                             >
-                              <Network size={11} /> Proof Map
+                              <Network size={11} /> {projectText('Proof Map')}
                             </button>
                           </div>
                         </div>
@@ -795,7 +881,7 @@ const AdvancedProjectTimeline = ({ view }) => {
                           disabled={!selectedChatProofIds.length}
                           className="inline-flex items-center gap-1 border border-[#3a2a1c] px-3 py-2 font-mono text-[8px] uppercase tracking-widest text-[#bcae86] hover:border-[#7b6542] hover:text-[#efe2bd] disabled:opacity-40"
                         >
-                          <MessageSquare size={11} /> Chat Proof
+                          <MessageSquare size={11} /> {projectText('Chat Proof')}
                         </button>
                         <button
                           type="button"
@@ -803,13 +889,13 @@ const AdvancedProjectTimeline = ({ view }) => {
                           disabled={!(selectedNode.timelineLogIds || []).length}
                           className="inline-flex items-center gap-1 border border-[#3a2a1c] px-3 py-2 font-mono text-[8px] uppercase tracking-widest text-[#bcae86] hover:border-[#7b6542] hover:text-[#efe2bd] disabled:opacity-40"
                         >
-                          <ScrollText size={11} /> Timeline Proof
+                          <ScrollText size={11} /> {projectText('Timeline Proof')}
                         </button>
                       </div>
                     </div>
   
                     <div className="tl-detail-section">
-                      <div className="tl-detail-section-title">Relationships</div>
+                      <div className="tl-detail-section-title">{projectText('Relationships')}</div>
                       <div className="space-y-2">
                         {relatedEdges.map(edge => {
                           const otherId = edge.fromNodeId === selectedNode.id ? edge.toNodeId : edge.fromNodeId;
@@ -821,14 +907,14 @@ const AdvancedProjectTimeline = ({ view }) => {
                               onClick={() => otherNode && setSelectedTimelineEventId(otherNode.id)}
                               className="w-full border border-[#2a2118] bg-[#0d0c0b]/45 p-2 text-left hover:border-[#7b6542]"
                             >
-                              <div className="font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">{projectText(edgeMeta[edge.type]?.label || edge.type)}</div>
-                              <div className="font-serif text-sm leading-tight text-[#d8c99f]">{projectText(otherNode?.title || otherId)}</div>
+                              <div className="font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">{graphText(edgeMeta[edge.type]?.label || edge.type, '关联')}</div>
+                              <div className="font-serif text-sm leading-tight text-[#d8c99f]">{graphText(otherNode?.title || otherId, '关联流程记录')}</div>
                             </button>
                           );
                         })}
                         {!relatedEdges.length && (
                           <div className="border border-dashed border-[#2a2118] p-3 font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">
-                            No visible relationship at this zoom level.
+                            {projectText('No visible relationship at this zoom level.')}
                           </div>
                         )}
                       </div>
@@ -836,7 +922,7 @@ const AdvancedProjectTimeline = ({ view }) => {
                   </div>
                   <div className="shrink-0 border-t border-[#2a2118] px-5 py-3">
                     <div className="mb-2 font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">
-                      Confirmation: {selectedNode.confirmation?.confirmedAt ? graphTime(selectedNode.confirmation.confirmedAt) : 'not confirmed by user'}
+                      {projectText('Confirmation')}: {selectedNode.confirmation?.confirmedAt ? graphTime(selectedNode.confirmation.confirmedAt) : projectText('not confirmed by user')}
                     </div>
                     <div className="flex gap-2">
                       <button
@@ -845,7 +931,7 @@ const AdvancedProjectTimeline = ({ view }) => {
                         disabled={!backendCommandAvailable || backendStation.loading || selectedNode.status === 'confirmed'}
                         className="inline-flex flex-1 items-center justify-center gap-1.5 border border-[#59684b] bg-[#59684b] px-3 py-2 font-mono text-[8px] uppercase tracking-widest text-white disabled:opacity-40"
                       >
-                        <CheckCircle2 size={12} /> Confirm Valid Work
+                        <CheckCircle2 size={12} /> {projectText('Confirm Valid Work')}
                       </button>
                       <button
                         type="button"
@@ -853,7 +939,7 @@ const AdvancedProjectTimeline = ({ view }) => {
                         disabled={!backendCommandAvailable || backendStation.loading}
                         className="inline-flex flex-1 items-center justify-center gap-1.5 border border-[#3a2a1c] px-3 py-2 font-mono text-[8px] uppercase tracking-widest text-[#bcae86] hover:border-[#8f1e18] disabled:opacity-40"
                       >
-                        <X size={12} /> Supersede
+                        <X size={12} /> {projectText('Supersede')}
                       </button>
                     </div>
                   </div>

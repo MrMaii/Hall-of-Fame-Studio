@@ -613,9 +613,16 @@ export function createModelProvider({
       return transport.execute(() => performChatCompletion(input));
     },
     async createRuntimeIntent(input = {}) {
+      const intentMessages = buildIntentMessages(input);
+      const initialMaxTokens = Math.max(256, Number(input.maxTokens) || DEFAULT_MAX_TOKENS);
       const completion = await this.createChatCompletion({
-        messages: buildIntentMessages(input),
+        messages: intentMessages,
         json: true,
+        maxTokens: initialMaxTokens,
+        emptyLengthRetryMessages: intentMessages,
+        emptyLengthRetryJson: true,
+        emptyLengthRetryMaxTokens: Math.max(1_400, initialMaxTokens * 2),
+        emptyLengthRetryTimeoutMs: Math.max(20_000, Number(input.timeoutMs) || DEFAULT_TIMEOUT_MS),
       });
       const intent = completion.json || (completion.ok ? { intent: completion.content } : null);
       const languageMatches = !completion.ok || modelOutputMatchesLanguage({

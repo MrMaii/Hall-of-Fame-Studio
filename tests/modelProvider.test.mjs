@@ -76,6 +76,48 @@ test('BUG-002: empty content with finish_reason=length returns explicit error, n
   assert.equal(result.finishReason, 'length');
 });
 
+test('runtime intent retries empty length output with a larger JSON output budget', async () => {
+  const { provider, calls } = makeProvider([
+    { choices: [{ message: { content: '' }, finish_reason: 'length' }] },
+    { choices: [{ message: { content: '{"intent":"Produce the evidence matrix now."}' }, finish_reason: 'stop' }] },
+  ], { config: { jsonResponseFormat: true } });
+
+  const result = await provider.createRuntimeIntent({
+    command: 'continue research',
+    project: { id: 'research', name: 'Research project', language: 'en', team: [] },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.intent.intent, 'Produce the evidence matrix now.');
+  assert.equal(calls.length, 2);
+  assert.ok(calls[1].body.max_tokens > calls[0].body.max_tokens);
+  assert.equal(calls[1].body.response_format.type, 'json_object');
+});
+
+test('callers can opt artifact JSON generation into an empty-length retry', async () => {
+  const retryMessages = [{ role: 'user', content: 'Return the complete research artifact as JSON.' }];
+  const { provider, calls } = makeProvider([
+    { choices: [{ message: { content: '' }, finish_reason: 'length' }] },
+    { choices: [{ message: { content: '{"title":"Evidence matrix","body":"Complete synthesis"}' }, finish_reason: 'stop' }] },
+  ], { config: { jsonResponseFormat: true } });
+
+  const result = await provider.createChatCompletion({
+    messages: retryMessages,
+    json: true,
+    maxTokens: 1200,
+    emptyLengthRetryMessages: retryMessages,
+    emptyLengthRetryJson: true,
+    emptyLengthRetryMaxTokens: 3200,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.json.title, 'Evidence matrix');
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].body.max_tokens, 1200);
+  assert.equal(calls[1].body.max_tokens, 3200);
+  assert.equal(calls[1].body.response_format.type, 'json_object');
+});
+
 test('json mode extracts fenced JSON object', async () => {
   const { provider } = makeProvider({
     choices: [{ message: { content: '```json\n{"ok": true}\n```' } }],

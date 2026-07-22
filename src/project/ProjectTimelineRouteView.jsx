@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import {
   Activity,
   BadgeCheck,
@@ -21,26 +22,36 @@ import {
   Users,
   X,
 } from 'lucide-react';
+import { flushSync } from 'react-dom';
 import AdvancedProjectTimeline from './AdvancedProjectTimeline.jsx';
+import {
+  activitySentence,
+  isMeaningfulActivitySentence,
+  normalizeActivityNodeForDisplay,
+} from './humanReadableRecords.js';
 import {
   WORKFLOW_NODE_FAMILIES,
   WORKFLOW_NODE_FAMILY_ORDER,
   WORKFLOW_NODE_SCALES,
   decorateWorkflowNode,
+  selectWorkflowTimelinePublications,
   workflowNodeVisibleAtScale,
 } from '../workflow/workflowNodeProtocol.js';
 import {
+  buildWorkflowTimelineCurvePath,
   buildWorkflowTimelineDisplayNodes,
-  centerTimelineNodePan,
+  buildWorkflowTimelineStemPath,
   clampTimelinePan,
-  fitTimelineCanvasZoom,
   planWorkflowTimelineLayout,
-  preserveTimelineViewportAnchor,
+  timelineAxisCenteredPanY,
+  timelinePanXForTimestamp,
+  timelineTimestampAtViewportX,
 } from '../workflow/workflowTimelineLayout.js';
 
 export default function ProjectTimelineRouteView({ view }) {
   const {
     DEFAULT_CHAT_PROJECT_ID,
+    activeLanguage,
     activeProject,
     allowLocalRuntimeFallbackForActiveProject,
     backendStation,
@@ -73,6 +84,8 @@ export default function ProjectTimelineRouteView({ view }) {
     tlPan,
     tlZoom,
   } = view;
+    const [timelineViewportHeight, setTimelineViewportHeight] = useState(920);
+    const [expandedOverflowGroupId, setExpandedOverflowGroupId] = useState(null);
 
     const iconByKey = {
       activity: Activity,
@@ -92,6 +105,8 @@ export default function ProjectTimelineRouteView({ view }) {
     };
     const categoryMeta = Object.fromEntries(WORKFLOW_NODE_FAMILY_ORDER.map((id) => [id, {
       ...WORKFLOW_NODE_FAMILIES[id],
+      label: projectText(WORKFLOW_NODE_FAMILIES[id].label),
+      lane: projectText(WORKFLOW_NODE_FAMILIES[id].lane),
       Icon: iconByKey[WORKFLOW_NODE_FAMILIES[id].iconKey] || CircleDot,
     }]));
     const channelNameById = Object.fromEntries(chatChannels.map(channel => [channel.id, channel.name]));
@@ -198,11 +213,18 @@ export default function ProjectTimelineRouteView({ view }) {
     const buildFallbackFlowGraph = () => {
       const agentStatusNodes = activeProject.team.map((agent, index) => {
         const state = activeProject.agentStates?.[agent.id] || {};
+        const displayTitle = activitySentence({
+          eventType: 'progress',
+          actor: agent.name,
+          object: state.currentPlan?.focus || '当前工作',
+        });
         return {
           id: `agent-status-${agent.id}`,
           category: 'monitoring',
           subtype: 'agent-heartbeat',
           title: `${agent.name} current state`,
+          displayTitle,
+          publiclyVisible: isMeaningfulActivitySentence(displayTitle),
           agentId: agent.id,
           agentName: agent.name,
           taskId: null,
@@ -219,6 +241,18 @@ export default function ProjectTimelineRouteView({ view }) {
       });
       const logNodes = (activeProject.logs || []).slice(0, 24).map((log, index) => {
         const agent = activeProject.team.find(member => member.id === log.agentId || member.name === log.agent);
+        const targetAgent = activeProject.team.find(member => member.id === log.targetAgentId || member.name === log.targetAgent);
+        const task = activeProject.tasks?.find(item => String(item.id) === String(log.taskId || ''));
+        const displayTitle = activitySentence({
+          eventType: log.eventType,
+          actor: log.actor || log.agent || agent?.name,
+          targetName: log.targetName || targetAgent?.name,
+          object: log.object || log.changeText || task?.text,
+          taskTitle: task?.text,
+          outcome: log.outcome || log.result,
+          commitMessage: log.commitMessage || log.timelineSubmission?.commitMessage,
+          summary: log.log || log.text,
+        });
         const category = /confirmed|approved|decision/i.test(log.eventType || '')
           ? 'decision'
           : /report|completed|test/i.test(log.eventType || '')
@@ -231,6 +265,8 @@ export default function ProjectTimelineRouteView({ view }) {
           category,
           subtype: log.eventType || 'timeline-log',
           title: log.agent || log.actor || log.eventType || 'Timeline log',
+          displayTitle,
+          publiclyVisible: isMeaningfulActivitySentence(displayTitle),
           agentId: log.agentId || agent?.id || null,
           agentName: agent?.name || log.agent || 'Runtime',
           taskId: log.taskId || null,
@@ -355,19 +391,30 @@ export default function ProjectTimelineRouteView({ view }) {
       : managerFlowGraph.dataSource === 'frontend-fallback'
         ? 'demo data'
         : 'backend-backed';
+    const managerFlowGraphLoading = String(backendStation.managerFlowGraphLoadingProjectId || '').toLowerCase() === activeFlowGraphProjectId;
+    const managerFlowGraphLoadError = String(backendStation.managerFlowGraphErrorProjectId || '').toLowerCase() === activeFlowGraphProjectId
+      ? backendStation.managerFlowGraphError
+      : null;
     const scaleProfiles = Object.fromEntries(Object.entries(WORKFLOW_NODE_SCALES).map(([id, profile]) => [id, {
       ...profile,
+      label: projectText(profile.label),
+      description: projectText(profile.description),
       test: node => workflowNodeVisibleAtScale(node, id),
     }]));
     const scaleOrder = Object.keys(WORKFLOW_NODE_SCALES);
-    const zoomDetail = tlZoom < 0.72 ? 'compact' : tlZoom < 1.12 ? 'medium' : 'expanded';
-    const zoomScale = tlZoom < 0.72 ? 'month' : tlZoom < 1.04 ? 'week' : tlZoom < 1.42 ? 'day' : 'hour';
-    const activeScaleProfile = scaleProfiles[zoomScale] || scaleProfiles.day;
-    const decoratedGraphNodes = (managerFlowGraph.nodes || []).map(decorateWorkflowNode);
-    const semanticNodes = Array.from(new Map(decoratedGraphNodes
-      .filter(activeScaleProfile.test)
-      .map(node => [node.id, node])).values())
-      .sort((a, b) => {
+    const zoomDetail = 'medium';
+    const zoomScale = timelineScale;
+    const decoratedGraphNodes = Array.from(new Map((managerFlowGraph.nodes || [])
+      .map(normalizeActivityNodeForDisplay)
+      .filter(node => node.publiclyVisible !== false && isMeaningfulActivitySentence(node.displayTitle))
+      .map(decorateWorkflowNode)
+      .map(node => [node.id, node])).values());
+    const timelinePublicationForScale = (scale) => selectWorkflowTimelinePublications({
+      nodes: decoratedGraphNodes,
+      scale,
+      pinnedReferenceIds: [selectedTimelineEventId, ...focusedTimelineProofIds],
+    });
+    const sortTimelineNodes = (nodes) => [...nodes].sort((a, b) => {
         const areaA = a.commitArea?.index ?? managerFlowGraph.layout?.nodeLayoutHints?.[a.id]?.index;
         const areaB = b.commitArea?.index ?? managerFlowGraph.layout?.nodeLayoutHints?.[b.id]?.index;
         if (Number.isFinite(areaA) && Number.isFinite(areaB) && areaA !== areaB) return areaA - areaB;
@@ -379,10 +426,13 @@ export default function ProjectTimelineRouteView({ view }) {
         if (Number.isFinite(branchA) && Number.isFinite(branchB) && branchA !== branchB) return branchA - branchB;
         return (a.sequence || 0) - (b.sequence || 0);
       });
+    const sortedSemanticNodesForScale = (scale) => sortTimelineNodes(timelinePublicationForScale(scale).nodes);
+    const timelinePublication = timelinePublicationForScale(zoomScale);
+    const semanticNodes = sortTimelineNodes(timelinePublication.nodes);
     const timelineDisplay = buildWorkflowTimelineDisplayNodes({ nodes: semanticNodes, scale: zoomScale });
     const visibleNodes = timelineDisplay.nodes;
     const visibleNodeIds = new Set(visibleNodes.map(node => node.id));
-    const visibleEdges = Array.from(new Map((managerFlowGraph.edges || [])
+    const semanticEdges = Array.from(new Map((managerFlowGraph.edges || [])
       .map((edge) => {
         const fromNodeId = timelineDisplay.memberToDisplayId.get(edge.fromNodeId) || edge.fromNodeId;
         const toNodeId = timelineDisplay.memberToDisplayId.get(edge.toNodeId) || edge.toNodeId;
@@ -399,30 +449,22 @@ export default function ProjectTimelineRouteView({ view }) {
     const selectedDisplayId = timelineDisplay.memberToDisplayId.get(selectedTimelineEventId) || selectedTimelineEventId;
     const selectedNode = visibleNodes.find(node => node.id === selectedDisplayId)
       || visibleNodes.find(node => [node.id, ...(node.clusterMemberIds || []), ...(node.proofIds || []), ...(node.timelineLogIds || []), ...(node.eventIds || [])].includes(selectedTimelineEventId))
-      || decoratedGraphNodes.find(node => node.id === selectedTimelineEventId)
       || null;
     const selectedThinkingFrame = selectedNode?.thinkingFrame || selectedNode?.submission?.thinkingFrame || null;
-    const relatedEdges = selectedNode
-      ? visibleEdges.filter(edge => edge.fromNodeId === selectedNode.id || edge.toNodeId === selectedNode.id)
-      : [];
-    const relatedNodeIds = selectedNode
-      ? Array.from(new Set(relatedEdges.flatMap(edge => [edge.fromNodeId, edge.toNodeId]).filter(id => id !== selectedNode.id)))
-      : [];
     const isProofFocused = (node) => focusedTimelineProofIds.some(id => (
       node.id === id
       || (node.proofIds || []).includes(id)
       || (node.timelineLogIds || []).includes(id)
       || (node.eventIds || []).includes(id)
     ));
-    const visibleTimelineProofCount = visibleNodes.filter(isProofFocused).length;
     const uniqueIds = (values) => Array.from(new Set((values || []).filter(Boolean).map(value => String(value))));
     const agentById = new Map((activeProject.team || []).map(agent => [agent.id, agent]));
     const agentDisplay = (agentId) => {
       const agent = agentById.get(agentId);
       return {
         id: agentId || 'project',
-        name: agent?.name || agentId || 'Project',
-        role: agent?.title || agent?.role || agent?.duty || (agentId ? 'Agent' : 'Project'),
+        name: projectText(agent?.name || agentId || 'Project'),
+        role: projectText(agent?.title || agent?.role || agent?.duty || (agentId ? 'Agent' : 'Project')),
         accent: agent?.color || '#bcae86',
       };
     };
@@ -433,7 +475,7 @@ export default function ProjectTimelineRouteView({ view }) {
     ]).map(agentDisplay);
     const committersLabel = (node) => {
       const committers = nodeCommitters(node);
-      if (!committers.length) return node.agentName || 'Project';
+      if (!committers.length) return projectText(node.agentName || 'Project');
       if (committers.length === 1) return committers[0].name;
       return `${committers.slice(0, 2).map(person => person.name).join(' + ')}${committers.length > 2 ? ` +${committers.length - 2}` : ''}`;
     };
@@ -442,93 +484,181 @@ export default function ProjectTimelineRouteView({ view }) {
       if (text.length <= max) return text;
       return `${text.slice(0, Math.max(0, max - 3)).trim()}...`;
     };
-    const timelineLayout = planWorkflowTimelineLayout({ nodes: visibleNodes, scale: zoomScale, detail: zoomDetail });
+    const timelineLayout = planWorkflowTimelineLayout({
+      nodes: visibleNodes,
+      scale: zoomScale,
+      detail: zoomDetail,
+      timeDensity: tlZoom,
+      viewportHeight: timelineViewportHeight,
+      expandedOverflowGroupId,
+      pinnedNodeIds: [
+        selectedDisplayId,
+        ...visibleNodes.filter(isProofFocused).map(node => node.id),
+      ],
+    });
     const {
       canvasH,
       canvasW,
-      laneGuides,
       nodeLayout,
-      rulerHeight,
+      overflowGroups,
+      timeAxisY,
       timeTicks,
-      xOffset,
     } = timelineLayout;
     const visibleNodesByPosition = visibleNodes
       .map(node => ({ node, box: nodeLayout[node.id] }))
       .filter(item => item.box)
       .sort((a, b) => a.box.x - b.box.x || a.box.y - b.box.y)
       .map(item => item.node);
+    const renderedNodeIds = new Set(visibleNodesByPosition.map(node => node.id));
+    const visibleEdges = semanticEdges.filter(edge => (
+      renderedNodeIds.has(edge.fromNodeId) && renderedNodeIds.has(edge.toNodeId)
+    ));
+    const relatedEdges = selectedNode
+      ? visibleEdges.filter(edge => edge.fromNodeId === selectedNode.id || edge.toNodeId === selectedNode.id)
+      : [];
+    const relatedNodeIds = selectedNode
+      ? Array.from(new Set(relatedEdges.flatMap(edge => [edge.fromNodeId, edge.toNodeId]).filter(id => id !== selectedNode.id)))
+      : [];
+    const visibleTimelineProofCount = visibleNodesByPosition.filter(isProofFocused).length;
     const initialGraphNode = selectedNode || visibleNodesByPosition[0] || null;
     const initialGraphNodeBox = initialGraphNode ? nodeLayout[initialGraphNode.id] : null;
-    const defaultGraphPan = initialGraphNodeBox
-      ? { x: 300 - initialGraphNodeBox.x, y: 180 - initialGraphNodeBox.y }
-      : { x: 0, y: 0 };
     const getAnchor = (edge) => {
       const from = nodeLayout[edge.fromNodeId];
       const to = nodeLayout[edge.toNodeId];
-      if (!from || !to) return null;
-      const forward = to.x >= from.x;
-      const sx = forward ? from.x + from.w : from.x;
-      const sy = from.y + from.h / 2;
-      const ex = forward ? to.x : to.x + to.w;
-      const ey = to.y + to.h / 2;
-      const bendX = forward && ex - sx > 80 ? (sx + ex) / 2 : Math.max(sx, ex) + 64;
-      return { sx, sy, ex, ey, path: `M ${sx} ${sy} H ${bendX} V ${ey} H ${ex}` };
+      return buildWorkflowTimelineCurvePath({ fromBox: from, toBox: to });
     };
+    const getTimeBranch = (nodeId) => buildWorkflowTimelineStemPath({ box: nodeLayout[nodeId], timeAxisY });
     const graphViewport = () => {
       const viewport = timelineViewportRef.current;
       return viewport ? { width: viewport.clientWidth, height: viewport.clientHeight } : null;
     };
-    const clampGraphPan = (pan, zoom = tlZoom) => clampTimelinePan({
-      pan,
-      zoom,
-      canvas: { width: canvasW, height: canvasH },
-      viewport: graphViewport(),
-    });
-    const focusGraphNode = (nodeId, zoom = tlZoom) => {
+    const initialViewport = graphViewport();
+    const defaultGraphPan = initialGraphNodeBox
+      ? {
+          x: 300 - initialGraphNodeBox.x,
+          y: timelineAxisCenteredPanY({ timeAxisY, viewportHeight: initialViewport?.height }),
+        }
+      : {
+          x: 0,
+          y: timelineAxisCenteredPanY({ timeAxisY, viewportHeight: initialViewport?.height }),
+        };
+    const clampGraphPanForLayout = ({ pan, layout = timelineLayout, viewport = graphViewport() }) => {
+      if (!viewport) return pan;
+      const clamped = clampTimelinePan({
+        pan,
+        zoom: 1,
+        canvas: { width: layout.canvasW, height: layout.canvasH },
+        viewport,
+      });
+      return {
+        ...clamped,
+        y: timelineAxisCenteredPanY({ timeAxisY: layout.timeAxisY, viewportHeight: viewport.height }),
+      };
+    };
+    const clampGraphPan = (pan) => clampGraphPanForLayout({ pan });
+    const focusGraphNode = (nodeId) => {
       const viewport = graphViewport();
       const box = nodeLayout[nodeId];
       if (!viewport || !box) return false;
-      setTlPan(clampGraphPan(centerTimelineNodePan({ box, viewport, zoom }), zoom));
+      setTlPan(clampGraphPan({
+        x: viewport.width / 2 - (box.x + box.w / 2),
+        y: timelineAxisCenteredPanY({ timeAxisY, viewportHeight: viewport.height }),
+      }));
       return true;
     };
-    const handleGraphZoomChange = (nextZoomValue) => {
+    const commitGraphViewportChange = (apply, animatePresence = false) => {
+      if (!animatePresence || typeof document.startViewTransition !== 'function') {
+        apply();
+        return;
+      }
+      document.startViewTransition(() => flushSync(apply)).finished.catch(() => {});
+    };
+    const toggleTimelineOverflowGroup = (group) => {
+      const nextOverflowGroupId = expandedOverflowGroupId === group.id ? null : group.id;
+      const viewport = graphViewport();
+      commitGraphViewportChange(() => {
+        setExpandedOverflowGroupId(nextOverflowGroupId);
+        setSelectedTimelineEventId(null);
+        if (viewport) {
+          setTlPan(previousPan => clampGraphPan({
+            ...previousPan,
+            x: viewport.width / 2 - group.timeAnchorX,
+          }));
+        }
+      }, true);
+    };
+    const handleGraphZoomChange = (nextZoomValue, requestedViewportPoint = null) => {
       const nextZoom = Math.min(2.2, Math.max(0.36, Number(nextZoomValue) || 1));
+      const nextScale = nextZoom < 0.72 ? 'month' : nextZoom < 0.96 ? 'week' : nextZoom < 1.42 ? 'day' : 'hour';
       const viewport = graphViewport();
       if (!viewport) {
         setTlZoom(nextZoom);
+        setTimelineScale(nextScale);
         return;
       }
       const selectedBox = selectedNode ? nodeLayout[selectedNode.id] : null;
-      const worldPoint = selectedBox
-        ? { x: selectedBox.x + selectedBox.w / 2, y: selectedBox.y + selectedBox.h / 2 }
-        : { x: (viewport.width / 2 - tlPan.x) / tlZoom, y: (viewport.height / 2 - tlPan.y) / tlZoom };
-      const viewportPoint = selectedBox
-        ? { x: tlPan.x + worldPoint.x * tlZoom, y: tlPan.y + worldPoint.y * tlZoom }
-        : { x: viewport.width / 2, y: viewport.height / 2 };
-      const nextPan = preserveTimelineViewportAnchor({ worldPoint, viewportPoint, zoom: nextZoom });
-      setTlZoom(nextZoom);
-      setTlPan(clampGraphPan(nextPan, nextZoom));
+      const viewportPoint = !requestedViewportPoint && selectedBox
+        ? { x: tlPan.x + selectedBox.x + selectedBox.w / 2 }
+        : requestedViewportPoint || { x: viewport.width / 2 };
+      const anchoredTimestamp = timelineTimestampAtViewportX({
+        layout: timelineLayout,
+        panX: tlPan.x,
+        viewportX: viewportPoint.x,
+      });
+      const nextDisplay = buildWorkflowTimelineDisplayNodes({
+        nodes: sortedSemanticNodesForScale(nextScale),
+        scale: nextScale,
+      });
+      const nextLayout = planWorkflowTimelineLayout({
+        nodes: nextDisplay.nodes,
+        scale: nextScale,
+        detail: 'medium',
+        timeDensity: nextZoom,
+        viewportHeight: viewport.height,
+      });
+      const nextSelectedBox = selectedNode ? nextLayout.nodeLayout[selectedNode.id] : null;
+      const nextPan = nextSelectedBox && !requestedViewportPoint
+        ? {
+            x: viewportPoint.x - (nextSelectedBox.x + nextSelectedBox.w / 2),
+            y: timelineAxisCenteredPanY({ timeAxisY: nextLayout.timeAxisY, viewportHeight: viewport.height }),
+          }
+        : {
+            x: timelinePanXForTimestamp({ layout: nextLayout, timestamp: anchoredTimestamp, viewportX: viewportPoint.x }),
+            y: timelineAxisCenteredPanY({ timeAxisY: nextLayout.timeAxisY, viewportHeight: viewport.height }),
+          };
+      commitGraphViewportChange(() => {
+        setTlZoom(nextZoom);
+        setTimelineScale(nextScale);
+        setExpandedOverflowGroupId(null);
+        setTlPan(clampGraphPanForLayout({ pan: nextPan, layout: nextLayout, viewport }));
+      }, nextScale !== zoomScale);
     };
     const fitGraphView = () => {
       const viewport = graphViewport();
       if (!viewport) return;
-      const nextZoom = fitTimelineCanvasZoom({
-        canvas: { width: canvasW, height: canvasH },
-        viewport,
-        minZoom: 0.36,
-        maxZoom: 1,
+      const nextZoom = { month: 0.36, week: 0.72, day: 0.96, hour: 1.42 }[zoomScale] || 0.96;
+      const nextDisplay = buildWorkflowTimelineDisplayNodes({
+        nodes: sortedSemanticNodesForScale(zoomScale),
+        scale: zoomScale,
       });
-      const nextPan = preserveTimelineViewportAnchor({
-        worldPoint: { x: canvasW / 2, y: canvasH / 2 },
-        viewportPoint: { x: viewport.width / 2, y: viewport.height / 2 },
-        zoom: nextZoom,
+      const nextLayout = planWorkflowTimelineLayout({
+        nodes: nextDisplay.nodes,
+        scale: zoomScale,
+        detail: 'medium',
+        timeDensity: nextZoom,
+        viewportHeight: viewport.height,
       });
+      const nextPan = {
+        x: viewport.width / 2 - nextLayout.canvasW / 2,
+        y: timelineAxisCenteredPanY({ timeAxisY: nextLayout.timeAxisY, viewportHeight: viewport.height }),
+      };
       setTlZoom(nextZoom);
-      setTlPan(clampGraphPan(nextPan, nextZoom));
+      setExpandedOverflowGroupId(null);
+      setTlPan(clampGraphPanForLayout({ pan: nextPan, layout: nextLayout, viewport }));
     };
     const focusSelectedNode = () => selectedNode && focusGraphNode(selectedNode.id);
     const focusLatestNode = () => {
-      const latest = [...visibleNodes].sort((a, b) => (
+      const latest = [...visibleNodesByPosition].sort((a, b) => (
         (Date.parse(b.time) || 0) - (Date.parse(a.time) || 0) || (b.sequence || 0) - (a.sequence || 0)
       ))[0];
       if (!latest) return;
@@ -538,48 +668,74 @@ export default function ProjectTimelineRouteView({ view }) {
     const handleGraphWheel = (event) => {
       event.preventDefault();
       if (event.altKey) {
-        const current = scaleOrder.indexOf(timelineScale);
+        const current = scaleOrder.indexOf(zoomScale);
         const next = event.deltaY > 0 ? Math.max(0, current - 1) : Math.min(scaleOrder.length - 1, current + 1);
-        setTimelineScale(scaleOrder[next]);
+        const nextScale = scaleOrder[next];
+        handleGraphZoomChange({ month: 0.68, week: 0.88, day: 1.2, hour: 1.68 }[nextScale]);
         return;
       }
       if (event.shiftKey) {
-        setTlPan(prev => ({ ...prev, x: prev.x - event.deltaY }));
+        setTlPan(prev => clampGraphPan({ ...prev, x: prev.x - event.deltaY }));
         return;
       }
       const rect = event.currentTarget.getBoundingClientRect();
       const pointerX = event.clientX - rect.left;
-      const pointerY = event.clientY - rect.top;
       const nextZoom = Math.min(2.2, Math.max(0.36, tlZoom * Math.exp(-event.deltaY * 0.0012)));
-      const worldX = (pointerX - tlPan.x) / tlZoom;
-      const worldY = (pointerY - tlPan.y) / tlZoom;
-      setTlZoom(nextZoom);
-      setTlPan(clampGraphPan({
-        x: pointerX - worldX * nextZoom,
-        y: pointerY - worldY * nextZoom,
-      }, nextZoom));
+      handleGraphZoomChange(nextZoom, { x: pointerX });
     };
     const handleGraphMouseDown = (event) => {
       if (event.target.closest('button')) return;
+      if (expandedOverflowGroupId) setExpandedOverflowGroupId(null);
       setTlDragging(true);
-      tlDragStartRef.current = { x: event.clientX, y: event.clientY, panX: tlPan.x, panY: tlPan.y };
+      tlDragStartRef.current = { x: event.clientX, panX: tlPan.x };
     };
     const handleGraphMouseMove = (event) => {
       if (!tlDragging) return;
       setTlPan(clampGraphPan({
         x: tlDragStartRef.current.panX + event.clientX - tlDragStartRef.current.x,
-        y: tlDragStartRef.current.panY + event.clientY - tlDragStartRef.current.y,
+        y: tlPan.y,
       }));
     };
     const resetGraphView = () => {
-      setTlZoom(1);
-      setTimelineScale('day');
-      const latest = [...visibleNodes].sort((a, b) => (Date.parse(b.time) || 0) - (Date.parse(a.time) || 0))[0];
+      const nextZoom = 1;
+      const nextScale = 'day';
+      const nextDisplay = buildWorkflowTimelineDisplayNodes({
+        nodes: sortedSemanticNodesForScale(nextScale),
+        scale: nextScale,
+      });
+      const nextLayout = planWorkflowTimelineLayout({
+        nodes: nextDisplay.nodes,
+        scale: nextScale,
+        detail: 'medium',
+        timeDensity: nextZoom,
+        viewportHeight: graphViewport()?.height || timelineViewportHeight,
+      });
+      const latest = [...nextDisplay.nodes].sort((a, b) => (
+        (Date.parse(b.time) || 0) - (Date.parse(a.time) || 0) || (b.sequence || 0) - (a.sequence || 0)
+      ))[0];
+      setTlZoom(nextZoom);
+      setTimelineScale(nextScale);
+      setExpandedOverflowGroupId(null);
+      setSelectedTimelineEventId(null);
       if (latest) {
-        setSelectedTimelineEventId(latest.id);
-        focusGraphNode(latest.id, 1);
+        const viewport = graphViewport();
+        const box = nextLayout.nodeLayout[latest.id];
+        if (viewport && box) {
+          setTlPan(clampGraphPanForLayout({
+            pan: {
+              x: viewport.width / 2 - (box.x + box.w / 2),
+              y: timelineAxisCenteredPanY({ timeAxisY: nextLayout.timeAxisY, viewportHeight: viewport.height }),
+            },
+            layout: nextLayout,
+            viewport,
+          }));
+        }
       } else {
-        setTlPan({ x: 0, y: 0 });
+        const viewport = graphViewport();
+        setTlPan({
+          x: 0,
+          y: timelineAxisCenteredPanY({ timeAxisY: nextLayout.timeAxisY, viewportHeight: viewport?.height }),
+        });
       }
     };
     const graphTime = (value) => {
@@ -723,8 +879,9 @@ export default function ProjectTimelineRouteView({ view }) {
     })();
 
     return (
-      <AdvancedProjectTimeline
+        <AdvancedProjectTimeline
           view={{
+            activeLanguage,
             CheckCircle2,
             CircleDot,
             Database,
@@ -756,6 +913,7 @@ export default function ProjectTimelineRouteView({ view }) {
             focusLatestNode,
             focusSelectedNode,
             getAnchor,
+            getTimeBranch,
             graphTime,
             handleGraphMouseDown,
             handleGraphMouseMove,
@@ -763,22 +921,24 @@ export default function ProjectTimelineRouteView({ view }) {
             handleGraphZoomChange,
             isProofFocused,
             managerFlowGraph,
+            managerFlowGraphLoadError,
+            managerFlowGraphLoading,
             managerFlowGraphSourceLabel,
-            laneGuides,
             nodeCommitters,
             nodeLayout,
             nodeMap,
             openProjectChatProof,
             openProjectTimelineProof,
+            overflowGroups,
             projectText,
             openSelectedNodeProofMapRoute,
             openSelectedNodeSubmissionRecord,
             relatedEdges,
             relatedNodeIds,
+            reportGraphViewportHeight: setTimelineViewportHeight,
             relationshipGraph,
             renderAutonomousActionDecision,
             resetGraphView,
-            rulerHeight,
             scaleProfiles,
             sceneTransition,
             selectedChatProofIds,
@@ -795,16 +955,18 @@ export default function ProjectTimelineRouteView({ view }) {
             setTlDragging,
             setTlPan,
             syncBackendManagerFlowGraph,
+            timeAxisY,
             timeTicks,
             timelineViewportRef,
+            timelinePublication,
+            toggleTimelineOverflowGroup,
             tlDragging,
             tlPan,
             tlZoom,
             visibleEdges,
-            visibleNodes,
+            visibleNodes: visibleNodesByPosition,
             visibleNodesByPosition,
             visibleTimelineProofCount,
-            xOffset,
             zoomDetail,
             zoomScale,
           }}

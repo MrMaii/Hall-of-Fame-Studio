@@ -2,6 +2,7 @@
 // Extracted verbatim from agentProjectService.js — behavior must stay identical.
 
 import { modelOutputLanguageInstruction, modelOutputMatchesLanguage } from './modelLanguagePolicy.js';
+import { buildMeetingContextPacket } from './meetingInteractionProtocol.js';
 
 const nowIso = () => new Date().toISOString();
 
@@ -25,13 +26,15 @@ export function buildModelKickoffMeetingMessages({
         'You are the real kickoff meeting engine for Hall of Fame Studio.',
         modelOutputLanguageInstruction(language),
         'Return the final JSON immediately. Do not reason step by step.',
-        'Generate only the opening clarification stage of a project-initiation meeting.',
+        'Generate the opening clarification stage of a project-initiation meeting and make the expected final deliverables explicit.',
         'The project topic is fixed. Never replace it with another research topic or generic AI/model-performance work.',
         'Every text field must mention or clearly refer to the project topic.',
-        'Use 2 or 3 roleTurns only. Do not generate leaderCampaigns or nextActions in the opening stage.',
+        'Use 2 to 4 roleTurns. Do not generate leaderCampaigns or nextActions in the opening stage.',
+        'At least one roleTurn must be a deliverable-question or deliverable-proposal so the team proactively raises what final files will be handed to the user.',
         'Keep each text under 32 Chinese characters or 24 English words.',
-        'Required JSON keys: roleTurns, decisionSummary, risks.',
-        'roleTurns item: {agentId,type,text,hears}. Use type "role-question" or "role-volunteer".',
+        'Required JSON keys: roleTurns, deliverables, decisionSummary, risks.',
+        'roleTurns item: {agentId,type,text,hears}. Use type "role-question", "role-volunteer", "deliverable-question", or "deliverable-proposal".',
+        'deliverables item: {title,fileName,format,ownerId,purpose,acceptanceCriteria}. File names must include an extension.',
         strictTopic ? 'Strict topic retry: every agent turn, leader claim, next action, and risk must explicitly concern the exact project name and brief.' : '',
         'Return JSON only. No markdown.',
       ].filter(Boolean).join('\n'),
@@ -58,7 +61,10 @@ export function buildModelKickoffMeetingTurnMessages({
   language = 'en',
   now = nowIso(),
 } = {}) {
-  const team = meeting.team || [];
+  const contextPacket = buildMeetingContextPacket({
+    meeting,
+    latestDirectorInput,
+  });
   return [
     {
       role: 'system',
@@ -66,11 +72,17 @@ export function buildModelKickoffMeetingTurnMessages({
         'You are the live kickoff meeting engine for Hall of Fame Studio.',
         modelOutputLanguageInstruction(language),
         'Return the final JSON immediately. Do not reason step by step.',
-        'Continue the meeting as a natural multi-agent conversation. Do not turn leader selection, role split, or next actions into dashboard controls.',
-        'Agents should ask clarifying questions, decompose the work, volunteer for responsibility areas, and self-nominate for leader only when the conversation is ready.',
+        'Continue the meeting as a natural multi-agent conversation. Do not turn leader selection, role split, next actions, or deliverables into dashboard controls.',
+        'Agents should ask clarifying questions, decompose the work, volunteer for responsibility areas, self-nominate for leader only when the conversation is ready, and explicitly propose the final files the project must deliver.',
+        'Before the team says it is ready to close, at least one Agent must raise the final deliverables. If they are unclear, ask the Director to confirm their names, file formats, owners, purposes, and acceptance criteria.',
+        'Make later agents respond to an earlier turn, not independently repeat an answer to the Director.',
+        'Use 2 or 3 causal peer exchanges. The final exchange must synthesize or escalate the remaining question to the Director.',
+        'Every peer response requires replyToTurnId, targetSpeakerId, and interactionIntent.',
+        'interactionIntent must be support, challenge, clarify, compete, synthesize, escalate, or yield.',
+        'Do not continue an A/B argument after three peer exchanges.',
         'The user is the final decision maker. Do not claim the leader is confirmed unless the user explicitly confirms it.',
         'If the team has no more useful agenda, agents may say they are ready to close, but only the user can end the meeting.',
-        'Use 1 to 3 short agentTurns. Keep each text under 36 Chinese characters or 28 English words.',
+        'Use 2 to 4 short agentTurns. Keep each text under 36 Chinese characters or 28 English words.',
         'Return JSON only. No markdown.',
       ].join('\n'),
     },
@@ -79,37 +91,17 @@ export function buildModelKickoffMeetingTurnMessages({
       content: JSON.stringify({
         now,
         language,
-        meeting: {
-          id: meeting.id,
-          projectId: meeting.projectId,
-          name: meeting.name,
-          brief: meeting.brief,
-          latestDirectorInput,
-        },
-        team: team.map((agent) => ({
-          id: agent.id,
-          name: agent.name,
-          role: agent.role || agent.title || 'Agent',
-          duty: agent.duty || agent.skill || '',
-        })),
-        recentTranscript: (meeting.transcript || []).slice(-14).map((turn) => ({
-          id: turn.id,
-          speakerId: turn.speakerId || turn.agentId || null,
-          speaker: turn.speaker || turn.author || '',
-          type: turn.type || '',
-          stage: turn.stage || '',
-          text: turn.text || '',
-        })),
-        openRoleQuestions: (meeting.roleQuestionResolutions || [])
-          .filter((row) => !row.answered)
-          .slice(0, 6),
+        contextPacket,
         requiredShape: {
           agentTurns: [
             {
               agentId: 'agent id from team',
-              type: 'clarifying-question, role-volunteer, task-decomposition, leader-campaign, adjustment, or next-action',
+              type: 'clarifying-question, role-volunteer, task-decomposition, leader-campaign, adjustment, next-action, deliverable-question, or deliverable-proposal',
               text: 'one natural meeting turn in the project language',
               score: 8,
+              replyToTurnId: 'id of an earlier context or agent turn',
+              targetSpeakerId: 'agent id being answered, or director for the opening response',
+              interactionIntent: 'support, challenge, clarify, compete, synthesize, escalate, or yield',
             },
           ],
           recommendedLeaderId: 'optional agent id from team, only if a recommendation is emerging',
@@ -117,6 +109,16 @@ export function buildModelKickoffMeetingTurnMessages({
             {
               text: 'optional concrete first action if the meeting has reached planning',
               ownerId: 'agent id from team',
+            },
+          ],
+          deliverables: [
+            {
+              title: 'human-readable final file name without an extension',
+              fileName: 'the exact file name including extension',
+              format: 'Markdown, PDF, Word, Excel, PowerPoint, or another explicit format',
+              ownerId: 'agent id from team',
+              purpose: 'what this file lets the user do',
+              acceptanceCriteria: ['one observable completion condition'],
             },
           ],
           decisionSummary: 'optional one sentence summary of the current meeting state',
@@ -139,9 +141,10 @@ export function buildModelKickoffOpeningLineMessages({
       content: [
         'You open a project kickoff meeting.',
         modelOutputLanguageInstruction(language),
-        'Return only 2 or 3 lines. No markdown. No JSON.',
+        'Return only 2 to 4 lines. No markdown. No JSON.',
         'Each line format: agentId | type | text',
-        'type must be role-question or role-volunteer.',
+        'type must be role-question, role-volunteer, deliverable-question, or deliverable-proposal.',
+        'At least one Agent must proactively ask about or propose the final files, their formats, owners, and acceptance conditions.',
         'Every line must be about the exact project topic.',
         'Keep each text under 32 Chinese characters or 24 English words.',
       ].join('\n'),
@@ -173,7 +176,7 @@ export function buildModelKickoffTurnLineMessages({
         modelOutputLanguageInstruction(language),
         'Return only 1 to 3 lines. No markdown. No JSON.',
         'Each line format: agentId | type | text',
-        'type must be clarifying-question, role-volunteer, task-decomposition, leader-campaign, adjustment, or next-action.',
+        'type must be clarifying-question, role-volunteer, task-decomposition, leader-campaign, adjustment, next-action, deliverable-question, or deliverable-proposal.',
         'Every line must respond to the latest Director input and stay on the project topic.',
         'Keep each text under 36 Chinese characters or 28 English words.',
       ].join('\n'),
@@ -205,7 +208,7 @@ export function parseModelLineTurns(content = '', team = [], { mode = 'opening' 
     .split(/\r?\n/)
     .map((line) => line.replace(/^[-*\d.\s]+/, '').trim())
     .filter(Boolean)
-    .slice(0, mode === 'opening' ? 3 : 4);
+    .slice(0, 4);
   return lines.map((line) => {
     const parts = line.split('|').map((part) => part.trim()).filter(Boolean);
     const agent = findMeetingAgent(team, parts[0]) || findMeetingAgent(team, line);
@@ -348,6 +351,7 @@ export function parseModelTurnLinePayload(content = '', meeting = {}) {
 
 export function normalizeModelMeetingTurnType(value = '') {
   const raw = String(value || '').toLowerCase();
+  if (/deliverable|artifact|output|file|交付|文件|产出/.test(raw)) return { type: 'deliverable-proposal', stage: 'deliverable-confirmation' };
   if (/leader|campaign|nominate|candidate/.test(raw)) return { type: 'leader-campaign', stage: 'leader-campaign' };
   if (/next|action|plan|execution/.test(raw)) return { type: 'next-action', stage: 'execution-planning' };
   if (/question|clarif|ask/.test(raw)) return { type: 'role-question', stage: 'role-clarification' };
@@ -392,6 +396,13 @@ export function modelKickoffPayloadText(modelPayload = {}) {
     ...normalizeModelArray(modelPayload.leaderCampaigns).flatMap((turn) => [turn.claim, turn.text, turn.statement, turn.content]),
     ...normalizeModelArray(modelPayload.nextActions).flatMap((action) => [action.text, action.title, action.action]),
     ...normalizeModelArray(modelPayload.agentTurns).flatMap((turn) => [turn.text, turn.question, turn.statement, turn.claim, turn.content]),
+    ...normalizeModelArray(modelPayload.deliverables).flatMap((deliverable) => [
+      deliverable.title,
+      deliverable.fileName,
+      deliverable.format,
+      deliverable.purpose,
+      ...normalizeModelArray(deliverable.acceptanceCriteria),
+    ]),
     modelPayload.decisionSummary,
     ...normalizeModelArray(modelPayload.risks),
   ];

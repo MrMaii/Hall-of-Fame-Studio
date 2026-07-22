@@ -58,7 +58,7 @@ Hall of Fame Studio is an open, local-first prototype for a **roundtable-first A
 
 ## Quick start
 
-> **Developer preview only.** Local setup is for UI inspection and validation scripts — not a supported product install. See **[ROADMAP.md](ROADMAP.md)** for milestone status and **[CONTRIBUTING.md](CONTRIBUTING.md)** if you want to contribute.
+> **Local self-hosted preview.** The first-user path now covers local account setup, model connection, project initiation, team selection, kickoff, dashboard creation, and restart recovery. It is still not approved for public production. Follow the **[local user quickstart](docs/OPEN_SOURCE_LOCAL_QUICKSTART.md)** for the supported path, common fixes, and current limits.
 
 ```bash
 git clone https://github.com/MrMaii/Hall-of-Fame-Studio.git
@@ -68,6 +68,8 @@ npm run dev
 ```
 
 Open **http://localhost:5173**, then click **Load Sample Fixture** only when you want to inspect the Manager Demo sample data. That path is a demo fixture. Real project work should start from the initiation workflow, not the sample fixture.
+
+> **License notice:** this repository does not currently include an open-source license. Until the maintainer selects and adds one, treat it as source-available rather than legally open source.
 
 ### Run the real local MVP path
 

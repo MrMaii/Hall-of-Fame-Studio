@@ -6,16 +6,13 @@ const ProjectDashboardRecentCommitLine = lazy(() => import('./ProjectDashboardRe
 export default function ProjectDashboardContentLayout({
   topPanelsFallback,
   topPanelsView,
-  managerBody,
   recentCommitFallback,
   recentCommitView,
 }) {
   return (
     <div className="project-paper min-w-0 w-full border border-[#7b6542] p-4 md:p-6 xl:p-10 grid grid-cols-12 gap-4 md:gap-6 xl:gap-8 min-h-[calc(100vh-96px)]">
       <Suspense fallback={topPanelsFallback}>
-        <ProjectDashboardTopPanels view={topPanelsView}>
-          {managerBody}
-        </ProjectDashboardTopPanels>
+        <ProjectDashboardTopPanels view={topPanelsView} />
       </Suspense>
 
       <Suspense fallback={recentCommitFallback}>

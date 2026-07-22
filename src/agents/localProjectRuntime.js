@@ -1,15 +1,19 @@
 import {
   appendFileSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readdirSync,
   readFileSync,
+  realpathSync,
+  renameSync,
   rmSync,
   statSync,
+  watch as watchFileSystem,
   writeFileSync,
 } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { dirname, relative, resolve, sep } from 'node:path';
+import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import process from 'node:process';
 import { replaceFileWithRetry } from './atomicFileReplace.js';
@@ -92,29 +96,79 @@ function safeJoin(rootPath, pathPart = '') {
 }
 
 function fileRecord(rootPath, absolutePath) {
-  const stat = statSync(absolutePath);
+  const linkStat = lstatSync(absolutePath);
+  const stat = linkStat.isSymbolicLink() ? linkStat : statSync(absolutePath);
   return {
     path: relative(rootPath, absolutePath).replace(/\\/g, '/') || '.',
     name: absolutePath.split(/[\\/]/).pop(),
-    type: stat.isDirectory() ? 'directory' : 'file',
+    type: linkStat.isSymbolicLink() ? 'symlink' : stat.isDirectory() ? 'directory' : 'file',
     size: stat.size,
     updatedAt: stat.mtime.toISOString(),
   };
 }
 
+function assertNoSymbolicLinkSegments(rootPath, absolutePath) {
+  const pathFromRoot = relative(resolve(rootPath), resolve(absolutePath));
+  if (!pathFromRoot || pathFromRoot === '.') return;
+  let cursor = resolve(rootPath);
+  for (const segment of pathFromRoot.split(sep).filter(Boolean)) {
+    cursor = resolve(cursor, segment);
+    if (!existsSync(cursor)) break;
+    if (lstatSync(cursor).isSymbolicLink()) throw new Error('workspace-symbolic-link-not-supported');
+  }
+}
+
+function nearestExistingPath(absolutePath) {
+  let cursor = absolutePath;
+  while (!existsSync(cursor)) {
+    const parent = dirname(cursor);
+    if (parent === cursor) break;
+    cursor = parent;
+  }
+  return cursor;
+}
+
+function workspaceTarget(rootPath, pathPart = '.', { allowMissing = false } = {}) {
+  const normalized = String(pathPart || '.').trim() || '.';
+  if (isAbsolute(normalized) || /^[A-Za-z]:[\\/]/.test(normalized)) {
+    throw new Error('workspace-absolute-child-path-not-allowed');
+  }
+  const target = safeJoin(rootPath, normalized);
+  const existingTarget = allowMissing ? nearestExistingPath(target) : target;
+  if (!existsSync(existingTarget)) throw new Error(`Workspace path not found: ${pathPart}`);
+  assertNoSymbolicLinkSegments(rootPath, existingTarget);
+  assertInside(realpathSync(rootPath), realpathSync(existingTarget));
+  return target;
+}
+
+function resolveWorkspacePathAlias(pathPart = '', aliases = {}) {
+  const path = String(pathPart || '').replace(/\\/g, '/');
+  const match = Object.entries(aliases || {})
+    .map(([fromPath, toPath]) => [String(fromPath || '').replace(/\\/g, '/'), String(toPath || '').replace(/\\/g, '/')])
+    .filter(([fromPath, toPath]) => fromPath && toPath && (path === fromPath || path.startsWith(`${fromPath}/`)))
+    .sort(([left], [right]) => right.length - left.length)[0];
+  if (!match) return path;
+  return path === match[0] ? match[1] : `${match[1]}${path.slice(match[0].length)}`;
+}
+
 function listDirectory(rootPath, relativePath = '.', { recursive = false, maxEntries = DEFAULT_MAX_LIST_ENTRIES } = {}) {
-  const startPath = safeJoin(rootPath, relativePath);
+  const startPath = workspaceTarget(rootPath, relativePath);
   if (!existsSync(startPath)) throw new Error(`Workspace path not found: ${relativePath}`);
   if (!statSync(startPath).isDirectory()) return [fileRecord(rootPath, startPath)];
 
   const entries = [];
   const visit = (directory) => {
-    for (const name of readdirSync(directory)) {
+    const records = readdirSync(directory)
+      .map(name => fileRecord(rootPath, assertInside(rootPath, resolve(directory, name))))
+      .sort((left, right) => {
+        const leftDirectory = left.type === 'directory' ? 0 : 1;
+        const rightDirectory = right.type === 'directory' ? 0 : 1;
+        return leftDirectory - rightDirectory || left.name.localeCompare(right.name, undefined, { numeric: true, sensitivity: 'base' });
+      });
+    for (const record of records) {
       if (entries.length >= maxEntries) return;
-      const absolutePath = assertInside(rootPath, resolve(directory, name));
-      const record = fileRecord(rootPath, absolutePath);
       entries.push(record);
-      if (recursive && record.type === 'directory') visit(absolutePath);
+      if (recursive && record.type === 'directory') visit(assertInside(rootPath, resolve(rootPath, record.path)));
     }
   };
   visit(startPath);
@@ -152,12 +206,109 @@ export function createLocalProjectRuntime({
   allowedCommands = [],
   maxReadBytes = DEFAULT_MAX_READ_BYTES,
   artifactRetentionDays = 365,
+  workspaceProjectionWriteFile = writeFileSync,
 } = {}) {
   if (!rootPath) throw new Error('createLocalProjectRuntime requires rootPath.');
   const resolvedRoot = resolve(rootPath);
   mkdirSync(resolvedRoot, { recursive: true });
   const commandAllowlist = new Set((allowedCommands || []).map((item) => String(item).toLowerCase()).filter(Boolean));
   const normalizedArtifactRetentionDays = Math.max(1, Math.min(3650, Number(artifactRetentionDays) || 365));
+  const workspaceWatchers = new Map();
+
+  const workspaceIdentity = (workspacePath) => {
+    const stat = statSync(workspacePath);
+    return { device: String(stat.dev), file: String(stat.ino) };
+  };
+  const sameWorkspaceIdentity = (left, right) => Boolean(
+    left?.device && left?.file && left.device === right?.device && left.file === right?.file,
+  );
+  const findRelocatedWorkspace = (missingPath, projectId, identity = null) => {
+    const parentPath = dirname(missingPath);
+    if (!existsSync(parentPath) || !statSync(parentPath).isDirectory()) return null;
+    const directories = readdirSync(parentPath, { withFileTypes: true }).filter(entry => entry.isDirectory());
+    const identityMatch = identity && directories.find((entry) => {
+      try {
+        return sameWorkspaceIdentity(workspaceIdentity(resolve(parentPath, entry.name)), identity);
+      } catch {
+        return false;
+      }
+    });
+    if (identityMatch) return realpathSync(resolve(parentPath, identityMatch.name));
+    const markerMatches = directories.filter((entry) => {
+      const markerPath = resolve(parentPath, entry.name, '.hall-of-fame-workspace', 'README.md');
+      if (!existsSync(markerPath)) return false;
+      try {
+        return readFileSync(markerPath, 'utf8').split(/\r?\n/).some(line => line.trim() === `Project id: ${projectId}`);
+      } catch {
+        return false;
+      }
+    });
+    return markerMatches.length === 1 ? realpathSync(resolve(parentPath, markerMatches[0].name)) : null;
+  };
+  const resolveWorkspaceBinding = (project = {}) => {
+    const configuredPath = resolve(project.localRuntime?.workspacePath || '');
+    if (existsSync(configuredPath) && statSync(configuredPath).isDirectory()) return realpathSync(configuredPath);
+    const relocatedPath = findRelocatedWorkspace(configuredPath, project.id, project.localRuntime?.workspaceIdentity);
+    if (!relocatedPath) throw new Error(`Bound workspace is not available: ${configuredPath}`);
+    project.localRuntime = {
+      ...(project.localRuntime || {}),
+      workspacePath: relocatedPath,
+      workspaceIdentity: workspaceIdentity(relocatedPath),
+      workspaceRelocatedAt: new Date().toISOString(),
+    };
+    return relocatedPath;
+  };
+
+  const workspaceChangeSnapshot = (state, since) => ({
+    schemaVersion: 'local-workspace-mirror-change/v1',
+    projectId: state.projectId,
+    workspacePath: state.workspacePath,
+    revision: state.revision,
+    changed: state.revision > since,
+    changes: state.changes.filter(change => change.revision > since),
+  });
+  const settleWorkspaceWatchWaiter = (state, waiter, payload) => {
+    if (!state.waiters.delete(waiter)) return;
+    clearTimeout(waiter.timeout);
+    waiter.signal?.removeEventListener('abort', waiter.onAbort);
+    waiter.resolve(payload);
+  };
+  const resolveWorkspaceWatchWaiters = (state) => {
+    for (const waiter of [...state.waiters]) {
+      if (state.revision <= waiter.since) continue;
+      settleWorkspaceWatchWaiter(state, waiter, workspaceChangeSnapshot(state, waiter.since));
+    }
+  };
+  const recordWorkspaceChange = (state, eventType, path = '.') => {
+    state.revision += 1;
+    state.changes.push({
+      revision: state.revision,
+      eventType,
+      path: String(path || '.').replace(/\\/g, '/').normalize('NFC'),
+      changedAt: new Date().toISOString(),
+    });
+    if (state.changes.length > 128) state.changes.splice(0, state.changes.length - 128);
+    resolveWorkspaceWatchWaiters(state);
+  };
+  const openWorkspaceRootWatcher = (state) => {
+    state.watcher = watchFileSystem(state.workspacePath, { recursive: true, persistent: false }, (eventType, fileName) => {
+      recordWorkspaceChange(state, eventType, fileName);
+    });
+    state.watcher.on('error', () => {
+      state.watcher = null;
+      recordWorkspaceChange(state, 'rescan');
+    });
+  };
+  const closeWorkspaceWatcher = (state) => {
+    if (state.relocationTimer) clearTimeout(state.relocationTimer);
+    state.watcher?.close();
+    state.parentWatcher?.close();
+    state.watcher = null;
+    state.parentWatcher = null;
+    for (const waiter of [...state.waiters]) {
+      settleWorkspaceWatchWaiter(state, waiter, { ...workspaceChangeSnapshot(state, waiter.since), closed: true });
+    }
+  };
 
   const projectRoot = (projectId) => safeJoin(resolvedRoot, safeProjectId(projectId));
   const projectPaths = (projectId) => {
@@ -175,6 +326,111 @@ export function createLocalProjectRuntime({
     Object.values(paths).forEach((path) => mkdirSync(path, { recursive: true }));
     return paths;
   };
+  const recoverWorkspaceArtifacts = (projectId, workspacePath, now, workspacePathAliases = {}) => {
+    const paths = ensureProjectDirs(projectId);
+    const storageLedgerPath = safeJoin(paths.artifacts, '.artifact-storage.jsonl');
+    const events = readArtifactStorageLedger(storageLedgerPath);
+    const latestDeletionByContent = new Map();
+    const latestProjectionEvents = new Map();
+    events.forEach((event) => {
+      if (event.eventType === 'artifact-retention-deleted') {
+        latestDeletionByContent.set(event.contentSha256, event);
+      }
+      if (event.eventType === 'artifact-stored' && event.projectionRelativePath) {
+        latestProjectionEvents.set(event.projectionRelativePath, event);
+      }
+    });
+    const summary = {
+      schemaVersion: 'workspace-artifact-recovery/v1',
+      projectedCount: 0,
+      unchangedCount: 0,
+      conflictCount: 0,
+      unavailableCount: 0,
+      recoveredAt: now,
+    };
+    latestProjectionEvents.forEach((event) => {
+      const deletion = latestDeletionByContent.get(event.contentSha256);
+      if (deletion && deletion.sequence > event.sequence) return;
+      const sourcePath = safeJoin(paths.artifacts, event.projectionRelativePath);
+      if (!existsSync(sourcePath)) {
+        summary.unavailableCount += 1;
+        return;
+      }
+      const content = readFileSync(sourcePath);
+      const checksum = createHash('sha256').update(content).digest('hex');
+      if (checksum !== event.contentSha256) {
+        summary.unavailableCount += 1;
+        return;
+      }
+      const originalWorkspaceRelativePath = event.workspaceRelativePath
+        || (event.projectionRelativePath.startsWith('agent-artifacts/')
+          ? event.projectionRelativePath
+          : `agent-artifacts/${event.projectionRelativePath}`);
+      const workspaceRelativePath = resolveWorkspacePathAlias(originalWorkspaceRelativePath, workspacePathAliases);
+      const targetPath = safeJoin(workspacePath, workspaceRelativePath);
+      if (existsSync(targetPath)) {
+        const targetChecksum = createHash('sha256').update(readFileSync(targetPath)).digest('hex');
+        if (targetChecksum === event.contentSha256) summary.unchangedCount += 1;
+        else summary.conflictCount += 1;
+        return;
+      }
+      mkdirSync(dirname(targetPath), { recursive: true });
+      writeFileSync(targetPath, content);
+      appendArtifactStorageEvent(storageLedgerPath, {
+        id: `artifact_event_workspace_${createHash('sha256').update(`${projectId}:${event.id}:${workspaceRelativePath}:${now}`).digest('hex').slice(0, 24)}`,
+        eventType: 'artifact-workspace-projected',
+        projectId,
+        artifactId: event.artifactId,
+        sourceArtifactStorageEventId: event.id,
+        contentSha256: event.contentSha256,
+        projectionRelativePath: event.projectionRelativePath,
+        workspaceRelativePath,
+        actorId: 'workspace-bind-recovery',
+        createdAt: now,
+        storesRawContent: false,
+      });
+      summary.projectedCount += 1;
+    });
+    return summary;
+  };
+  const ensureWorkspaceWatcher = (project = {}) => {
+    const workspacePath = resolveWorkspaceBinding(project);
+    const existing = workspaceWatchers.get(project.id);
+    if (existing?.workspacePath === workspacePath && existing.watcher && existing.parentWatcher) return existing;
+    const relocated = Boolean(existing && existing.workspacePath !== workspacePath);
+    if (existing) closeWorkspaceWatcher(existing);
+    const state = existing || {
+          projectId: project.id,
+          workspacePath,
+          revision: 0,
+          changes: [],
+          waiters: new Set(),
+          watcher: null,
+          parentWatcher: null,
+          relocationTimer: null,
+        };
+    state.workspacePath = workspacePath;
+    state.identity = workspaceIdentity(workspacePath);
+    openWorkspaceRootWatcher(state);
+    state.parentWatcher = watchFileSystem(dirname(workspacePath), { persistent: false }, () => {
+      if (state.relocationTimer) clearTimeout(state.relocationTimer);
+      state.relocationTimer = setTimeout(() => {
+        state.relocationTimer = null;
+        if (existsSync(state.workspacePath)) return;
+        const relocatedPath = findRelocatedWorkspace(state.workspacePath, state.projectId, state.identity);
+        if (!relocatedPath || relocatedPath === state.workspacePath) return;
+        state.watcher?.close();
+        state.workspacePath = relocatedPath;
+        state.identity = workspaceIdentity(relocatedPath);
+        openWorkspaceRootWatcher(state);
+        recordWorkspaceChange(state, 'workspace-root-moved');
+      }, 25);
+      state.relocationTimer.unref?.();
+    });
+    if (relocated) recordWorkspaceChange(state, 'workspace-root-moved');
+    workspaceWatchers.set(project.id, state);
+    return state;
+  };
   const publicRuntime = (project = {}) => {
     const paths = ensureProjectDirs(project.id);
     const previousRuntime = project.localRuntime || {};
@@ -186,7 +442,11 @@ export function createLocalProjectRuntime({
       artifactsPath: paths.artifacts,
       archivesPath: paths.archives,
       workspacePath: previousRuntime.workspacePath || null,
+      workspaceIdentity: previousRuntime.workspaceIdentity || null,
+      workspaceRelocatedAt: previousRuntime.workspaceRelocatedAt || null,
       workspaceBoundAt: previousRuntime.workspaceBoundAt || null,
+      workspaceRecovery: previousRuntime.workspaceRecovery || null,
+      workspacePathAliases: previousRuntime.workspacePathAliases || {},
       archivedAt: previousRuntime.archivedAt || null,
       latestArchivePath: previousRuntime.latestArchivePath || null,
       commandExecutionEnabled: enableCommandExecution,
@@ -344,17 +604,24 @@ export function createLocalProjectRuntime({
       writeFileSync(absolutePath, content, 'utf8');
       const workspacePath = context.project?.localRuntime?.workspacePath;
       let workspaceFile = null;
+      let workspaceProjection = { status: workspacePath ? 'unavailable' : 'not-configured', errorCode: null };
       if (workspacePath && existsSync(workspacePath) && statSync(workspacePath).isDirectory()) {
         const workspaceRelativePath = artifact.workspaceRelativePath || `agent-artifacts/${relativePath}`;
         const workspaceAbsolutePath = safeJoin(workspacePath, workspaceRelativePath);
-        mkdirSync(dirname(workspaceAbsolutePath), { recursive: true });
-        writeFileSync(workspaceAbsolutePath, content, 'utf8');
-        workspaceFile = {
-          absolutePath: workspaceAbsolutePath,
-          path: workspaceAbsolutePath,
-          relativePath: relative(workspacePath, workspaceAbsolutePath).replace(/\\/g, '/'),
-          url: `file://${workspaceAbsolutePath.replace(/\\/g, '/')}`,
-        };
+        try {
+          mkdirSync(dirname(workspaceAbsolutePath), { recursive: true });
+          workspaceProjectionWriteFile(workspaceAbsolutePath, content, 'utf8');
+          workspaceFile = {
+            absolutePath: workspaceAbsolutePath,
+            path: workspaceAbsolutePath,
+            relativePath: relative(workspacePath, workspaceAbsolutePath).replace(/\\/g, '/'),
+            url: `file://${workspaceAbsolutePath.replace(/\\/g, '/')}`,
+          };
+          workspaceProjection = { status: 'written', errorCode: null };
+        } catch (error) {
+          if (!['EPERM', 'EACCES', 'EROFS'].includes(String(error?.code || ''))) throw error;
+          workspaceProjection = { status: 'blocked', errorCode: String(error.code) };
+        }
       }
       const createdAt = new Date(Date.parse(context.now) || Date.now()).toISOString();
       const storageEvent = appendArtifactStorageEvent(storageLedgerPath, {
@@ -368,6 +635,8 @@ export function createLocalProjectRuntime({
         immutableRelativePath,
         projectionRelativePath: relative(paths.artifacts, absolutePath).replace(/\\/g, '/'),
         workspaceRelativePath: workspaceFile?.relativePath || null,
+        workspaceProjectionStatus: workspaceProjection.status,
+        workspaceProjectionErrorCode: workspaceProjection.errorCode,
         retentionClass: `project-artifact-${projectRetentionDays}d`,
         retainUntil: new Date(Date.parse(createdAt) + projectRetentionDays * 86_400_000).toISOString(),
         actorId: context.agent?.id || context.agentId || null,
@@ -388,6 +657,7 @@ export function createLocalProjectRuntime({
         workspaceAbsolutePath: workspaceFile?.absolutePath || null,
         workspaceRelativePath: workspaceFile?.relativePath || null,
         workspaceUrl: workspaceFile?.url || null,
+        workspaceProjection,
         storageEvent,
         storageLedgerPath,
       };
@@ -404,6 +674,9 @@ export function createLocalProjectRuntime({
         integrityFindings.push({ code: 'ledger-integrity-invalid', targetId: storageLedgerPath, reason: error.message || String(error) });
       }
       const storedEvents = events.filter((row) => row.eventType === 'artifact-stored');
+      const workspaceProjectionEvents = events.filter((row) => (
+        row.eventType === 'artifact-stored' || row.eventType === 'artifact-workspace-projected'
+      ));
       const retentionDeletionEvents = events.filter((row) => row.eventType === 'artifact-retention-deleted');
       const latestDeletionByContent = new Map();
       retentionDeletionEvents.forEach((event) => latestDeletionByContent.set(event.contentSha256, event));
@@ -425,7 +698,7 @@ export function createLocalProjectRuntime({
       const projectionFindings = [];
       const latestProjectionEvents = new Map();
       const latestWorkspaceEvents = new Map();
-      storedEvents.forEach((event) => {
+      workspaceProjectionEvents.forEach((event) => {
         if (event.projectionRelativePath) latestProjectionEvents.set(event.projectionRelativePath, event);
         if (event.workspaceRelativePath) latestWorkspaceEvents.set(event.workspaceRelativePath, event);
       });
@@ -721,36 +994,75 @@ export function createLocalProjectRuntime({
       if (!statSync(absoluteWorkspacePath).isDirectory()) {
         throw new Error(`Workspace path is not a directory: ${absoluteWorkspacePath}`);
       }
+      const canonicalWorkspacePath = realpathSync(absoluteWorkspacePath);
       const attached = this.attachProject(project);
+      const workspaceRecovery = recoverWorkspaceArtifacts(
+        project.id,
+        canonicalWorkspacePath,
+        now,
+        attached.localRuntime?.workspacePathAliases || {},
+      );
       return {
         ...attached,
         localRuntime: {
           ...attached.localRuntime,
-          workspacePath: absoluteWorkspacePath,
+          workspacePath: canonicalWorkspacePath,
+          workspaceIdentity: workspaceIdentity(canonicalWorkspacePath),
           workspaceBoundAt: now,
+          workspaceRecovery,
         },
       };
     },
     requireWorkspace(project = {}) {
       const workspacePath = project.localRuntime?.workspacePath;
       if (!workspacePath) throw new Error(`Project has no bound workspace: ${project.id}`);
-      const absoluteWorkspacePath = resolve(workspacePath);
-      if (!existsSync(absoluteWorkspacePath) || !statSync(absoluteWorkspacePath).isDirectory()) {
-        throw new Error(`Bound workspace is not available: ${absoluteWorkspacePath}`);
-      }
-      return absoluteWorkspacePath;
+      return resolveWorkspaceBinding(project);
     },
     listWorkspace(project = {}, input = {}) {
       const workspacePath = this.requireWorkspace(project);
+      const watcher = ensureWorkspaceWatcher(project);
       return {
         projectId: project.id,
         workspacePath,
+        workspaceRevision: watcher.revision,
         files: listDirectory(workspacePath, input.path || '.', input),
       };
     },
+    waitForWorkspaceChange(project = {}, input = {}) {
+      this.requireWorkspace(project);
+      const watcher = ensureWorkspaceWatcher(project);
+      const since = Math.max(0, Number.parseInt(input.since, 10) || 0);
+      if (watcher.revision > since) return Promise.resolve(workspaceChangeSnapshot(watcher, since));
+      const timeoutMs = Math.max(1000, Math.min(30_000, Number(input.timeoutMs) || 25_000));
+      if (input.signal?.aborted) {
+        return Promise.resolve({ ...workspaceChangeSnapshot(watcher, since), aborted: true });
+      }
+      return new Promise((resolveChange) => {
+        const waiter = {
+          since,
+          resolve: resolveChange,
+          timeout: null,
+          signal: input.signal || null,
+          onAbort: null,
+        };
+        waiter.onAbort = () => settleWorkspaceWatchWaiter(watcher, waiter, {
+          ...workspaceChangeSnapshot(watcher, since),
+          aborted: true,
+        });
+        waiter.timeout = setTimeout(() => {
+          settleWorkspaceWatchWaiter(watcher, waiter, workspaceChangeSnapshot(watcher, since));
+        }, timeoutMs);
+        watcher.waiters.add(waiter);
+        waiter.signal?.addEventListener('abort', waiter.onAbort, { once: true });
+      });
+    },
+    closeWorkspaceWatchers() {
+      workspaceWatchers.forEach(closeWorkspaceWatcher);
+      workspaceWatchers.clear();
+    },
     readWorkspaceFile(project = {}, input = {}) {
       const workspacePath = this.requireWorkspace(project);
-      const absolutePath = safeJoin(workspacePath, input.path || '');
+      const absolutePath = workspaceTarget(workspacePath, input.path || '');
       if (!existsSync(absolutePath)) throw new Error(`Workspace file not found: ${input.path}`);
       const stat = statSync(absolutePath);
       if (!stat.isFile()) throw new Error(`Workspace path is not a file: ${input.path}`);
@@ -766,10 +1078,23 @@ export function createLocalProjectRuntime({
     writeWorkspaceFile(project = {}, input = {}) {
       const workspacePath = this.requireWorkspace(project);
       if (!input.path) throw new Error('path is required.');
-      const absolutePath = safeJoin(workspacePath, input.path);
+      const absolutePath = workspaceTarget(workspacePath, input.path, { allowMissing: true });
+      if (existsSync(absolutePath)) {
+        assertNoSymbolicLinkSegments(workspacePath, absolutePath);
+        const currentRecord = fileRecord(workspacePath, absolutePath);
+        if (input.expectedUpdatedAt && input.expectedUpdatedAt !== currentRecord.updatedAt) {
+          throw new Error(`workspace-file-conflict:${currentRecord.updatedAt}`);
+        }
+      }
       mkdirSync(dirname(absolutePath), { recursive: true });
       const content = String(input.content ?? '');
-      writeFileSync(absolutePath, content, input.encoding || 'utf8');
+      const temporaryPath = `${absolutePath}.${process.pid}.${Date.now()}.tmp`;
+      try {
+        writeFileSync(temporaryPath, content, input.encoding || 'utf8');
+        replaceFileWithRetry(temporaryPath, absolutePath);
+      } finally {
+        if (existsSync(temporaryPath)) rmSync(temporaryPath, { force: true });
+      }
       return {
         projectId: project.id,
         workspacePath,
@@ -779,13 +1104,45 @@ export function createLocalProjectRuntime({
     deleteWorkspacePath(project = {}, input = {}) {
       const workspacePath = this.requireWorkspace(project);
       if (!input.path || input.path === '.') throw new Error('A non-root path is required for delete.');
-      const absolutePath = safeJoin(workspacePath, input.path);
+      const absolutePath = workspaceTarget(workspacePath, input.path);
       if (!existsSync(absolutePath)) throw new Error(`Workspace path not found: ${input.path}`);
       rmSync(absolutePath, { recursive: Boolean(input.recursive), force: false });
       return {
         projectId: project.id,
         workspacePath,
         deletedPath: input.path,
+      };
+    },
+    createWorkspaceDirectory(project = {}, input = {}) {
+      const workspacePath = this.requireWorkspace(project);
+      if (!input.path || input.path === '.') throw new Error('workspace-directory-path-required');
+      const absolutePath = workspaceTarget(workspacePath, input.path, { allowMissing: true });
+      if (existsSync(absolutePath)) throw new Error('workspace-destination-exists');
+      const parentPath = dirname(absolutePath);
+      if (!statSync(parentPath).isDirectory()) throw new Error(`Workspace path is not a directory: ${relative(workspacePath, parentPath)}`);
+      mkdirSync(absolutePath, { recursive: false });
+      return {
+        projectId: project.id,
+        workspacePath,
+        directory: fileRecord(workspacePath, absolutePath),
+      };
+    },
+    moveWorkspacePath(project = {}, input = {}) {
+      const workspacePath = this.requireWorkspace(project);
+      if (!input.fromPath || input.fromPath === '.' || !input.toPath || input.toPath === '.') {
+        throw new Error('workspace-non-root-move-path-required');
+      }
+      const fromPath = workspaceTarget(workspacePath, input.fromPath);
+      const toPath = workspaceTarget(workspacePath, input.toPath, { allowMissing: true });
+      if (existsSync(toPath)) throw new Error('workspace-destination-exists');
+      if (toPath.startsWith(`${fromPath}${sep}`)) throw new Error('workspace-move-into-self-not-allowed');
+      const parentPath = dirname(toPath);
+      if (!statSync(parentPath).isDirectory()) throw new Error(`Workspace path is not a directory: ${relative(workspacePath, parentPath)}`);
+      renameSync(fromPath, toPath);
+      return {
+        projectId: project.id,
+        workspacePath,
+        entry: fileRecord(workspacePath, toPath),
       };
     },
     executeWorkspaceCommand(project = {}, input = {}) {

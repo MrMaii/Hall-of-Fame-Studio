@@ -30,12 +30,9 @@ test('interactive commands do not enqueue every heavy dashboard refresh ahead of
     appSource.indexOf('const recordTimelineAction = async', appSource.indexOf('const runBackendProjectCommand = async')),
   );
 
-  assert.match(appSource, /const backendProjectCommandRefreshTimerRef = useRef\(null\)/);
   assert.match(commandSource, /cancelPendingBackendReadModelRefreshes\(\)/);
-  assert.match(commandSource, /backendProjectCommandRefreshTimerRef\.current = setTimeout\(async \(\) =>/);
-  assert.match(commandSource, /await syncBackendProjectTranscripts/);
-  assert.match(commandSource, /await syncBackendTimelineAndEvents/);
-  assert.match(commandSource, /}, 5000\)/);
-  assert.doesNotMatch(commandSource, /setTimeout\(\(\) => syncBackendProjectTranscripts/);
-  assert.doesNotMatch(commandSource, /setTimeout\(\(\) => syncBackendTimelineAndEvents/);
+  assert.match(commandSource, /projectCommandRefreshPlan\(/);
+  assert.match(commandSource, /await Promise\.allSettled\(refreshPlan\.immediate\.map\(refreshReadModel\)\)/);
+  assert.match(commandSource, /void Promise\.allSettled\(refreshPlan\.background\.map\(refreshReadModel\)\)/);
+  assert.doesNotMatch(commandSource, /setTimeout/);
 });

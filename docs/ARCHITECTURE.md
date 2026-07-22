@@ -185,3 +185,17 @@ LLM 会议生成链路（BUG-002 修复后）：轻量行格式请求（`agentId
 3. 新路由若依赖 async（LLM/文件对话框/网络），只加到 `handleAsync` 通道，同步通道返回明确错误。
 4. 动 `agentProjectService.js` / `App.jsx` 前先跑对应 validate 脚本记录基线，改完复跑。
 5. 每个独立改动一个 commit，信息写明动机；bug 修复引用 BUG 编号。
+
+## 8. Local Dashboard Workspace file manager
+
+- The selected project folder remains the source of truth. The Dashboard opens it in an in-place right drawer; it does not copy, upload, synchronize, or introduce a cloud storage layer.
+- `ProjectDashboardWorkspaceDrawer` lazy-loads directories and exposes text read/write, folder/file creation, rename/move, and guarded deletion through project-scoped local backend routes. Binary files are metadata-only.
+- Workspace mutations are resolved beneath the canonical `project.localRuntime.workspacePath`. Absolute child paths, traversal, symbolic-link escapes, root mutation, destination overwrite, and stale writes are rejected. The drawer exposes no command execution surface.
+- Routes are `POST {P}/workspace/{list,read,write,mkdir,move,delete}`. `expectedUpdatedAt` provides optimistic conflict detection for files that an Agent changed while the user was editing.
+- `npm run ui:project-dashboard-workspace` builds the app and validates the real Dashboard flow against an isolated local folder, including expansion, edit/save, folder creation, outside-folder preservation, and browser diagnostics.
+
+## 9. Outcome-driven Agent runtime
+
+Autonomous work uses a material-delivery protocol instead of activity-based progress. A normalized `WorkContract` selects the required executor and evidence shape for research, technical delivery, creative, operations, or general work. Only an independently accepted material submission advances outcome progress; chat, pulses, receipts, templates, and coordination do not.
+
+Provider-required work fails closed, two no-output cycles trigger `STALLED_NO_MATERIAL_DELTA`, and handoffs use `material-handoff/v1` with artifact/version/checksum/evidence/open-question/next-owner fields. See [OUTCOME_DRIVEN_AGENT_RUNTIME.md](./OUTCOME_DRIVEN_AGENT_RUNTIME.md) and run `npm run agents:outcome-runtime` for the focused cross-project acceptance gate.

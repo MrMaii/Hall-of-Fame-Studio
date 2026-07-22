@@ -16,6 +16,16 @@ import { buildLocalTeamFormationBrief, publicLocalTeamFormationBrief } from './l
 
 const json = (status, body) => ({ status, body });
 
+const dashboardProjectSnapshot = (project = {}) => Object.fromEntries(
+  Object.entries(project || {}).filter(([key]) => (
+    key !== 'logs'
+    && key !== 'eventLedger'
+    && key !== 'projectSettingsAudit'
+    && key !== 'securityAccessAudit'
+    && !key.endsWith('Ledger')
+  )),
+);
+
 function normalizePath(path = '') {
   return String(path || '').split('?')[0].replace(/\/+$/, '') || '/';
 }
@@ -128,6 +138,21 @@ function languageFromRequest(request = {}, body = {}) {
   }
 }
 
+function collectionPageFromRequest(request = {}) {
+  try {
+    const url = new URL(request.url || request.path || '/', 'http://127.0.0.1');
+    const rawLimit = Number.parseInt(url.searchParams.get('limit') || '', 10);
+    if (!Number.isFinite(rawLimit) || rawLimit <= 0) return undefined;
+    const rawOffset = Number.parseInt(url.searchParams.get('offset') || '0', 10);
+    return {
+      limit: Math.min(rawLimit, 500),
+      offset: Number.isFinite(rawOffset) && rawOffset > 0 ? rawOffset : 0,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 function parseProjectRoute(path = '') {
   const parts = normalizePath(path).split('/').filter(Boolean);
   const rootIndex = parts.indexOf('projects');
@@ -168,6 +193,10 @@ function publicResult(result = {}) {
     cycle: result.cycle,
     responses: result.responses || {},
     meetingAgentTurns: result.meetingAgentTurns || [],
+    meetingIntentions: result.meetingIntentions || [],
+    meetingSession: result.meetingSession || null,
+    meetingReport: result.meetingReport || null,
+    submission: result.submission || null,
     meetingProtocol: result.meetingProtocol || null,
     roleNegotiation: result.roleNegotiation,
     leaderElection: result.leaderElection,
@@ -1265,10 +1294,18 @@ export function createAgentProjectApi({ service, accessControl = {}, localAuth =
         const resultProjectId = result.project?.id || route.projectId;
         const includeReadModels = shouldIncludeReadModels(body);
         return json(200, {
-          ...publicProjectResult(result, resultProjectId, language, {
-            includeReadModels,
-            agentId: result.agentAutonomousAction?.agentId || result.agentAutonomousActionRun?.agentId,
-          }),
+          ...(includeReadModels
+            ? publicProjectResult(result, resultProjectId, language, {
+                includeReadModels,
+                agentId: result.agentAutonomousAction?.agentId || result.agentAutonomousActionRun?.agentId,
+              })
+            : {
+                ...compactProjectResult(result, resultProjectId),
+                ...deferredReadModels(
+                  resultProjectId,
+                  result.agentAutonomousAction?.agentId || result.agentAutonomousActionRun?.agentId,
+                ),
+              }),
           agentAutonomousAction: result.agentAutonomousAction,
           agentAutonomousActionRun: result.agentAutonomousActionRun,
           agentAutonomousActionQueue: result.agentAutonomousActionQueue,
@@ -1543,6 +1580,16 @@ export function createAgentProjectApi({ service, accessControl = {}, localAuth =
         return json(200, await service.pickWorkspaceBaseFolder({ ...body, language }));
       }
 
+      if (method === 'GET' && route?.action === 'workspace' && route.tail[0] === 'watch') {
+        const requestUrl = new URL(request.url || request.path || '/', 'http://127.0.0.1');
+        return json(200, await service.waitForWorkspaceChange({
+          projectId: route.projectId,
+          since: requestUrl.searchParams.get('since'),
+          timeoutMs: requestUrl.searchParams.get('timeoutMs'),
+          signal: request.signal,
+        }));
+      }
+
       const result = this.handle({ ...request, _accessChecked: true });
       if (
         result.status >= 400
@@ -1610,7 +1657,7 @@ export function createAgentProjectApi({ service, accessControl = {}, localAuth =
           return json(200, result);
         }
         if (method === 'GET' && path === '/projects') {
-          return json(200, { projects: service.listProjects() });
+          return json(200, { projects: service.listProjectCatalog() });
         }
         if (method === 'POST' && path === '/projects/initiate') {
           const workModeInitiation = workModeInitiationInput(body);
@@ -1962,6 +2009,12 @@ export function createAgentProjectApi({ service, accessControl = {}, localAuth =
               ...body,
             })));
           }
+          if (method === 'POST' && kickoffMeetingRoute.action === 'deliverables') {
+            return json(200, publicResult(service.confirmKickoffMeetingDeliverables({
+              meetingId: kickoffMeetingRoute.meetingId,
+              ...body,
+            })));
+          }
           if (method === 'POST' && kickoffMeetingRoute.action === 'approve') {
             const includeReadModels = shouldIncludeReadModels(body);
             const result = service.approveKickoffMeeting({
@@ -2142,6 +2195,9 @@ export function createAgentProjectApi({ service, accessControl = {}, localAuth =
         }
 
         if (method === 'GET' && route.action === 'get') {
+          if (requestUrl.searchParams.get('view') === 'dashboard') {
+            return json(200, { project: dashboardProjectSnapshot(service.getProject(route.projectId)) });
+          }
           return json(200, {
             project: service.getProject(route.projectId),
             messages: service.getMessages(route.projectId),
@@ -2340,7 +2396,7 @@ export function createAgentProjectApi({ service, accessControl = {}, localAuth =
           return json(200, { productTeamMissionRun: service.getProductTeamMissionRun(route.projectId, missionId) });
         }
         if (method === 'GET' && route.action === 'timeline') {
-          return json(200, service.getTimeline(route.projectId));
+          return json(200, service.getTimeline(route.projectId, collectionPageFromRequest(request)));
         }
         if (method === 'POST' && route.action === 'timeline' && route.tail[0] === 'actions') {
           const result = service.recordTimelineAction({
@@ -2373,7 +2429,7 @@ export function createAgentProjectApi({ service, accessControl = {}, localAuth =
           });
         }
         if (method === 'GET' && route.action === 'events') {
-          return json(200, service.getEventLedger(route.projectId));
+          return json(200, service.getEventLedger(route.projectId, collectionPageFromRequest(request)));
         }
         if (route.action === 'event-recovery') {
           if (method === 'GET' && !route.tail.length) {
@@ -2607,6 +2663,7 @@ export function createAgentProjectApi({ service, accessControl = {}, localAuth =
               now: body.now,
             };
             if (Object.prototype.hasOwnProperty.call(body, 'language')) settingsInput.language = body.language;
+            if (Object.prototype.hasOwnProperty.call(body, 'inheritedLanguage')) settingsInput.inheritedLanguage = body.inheritedLanguage;
             if (Object.prototype.hasOwnProperty.call(body, 'privacyPolicy')) settingsInput.privacyPolicy = body.privacyPolicy;
             if (Object.prototype.hasOwnProperty.call(body, 'providerBudgetPolicy')) settingsInput.providerBudgetPolicy = body.providerBudgetPolicy;
             if (Object.prototype.hasOwnProperty.call(body, 'workspacePolicy')) settingsInput.workspacePolicy = body.workspacePolicy;
@@ -3035,6 +3092,14 @@ export function createAgentProjectApi({ service, accessControl = {}, localAuth =
             } : deferredReadModels(route.projectId)),
           });
         }
+        if (method === 'POST' && route.action === 'leader-work-plan' && route.tail[0] === 'reconcile') {
+          const result = service.reconcileProjectLeaderWorkPlan({ projectId: route.projectId, ...body });
+          return json(200, {
+            route: result.route,
+            project: result.project,
+            leaderWorkPlan: result.leaderWorkPlan,
+          });
+        }
         if (route.action === 'workspace') {
           if (method === 'POST' && route.tail[0] === 'bind') {
             const result = service.bindProjectWorkspace({ projectId: route.projectId, ...body });
@@ -3055,6 +3120,12 @@ export function createAgentProjectApi({ service, accessControl = {}, localAuth =
           }
           if (method === 'POST' && route.tail[0] === 'delete') {
             return json(200, service.deleteWorkspacePath({ projectId: route.projectId, ...body }));
+          }
+          if (method === 'POST' && route.tail[0] === 'mkdir') {
+            return json(201, service.createWorkspaceDirectory({ projectId: route.projectId, ...body }));
+          }
+          if (method === 'POST' && route.tail[0] === 'move') {
+            return json(200, service.moveWorkspacePath({ projectId: route.projectId, ...body }));
           }
           if (method === 'POST' && route.tail[0] === 'exec') {
             return json(200, service.executeWorkspaceCommand({ projectId: route.projectId, ...body }));
@@ -4526,11 +4597,15 @@ export function createAgentProjectApi({ service, accessControl = {}, localAuth =
           return json(200, publicProjectResult(result, resultProjectId, language, { includeReadModels }));
         }
         if (method === 'POST' && route.action === 'meeting') {
-          const result = service.submitMeetingMessage({ projectId: route.projectId, ...body });
+          const result = route.tail[0] === 'start'
+            ? service.startProjectMeeting({ projectId: route.projectId, ...body })
+            : route.tail[0] === 'complete'
+              ? service.completeProjectMeeting({ projectId: route.projectId, ...body })
+              : service.submitMeetingMessage({ projectId: route.projectId, ...body });
           const resultProjectId = result.project?.id || route.projectId;
           const includeReadModels = shouldIncludeReadModels(body);
           const response = publicProjectResult(result, resultProjectId, language, { includeReadModels });
-          return json(200, body.compactResult === true
+          return json(route.tail[0] === 'start' ? 201 : 200, body.compactResult === true
             ? compactProjectResult(response, resultProjectId)
             : response);
         }
@@ -4549,11 +4624,19 @@ export function createAgentProjectApi({ service, accessControl = {}, localAuth =
 
         return json(405, { error: 'method-not-allowed', method, path });
       } catch (error) {
-        return json(error.message?.includes('not found') ? 404 : 400, {
+        const errorMessage = error.message || String(error);
+        const status = errorMessage.includes('workspace-file-conflict') || errorMessage.includes('workspace-destination-exists')
+          ? 409
+          : errorMessage.includes('too large')
+            ? 413
+            : errorMessage.includes('not found') || errorMessage.includes('no bound workspace') || errorMessage.includes('not available')
+              ? 404
+              : 400;
+        return json(status, {
           error: error.message === 'transcript-channel-create-leader-required'
             ? error.message
             : 'agent-project-api-error',
-          message: error.message || String(error),
+          message: errorMessage,
         });
       }
     },
@@ -4574,6 +4657,7 @@ export function createFileBackedAgentProjectApi({
   searchProvider = null,
   providerPolicy = {},
   secretVault = null,
+  runtimeControls = {},
   accessControl = {},
   localAuthFilePath = null,
   localAuthRequired = false,
@@ -4588,7 +4672,7 @@ export function createFileBackedAgentProjectApi({
     hydrateProject: hydrateAgentProject,
     replaceWithSeed,
   });
-  const service = createAgentProjectService({ store, artifactWriter, projectRuntime, llmProvider, searchProvider, providerPolicy, secretVault });
+  const service = createAgentProjectService({ store, artifactWriter, projectRuntime, llmProvider, searchProvider, providerPolicy, secretVault, runtimeControls });
   const localAuth = (localAuthFilePath || localAuthRequired)
     ? createLocalAuthStore({ filePath: localAuthFilePath || `${store.filePath}.local-auth.json` })
     : null;

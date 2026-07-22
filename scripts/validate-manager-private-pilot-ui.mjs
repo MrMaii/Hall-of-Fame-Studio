@@ -565,14 +565,12 @@ try {
   }
   await assertPageContains(page, PROJECT_NAME, 'Backend project catalog sync must expose the prepared product-team acceptance project.');
   await page.getByText(PROJECT_NAME, { exact: true }).first().click();
-  await page.getByTestId('project-overview').waitFor({ state: 'visible', timeout: 10000 });
-  await page.getByTestId('project-overview-open-advanced').waitFor({ state: 'visible', timeout: 10000 });
+  await page.getByTestId('project-dashboard-view').waitFor({ state: 'visible', timeout: 10000 });
   await assertPageContains(
     page,
     'Validate private-pilot handoff for a generic AI product-team project.',
     'Prepared backend project goal must be visible after loading the real backend project.',
   );
-  await page.getByTestId('project-overview-open-advanced').click();
   await scrollDashboardToStation(page);
   await page.getByTestId('backend-worker-station').waitFor({ state: 'visible', timeout: 10000 });
   validationProgress('complete Dashboard loaded');

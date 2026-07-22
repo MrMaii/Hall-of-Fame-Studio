@@ -138,7 +138,9 @@ try {
     await page.getByTestId('settings-provider-model-base-url-input').waitFor({ state: 'visible' });
     assert((await page.getByTestId('settings-tab-models').count()) === 0, 'Model technical status must not appear as a duplicate ordinary settings category.');
     for (const tab of ['account', 'deployment', 'health', 'privacy', 'workspace', 'integrations', 'keys']) {
-      await page.getByTestId(`settings-tab-${tab}`).click();
+      const mobileTabSelect = page.getByTestId('settings-mobile-tab-select');
+      if (await mobileTabSelect.isVisible()) await mobileTabSelect.selectOption(tab);
+      else await page.getByTestId(`settings-tab-${tab}`).click();
       await page.locator('[role="dialog"]').waitFor({ state: 'visible' });
       assert((await page.getByRole('heading', { name: '界面没有正常加载' }).count()) === 0, `Settings tab ${tab} must not trigger UI recovery.`);
       if (tab === 'health') {
@@ -155,7 +157,7 @@ try {
         await page.getByTestId('settings-local-deployment').waitFor({ state: 'visible' });
         await page.getByTestId('settings-deployment-backend-url-input').waitFor({ state: 'visible' });
         await page.getByTestId('settings-deployment-save-backend-url').waitFor({ state: 'visible' });
-        await page.getByRole('button', { name: 'Sync runtime', exact: true }).waitFor({ state: 'visible' });
+        await page.getByTestId('settings-local-auth-sync-runtime').waitFor({ state: 'visible' });
       }
       if (tab === 'workspace') {
         await page.getByTestId('settings-local-workspace').waitFor({ state: 'visible' });
@@ -197,7 +199,7 @@ try {
       await page.getByTestId('project-hub').waitFor({ state: 'visible' });
     }
 
-    await page.getByLabel('创建项目').click();
+    await projectHub.getByRole('button', { name: '创建项目' }).click();
     await page.getByRole('heading', { name: '发起立项' }).waitFor({ state: 'visible' });
     for (const mode of ['学生学习', '论文内容写作', '调查', '技术工作', '创作与艺术']) {
       await page.getByRole('option', { name: mode }).waitFor({ state: 'attached' });

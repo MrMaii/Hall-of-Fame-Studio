@@ -4,6 +4,7 @@ import {
   applyChatMessagesToAgentStates,
   attachMessageReceipts,
   backfillProjectEventLedger,
+  buildLeaderTodos,
   buildAgentChatReplies,
   createProjectLedgerEvent,
   createKickoffCharter,
@@ -45,8 +46,28 @@ import { createSecretVaultFromEnv, normalizeSecretVaultStatus } from './secretVa
 import { providerSecretBindingForRecord, findProviderVaultRecord } from './providerSecretBinding.js';
 import { createModelProviderFromEnv } from './modelProvider.js';
 import { createSearchProviderFromEnv } from './searchProvider.js';
+import {
+  buildNoMaterialDeltaState,
+  calculateOutcomeProgress,
+  classifyProjectWork,
+  evaluateMaterialOutcome,
+  normalizeOutcomeWorkContract,
+} from './outcomeDrivenExecution.js';
 import { evaluateLocalNetworkEndpoint } from './localNetworkPolicy.js';
 import { evaluateLocalIntervalSchedule } from './localScheduleGovernance.js';
+import { buildPeerManagementMatrix } from './peerManagementMatrix.js';
+export { buildPeerManagementMatrix } from './peerManagementMatrix.js';
+import {
+  buildKickoffDeliverableResolution,
+  kickoffDeliverablesReady,
+  kickoffDeliverablesToTasks,
+} from './kickoffDeliverables.js';
+import {
+  activitySentence,
+  isConversationMessage,
+  isMeaningfulActivitySentence,
+} from '../project/humanReadableRecords.js';
+import { describeTaskAsset, isControlPlaneActivity } from '../project/workOutputSemantics.js';
 import {
   buildArtifactDraftPromptBoundary,
   createUntrustedContentEnvelope,
@@ -210,12 +231,12 @@ import {
 import { createHash, randomUUID } from 'node:crypto';
 import { createHttpJsonAdapterGatewayClient } from './adapterGatewayClient.js';
 import { meetingTurnDelayMs } from './meetingQueueProtocol.js';
+import { normalizeMeetingInteractionChain } from './meetingInteractionProtocol.js';
 import { selectMeetingResponders } from '../meeting/meetingMessageState.js';
 import {
   buildModelKickoffMeetingMessages,
   buildModelKickoffMeetingTurnMessages,
   buildModelKickoffOpeningLineMessages,
-  buildModelKickoffTurnLineMessages,
   findMeetingAgent,
   modelKickoffPayloadMatchesLanguage,
   modelKickoffPayloadMatchesTopic,
@@ -225,12 +246,15 @@ import {
   normalizeModelText,
   parseModelCompletionJson,
   parseModelOpeningLinePayload,
-  parseModelTurnLinePayload,
   repairModelCompletionJson,
 } from './modelKickoffParsing.js';
-import { modelOutputMatchesLanguage } from './modelLanguagePolicy.js';
+import { modelOutputLanguageInstruction, modelOutputMatchesLanguage } from './modelLanguagePolicy.js';
 import { compactPreview } from './textPreview.js';
 import { createTranslator, localizeText, normalizeLanguage } from '../i18n/runtime.js';
+import {
+  localizeManagerFlowGraphReadModel,
+  managerFlowUserAuthoredFragments,
+} from '../i18n/managerFlowChinese.js';
 import { appendLocalTraceGraphReceipt, buildLocalTraceGraph } from './localTraceGraph.js';
 
 const nowIso = () => new Date().toISOString();
@@ -619,6 +643,16 @@ const READ_MODEL_LOCALIZED_KEYS = new Set([
   'summary',
   'proof',
   'actionLabel',
+  'categoryLabel',
+  'semanticLabel',
+  'typeLabel',
+  'agentName',
+  'submittedByAgentName',
+  'intent',
+  'routineLabel',
+  'role',
+  'sourceLabel',
+  'commitMessage',
 ]);
 
 function localizeReadModel(value, language = 'en', key = '') {
@@ -657,6 +691,7 @@ function extractKickoffActionFromPath(path = '') {
 function commandShouldRequestModelIntent(command = '') {
   return /^POST\s+/i.test(command)
     && !/\/llm\//i.test(command)
+    && !/\/leader-work-plan\/reconcile/i.test(command)
     && !/\/manager-flow-graph\/nodes\/[^/]+\/confirm/i.test(command);
 }
 
@@ -688,40 +723,6 @@ function multiChannelSourceLabelFor(sourceMode, channelId) {
   if (normalizedMode === 'google_chat') return 'Google Chat';
   if (normalizedMode === 'war_room_meeting') return 'War Room';
   return normalizedMode || channelId || 'Source';
-}
-
-export function buildPeerManagementMatrix(team = [], { leaderId, reviewerId } = {}) {
-  const agents = team.filter((agent) => agent?.id);
-  if (agents.length <= 1) {
-    return agents.map((agent) => ({
-      agentId: agent.id,
-      peerManagedIds: [],
-      peerManagerIds: [],
-      peerIds: [],
-    }));
-  }
-
-  const orderedAgents = [
-    ...agents.filter((agent) => agent.id === leaderId),
-    ...agents.filter((agent) => agent.id === reviewerId && agent.id !== leaderId),
-    ...agents.filter((agent) => agent.id !== leaderId && agent.id !== reviewerId),
-  ];
-  const peerManagedByAgent = new Map(orderedAgents.map((agent) => [agent.id, []]));
-  const peerManagersByAgent = new Map(orderedAgents.map((agent) => [agent.id, []]));
-
-  orderedAgents.forEach((agent, index) => {
-    const target = orderedAgents[(index + 1) % orderedAgents.length];
-    if (!target || target.id === agent.id) return;
-    peerManagedByAgent.set(agent.id, uniqueStrings([...(peerManagedByAgent.get(agent.id) || []), target.id]));
-    peerManagersByAgent.set(target.id, uniqueStrings([...(peerManagersByAgent.get(target.id) || []), agent.id]));
-  });
-
-  return agents.map((agent) => ({
-    agentId: agent.id,
-    peerManagedIds: peerManagedByAgent.get(agent.id) || [],
-    peerManagerIds: peerManagersByAgent.get(agent.id) || [],
-    peerIds: agents.filter((peer) => peer.id !== agent.id).map((peer) => peer.id),
-  }));
 }
 
 export function applyPeerManagementMatrix({
@@ -856,13 +857,20 @@ function agentManagementPriority({ project = {}, agent = {}, state = {} } = {}) 
   };
 }
 
-function slugifyArtifactPart(value = 'artifact', maxLength = 48) {
-  const length = Math.max(8, Math.min(Number(maxLength) || 48, 96));
-  return String(value || 'artifact')
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, length) || 'artifact';
+function readableArtifactFileName(value = 'artifact', extension = 'md', maxLength = 120) {
+  const normalizedExtension = String(extension || 'md').replace(/[^a-z0-9]+/gi, '').toLowerCase() || 'md';
+  const length = Math.max(24, Math.min(Number(maxLength) || 120, 180));
+  let baseName = String(value || 'artifact')
+    .normalize('NFC')
+    .replace(/[\u0000-\u001f<>:"/\\|?*]+/g, '-')
+    .replace(/\s+/g, ' ')
+    .replace(/^[. ]+|[. ]+$/g, '')
+    .replace(new RegExp(`\\.${normalizedExtension}$`, 'i'), '')
+    .slice(0, length)
+    .replace(/[. ]+$/g, '');
+  if (!baseName) baseName = 'artifact';
+  if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(baseName)) baseName = `${baseName}-artifact`;
+  return `${baseName}.${normalizedExtension}`;
 }
 
 function shortArtifactHash(value = 'artifact') {
@@ -879,40 +887,42 @@ function buildAgentArtifactDraft({
   completed = false,
   cycleId = '',
 } = {}) {
-  const projectSlug = slugifyArtifactPart(project.id || project.name || 'project', 32);
-  const agentSlug = slugifyArtifactPart(agent.name || agent.id || 'agent', 24);
-  const taskSlug = slugifyArtifactPart(task?.text || workText || 'work', 28);
-  const fileName = `${agentSlug}-${taskSlug}-${shortArtifactHash({
-    projectId: project.id || null,
-    agentId: agent.id || null,
-    taskId: task?.id || null,
-    taskText: task?.text || workText || '',
-    now,
-  })}.md`;
-  const relativePath = `agent-artifacts/${projectSlug}/${fileName}`;
+  const language = effectiveProjectLanguage(project);
+  const descriptor = describeTaskAsset({ project, task: task || {}, agent, language });
+  const fileName = readableArtifactFileName(descriptor.title);
+  const relativePath = fileName;
   const content = [
-    `# ${task?.text || workText || 'Agent work artifact'}`,
+    `# ${descriptor.title}`,
     '',
-    `Project: ${project.name || project.id || 'Untitled project'}`,
-    `Agent: ${agent.name || agent.id || 'Agent'}`,
-    `Role: ${agent.role || agent.title || 'Agent'}`,
-    `Status: ${completed ? 'completed' : 'in-progress'}`,
-    `Created at: ${now}`,
-    `Cycle: ${cycleId || 'agent-work-cycle'}`,
+    language === 'zh' ? `> 用途：${descriptor.purpose}` : `> Purpose: ${descriptor.purpose}`,
+    language === 'zh' ? `> 负责人：${agent.name || agent.id || '待分配'}` : `> Owner: ${agent.name || agent.id || 'Unassigned'}`,
+    language === 'zh' ? `> 当前状态：${completed ? '已完成，待验收' : '工作草稿，尚未完成'}` : `> Status: ${completed ? 'Complete, awaiting acceptance' : 'Working draft, not complete'}`,
     '',
-    '## Work Summary',
-    workSummary || 'Agent produced a durable work artifact for timeline review.',
+    language === 'zh' ? '## 这份文件要解决什么' : '## What this file must resolve',
+    project.objective || project.brief || project.currentObjective || project.name || descriptor.purpose,
     '',
-    '## Next Evidence',
+    language === 'zh' ? '## 完成方式' : '## How it will be completed',
+    ...(task?.workDefinition?.approach || []).map((item) => `- ${item}`),
+    '',
+    language === 'zh' ? '## 验收条件' : '## Acceptance criteria',
+    ...(task?.workDefinition?.acceptanceCriteria || []).map((item) => `- ${item}`),
+    '',
+    language === 'zh' ? '## 当前正文' : '## Current content',
+    language === 'zh'
+      ? '这是一份刚建立的工作草稿。负责人需要在这里补充真实分析、来源、设计或实现结果；内部运行次数不会被当作正文。'
+      : 'This is a newly created working draft. The owner must add real analysis, sources, design, or implementation results here; runtime activity does not count as content.',
+    '',
+    language === 'zh' ? '## 下一步' : '## Next step',
     completed
-      ? 'This artifact is ready for manager review and downstream handoff.'
-      : 'Continue the next work pulse, update this artifact, and publish timeline evidence.',
+      ? (language === 'zh' ? '请审阅人逐条检查验收条件并给出通过或修改意见。' : 'The reviewer should check each acceptance criterion and accept it or request concrete changes.')
+      : (language === 'zh' ? '补齐当前正文后再提交审阅。' : 'Complete the current content before requesting review.'),
     '',
   ].join('\n');
   return {
     id: `artifact_${agent.id || agentSlug}_${Date.parse(now) || Date.now()}`,
     type: completed ? 'deliverable-artifact' : 'work-artifact',
-    title: task?.text || workText || 'Agent work artifact',
+    title: descriptor.title,
+    summary: descriptor.purpose,
     fileName,
     relativePath,
     path: relativePath,
@@ -1407,7 +1417,7 @@ function managementSignalItems({ project = {}, agent = {}, state = {} } = {}) {
     ...managerIds.map((id) => team.find((member) => member.id === id)?.name).filter(Boolean),
   ]);
   return (state.inbox || []).filter((item) => {
-    if (item.status === 'addressed' || item.status === 'done' || item.respondedAt) return false;
+    if (['addressed', 'done', 'deferred-to-material-work'].includes(item.status) || item.respondedAt) return false;
     return ['management-check-in', 'peer-management-check-in', 'review-sweep', 'change-sync'].includes(item.source)
       || managerRefs.has(item.from)
       || /management check-in|peer-management|review sweep|plan updated/i.test(item.text || '');
@@ -1445,6 +1455,17 @@ function pendingSubmissionForReviewer({ project = {}, reviewer = {}, submissionI
     ))) return false;
     const status = String(submission.reviewStatus || submission.status || 'pending-review');
     if (!reviewableStatuses.has(status)) return false;
+    const submissionTask = (project.tasks || []).find((task) => String(task.id || '') === String(submission.taskId || '')) || {};
+    const submitter = (project.team || []).find((member) => String(member.id || '') === String(submission.agentId || '')) || {};
+    const materialOutcome = evaluateMaterialOutcome({
+      project,
+      task: submissionTask,
+      agent: submitter,
+      artifact: { id: submission.artifactId || submission.id, content: submission.body || submission.description || '' },
+      submissions: [submission],
+      reviews: [],
+    });
+    if (!materialOutcome.material) return false;
     const requestedIds = uniqueStrings([
       submission.requestedReviewAgentId,
       submission.reviewerAgentId,
@@ -1545,6 +1566,20 @@ function buildAgentAutonomousStrategyDecision({
     submissionId: controls.reviewSubmissionId,
   });
   const openOwnedTasks = (project.tasks || []).filter((item) => taskBelongsToAgent(item, agent) && item.status !== 'done');
+  const pendingOwnedSubmission = (project.agentSubmissions || []).find((submission) => {
+    if (String(submission.agentId || '') !== String(agent.id || agent.agentId || '')) return false;
+    if (task?.id && String(submission.taskId || '') !== String(task.id)) return false;
+    const latestReview = (project.submissionReviews || []).find((review) => String(review.submissionId || '') === String(submission.id || ''));
+    if (latestReview && ['accepted', 'changes-requested', 'rejected'].includes(String(latestReview.verdict || ''))) return false;
+    return evaluateMaterialOutcome({
+      project,
+      task: task || {},
+      agent,
+      artifact: { id: submission.artifactId || submission.id, content: submission.body || submission.description || '' },
+      submissions: [submission],
+      reviews: [],
+    }).material;
+  }) || null;
   const selectedReviewerAgentId = controls.workArtifactReviewerAgentId
     || controls.reviewResponseReviewerAgentId
     || reviewerAgentIdForAutonomousWork(project, agent);
@@ -1554,6 +1589,8 @@ function buildAgentAutonomousStrategyDecision({
     agent,
     task,
   });
+  const outcomeWorkContract = normalizeOutcomeWorkContract({ project, task: task || {}, agent });
+  const providerEvidenceRequired = Boolean(task && outcomeWorkContract.evidencePolicy.providerRequired);
   const explicitActions = [
     controls.submitWorkArtifact ? 'submit-work-artifact' : null,
     controls.reviewPendingSubmission ? 'review-pending-submission' : null,
@@ -1565,7 +1602,7 @@ function buildAgentAutonomousStrategyDecision({
   const rationale = [];
   const nextControls = {
     submitWorkArtifact: Boolean(controls.submitWorkArtifact),
-    workArtifactType: selectedWorkArtifactType,
+    workArtifactType: providerEvidenceRequired ? 'evidence-packet' : selectedWorkArtifactType,
     workArtifactReviewStatus: controls.workArtifactReviewStatus || 'pending-review',
     workArtifactReviewerAgentId: controls.workArtifactReviewerAgentId || selectedReviewerAgentId,
     submitWorkArtifactOn: controls.submitWorkArtifactOn || 'completion',
@@ -1578,9 +1615,9 @@ function buildAgentAutonomousStrategyDecision({
     reviewResponseId: controls.reviewResponseId || null,
     reviewResponseArtifactType: normalizeAgentSubmissionArtifactType(controls.reviewResponseArtifactType || 'revision-note'),
     reviewResponseReviewerAgentId: controls.reviewResponseReviewerAgentId || selectedReviewerAgentId,
-    recordEvidenceSearch: Boolean(controls.recordEvidenceSearch),
+    recordEvidenceSearch: Boolean(controls.recordEvidenceSearch || providerEvidenceRequired),
     evidenceSearchQuery: controls.evidenceSearchQuery || task?.text || '',
-    evidenceSearchPurpose: controls.evidenceSearchPurpose || '',
+    evidenceSearchPurpose: controls.evidenceSearchPurpose || (providerEvidenceRequired ? `Collect provider-backed evidence required by ${task?.text || 'the research work contract'}.` : ''),
     evidenceSearchSources: Array.isArray(controls.evidenceSearchSources) ? controls.evidenceSearchSources : [],
     evidenceSearchFindings: Array.isArray(controls.evidenceSearchFindings) ? controls.evidenceSearchFindings : [],
     evidenceSearchConfidence: controls.evidenceSearchConfidence || 'high',
@@ -1620,26 +1657,32 @@ function buildAgentAutonomousStrategyDecision({
     nextControls.reviewSubmissionId = pendingReviewSubmission.id;
     nextControls.agentReviewVerdict = controls.agentReviewVerdict || 'auto';
     nextControls.agentReviewRequestedChanges = controls.agentReviewRequestedChanges || [];
+  } else if (task && pendingOwnedSubmission) {
+    selectedAction = 'await-material-review';
+    priority = 80;
+    rationale.push('Owned work already has a pending submission, so the Agent waits for review instead of creating duplicate checkpoints.');
+    nextControls.submitWorkArtifact = false;
+    nextControls.recordEvidenceSearch = false;
   } else if (task && completed) {
     selectedAction = 'complete-and-submit-owned-work';
     priority = 75;
     rationale.push('Owned task reaches completion in this pulse, so the work should be submitted as a Manager-visible node.');
     nextControls.submitWorkArtifact = true;
-    nextControls.workArtifactType = selectedWorkArtifactType;
+    nextControls.workArtifactType = providerEvidenceRequired ? 'evidence-packet' : selectedWorkArtifactType;
     nextControls.workArtifactReviewerAgentId = controls.workArtifactReviewerAgentId || selectedReviewerAgentId;
     nextControls.submitWorkArtifactOn = controls.submitWorkArtifactOn || 'completion';
     nextControls.recordEvidenceSearch = Boolean(controls.recordEvidenceSearch)
       || shouldAgentWorkerRecordEvidenceSearch({ task, workArtifactType: selectedWorkArtifactType });
     nextControls.evidenceSearchQuery = controls.evidenceSearchQuery || task?.text || '';
     nextControls.evidenceSearchPurpose = controls.evidenceSearchPurpose || `Collect evidence for ${task?.text || 'the completed Agent task'}.`;
-  } else if (managementSignals.length) {
-    selectedAction = 'answer-management-signal';
-    priority = 65;
-    rationale.push('Agent has management or peer-management signals that need an auditable response.');
   } else if (task) {
     selectedAction = 'continue-owned-work';
-    priority = 55;
-    rationale.push('Agent has an open owned task and should continue producing work evidence.');
+    priority = 70;
+    rationale.push('Agent has open owned work, so producing the next material deliverable outranks non-blocking management chatter.');
+  } else if (managementSignals.length) {
+    selectedAction = 'answer-management-signal';
+    priority = 40;
+    rationale.push('No owned material work is available, so the Agent can answer the remaining management signal.');
   } else {
     rationale.push('No open owned task, review obligation, or pending review was found, so the Agent monitors the project lane.');
   }
@@ -1673,9 +1716,11 @@ function buildAgentAutonomousStrategyDecision({
       ? 'Submit a linked revision response.'
       : selectedAction === 'review-pending-submission'
         ? 'Review the pending teammate submission.'
-        : selectedAction === 'complete-and-submit-owned-work'
-          ? 'Submit completed work as an Agent artifact node.'
-          : selectedAction === 'continue-owned-work'
+         : selectedAction === 'complete-and-submit-owned-work'
+           ? 'Submit completed work as an Agent artifact node.'
+           : selectedAction === 'await-material-review'
+             ? 'Wait for the requested Reviewer decision; do not publish another checkpoint.'
+           : selectedAction === 'continue-owned-work'
             ? 'Continue owned task work and publish progress proof.'
             : selectedAction === 'answer-management-signal'
               ? 'Answer management signals before continuing.'
@@ -1689,6 +1734,9 @@ function buildAgentAutonomousStrategyDecision({
       pendingReviewResponseId: pendingReviewResponse?.review?.id || null,
       pendingReviewResponseSubmissionId: pendingReviewResponse?.submission?.id || null,
       pendingReviewSubmissionId: pendingReviewSubmission?.id || null,
+      pendingOwnedSubmissionId: pendingOwnedSubmission?.id || null,
+      providerEvidenceRequired,
+      outcomeWorkContract,
       explicitActions,
     },
     controls: nextControls,
@@ -1700,6 +1748,7 @@ function actionLabelForAgentStrategy(action = '') {
     'respond-to-review-obligation': 'Respond to requested changes',
     'review-pending-submission': 'Review pending teammate submission',
     'complete-and-submit-owned-work': 'Submit completed owned work',
+    'await-material-review': 'Await material review',
     'answer-management-signal': 'Answer management signal',
     'continue-owned-work': 'Continue owned work',
     'monitor-project': 'Monitor project lane',
@@ -1940,23 +1989,45 @@ function buildAgentAutonomousActionQueue({
       ...(latestWorker?.timelineLogIds || []),
     ].filter(Boolean));
     const canRun = Boolean(projectId && strategyDecision.selectedAction !== 'monitor-project');
+    const outcomeExecutionSelected = ['continue-owned-work', 'complete-and-submit-owned-work'].includes(strategyDecision.selectedAction);
     const plannedArtifactType = strategyDecision.controls?.workArtifactType || 'progress-brief';
+    const providerEvidenceRequired = Boolean(outcomeExecutionSelected && strategyDecision.inputs?.providerEvidenceRequired);
+    const outcomeWorkContract = strategyDecision.inputs?.outcomeWorkContract || normalizeOutcomeWorkContract({ project, task: task || {}, agent });
+    const existingProviderEvidenceSearches = providerEvidenceRequired
+      ? (project.evidenceSearches || []).filter((record) => {
+          if (task?.id && String(record.taskId || '') !== String(task.id)) return false;
+          if (['failed', 'blocked', 'cancelled'].includes(String(record.status || '').toLowerCase())) return false;
+          if (['manual', 'local-fallback', 'agent-autonomous-worker'].includes(String(record.provider || '').toLowerCase())) return false;
+          if (String(record.searchMode || '').toLowerCase().includes('fallback')) return false;
+          const sourceCount = (record.sources || []).filter((source) => source?.url || source?.id || source?.title).length;
+          return sourceCount >= Number(outcomeWorkContract.evidencePolicy?.minimumSources || 3);
+        })
+      : [];
+    const reusableProviderEvidenceAvailable = existingProviderEvidenceSearches.length > 0;
     const plannedEvidenceSearch = Boolean(
+      outcomeExecutionSelected && (providerEvidenceRequired
+      ||
       strategyDecision.controls?.recordEvidenceSearch
       || normalizeAgentSubmissionArtifactType(plannedArtifactType) === 'evidence-packet'
+      )
     );
-    const useProviderEvidenceSearch = Boolean(providerEvidenceSearchEnabled && plannedEvidenceSearch);
+    const useProviderEvidenceSearch = Boolean(
+      !reusableProviderEvidenceAvailable
+      && (providerEvidenceRequired || (providerEvidenceSearchEnabled && plannedEvidenceSearch)),
+    );
     const requestBodyTemplate = {
       useAutonomousStrategy: true,
-      submitWorkArtifact: true,
+      useOutcomeModelExecution: Boolean(task && outcomeExecutionSelected),
+      submitWorkArtifact: false,
       workArtifactType: plannedArtifactType,
       workArtifactReviewerAgentId: strategyDecision.controls?.workArtifactReviewerAgentId || null,
-      recordEvidenceSearch: Boolean(strategyDecision.controls?.recordEvidenceSearch),
+      recordEvidenceSearch: Boolean(strategyDecision.controls?.recordEvidenceSearch && useProviderEvidenceSearch),
       evidenceSearchQuery: strategyDecision.controls?.evidenceSearchQuery || null,
       evidenceSearchPurpose: strategyDecision.controls?.evidenceSearchPurpose || null,
+      existingEvidenceSearchIds: existingProviderEvidenceSearches.map((record) => record.id),
       ...(useProviderEvidenceSearch ? {
         useProviderEvidenceSearch: true,
-        requireProviderEvidenceSearch: false,
+        requireProviderEvidenceSearch: providerEvidenceRequired,
       } : {}),
       reviewPendingSubmission: true,
       reviewSubmissionId: strategyDecision.controls?.reviewSubmissionId || null,
@@ -2512,8 +2583,46 @@ function attachWorkerRunControlsToProject(project = {}) {
   };
 }
 
+function compactPrototypeSecurityAccessEvents(project = {}) {
+  const events = Array.isArray(project.eventLedger) ? project.eventLedger : [];
+  const retainedEnforcedAccessIds = new Set(events
+    .filter((event) => event.type === 'security-access' && event.payload?.enforced === true)
+    .slice(-100)
+    .map((event) => event.id));
+  const retained = events.filter((event) => (
+    event.type !== 'security-access'
+    || retainedEnforcedAccessIds.has(event.id)
+  ));
+  if (retained.length === events.length) return project;
+  const eventLedger = retained.map((event, index) => {
+    const {
+      eventChecksum: _eventChecksum,
+      previousEventHash: _previousEventHash,
+      eventHash: _eventHash,
+      ...base
+    } = event;
+    return { ...base, sequence: index + 1 };
+  });
+  return {
+    ...project,
+    eventLedger,
+    eventLedgerChainVersion: 0,
+    eventLedgerPreviousHash: null,
+    eventLedgerRootHash: null,
+    eventLedgerFirstSequence: eventLedger[0]?.sequence || 0,
+    eventLedgerLastSequence: eventLedger.at(-1)?.sequence || 0,
+    eventLedgerEventCount: eventLedger.length,
+    prototypeAccessEventCompaction: {
+      schemaVersion: 'prototype-access-event-compaction/v1',
+      removedEventCount: events.length - retained.length,
+      retainedEventCount: retained.length,
+      auditSource: 'security-access-audit-stream',
+    },
+  };
+}
+
 export function hydrateAgentProject(project = {}) {
-  return attachWorkerRunControlsToProject(backfillProjectEventLedger(project));
+  return attachWorkerRunControlsToProject(backfillProjectEventLedger(compactPrototypeSecurityAccessEvents(project)));
 }
 
 function projectEventSnapshot(project = {}) {
@@ -3193,7 +3302,7 @@ export function replyToProjectTranscriptMessage({
   replierId = 'director',
   now = nowIso(),
   source = 'backend-transcript-reply',
-  language = project.language || 'en',
+  language = effectiveProjectLanguage(project),
 } = {}) {
   const scopedChannelId = String(channelId || 'main').trim() || 'main';
   const parentMessageId = String(messageId || '').trim();
@@ -3364,7 +3473,7 @@ export function mentionProjectTranscriptMessage({
   mentionedById = 'director',
   now = nowIso(),
   source = 'backend-transcript-mention',
-  language = project.language || 'en',
+  language = effectiveProjectLanguage(project),
 } = {}) {
   const scopedChannelId = String(channelId || 'main').trim() || 'main';
   const sourceMessageId = String(messageId || '').trim();
@@ -3570,7 +3679,7 @@ export function attachProjectTranscriptFile({
   uploadedById = 'director',
   now = nowIso(),
   source = 'backend-transcript-attachment',
-  language = project.language || 'en',
+  language = effectiveProjectLanguage(project),
 } = {}) {
   const scopedChannelId = String(channelId || 'main').trim() || 'main';
   const safeFileName = String(fileName || '').trim();
@@ -3752,7 +3861,7 @@ export function submitProjectChatMessage({
   leaderId,
   source,
   targetIds = [],
-  language = project.language || 'en',
+  language = effectiveProjectLanguage(project),
 } = {}) {
   const currentLanguage = normalizeLanguage(language);
   const trimmedText = text.trim();
@@ -3917,7 +4026,7 @@ export function submitAgentMessage({
   channelId = 'main',
   now = nowIso(),
   messageId,
-  language = project.language || 'en',
+  language = effectiveProjectLanguage(project),
 } = {}) {
   const team = project.team || [];
   const agent = team.find((member) => member.id === agentId || member.name === agentId);
@@ -3976,13 +4085,137 @@ export function submitAgentMessage({
   };
 }
 
+function projectMeetingSessionById(project = {}, meetingSessionId = null) {
+  if (!meetingSessionId) return null;
+  return (project.meetingSessions || []).find((session) => session.id === meetingSessionId) || null;
+}
+
+function replaceProjectMeetingSession(project = {}, nextSession = {}) {
+  return {
+    ...project,
+    activeMeetingSessionId: nextSession.status === 'active' ? nextSession.id : null,
+    latestMeetingSessionId: nextSession.id,
+    meetingSessions: [
+      nextSession,
+      ...(project.meetingSessions || []).filter((session) => session.id !== nextSession.id),
+    ].slice(0, 48),
+  };
+}
+
+export function createProjectMeetingSession({
+  project = {},
+  agenda = '',
+  participantIds = [],
+  recorderId,
+  now = nowIso(),
+  meetingSessionId,
+  language = effectiveProjectLanguage(project),
+} = {}) {
+  const team = project.team || [];
+  const normalizedAgenda = String(agenda || '').trim();
+  if (!normalizedAgenda) throw new Error('project-meeting-agenda-required');
+  const selectedParticipantIds = uniqueStrings(participantIds)
+    .filter((participantId) => team.some((member) => member.id === participantId));
+  const minimumParticipants = team.length > 1 ? 2 : 1;
+  if (selectedParticipantIds.length < minimumParticipants) {
+    throw new Error(`project-meeting-requires-${minimumParticipants}-participants`);
+  }
+  if (!selectedParticipantIds.includes(recorderId)) {
+    throw new Error('project-meeting-recorder-must-attend');
+  }
+  const existingActive = (project.meetingSessions || []).find((session) => session.status === 'active');
+  if (existingActive) throw new Error(`project-meeting-already-active:${existingActive.id}`);
+
+  const participants = selectedParticipantIds.map((participantId) => {
+    const member = team.find((agent) => agent.id === participantId);
+    return {
+      id: member.id,
+      name: member.name || member.id,
+      role: member.role || member.title || 'Meeting participant',
+    };
+  });
+  const recorder = participants.find((member) => member.id === recorderId);
+  const timestamp = Date.parse(now) || Date.now();
+  const id = meetingSessionId || `project_meeting_${project.id || 'project'}_${timestamp}`;
+  const session = {
+    schemaVersion: 'project-meeting-session/v1',
+    id,
+    projectId: project.id || null,
+    status: 'active',
+    agenda: normalizedAgenda,
+    participantIds: selectedParticipantIds,
+    participants,
+    recorderId: recorder.id,
+    recorderName: recorder.name,
+    startedAt: now,
+    completedAt: null,
+    rounds: [],
+    transcriptMessageIds: [],
+    agentTurnIds: [],
+    summary: null,
+  };
+  const attendanceMessages = participants.map((participant, index) => attachMessageReceipts({
+    id: `${id}_attendance_${participant.id}`,
+    projectId: project.id,
+    meetingSessionId: id,
+    channelId: 'main',
+    type: 'meeting-attendance',
+    schemaVersion: 'project-meeting-attendance/v1',
+    author: participant.name,
+    authorId: participant.id,
+    role: participant.role,
+    time: 'War Room',
+    source: 'project-meeting-attendance',
+    text: normalizeLanguage(language) === 'zh'
+      ? `我已进入会议并了解议题：“${normalizedAgenda}”。我会先听取总监说明，再形成自己的判断并回应其他参会者。`
+      : `I have joined the meeting and understand the agenda: “${normalizedAgenda}”. I will hear the Director first, form my own view, and respond to the other participants.`,
+    meetingAttendance: {
+      schemaVersion: 'project-meeting-attendance/v1',
+      meetingSessionId: id,
+      participantId: participant.id,
+      attendeeIndex: index,
+      agenda: normalizedAgenda,
+      recorder: participant.id === recorder.id,
+    },
+  }, team, { seenAt: now }));
+  const sessionWithAttendance = {
+    ...session,
+    transcriptMessageIds: attendanceMessages.map((message) => message.id),
+  };
+  const projectWithSession = replaceProjectMeetingSession(project, sessionWithAttendance);
+  const nextProject = applyChatMessagesToAgentStates({
+    project: projectWithSession,
+    team,
+    messages: attendanceMessages,
+    now,
+    source: 'project-meeting-attendance',
+    language: normalizeLanguage(language),
+  });
+  return {
+    route: 'project-meeting-started',
+    project: nextProject,
+    meetingSession: sessionWithAttendance,
+    messages: attendanceMessages,
+    meetingIntentions: participants.map((participant) => ({
+      id: participant.id,
+      speakerId: participant.id,
+      name: participant.name,
+      role: participant.role,
+      status: 'listening',
+      target: normalizedAgenda,
+      interactionIntent: 'listen',
+    })),
+  };
+}
+
 export function submitProjectMeetingMessage({
   project = {},
   text = '',
   now = nowIso(),
   messageId,
   channelId = 'main',
-  language = project.language || 'en',
+  meetingSessionId = null,
+  language = effectiveProjectLanguage(project),
 } = {}) {
   const currentLanguage = normalizeLanguage(language);
   const trimmedText = text.trim();
@@ -3996,8 +4229,16 @@ export function submitProjectMeetingMessage({
   }
 
   const team = project.team || [];
+  const meetingSession = projectMeetingSessionById(project, meetingSessionId);
+  if (meetingSessionId && (!meetingSession || meetingSession.status !== 'active')) {
+    throw new Error(`project-meeting-session-not-active:${meetingSessionId}`);
+  }
+  const meetingTeam = meetingSession
+    ? meetingSession.participantIds.map((participantId) => team.find((member) => member.id === participantId)).filter(Boolean)
+    : team;
   const targets = resolveProjectChatTargets(trimmedText, team);
-  const userMessage = createDirectorChatMessage({
+  const userMessage = {
+    ...createDirectorChatMessage({
     project,
     text: trimmedText,
     channelId,
@@ -4005,8 +4246,12 @@ export function submitProjectMeetingMessage({
     id: messageId || `room_change_user_${Date.now()}`,
     time: 'War Room',
     weight: targets.length ? 'Meeting Change' : null,
-    targets,
-  });
+    targets: meetingSession ? meetingSession.participantIds : targets,
+    }),
+    meetingSessionId: meetingSession?.id || null,
+    heardByAgentIds: meetingSession?.participantIds || targets,
+    agenda: meetingSession?.agenda || null,
+  };
   const projectAfterMeetingMessage = applyChatMessagesToAgentStates({
     project,
     team,
@@ -4016,22 +4261,31 @@ export function submitProjectMeetingMessage({
     language: currentLanguage,
   });
   const isFeatureChange = isFeatureChangeRequest(trimmedText);
-  const meetingDirective = project.meetingSkillBrief
-    ? `${project.meetingSkillBrief}\n\nDirector input:\n${trimmedText}`
-    : trimmedText;
-  const respondingTeam = selectMeetingResponders(team, trimmedText);
+  const meetingDirective = [
+    meetingSession?.agenda ? `Meeting agenda: ${meetingSession.agenda}` : '',
+    meetingSession?.recorderName ? `Meeting recorder: ${meetingSession.recorderName}` : '',
+    project.meetingSkillBrief || '',
+    `Director input:\n${trimmedText}`,
+    meetingSession ? 'Every attendee must first form an independent intent, then respond to the preceding attendee, and the final speaker must synthesize the discussion.' : '',
+  ].filter(Boolean).join('\n\n');
+  const respondingTeam = meetingSession ? meetingTeam : selectMeetingResponders(team, trimmedText);
   const meetingExchange = runRoundtableExchange(respondingTeam, meetingDirective, {
     projectId: project.id,
     projectName: project.name,
     meetingType: project.lastAutonomousRunAt ? 'sync' : 'kickoff',
     language: currentLanguage,
+    sourceMessageId: userMessage.id,
+    topicId: meetingSession ? `${meetingSession.id}_round_${(meetingSession.rounds || []).length + 1}` : undefined,
+    maxSpeakers: meetingSession ? respondingTeam.length : undefined,
+    now,
   });
   const meetingAgentMessages = (meetingExchange?.responses || []).map((turn, index) => {
     const agent = team.find((member) => member.id === turn.speakerId || member.name === turn.speaker);
-    const turnId = `meeting_turn_${project.id || 'project'}_${turn.speakerId || agent?.id || index}_${Date.parse(now) || Date.now()}_${index}`;
+    const turnId = turn.id || `meeting_turn_${project.id || 'project'}_${turn.speakerId || agent?.id || index}_${Date.parse(now) || Date.now()}_${index}`;
     return attachMessageReceipts({
       id: turnId,
       projectId: project.id,
+      meetingSessionId: meetingSession?.id || null,
       channelId,
       type: 'meeting-turn',
       schemaVersion: 'meeting-agent-turn/v1',
@@ -4042,10 +4296,17 @@ export function submitProjectMeetingMessage({
       text: turn.text || '',
       score: turn.score,
       role: turn.role || agent?.role || 'Meeting participant',
-      replyToMessageId: userMessage.id,
+      replyToMessageId: turn.replyToTurnId || userMessage.id,
+      replyToTurnId: turn.replyToTurnId || userMessage.id,
+      targetSpeakerId: turn.targetSpeakerId || null,
+      addressedAgentIds: turn.addressedAgentIds || [],
+      interactionIntent: turn.interactionIntent || null,
+      topicId: turn.topicId || null,
+      exchangeIndex: turn.exchangeIndex || 0,
       meetingTurn: {
         schemaVersion: 'meeting-agent-turn/v1',
         projectId: project.id,
+        meetingSessionId: meetingSession?.id || null,
         sourceMessageId: userMessage.id,
         speakerId: turn.speakerId || agent?.id || null,
         speaker: turn.speaker || agent?.name || 'Agent',
@@ -4053,6 +4314,12 @@ export function submitProjectMeetingMessage({
         score: turn.score,
         rank: index + 1,
         protocolId: meetingExchange?.protocol?.id || null,
+        replyToTurnId: turn.replyToTurnId || userMessage.id,
+        targetSpeakerId: turn.targetSpeakerId || null,
+        addressedAgentIds: turn.addressedAgentIds || [],
+        interactionIntent: turn.interactionIntent || null,
+        topicId: turn.topicId || null,
+        exchangeIndex: turn.exchangeIndex || 0,
         backendAuthored: true,
       },
     }, team, { seenAt: now });
@@ -4067,7 +4334,7 @@ export function submitProjectMeetingMessage({
     source: 'war-room-meeting-agent-turn',
     sourceChannelId: channelId,
     messageId: message.id,
-    replyToMessageId: userMessage.id,
+    replyToMessageId: message.replyToMessageId || userMessage.id,
     proofIds: uniqueStrings([message.id]),
     eventIds: uniqueStrings([`evt_chat_${message.id}`]),
     rank: index + 1,
@@ -4103,7 +4370,15 @@ export function submitProjectMeetingMessage({
     rank: index + 1,
     delayMs: meetingTurnDelayMs(index),
     text: message.text || '',
+    replyToTurnId: message.meetingTurn?.replyToTurnId || message.replyToTurnId || userMessage.id,
+    targetSpeakerId: message.meetingTurn?.targetSpeakerId || message.targetSpeakerId || null,
+    addressedAgentIds: message.meetingTurn?.addressedAgentIds || message.addressedAgentIds || [],
+    interactionIntent: message.meetingTurn?.interactionIntent || message.interactionIntent || null,
+    topicId: message.meetingTurn?.topicId || message.topicId || null,
+    exchangeIndex: message.meetingTurn?.exchangeIndex || message.exchangeIndex || 0,
     backendAuthored: true,
+    meetingSessionId: meetingSession?.id || null,
+    heardByParticipantIds: meetingSession?.participantIds || [],
   }));
   const changeResponse = isFeatureChange ? handleFeatureChangeRequest({
     project: projectAfterMeetingTurns,
@@ -4127,8 +4402,46 @@ export function submitProjectMeetingMessage({
     language: currentLanguage,
   }) : null;
 
+  const projectAfterResponses = changeOwnerStartWorkResponse?.project || changeResponse?.project || projectAfterMeetingTurns;
+  const meetingIntentions = (meetingExchange?.intentions || []).map((intent) => ({
+    id: intent.id,
+    speakerId: intent.id,
+    name: intent.name,
+    role: intent.role,
+    score: intent.score,
+    status: 'queued',
+    target: meetingSession?.agenda || trimmedText,
+    interactionIntent: 'consider',
+    sourceMessageId: userMessage.id,
+  }));
+  const updatedMeetingSession = meetingSession ? {
+    ...meetingSession,
+    rounds: [...(meetingSession.rounds || []), {
+      schemaVersion: 'project-meeting-round/v1',
+      id: `${meetingSession.id}_round_${(meetingSession.rounds || []).length + 1}`,
+      directorMessageId: userMessage.id,
+      heardByParticipantIds: meetingSession.participantIds,
+      intentionAgentIds: meetingIntentions.map((intent) => intent.speakerId),
+      agentTurnIds: meetingAgentMessages.map((message) => message.id),
+      synthesisTurnId: meetingAgentMessages[meetingAgentMessages.length - 1]?.id || null,
+      createdAt: now,
+    }],
+    transcriptMessageIds: uniqueStrings([
+      ...(meetingSession.transcriptMessageIds || []),
+      userMessage.id,
+      ...meetingAgentMessages.map((message) => message.id),
+    ]),
+    agentTurnIds: uniqueStrings([
+      ...(meetingSession.agentTurnIds || []),
+      ...meetingAgentMessages.map((message) => message.id),
+    ]),
+  } : null;
+  const projectWithMeetingSession = updatedMeetingSession
+    ? replaceProjectMeetingSession(projectAfterResponses, updatedMeetingSession)
+    : projectAfterResponses;
+
   return {
-    project: changeOwnerStartWorkResponse?.project || changeResponse?.project || projectAfterMeetingTurns,
+    project: projectWithMeetingSession,
     messages: [
       userMessage,
       ...meetingAgentMessages,
@@ -4138,6 +4451,8 @@ export function submitProjectMeetingMessage({
     route: changeResponse ? 'war-room-meeting-change' : 'war-room-meeting-message',
     userMessage,
     meetingAgentTurns,
+    meetingIntentions,
+    meetingSession: updatedMeetingSession,
     meetingProtocol: meetingExchange?.protocol || null,
     responses: {
       changeResponse,
@@ -4155,7 +4470,7 @@ export function submitProjectMultiChannelChangeRequest({
   channelIds = ['main', 'google_chat'],
   sourceModes = [],
   messageIdPrefix = `multi_channel_change_${Date.parse(now) || Date.now()}`,
-  language = project.language || 'en',
+  language = effectiveProjectLanguage(project),
 } = {}) {
   const currentLanguage = normalizeLanguage(language);
   const trimmedText = text.trim();
@@ -4276,7 +4591,7 @@ export function runProjectAutonomousCycle({
   schedulerReason = `${cadence}-pulse-requested`,
   dueAt = now,
   source = 'autonomous-cycle-chat',
-  language = project.language || 'en',
+  language = effectiveProjectLanguage(project),
 } = {}) {
   const currentLanguage = normalizeLanguage(language);
   const result = advanceAutonomousProjectCycle({
@@ -4335,7 +4650,7 @@ export function runAgentWorkCycle({
   managementReasons = [],
   queueReason = null,
   taskId,
-  language = project.language || 'en',
+  language = effectiveProjectLanguage(project),
   artifactWriter = null,
   submitWorkArtifact = false,
   workArtifactType = 'progress-brief',
@@ -4360,6 +4675,7 @@ export function runAgentWorkCycle({
   evidenceSearchProvider = '',
   evidenceSearchMode = '',
   evidenceSearchProviderReceipt = null,
+  skipEvidenceSearchRecording = false,
   useAutonomousStrategy = false,
 } = {}) {
   const currentLanguage = normalizeLanguage(language);
@@ -4398,16 +4714,91 @@ export function runAgentWorkCycle({
   const timestamp = Date.parse(now) || Date.now();
   const cycleId = `agent_cycle_${agent.id}_${timestamp}`;
   const nextRunAt = new Date(safeDateMs(now) + agentWorkIntervalMs(project, previousState, intervalMs)).toISOString();
+  if (!task) {
+    const waitingCycle = withWorkerRunControlFields({
+      id: cycleId,
+      traceId: normalizedTraceId,
+      requestSpanId: /^span_[a-f0-9]{32}$/.test(String(requestSpanId || '')) ? requestSpanId : null,
+      idempotencyKey: workerIdempotencyKey || undefined,
+      leaseKey: workerLeaseKey || undefined,
+      agentId: agent.id,
+      taskId: null,
+      trigger,
+      queueReason,
+      cadence,
+      dueAt,
+      nextRunAt: null,
+      ranAt: now,
+      status: 'waiting-for-leader-assignment',
+      managementPriority: resolvedManagementPriority,
+      managementReasons: resolvedManagementReasons,
+    }, { projectId: project.id, workerKind: 'agent-worker', now });
+    const waitingState = {
+      ...previousState,
+      agentId: agent.id,
+      name: previousState.name || agent.name,
+      role: previousState.role || agent.role,
+      status: 'waiting-for-leader-assignment',
+      currentPlan: {
+        ...(previousState.currentPlan || {}),
+        focus: currentLanguage === 'zh' ? '等待负责人分配正式工作' : 'Await Leader-assigned formal work',
+        next: currentLanguage === 'zh' ? '负责人明确产物、做法和截止时间后开始执行。' : 'Start after the Leader defines the deliverable, approach, and deadline.',
+        taskId: null,
+      },
+      lastAgentRunAt: now,
+      nextAgentRunAt: null,
+    };
+    return {
+      project: {
+        ...project,
+        agentStates: {
+          ...previousStates,
+          [agent.id]: waitingState,
+        },
+        agentWorkerLedger: [waitingCycle, ...(project.agentWorkerLedger || [])].slice(0, 100),
+      },
+      messages: [],
+      route: 'agent-work-cycle',
+      agent: waitingState,
+      cycle: waitingCycle,
+      log: null,
+      task: null,
+      evidenceSearch: null,
+      evidenceSearchLog: null,
+      evidenceSearchSourceSnapshots: [],
+      submission: null,
+      artifact: null,
+      workSubmission: null,
+      review: null,
+      reviewedSubmission: null,
+      reviewResponseSubmission: null,
+      reviewResponseArtifact: null,
+      strategyDecision: null,
+      contributionIntent: {
+        schemaVersion: 'agent-workflow-node-intent/v1',
+        decision: 'decline',
+        reasonCode: 'no-meaningful-change',
+        rationale: currentLanguage === 'zh'
+          ? '没有负责人分配的正式工作，不发布工作总结或节点。'
+          : 'No Leader-assigned formal work exists, so no work summary or node is published.',
+      },
+    };
+  }
   const routine = previousState.currentPlan?.routine || null;
   const workText = task?.text || previousState.currentPlan?.focus || t('agent.monitorWork');
   const workPulseCount = task ? (task.workPulseCount || 0) + 1 : 0;
-  const completed = Boolean(task && workPulseCount >= 2);
+  const workSteps = task.workDefinition?.steps || [];
+  const requiredWorkPulses = Math.max(2, Number(task.requiredWorkPulses) || workSteps.length || 2);
+  const currentWorkStep = workSteps[Math.min(Math.max(0, workPulseCount - 1), Math.max(0, workSteps.length - 1))] || workText;
+  const checkpointReady = Boolean(task && workPulseCount >= requiredWorkPulses);
+  const existingOutcome = evaluateMaterialOutcome({ project, task, agent });
+  const acceptedBeforeCycle = Boolean(existingOutcome.accepted);
   const strategyDecision = useAutonomousStrategy ? buildAgentAutonomousStrategyDecision({
     project,
     agent,
     state: previousState,
     task,
-    completed,
+    completed: checkpointReady,
     managementSignals,
     now,
     trigger,
@@ -4439,7 +4830,7 @@ export function runAgentWorkCycle({
     },
   }) : null;
   const strategyControls = strategyDecision?.controls || {};
-  const resolvedSubmitWorkArtifact = strategyDecision ? Boolean(strategyControls.submitWorkArtifact) : Boolean(submitWorkArtifact);
+  const resolvedSubmitWorkArtifact = Boolean(submitWorkArtifact);
   const resolvedWorkArtifactType = resolveAgentWorkArtifactType({
     value: strategyControls.workArtifactType || workArtifactType,
     project,
@@ -4458,9 +4849,9 @@ export function runAgentWorkCycle({
   const resolvedReviewResponseId = strategyControls.reviewResponseId || reviewResponseId;
   const resolvedReviewResponseArtifactType = strategyControls.reviewResponseArtifactType || reviewResponseArtifactType;
   const resolvedReviewResponseReviewerAgentId = strategyControls.reviewResponseReviewerAgentId || reviewResponseReviewerAgentId;
-  const resolvedRecordEvidenceSearch = strategyDecision
+  const resolvedRecordEvidenceSearch = !skipEvidenceSearchRecording && (strategyDecision
     ? Boolean(strategyControls.recordEvidenceSearch || evidenceSearchProviderReceipt)
-    : (Boolean(recordEvidenceSearch || evidenceSearchProviderReceipt) || shouldAgentWorkerRecordEvidenceSearch({ task, workArtifactType: resolvedWorkArtifactType }));
+    : (Boolean(recordEvidenceSearch || evidenceSearchProviderReceipt) || shouldAgentWorkerRecordEvidenceSearch({ task, workArtifactType: resolvedWorkArtifactType })));
   const resolvedEvidenceSearchQuery = strategyControls.evidenceSearchQuery || evidenceSearchQuery;
   const resolvedEvidenceSearchPurpose = strategyControls.evidenceSearchPurpose || evidenceSearchPurpose;
   const resolvedEvidenceSearchSources = strategyControls.evidenceSearchSources || evidenceSearchSources;
@@ -4469,30 +4860,38 @@ export function runAgentWorkCycle({
   const resolvedEvidenceSearchProvider = strategyControls.evidenceSearchProvider || evidenceSearchProvider;
   const resolvedEvidenceSearchMode = strategyControls.evidenceSearchMode || evidenceSearchMode;
   const resolvedEvidenceSearchProviderReceipt = strategyControls.evidenceSearchProviderReceipt || evidenceSearchProviderReceipt;
-  const completedThisPulse = Boolean(completed && (!strategyDecision || resolvedSubmitWorkArtifact));
+  const completedThisPulse = acceptedBeforeCycle;
   const contributionIntent = evaluateAgentContributionOpportunity({
     project,
     agent,
     task,
-    completed: completedThisPulse,
+    completed: checkpointReady,
     managementSignals,
     strategyDecision,
     now,
   });
-  const taskStatus = completedThisPulse ? 'done' : task ? 'in-progress' : 'monitoring';
-  const artifact = routine?.artifact || (currentLanguage === 'zh' ? '时间线证据' : 'timeline evidence');
+  const taskStatus = completedThisPulse ? 'done' : checkpointReady ? 'awaiting-material-review' : task ? 'in-progress' : 'monitoring';
+  const artifact = task?.workDefinition?.artifactTitle
+    || task?.workDefinition?.deliverable
+    || task?.text
+    || (currentLanguage === 'zh' ? '本次工作成果' : 'the current work result');
   const messageId = `agent_work_${agent.id}_${timestamp}`;
   const logId = `log_${messageId}`;
   const progressEventId = `evt_${logId}`;
-  const workSummary = completedThisPulse
-    ? t('agent.workCompletedLog', { agent: agent.name, workText, artifact })
-    : t('agent.workProgressLog', { agent: agent.name, workText, routine: routine?.label || (currentLanguage === 'zh' ? '固定工作例行程序' : 'their fixed work routine'), artifact });
+  const workSummary = currentLanguage === 'zh'
+    ? `${agent.name} 正在执行负责人分配的“${workText}”：${currentWorkStep}（${workPulseCount}/${requiredWorkPulses}）。目标产物：${task.workDefinition?.deliverable || workText}。截止时间：${task.dueAt || '待负责人确认'}。`
+    : `${agent.name} is executing Leader-assigned work "${workText}": ${currentWorkStep} (${workPulseCount}/${requiredWorkPulses}). Deliverable: ${task.workDefinition?.deliverable || workText}. Deadline: ${task.dueAt || 'awaiting Leader confirmation'}.`;
   const managementLine = resolvedManagementReasons.length ? t('agent.managementPriority', { reasons: resolvedManagementReasons.join('; ') }) : '';
-  const managementResponseLine = managementSignals.length
+  const shouldAnswerManagementSignals = !task || strategyDecision?.selectedAction === 'answer-management-signal';
+  const effectiveManagementSignals = shouldAnswerManagementSignals ? managementSignals : [];
+  const effectiveManagementResponderTargets = shouldAnswerManagementSignals ? managementResponderTargets : [];
+  const effectiveManagementSignalIds = new Set(effectiveManagementSignals.map((item) => item.id).filter(Boolean));
+  const effectiveManagementSignalMessageIds = new Set(effectiveManagementSignals.map((item) => item.sourceMessageId || item.messageId).filter(Boolean));
+  const managementResponseLine = effectiveManagementSignals.length
     ? t('agent.managementResponse', {
-      count: managementSignals.length,
-      plural: managementSignals.length === 1 ? '' : 's',
-      targets: managementResponderTargets.map((target) => target.name).join(' / ') || (currentLanguage === 'zh' ? '管理链' : 'the management chain'),
+      count: effectiveManagementSignals.length,
+      plural: effectiveManagementSignals.length === 1 ? '' : 's',
+      targets: effectiveManagementResponderTargets.map((target) => target.name).join(' / ') || (currentLanguage === 'zh' ? '管理链' : 'the management chain'),
     })
     : '';
   const progressMessage = attachMessageReceipts({
@@ -4502,7 +4901,7 @@ export function runAgentWorkCycle({
     type: completedThisPulse ? 'decision' : 'progress',
     author: agent.name,
     role: agent.role,
-    time: t('agent.agentPulse'),
+    time: t('agent.timeNow'),
     text: completedThisPulse
       ? t('agent.completed', { workText, artifact, managementLine, responseLine: managementResponseLine })
       : t('agent.progress', { workText, routine: routine?.label || (currentLanguage === 'zh' ? '我的固定例行程序' : 'my fixed routine'), artifact, managementLine, responseLine: managementResponseLine }),
@@ -4523,27 +4922,7 @@ export function runAgentWorkCycle({
       strategySelectedAction: strategyDecision?.selectedAction || null,
     },
   }, team, { seenAt: now });
-  const artifactDraft = redactSensitiveObject(buildAgentArtifactDraft({
-    project,
-    agent,
-    task,
-    workText,
-    workSummary,
-    now,
-    completed: completedThisPulse,
-    cycleId,
-  }));
-  const writtenArtifact = typeof artifactWriter === 'function'
-    ? artifactWriter(artifactDraft, { project, agent, task, now, completed: completedThisPulse, cycleId })
-    : null;
-  const redactedWrittenArtifact = redactSensitiveObject(writtenArtifact || {});
-  const artifactRecord = {
-    ...artifactDraft,
-    ...redactedWrittenArtifact,
-    traceId: normalizedTraceId,
-    existsOnDisk: Boolean(writtenArtifact?.absolutePath || writtenArtifact?.path),
-    source: typeof artifactWriter === 'function' ? 'agent-artifact-writer' : 'agent-artifact-draft',
-  };
+  const artifactRecord = null;
   const timelineSubmission = buildAgentTimelineToolSubmission({
     project,
     agent,
@@ -4574,9 +4953,9 @@ export function runAgentWorkCycle({
     sourceChannelId: channelId,
     receiptCount: progressMessage.visibility?.receiptCount || 0,
     directTargetIds: progressMessage.directTargetIds || [],
-    attachments: [artifactRecord],
-    artifactIds: [artifactRecord.id],
-    artifactPaths: [artifactRecord.absolutePath || artifactRecord.path || artifactRecord.relativePath].filter(Boolean),
+    attachments: [],
+    artifactIds: [],
+    artifactPaths: [],
     timelineSubmission,
     commitAreaKey: timelineSubmission.commitAreaKey,
     commitMessage: timelineSubmission.commitMessage,
@@ -4585,14 +4964,14 @@ export function runAgentWorkCycle({
     strategyDecision,
     contributionIntent,
   };
-  const managementResponseMessages = managementResponderTargets.map((target, index) => attachMessageReceipts({
+  const managementResponseMessages = effectiveManagementResponderTargets.map((target, index) => attachMessageReceipts({
     id: `agent_management_response_${agent.id}_${target.id}_${timestamp}_${index}`,
     projectId: project.id,
     channelId,
     type: 'mention',
     author: agent.name,
     role: agent.role,
-    time: t('agent.agentPulse'),
+    time: t('agent.timeNow'),
     text: t('agent.managementResponseMessage', { agent: agent.name, target: target.name, workText, artifact }),
     targets: [target.name],
     directTargetIds: [target.id],
@@ -4609,10 +4988,10 @@ export function runAgentWorkCycle({
       nextRunAt,
       managementPriority: resolvedManagementPriority,
       managementReasons: resolvedManagementReasons,
-      managementSignalIds: managementSignals.map((item) => item.id).filter(Boolean),
+      managementSignalIds: effectiveManagementSignals.map((item) => item.id).filter(Boolean),
     },
   }, team, { seenAt: now }));
-  const managementResponseLogs = managementResponderTargets.map((target, index) => ({
+  const managementResponseLogs = effectiveManagementResponderTargets.map((target, index) => ({
     id: `log_agent_management_response_${agent.id}_${target.id}_${timestamp}_${index}`,
     time: now,
     agent: agent.name,
@@ -4626,7 +5005,7 @@ export function runAgentWorkCycle({
     receiptCount: managementResponseMessages[index]?.visibility?.receiptCount || 0,
     directTargetIds: [target.id],
   }));
-  const managementTargetIds = Array.from(new Set([
+  const managementTargetIds = task ? [] : Array.from(new Set([
     ...(previousState.managedIds || agent.managedIds || []),
     ...(previousState.peerManagedIds || []),
   ].filter((targetId) => targetId && targetId !== agent.id)));
@@ -4643,7 +5022,7 @@ export function runAgentWorkCycle({
       type: 'mention',
       author: agent.name,
       role: agent.role,
-      time: t('agent.agentPulse'),
+      time: t('agent.timeNow'),
       text: t('agent.managementCheckIn', {
         agent: agent.name,
         target: target.name,
@@ -4687,20 +5066,28 @@ export function runAgentWorkCycle({
   });
   const nextTasks = (project.tasks || []).map((item) => {
     if (!task || String(item.id) !== String(task.id)) return item;
-    return {
+    const nextTask = {
       ...item,
       status: completedThisPulse ? 'done' : 'in-progress',
       lastTouchedAt: now,
       workPulseCount,
+      requiredWorkPulses,
+      currentWorkStep,
+      currentWorkStepIndex: Math.min(workPulseCount, requiredWorkPulses),
       completedAt: completedThisPulse ? now : item.completedAt,
       evidenceMessageIds: Array.from(new Set([...(item.evidenceMessageIds || []), progressMessage.id])),
       timelineLogIds: Array.from(new Set([...(item.timelineLogIds || []), progressLog.id])),
-      attachments: [
-        ...(item.attachments || []),
-        artifactRecord,
-      ].filter((attachment, index, all) => all.findIndex((candidate) => candidate.id === attachment.id) === index),
-      artifactIds: Array.from(new Set([...(item.artifactIds || []), artifactRecord.id])),
+      attachments: item.attachments || [],
+      artifactIds: item.artifactIds || [],
       artifactPaths: Array.from(new Set([...(item.artifactPaths || []), ...(progressLog.artifactPaths || [])])),
+    };
+    return {
+      ...nextTask,
+      leaderTodos: buildLeaderTodos({
+        task: nextTask,
+        leaderId: nextTask.deadlineSetBy || nextTask.assignedBy || project.leaderWorkPlan?.leaderId || null,
+        now,
+      }),
     };
   });
   const nextState = {
@@ -4712,6 +5099,9 @@ export function runAgentWorkCycle({
     currentPlan: {
       ...(previousState.currentPlan || {}),
       focus: workText,
+      currentStep: currentWorkStep,
+      deadlineAt: task.dueAt || null,
+      deliverable: task.workDefinition?.deliverable || null,
       next: completedThisPulse ? t('agent.waitNext') : t('agent.continueWork'),
       strategyNext: strategyDecision?.nextStep || null,
       strategySelectedAction: strategyDecision?.selectedAction || null,
@@ -4725,8 +5115,8 @@ export function runAgentWorkCycle({
       if (!matchesSignal) return item;
       return {
         ...item,
-        status: 'addressed',
-        respondedAt: now,
+        status: shouldAnswerManagementSignals ? 'addressed' : 'deferred-to-material-work',
+        ...(shouldAnswerManagementSignals ? { respondedAt: now } : { deferredAt: now, deferredReason: 'owned-material-work-priority' }),
         responseMessageIds: managementResponseMessages.map((message) => message.id),
       };
     }),
@@ -4736,9 +5126,11 @@ export function runAgentWorkCycle({
       if (matchesManagementSignal) {
         return {
           ...obligation,
-          status: 'done',
+          status: shouldAnswerManagementSignals ? 'done' : 'deferred-to-material-work',
           lastWorkedAt: now,
-          completedAt: now,
+          completedAt: shouldAnswerManagementSignals ? now : obligation.completedAt,
+          deferredAt: shouldAnswerManagementSignals ? obligation.deferredAt : now,
+          deferredReason: shouldAnswerManagementSignals ? obligation.deferredReason : 'owned-material-work-priority',
           responseMessageIds: managementResponseMessages.map((message) => message.id),
         };
       }
@@ -4759,8 +5151,8 @@ export function runAgentWorkCycle({
         sourceMessageId: progressMessage.id,
         taskId: task?.id || null,
         text: workSummary,
-        artifactId: artifactRecord.id,
-        artifactPath: artifactRecord.absolutePath || artifactRecord.path || artifactRecord.relativePath,
+        artifactId: null,
+        artifactPath: null,
         timelineSubmissionId: timelineSubmission.id,
         commitAreaKey: timelineSubmission.commitAreaKey,
         thinkingFrame: timelineSubmission.thinkingFrame,
@@ -4768,17 +5160,17 @@ export function runAgentWorkCycle({
         strategySelectedAction: strategyDecision?.selectedAction || null,
         contributionIntent,
       },
-      ...(managementSignals.length ? [{
+      ...(effectiveManagementSignals.length ? [{
         id: `worklog_management_response_${messageId}`,
         at: now,
         kind: 'management-response',
         source: 'agent-work-cycle',
-        sourceMessageIds: Array.from(managementSignalMessageIds),
+        sourceMessageIds: Array.from(effectiveManagementSignalMessageIds),
         responseMessageIds: managementResponseMessages.map((message) => message.id),
         taskId: task?.id || null,
         text: currentLanguage === 'zh'
-          ? `${agent.name} 在继续工作脉冲前回应了 ${managementSignals.length} 条管理信号。`
-          : `${agent.name} responded to ${managementSignals.length} management signal${managementSignals.length === 1 ? '' : 's'} before continuing the work pulse.`,
+          ? `${agent.name} 在继续工作脉冲前回应了 ${effectiveManagementSignals.length} 条管理信号。`
+          : `${agent.name} responded to ${effectiveManagementSignals.length} management signal${effectiveManagementSignals.length === 1 ? '' : 's'} before continuing the work pulse.`,
       }] : []),
       ...(previousState.worklog || []),
     ].slice(0, 80),
@@ -4788,7 +5180,8 @@ export function runAgentWorkCycle({
   };
   const projectWithState = {
     ...project,
-    progress: Math.min(100, (project.progress || 0) + (completedThisPulse ? 2 : task ? 1 : 0)),
+    progress: Number(project.progress || 0),
+    outcomeBaselineProgress: Number(project.outcomeBaselineProgress ?? project.progress ?? 0),
     tasks: nextTasks,
     logs: [...managementResponseLogs, ...managementLogs, progressLog, ...(project.logs || [])],
     agentStates: {
@@ -4816,8 +5209,8 @@ export function runAgentWorkCycle({
         messageId: progressMessage.id,
         logId: progressLog.id,
         managementTargetIds: managementTargets.map((target) => target.id),
-        managementResponseTargetIds: managementResponderTargets.map((target) => target.id),
-        managementSignalIds: managementSignals.map((item) => item.id).filter(Boolean),
+        managementResponseTargetIds: effectiveManagementResponderTargets.map((target) => target.id),
+        managementSignalIds: effectiveManagementSignals.map((item) => item.id).filter(Boolean),
         managementResponseCount: managementResponseLogs.length,
         managementEventCount: managementLogs.length,
         strategyDecision,
@@ -4837,7 +5230,7 @@ export function runAgentWorkCycle({
       summary: progressLog.log,
       source: 'agent-work-cycle',
       channelId,
-      evidenceIds: [progressLog.id, progressMessage.id, artifactRecord.id],
+      evidenceIds: [progressLog.id, progressMessage.id],
       entityIds: {
         agentId: agent.id,
         taskId: task?.id || null,
@@ -4853,7 +5246,7 @@ export function runAgentWorkCycle({
         completed: completedThisPulse,
         managementPriority: resolvedManagementPriority,
         managementReasons: resolvedManagementReasons,
-        managementSignalIds: managementSignals.map((item) => item.id).filter(Boolean),
+        managementSignalIds: effectiveManagementSignals.map((item) => item.id).filter(Boolean),
         artifact: artifactRecord,
         timelineSubmission,
         strategyDecision,
@@ -4867,7 +5260,7 @@ export function runAgentWorkCycle({
       summary: log.log,
       source: 'agent-work-cycle-management-response',
       channelId,
-      evidenceIds: [log.id, managementResponseMessages[index]?.id, ...Array.from(managementSignalMessageIds)].filter(Boolean),
+      evidenceIds: [log.id, managementResponseMessages[index]?.id, ...Array.from(effectiveManagementSignalMessageIds)].filter(Boolean),
       entityIds: {
         agentId: agent.id,
         targetAgentId: log.targetAgentId,
@@ -4882,7 +5275,7 @@ export function runAgentWorkCycle({
         nextRunAt,
         managementPriority: resolvedManagementPriority,
         managementReasons: resolvedManagementReasons,
-        managementSignalIds: managementSignals.map((item) => item.id).filter(Boolean),
+        managementSignalIds: effectiveManagementSignals.map((item) => item.id).filter(Boolean),
       },
     })),
     ...managementLogs.map((log, index) => createProjectLedgerEvent({
@@ -4939,13 +5332,13 @@ export function runAgentWorkCycle({
     && (Boolean(task) || explicitProjectWorkArtifactRequested)
     && (
       resolvedSubmitWorkArtifactOn === 'always'
-      || (resolvedSubmitWorkArtifactOn === 'completion' && completedThisPulse)
+      || (resolvedSubmitWorkArtifactOn === 'completion' && checkpointReady)
       || (!task && explicitProjectWorkArtifactRequested)
     );
   const shouldRecordEvidenceSearch = Boolean(resolvedRecordEvidenceSearch)
     && (Boolean(task) || explicitEvidenceSearchRequested)
     && (
-      completedThisPulse
+      checkpointReady
       || resolvedSubmitWorkArtifactOn === 'always'
       || resolvedWorkArtifactType === 'evidence-packet'
     );
@@ -5001,31 +5394,18 @@ export function runAgentWorkCycle({
   }
 
   if (shouldSubmitWorkArtifact) {
-    const resolvedWorkArtifactLabel = String(resolvedWorkArtifactType || 'progress-brief').replace(/-/g, ' ');
+    const workArtifactDraft = buildAgentArtifactDraft({ project: finalProject, agent, task, workText, workSummary, now, completed: completedThisPulse, cycleId });
     workSubmissionResult = submitAgentArtifact({
       project: finalProject,
       agentId: agent.id,
       traceId: normalizedTraceId,
       artifactType: resolvedWorkArtifactType,
-      title: `${agent.name || agent.id} autonomous ${resolvedWorkArtifactLabel}`,
-      summary: `${agent.name || agent.id} completed a worker cycle for ${workText} and submitted a proofed ${resolvedWorkArtifactLabel}.`,
-      description: `${agent.name || agent.id} published this ${resolvedWorkArtifactLabel} because the current worker cycle reached a reviewable checkpoint for ${workText}. The requested reviewer should validate the linked chat, timeline, event, and artifact proof.`,
-      body: [
-        `# ${agent.name || agent.id} autonomous ${resolvedWorkArtifactLabel}`,
-        '',
-        workSummary,
-        '',
-        `- Worker cycle: ${cycleId}`,
-        `- Trigger: ${trigger}`,
-        `- Cadence: ${cadence}`,
-        task ? `- Task: ${task.text || task.id}` : `- Project objective: ${project.currentObjective || project.objective || project.summary || project.name || project.id}`,
-        `- Timeline proof: ${progressLog.id}`,
-        `- Chat proof: ${progressMessage.id}`,
-        `- Event proof: ${progressEventId}`,
-        evidenceSearchResult?.evidenceSearch?.id ? `- Evidence search: ${evidenceSearchResult.evidenceSearch.id}` : null,
-        '',
-        `This ${resolvedWorkArtifactLabel} was created by the backend Agent worker after the Agent completed its assigned work pulse.`,
-      ].filter(Boolean).join('\n'),
+      title: workArtifactDraft.title,
+      summary: workArtifactDraft.summary,
+      description: currentLanguage === 'zh'
+        ? `《${workArtifactDraft.title}》的工作草稿；正文必须补齐后才能验收。`
+        : `Working draft of “${workArtifactDraft.title}”; its content must be completed before acceptance.`,
+      body: workArtifactDraft.content,
       taskId: task?.id || null,
       status: 'submitted',
       reviewStatus: resolvedWorkArtifactReviewStatus,
@@ -5048,7 +5428,7 @@ export function runAgentWorkCycle({
           judgement: evidenceSearchResult.evidenceSearch.evidenceJudgement || null,
         } : null,
       ].filter(Boolean),
-      tags: ['autonomous-worker', 'agent-initiative', trigger, cadence].filter(Boolean),
+      tags: ['working-draft', 'agent-initiative', trigger, cadence].filter(Boolean),
       channelId,
       now,
       artifactWriter,
@@ -5198,6 +5578,86 @@ export function runAgentWorkCycle({
     }
   }
 
+  const tasksWithOutcomes = (finalProject.tasks || []).map((candidateTask) => {
+    const taskAgent = team.find((member) => taskBelongsToAgent(candidateTask, member)) || {};
+    const outcome = evaluateMaterialOutcome({
+      project: finalProject,
+      task: candidateTask,
+      agent: taskAgent,
+      artifact: String(candidateTask.id || '') === String(task?.id || '')
+        ? (workSubmissionResult?.artifact || artifactRecord)
+        : null,
+    });
+    const isCurrentTask = String(candidateTask.id || '') === String(task?.id || '');
+    const reachedCheckpointWithoutMaterial = isCurrentTask && checkpointReady && !outcome.material;
+    return {
+      ...candidateTask,
+      outcomeWorkContract: normalizeOutcomeWorkContract({ project: finalProject, task: candidateTask, agent: taskAgent }),
+      outcome,
+      status: outcome.accepted
+        ? 'done'
+        : outcome.material
+          ? 'awaiting-review'
+          : reachedCheckpointWithoutMaterial
+            ? 'blocked-no-material-outcome'
+            : candidateTask.status === 'done'
+              ? 'in-progress'
+              : candidateTask.status,
+      completedAt: outcome.accepted ? (candidateTask.completedAt || now) : null,
+    };
+  });
+  const currentOutcomeTask = tasksWithOutcomes.find((candidateTask) => String(candidateTask.id || '') === String(task?.id || '')) || null;
+  const currentOutcome = currentOutcomeTask?.outcome || existingOutcome;
+  const outcomeHealth = buildNoMaterialDeltaState({
+    previous: finalProject.outcomeHealth || project.outcomeHealth || null,
+    material: Boolean(currentOutcome.material),
+    now,
+  });
+  const outcomeProgress = calculateOutcomeProgress({ ...finalProject, tasks: tasksWithOutcomes });
+  const outcomeBaselineProgress = Number(finalProject.outcomeBaselineProgress ?? project.progress ?? 0);
+  const outcomeAdjustedProgress = Math.min(100, Math.round(
+    outcomeBaselineProgress + ((100 - outcomeBaselineProgress) * outcomeProgress / 100),
+  ));
+  const outcomeCycleStatus = currentOutcome.accepted
+    ? 'accepted-material-outcome'
+    : currentOutcome.material
+      ? 'awaiting-material-review'
+      : outcomeHealth.status === 'STALLED_NO_MATERIAL_DELTA'
+        ? 'blocked-no-material-outcome'
+        : 'working-no-material-delta';
+  finalProject = {
+    ...finalProject,
+    tasks: tasksWithOutcomes,
+    progress: outcomeAdjustedProgress,
+    outcomeProgress,
+    outcomeBaselineProgress,
+    outcomeHealth,
+    agentStates: {
+      ...(finalProject.agentStates || {}),
+      [agent.id]: {
+        ...(finalProject.agentStates?.[agent.id] || nextState),
+        status: outcomeCycleStatus,
+        outcome: currentOutcome,
+        outcomeWorkContract: currentOutcome.contract,
+        materialHandoff: currentOutcome.handoff,
+      },
+    },
+    agentWorkerLedger: (finalProject.agentWorkerLedger || []).map((record) => (
+      record.id === cycleId
+        ? {
+            ...record,
+            status: outcomeCycleStatus,
+            materialDelta: Boolean(currentOutcome.material),
+            outcomeAccepted: Boolean(currentOutcome.accepted),
+            outcomeBlockers: currentOutcome.blockers,
+            outcomeWorkContract: currentOutcome.contract,
+            materialHandoff: currentOutcome.handoff,
+            noMaterialDeltaState: outcomeHealth,
+          }
+        : record
+    )),
+  };
+
   return {
     project: finalProject,
     messages: finalMessages.map((message) => ({ ...message, projectId: project.id })),
@@ -5221,6 +5681,10 @@ export function runAgentWorkCycle({
     reviewResponseLog: reviewResponseResult?.log || null,
     strategyDecision,
     contributionIntent,
+    outcome: currentOutcome,
+    outcomeWorkContract: currentOutcome.contract,
+    materialHandoff: currentOutcome.handoff,
+    outcomeHealth,
   };
 }
 
@@ -5247,6 +5711,7 @@ export function submitAgentArtifact({
   respondsToReviewId = null,
   supersedesSubmissionIds = [],
   sourceRefs = [],
+  evidenceSearchIds = [],
   tags = [],
   originDraft = null,
   channelId = 'main',
@@ -5254,7 +5719,7 @@ export function submitAgentArtifact({
   workspaceRelativePath = '',
   now = nowIso(),
   artifactWriter = null,
-  language = project.language || 'en',
+  language = effectiveProjectLanguage(project),
 } = {}) {
   const currentLanguage = normalizeLanguage(language);
   const normalizedTraceId = normalizeLocalTraceId(traceId);
@@ -5344,9 +5809,10 @@ export function submitAgentArtifact({
   const reviewStatus = generatedDraftInput ? 'pending-review' : requestedReviewStatus;
   const timestamp = Date.parse(now) || Date.now();
   const submissionId = `agent_submission_${project.id || 'project'}_${agent.id}_${normalizedType}_${timestamp}`;
-  const safeTitle = redactSensitiveText(String(title || '').trim() || `${agent.name || 'Agent'} ${normalizedType.replace(/-/g, ' ')}`);
+  const taskAsset = describeTaskAsset({ project, task: task || {}, agent, language: currentLanguage });
+  const safeTitle = redactSensitiveText(String(title || '').trim() || taskAsset.title);
   const safeSummary = redactSensitiveText(String(summary || '').trim()
-    || `${agent.name || 'Agent'} submitted ${safeTitle} for manager review.`);
+    || taskAsset.purpose);
   const hasAgentAuthoredDescription = Boolean(String(description || '').trim());
   const safeDescription = redactSensitiveText(String(description || '').trim() || safeSummary);
   const content = redactSensitiveText(String(body || '').trim() || [
@@ -5354,14 +5820,14 @@ export function submitAgentArtifact({
     '',
     safeSummary,
     '',
-    `- Submitter: ${agent.name || agent.id}`,
-    `- Artifact type: ${normalizedType}`,
-    task ? `- Linked task: ${task.text || task.id}` : null,
-    reviewer ? `- Requested reviewer: ${reviewer.name || reviewer.id}` : null,
+    currentLanguage === 'zh' ? `- 用途：${taskAsset.purpose}` : `- Purpose: ${taskAsset.purpose}`,
+    currentLanguage === 'zh' ? `- 负责人：${agent.name || agent.id}` : `- Owner: ${agent.name || agent.id}`,
+    reviewer ? (currentLanguage === 'zh' ? `- 审阅人：${reviewer.name || reviewer.id}` : `- Reviewer: ${reviewer.name || reviewer.id}`) : null,
   ].filter(Boolean).join('\n'));
   const normalizedSourceRefs = (Array.isArray(sourceRefs) ? sourceRefs : [])
     .map((item) => redactSensitiveObject(item))
     .filter(Boolean);
+  const normalizedEvidenceSearchIds = uniqueStrings(evidenceSearchIds || []);
   const normalizedTags = uniqueStrings(tags || []).map((tag) => redactSensitiveText(tag));
   const normalizedOriginDraft = originDraft && typeof originDraft === 'object'
     ? {
@@ -5390,19 +5856,16 @@ export function submitAgentArtifact({
     normalizedRespondsToReviewId,
   ].filter(Boolean)).map((item) => redactSensitiveText(item));
   const extension = artifactExtensionForType(normalizedType);
-  const artifactFileName = `artifact-${shortArtifactHash({
-    submissionId,
-    projectId: project.id || null,
-    agentId: agent.id,
-    artifactType: normalizedType,
-    timestamp,
-  })}.${extension}`;
+  const artifactFileName = readableArtifactFileName(safeTitle, extension);
   const defaultArtifactPath = {
-    relativePath: `submissions/${slugPart(agent.id).slice(0, 32)}/${normalizedType}/${artifactFileName}`,
-    path: `submissions/${slugPart(agent.id).slice(0, 32)}/${normalizedType}/${artifactFileName}`,
+    fileName: artifactFileName,
+    relativePath: artifactFileName,
+    path: artifactFileName,
   };
   const isKickoffMeetingReportPath = relativePath === 'meeting-notes/kickoff-summary.md'
     && workspaceRelativePath === 'meeting-notes/kickoff-summary.md';
+  const isProjectMeetingMinutesPath = relativePath === workspaceRelativePath
+    && /^meeting-notes\/[a-z0-9][a-z0-9-]*\.md$/i.test(relativePath);
   const artifactDraft = {
     id: `artifact_${submissionId}`,
     submissionId,
@@ -5413,7 +5876,7 @@ export function submitAgentArtifact({
     summary: safeSummary,
     content,
     ...defaultArtifactPath,
-    ...(isKickoffMeetingReportPath ? {
+    ...(isKickoffMeetingReportPath || isProjectMeetingMinutesPath ? {
       relativePath,
       path: relativePath,
       workspaceRelativePath,
@@ -5423,6 +5886,7 @@ export function submitAgentArtifact({
     taskId: task?.id || null,
     status: normalizedStatus,
     sourceRefs: normalizedSourceRefs,
+    evidenceSearchIds: normalizedEvidenceSearchIds,
     tags: normalizedTags,
     revisesSubmissionId: normalizedRevisesSubmissionId,
     respondsToReviewId: normalizedRespondsToReviewId,
@@ -5464,10 +5928,14 @@ export function submitAgentArtifact({
     author: agent.name,
     authorId: agent.id,
     role: agent.role || agent.title || 'Agent',
-    time: 'Submission',
-    text: reviewer
-      ? `@${reviewer.name} I submitted "${safeTitle}" (${normalizedType}) for review. ${safeSummary}`
-      : `@all I submitted "${safeTitle}" (${normalizedType}) for review. ${safeSummary}`,
+    time: currentLanguage === 'zh' ? '刚刚提交' : 'Submitted',
+    text: currentLanguage === 'zh'
+      ? (reviewer
+        ? `@${reviewer.name}，我完成了《${safeTitle}》，请重点检查：${safeSummary}`
+        : `@所有人，我完成了《${safeTitle}》，请查看：${safeSummary}`)
+      : (reviewer
+        ? `@${reviewer.name}, I completed “${safeTitle}”. Please review: ${safeSummary}`
+        : `@all, I completed “${safeTitle}”. Please review: ${safeSummary}`),
     targets: targetNames,
     targetIds: reviewer ? [reviewer.id] : ['all'],
     weight: 'Agent Submission',
@@ -5495,7 +5963,7 @@ export function submitAgentArtifact({
     description: safeDescription,
     descriptionSource: hasAgentAuthoredDescription ? 'agent-authored' : 'runtime-fallback',
     intent: 'Agent submitted a typed artifact node for manager review and proof-map traceability.',
-    commitMessage: `${agent.name || 'Agent'} submitted ${safeTitle}.`,
+    commitMessage: safeTitle,
     committerIds: normalizedCommitterIds,
     coAuthorIds: normalizedCoAuthorIds,
     participantIds: normalizedParticipantIds,
@@ -5521,6 +5989,7 @@ export function submitAgentArtifact({
       artifactStorageProof,
       artifactStorageProofChecksum: artifactStorageProof.checksum,
       sourceRefs: normalizedSourceRefs,
+      evidenceSearchIds: normalizedEvidenceSearchIds,
     },
     collaborationContext: {
       reviewerAgentId: reviewer?.id || null,
@@ -5590,6 +6059,7 @@ export function submitAgentArtifact({
       supersedesSubmissionIds: normalizedSupersedesSubmissionIds,
     },
     sourceRefs: normalizedSourceRefs,
+    evidenceSearchIds: normalizedEvidenceSearchIds,
     tags: normalizedTags,
     isGeneratedDraft: Boolean(normalizedOriginDraft),
     artifactDraft: normalizedOriginDraft,
@@ -5613,7 +6083,7 @@ export function submitAgentArtifact({
     messageId: submissionMessage.id,
     timelineLogId: logId,
     eventId,
-    evidenceIds: uniqueStrings([submissionMessage.id, logId, eventId, artifactRecord.id, artifactStorageProof.checksum]),
+    evidenceIds: uniqueStrings([submissionMessage.id, logId, eventId, artifactRecord.id, artifactStorageProof.checksum, ...normalizedEvidenceSearchIds]),
     createdAt: now,
     updatedAt: now,
     timelineSubmission,
@@ -5632,7 +6102,9 @@ export function submitAgentArtifact({
     submissionId,
     artifactType: normalizedType,
     reviewStatus,
-    log: `${agent.name || 'Agent'} submitted "${safeTitle}" as ${normalizedType}.`,
+    log: currentLanguage === 'zh'
+      ? `${agent.name || '成员'}提交了《${safeTitle}》，等待审阅。`
+      : `${agent.name || 'Team member'} submitted “${safeTitle}” for review.`,
     receiptCount: submissionMessage.visibility?.receiptCount || 0,
     directTargetIds: submissionMessage.directTargetIds || [],
     attachments: [artifactRecord],
@@ -5658,6 +6130,7 @@ export function submitAgentArtifact({
         ? uniqueStrings([...(item.revisionSubmissionIds || []), submissionId])
         : (item.revisionSubmissionIds || []),
       evidenceMessageIds: uniqueStrings([...(item.evidenceMessageIds || []), submissionMessage.id]),
+      evidenceSearchIds: uniqueStrings([...(item.evidenceSearchIds || []), ...normalizedEvidenceSearchIds]),
       timelineLogIds: uniqueStrings([...(item.timelineLogIds || []), log.id]),
       artifactIds: uniqueStrings([...(item.artifactIds || []), artifactRecord.id]),
       artifactPaths: uniqueStrings([...(item.artifactPaths || []), ...(log.artifactPaths || [])]),
@@ -5830,7 +6303,7 @@ export function recordAgentEvidenceSearch({
   tags = [],
   channelId = 'main',
   now = nowIso(),
-  language = project.language || 'en',
+  language = effectiveProjectLanguage(project),
 } = {}) {
   const currentLanguage = normalizeLanguage(language);
   const normalizedTraceId = normalizeLocalTraceId(traceId);
@@ -6133,7 +6606,7 @@ export function reviewAgentSubmission({
   requestedChanges = [],
   channelId = 'main',
   now = nowIso(),
-  language = project.language || 'en',
+  language = effectiveProjectLanguage(project),
 } = {}) {
   const currentLanguage = normalizeLanguage(language);
   const team = project.team || [];
@@ -6437,7 +6910,7 @@ export function reviewEvidenceSource({
   requestedActions = [],
   channelId = 'main',
   now = nowIso(),
-  language = project.language || 'en',
+  language = effectiveProjectLanguage(project),
 } = {}) {
   const currentLanguage = normalizeLanguage(language);
   const team = project.team || [];
@@ -7166,6 +7639,8 @@ export function createKickoffMeetingSession({
   selectedLeaderId,
   reviewerId,
   tasks = [],
+  nextActions = [],
+  deliverables = [],
   workModeContract = null,
   now = nowIso(),
   source = 'backend-kickoff-meeting-session',
@@ -7196,6 +7671,16 @@ export function createKickoffMeetingSession({
     || team.find((agent) => agent.id !== recommendedLeader?.id && /review|evidence|qa|critic|report/i.test(`${agent.role || ''} ${agent.title || ''} ${agent.skill || ''}`))
     || team.find((agent) => agent.id !== recommendedLeader?.id)
     || recommendedLeader;
+  const proposedDeliverableResolution = buildKickoffDeliverableResolution({
+    deliverables: deliverables.length ? deliverables : tasks,
+    team,
+    selectedLeaderId: selectedLeaderId || recommendedLeader?.id,
+    now,
+    managerConfirmed: false,
+    language: currentLanguage,
+  });
+  const deliverableSpeaker = team.find(agent => agent.id === proposedDeliverableResolution.deliverables[0]?.ownerId)
+    || recommendedLeader;
   const transcript = [
     {
       id: `${meetingId}_director_brief`,
@@ -7207,6 +7692,20 @@ export function createKickoffMeetingSession({
       hears: team.map((agent) => agent.id),
       stage: 'brief',
     },
+    ...(proposedDeliverableResolution.deliverables.length ? [{
+      id: `${meetingId}_deliverables_proposed`,
+      type: 'deliverable-proposal',
+      speaker: deliverableSpeaker?.name || 'Agent',
+      speakerId: deliverableSpeaker?.id || null,
+      agentId: deliverableSpeaker?.id || null,
+      role: deliverableSpeaker?.role || deliverableSpeaker?.title || 'Agent',
+      text: currentLanguage === 'zh'
+        ? `我建议本项目最终交付：${proposedDeliverableResolution.deliverables.map(item => item.fileName).join('、')}，请确认负责人和验收标准。`
+        : `I propose these final deliverables: ${proposedDeliverableResolution.deliverables.map(item => item.fileName).join(', ')}. Please confirm owners and acceptance criteria.`,
+      hears: team.filter(agent => agent.id !== deliverableSpeaker?.id).map(agent => agent.id),
+      stage: 'deliverable-confirmation',
+      source: 'kickoff-deliverable-proposal',
+    }] : []),
     ...(roleNegotiation.transcript || []).map((item) => ({
       ...item,
       stage: item.type === 'role-question' ? 'role-clarification' : 'self-nomination',
@@ -7227,12 +7726,13 @@ export function createKickoffMeetingSession({
     managerConfirmed: false,
   });
   const nextActionResolution = buildNextActionResolution({
-    tasks,
+    tasks: nextActions.length ? nextActions : tasks,
     team,
     selectedLeaderId: leaderElectionResolution.selectedLeaderId || recommendedLeader?.id,
     now,
     managerConfirmed: false,
   });
+  const deliverableResolution = proposedDeliverableResolution;
 
   return {
     id: meetingId,
@@ -7246,6 +7746,7 @@ export function createKickoffMeetingSession({
     updatedAt: now,
     team,
     tasks,
+    nextActions: nextActionResolution.tasks,
     workModeContract: workModeContract?.schemaVersion === 'super-agent-work-mode-team/v1'
       ? workModeContract
       : null,
@@ -7259,12 +7760,14 @@ export function createKickoffMeetingSession({
     roleQuestionResolutions,
     leaderElectionResolution,
     nextActionResolution,
+    deliverableResolution,
     decisionOptions: {
       selectableTeamIds: team.map((agent) => agent.id),
       leaderCandidateIds: uniqueStrings((leaderElection.candidates || []).map((candidate) => candidate.id)),
       recommendedLeaderId: recommendedLeader?.id || null,
       reviewerId: reviewer?.id || null,
       taskCount: tasks.length,
+      deliverableCount: deliverableResolution.deliverableCount,
     },
     evidence: {
       generationProvenance: kickoffGenerationProvenance,
@@ -7274,6 +7777,8 @@ export function createKickoffMeetingSession({
       roleQuestionResolutions,
       leaderElectionResolution,
       nextActionResolution,
+      deliverableResolution,
+      deliverableIds: deliverableResolution.deliverableIds,
       unansweredRoleQuestionIds: roleQuestionResolutions.filter((item) => !item.answered).map((item) => item.questionId),
       hearingEdgeCount: transcript.reduce((count, item) => count + (item.hears?.length || item.hearsOthers?.length || 0), 0),
     },
@@ -7281,7 +7786,7 @@ export function createKickoffMeetingSession({
 }
 
 
-function appendModelKickoffMeetingTurns({
+export function appendModelKickoffMeetingTurns({
   meeting = {},
   modelPayload = {},
   modelResult = {},
@@ -7293,14 +7798,14 @@ function appendModelKickoffMeetingTurns({
   const turnSource = normalizeModelArray(modelPayload.agentTurns).length
     ? normalizeModelArray(modelPayload.agentTurns)
     : normalizeModelArray(modelPayload.turns);
-  const agentTurns = turnSource.map((turn, index) => {
+  const candidateAgentTurns = turnSource.map((turn, index) => {
     const agent = findMeetingAgent(team, turn.agentId || turn.speakerId || turn.speaker || turn.name);
     const text = normalizeModelText(turn.text || turn.statement || turn.question || turn.claim || turn.content);
     if (!agent || !text) return null;
     const kind = normalizeModelMeetingTurnType(turn.type || turn.stage || turn.kind);
     const score = Number(turn.score);
     return {
-      id: `${meeting.id || 'kickoff_meeting'}_agent_turn_${timestamp}_${index + 1}`,
+      id: turn.id || `${meeting.id || 'kickoff_meeting'}_agent_turn_${timestamp}_${index + 1}`,
       type: kind.type,
       stage: kind.stage,
       speaker: agent.name,
@@ -7309,6 +7814,11 @@ function appendModelKickoffMeetingTurns({
       role: agent.role || agent.title || 'Agent',
       text,
       score: Number.isFinite(score) ? score : 8,
+      replyToTurnId: turn.replyToTurnId || turn.repliesTo || null,
+      targetSpeakerId: turn.targetSpeakerId || null,
+      interactionIntent: turn.interactionIntent || null,
+      topicId: turn.topicId || null,
+      addressedAgentIds: normalizeModelArray(turn.addressedAgentIds),
       hears: team.filter((peer) => peer.id !== agent.id).map((peer) => peer.id),
       source: 'model-kickoff-meeting-turn',
       modelProvider: {
@@ -7319,6 +7829,17 @@ function appendModelKickoffMeetingTurns({
       createdAt: now,
     };
   }).filter(Boolean);
+  const interaction = normalizeMeetingInteractionChain({
+    meeting,
+    turns: candidateAgentTurns,
+    now,
+  });
+  const agentTurns = interaction.turns;
+  const rejectedSourceTurnCount = Math.max(0, turnSource.length - candidateAgentTurns.length);
+  const discussionState = {
+    ...interaction.state,
+    droppedTurnCount: interaction.state.droppedTurnCount + rejectedSourceTurnCount,
+  };
   if (!agentTurns.length) throw new Error('model-kickoff-meeting-turn-empty');
 
   const nextTranscript = [...(meeting.transcript || []), ...agentTurns];
@@ -7352,7 +7873,7 @@ function appendModelKickoffMeetingTurns({
     source: meeting.roleNegotiation?.source || 'live-kickoff-meeting',
     projectId: meeting.projectId,
     projectName: meeting.name,
-    transcript: roleTranscript,
+    transcript: roleTranscript.filter(turn => turn.type === 'role-question' || turn.type === 'role-volunteer'),
   };
   const roleQuestionResolutions = buildRoleQuestionResolutions({
     transcript: nextTranscript,
@@ -7382,6 +7903,7 @@ function appendModelKickoffMeetingTurns({
       };
     })
     .filter(Boolean);
+  const modelDeliverables = normalizeModelArray(modelPayload.deliverables);
   const nextActionResolution = modelNextActions.length
     ? buildNextActionResolution({
         tasks: modelNextActions,
@@ -7392,6 +7914,17 @@ function appendModelKickoffMeetingTurns({
         source: 'model-kickoff-meeting-turn-next-actions',
       })
     : meeting.nextActionResolution;
+  const deliverableResolution = modelDeliverables.length
+    ? buildKickoffDeliverableResolution({
+        deliverables: modelDeliverables,
+        team,
+        selectedLeaderId: leaderElectionResolution.selectedLeaderId || leaderElection.recommendedLeaderId,
+        now,
+        managerConfirmed: false,
+        source: 'model-kickoff-meeting-deliverables',
+        language: meeting.language || 'en',
+      })
+    : meeting.deliverableResolution;
   const kickoffGenerationProvenance = meeting.generationProvenance || buildKickoffGenerationProvenance({
     source: 'model-kickoff-meeting-turn',
     mode: 'model-provider',
@@ -7408,10 +7941,12 @@ function appendModelKickoffMeetingTurns({
     leaderElection,
     recommendedLeaderId: leaderElection.recommendedLeaderId || meeting.recommendedLeaderId || null,
     recommendedLeaderName: leaderElection.recommendedLeaderName || meeting.recommendedLeaderName || null,
-    tasks: modelNextActions.length ? nextActionResolution.tasks : meeting.tasks,
+    nextActions: modelNextActions.length ? nextActionResolution.tasks : meeting.nextActions,
     roleQuestionResolutions,
     leaderElectionResolution,
     nextActionResolution,
+    deliverableResolution,
+    discussionState,
     generationProvenance: kickoffGenerationProvenance,
     evidence: {
       ...(meeting.evidence || {}),
@@ -7424,7 +7959,14 @@ function appendModelKickoffMeetingTurns({
       roleQuestionResolutions,
       leaderElectionResolution,
       nextActionResolution,
+      deliverableResolution,
+      deliverableIds: deliverableResolution?.deliverableIds || [],
       modelTurnIds: agentTurns.map((item) => item.id),
+      peerInteractionEdgeCount: discussionState.peerExchangeCount,
+      convergedTopicIds: discussionState.status === 'converged'
+        ? uniqueStrings([...(meeting.evidence?.convergedTopicIds || []), discussionState.topicId])
+        : meeting.evidence?.convergedTopicIds || [],
+      droppedMeetingTurnCount: Number(meeting.evidence?.droppedMeetingTurnCount || 0) + discussionState.droppedTurnCount,
       hearingEdgeCount: nextTranscript.reduce((count, item) => count + (item.hears?.length || item.hearsOthers?.length || 0), 0),
     },
   };
@@ -7447,6 +7989,8 @@ function createModelKickoffMeetingSession(input = {}, modelPayload = {}, modelRe
     brief = '',
     team = [],
     tasks = [],
+    nextActions: requestedNextActions = [],
+    deliverables = [],
     selectedLeaderId,
     reviewerId,
     now = nowIso(),
@@ -7469,7 +8013,8 @@ function createModelKickoffMeetingSession(input = {}, modelPayload = {}, modelRe
     const speaker = findMeetingAgent(validTeam, turn.agentId || turn.speakerId || turn.speaker || turn.name);
     const text = normalizeModelText(turn.text || turn.question || turn.statement || turn.claim || turn.content);
     if (!speaker || !text) return null;
-    const kind = /volunteer|nomination|self/i.test(String(turn.type || turn.stage || '')) ? 'role-volunteer' : 'role-question';
+    const normalizedTurn = normalizeModelMeetingTurnType(turn.type || turn.stage || 'role-question');
+    const kind = normalizedTurn.type;
     return {
       id: `${meetingId}_role_${index + 1}`,
       type: kind,
@@ -7479,7 +8024,7 @@ function createModelKickoffMeetingSession(input = {}, modelPayload = {}, modelRe
       role: speaker.role || speaker.title || 'Agent',
       text,
       hears: normalizeMeetingHearIds(validTeam, speaker.id, turn.hears || turn.hearsOthers),
-      stage: kind === 'role-question' ? 'role-clarification' : 'self-nomination',
+      stage: normalizedTurn.stage,
       source: 'model-kickoff-meeting',
     };
   }).filter(Boolean);
@@ -7527,6 +8072,15 @@ function createModelKickoffMeetingSession(input = {}, modelPayload = {}, modelRe
     || findMeetingAgent(validTeam, modelPayload.reviewerId)
     || validTeam.find((agent) => agent.id !== modelLeader?.id)
     || modelLeader;
+  const deliverableResolution = buildKickoffDeliverableResolution({
+    deliverables: normalizeModelArray(modelPayload.deliverables).length ? modelPayload.deliverables : deliverables.length ? deliverables : tasks,
+    team: validTeam,
+    selectedLeaderId: selectedLeaderId || modelLeader?.id,
+    now,
+    managerConfirmed: false,
+    source: normalizeModelArray(modelPayload.deliverables).length ? 'model-kickoff-meeting-deliverables' : 'kickoff-input-deliverables',
+    language: currentLanguage,
+  });
   const leaderElection = {
     source: 'model-kickoff-meeting',
     projectId,
@@ -7540,7 +8094,7 @@ function createModelKickoffMeetingSession(input = {}, modelPayload = {}, modelRe
     source: 'model-kickoff-meeting',
     projectId,
     projectName: name,
-    transcript: roleTranscript,
+    transcript: roleTranscript.filter(turn => turn.type === 'role-question' || turn.type === 'role-volunteer'),
   };
   const nextActions = normalizeModelArray(modelPayload.nextActions).length
     ? normalizeModelArray(modelPayload.nextActions).map((action, index) => {
@@ -7554,7 +8108,7 @@ function createModelKickoffMeetingSession(input = {}, modelPayload = {}, modelRe
         status: action.status || 'pending',
       };
     }).filter((action) => action.text)
-    : tasks;
+    : requestedNextActions.length ? requestedNextActions : tasks;
   const transcript = [
     {
       id: `${meetingId}_director_brief`,
@@ -7568,6 +8122,20 @@ function createModelKickoffMeetingSession(input = {}, modelPayload = {}, modelRe
       source: 'director',
     },
     ...roleTranscript,
+    ...(!roleTranscript.some(turn => turn.stage === 'deliverable-confirmation') && deliverableResolution.deliverables.length ? [{
+      id: `${meetingId}_deliverables_proposed`,
+      type: 'deliverable-proposal',
+      speaker: modelLeader?.name || 'Agent',
+      speakerId: modelLeader?.id || null,
+      agentId: modelLeader?.id || null,
+      role: modelLeader?.role || modelLeader?.title || 'Agent',
+      text: currentLanguage === 'zh'
+        ? `我建议本项目最终交付：${deliverableResolution.deliverables.map(item => item.fileName).join('、')}，请确认负责人和验收标准。`
+        : `I propose these final deliverables: ${deliverableResolution.deliverables.map(item => item.fileName).join(', ')}. Please confirm owners and acceptance criteria.`,
+      hears: validTeam.filter(agent => agent.id !== modelLeader?.id).map(agent => agent.id),
+      stage: 'deliverable-confirmation',
+      source: 'model-kickoff-deliverable-proposal',
+    }] : []),
     ...leaderCampaigns,
   ];
   const roleQuestionResolutions = buildRoleQuestionResolutions({ transcript, clarifications: [] });
@@ -7611,7 +8179,8 @@ function createModelKickoffMeetingSession(input = {}, modelPayload = {}, modelRe
     createdAt: now,
     updatedAt: now,
     team: validTeam,
-    tasks: nextActionResolution.tasks || nextActions,
+    tasks,
+    nextActions: nextActionResolution.tasks || nextActions,
     recommendedLeaderId: modelLeader?.id || null,
     recommendedLeaderName: modelLeader?.name || null,
     reviewerId: modelReviewer?.id || null,
@@ -7622,12 +8191,14 @@ function createModelKickoffMeetingSession(input = {}, modelPayload = {}, modelRe
     roleQuestionResolutions,
     leaderElectionResolution,
     nextActionResolution,
+    deliverableResolution,
     decisionOptions: {
       selectableTeamIds: validTeam.map((agent) => agent.id),
       leaderCandidateIds: uniqueStrings(leaderCandidates.map((candidate) => candidate.id)),
       recommendedLeaderId: modelLeader?.id || null,
       reviewerId: modelReviewer?.id || null,
       taskCount: nextActionResolution.tasks?.length || nextActions.length || 0,
+      deliverableCount: deliverableResolution.deliverableCount,
     },
     evidence: {
       generationProvenance: kickoffGenerationProvenance,
@@ -7635,11 +8206,13 @@ function createModelKickoffMeetingSession(input = {}, modelPayload = {}, modelRe
       decisionSummary: normalizeModelText(modelPayload.decisionSummary),
       risks: normalizeModelArray(modelPayload.risks).map(normalizeModelText).filter(Boolean),
       transcriptIds: transcript.map((item) => item.id).filter(Boolean),
-      roleTranscriptIds: roleTranscript.map((item) => item.id),
+      roleTranscriptIds: roleTranscript.filter(turn => turn.type === 'role-question' || turn.type === 'role-volunteer').map((item) => item.id),
       leaderCampaignIds: leaderCampaigns.map((item) => item.id),
       roleQuestionResolutions,
       leaderElectionResolution,
       nextActionResolution,
+      deliverableResolution,
+      deliverableIds: deliverableResolution.deliverableIds,
       unansweredRoleQuestionIds: roleQuestionResolutions.filter((item) => !item.answered).map((item) => item.questionId),
       hearingEdgeCount: transcript.reduce((count, item) => count + (item.hears?.length || item.hearsOthers?.length || 0), 0),
     },
@@ -7736,7 +8309,10 @@ export function confirmKickoffMeetingNextActions({
   });
   return {
     ...meeting,
-    tasks: nextActionResolution.tasks,
+    tasks: meeting.deliverableResolution?.schemaVersion === 'kickoff-deliverable-resolution/v1'
+      ? meeting.tasks
+      : nextActionResolution.tasks,
+    nextActions: nextActionResolution.tasks,
     updatedAt: now,
     nextActionResolution,
     evidence: {
@@ -7831,6 +8407,18 @@ function buildProductTeamMissionConfig(input = {}) {
     ? input.selectedTeamIds
     : team.map((agent) => agent.id)).filter(Boolean))
     .filter((agentId) => team.some((agent) => agent.id === agentId));
+  const deliverableResolution = buildKickoffDeliverableResolution({
+    deliverables: input.deliverables?.length ? input.deliverables : tasks,
+    team,
+    selectedLeaderId: input.selectedLeaderId || leader?.id,
+    now,
+    managerConfirmed: false,
+    source: input.deliverables?.length ? 'product-team-mission-deliverables' : 'product-team-mission-task-deliverables',
+    language: normalizeLanguage(input.language || 'en'),
+  });
+  const deliverableTasks = input.deliverables?.length
+    ? kickoffDeliverablesToTasks(deliverableResolution, { language: normalizeLanguage(input.language || 'en') })
+    : tasks;
   return {
     now,
     projectId,
@@ -7839,13 +8427,47 @@ function buildProductTeamMissionConfig(input = {}) {
     brief: missionBrief || 'Run a generic AI product-team mission from kickoff through autonomous collaboration and deliverable proof.',
     team,
     selectedTeamIds,
-    tasks,
+    tasks: deliverableTasks,
+    nextActions: input.nextActions?.length ? input.nextActions : tasks,
+    deliverables: deliverableResolution.deliverables,
     selectedLeaderId: input.selectedLeaderId || leader?.id || null,
     reviewerId: input.reviewerId || reviewer?.id || null,
     workModeContract: input.workModeContract?.schemaVersion === 'super-agent-work-mode-team/v1'
       ? input.workModeContract
       : null,
     language: normalizeLanguage(input.language || 'en'),
+  };
+}
+
+export function confirmKickoffMeetingDeliverables({
+  meeting = {},
+  deliverables,
+  now = nowIso(),
+  language = meeting.language || 'en',
+} = {}) {
+  const deliverableResolution = buildKickoffDeliverableResolution({
+    deliverables: deliverables || meeting.deliverableResolution?.deliverables || [],
+    team: meeting.team || [],
+    selectedLeaderId: meeting.leaderElectionResolution?.selectedLeaderId || meeting.recommendedLeaderId,
+    now,
+    managerConfirmed: true,
+    source: 'kickoff-meeting-deliverables-confirmed',
+    language: normalizeLanguage(language),
+  });
+  if (!kickoffDeliverablesReady(deliverableResolution)) {
+    throw new Error('kickoff-deliverables-incomplete');
+  }
+  const deliverableTasks = kickoffDeliverablesToTasks(deliverableResolution, { language: normalizeLanguage(language) });
+  return {
+    ...meeting,
+    tasks: deliverableTasks,
+    updatedAt: now,
+    deliverableResolution,
+    evidence: {
+      ...(meeting.evidence || {}),
+      deliverableResolution,
+      deliverableIds: deliverableResolution.deliverableIds,
+    },
   };
 }
 
@@ -7917,7 +8539,11 @@ export function approveKickoffMeetingSession({
   const meetingLeaderResolution = meeting.leaderElectionResolution || meeting.evidence?.leaderElectionResolution || null;
   const approvedLeaderId = selectedLeaderId || meetingLeaderResolution?.selectedLeaderId || meeting.recommendedLeaderId;
   const approvedReviewerId = reviewerId || meeting.reviewerId;
-  const approvedTasks = tasks || meeting.nextActionResolution?.tasks || meeting.evidence?.nextActionResolution?.tasks || meeting.tasks || [];
+  const meetingDeliverableResolution = meeting.deliverableResolution || meeting.evidence?.deliverableResolution || null;
+  if (!kickoffDeliverablesReady(meetingDeliverableResolution)) {
+    throw new Error('kickoff-deliverables-must-be-confirmed-before-approval');
+  }
+  const approvedTasks = tasks || meeting.tasks || kickoffDeliverablesToTasks(meetingDeliverableResolution, { language });
   const meetingNextActionResolution = meeting.nextActionResolution?.managerConfirmed
     ? meeting.nextActionResolution
     : buildNextActionResolution({
@@ -7942,6 +8568,7 @@ export function approveKickoffMeetingSession({
     roleQuestionResolutions: meeting.roleQuestionResolutions || meeting.evidence?.roleQuestionResolutions || [],
     leaderElectionResolution: meetingLeaderResolution,
     nextActionResolution: meetingNextActionResolution,
+    deliverableResolution: meetingDeliverableResolution,
     workModeContract: meeting.workModeContract,
     generationProvenance: meeting.generationProvenance || meeting.evidence?.generationProvenance || null,
     now,
@@ -7954,6 +8581,7 @@ export function approveKickoffMeetingSession({
     updatedAt: now,
     approvedAt: now,
     nextActionResolution: meetingNextActionResolution,
+    deliverableResolution: meetingDeliverableResolution,
     approvedProjectId: kickoffResult.project.id,
     managerDecision: {
       selectedTeamIds: team.map((agent) => agent.id),
@@ -7963,6 +8591,7 @@ export function approveKickoffMeetingSession({
       reviewerName: kickoffResult.kickoffCharter?.governance?.reviewerName || null,
       taskIds: (kickoffResult.project.tasks || []).map((task) => task.id),
       nextActionIds: meetingNextActionResolution.actionIds,
+      deliverableIds: meetingDeliverableResolution.deliverableIds,
     },
     kickoffCharterId: kickoffResult.kickoffCharter?.id || null,
     firstPulse: {
@@ -7996,6 +8625,7 @@ export function createKickoffProjectFromMeeting({
   roleQuestionResolutions = [],
   leaderElectionResolution: savedLeaderElectionResolution,
   nextActionResolution: savedNextActionResolution,
+  deliverableResolution: savedDeliverableResolution,
   generationProvenance = null,
   workModeContract = null,
   now = nowIso(),
@@ -8083,6 +8713,7 @@ export function createKickoffProjectFromMeeting({
     nextAutonomousRunAt: null,
     team: confirmedTeam,
     tasks: openTasks,
+    deliverableResolution: savedDeliverableResolution || null,
     workModeContract: workModeContract?.schemaVersion === 'super-agent-work-mode-team/v1'
       ? workModeContract
       : null,
@@ -8116,10 +8747,12 @@ export function createKickoffProjectFromMeeting({
       roleQuestionResolutions,
       leaderElectionResolution,
       nextActionResolution,
+      deliverableResolution: savedDeliverableResolution || null,
       generationProvenance: kickoffGenerationProvenance,
       approvedAt: now,
       summary: brief,
-      output: openTasks.map((task) => task.text).join('; '),
+      output: (savedDeliverableResolution?.deliverables || []).map((deliverable) => deliverable.fileName).join('; ')
+        || openTasks.map((task) => task.text).join('; '),
       reason: 'Created through backend kickoff project command.',
     },
   };
@@ -8137,6 +8770,7 @@ export function createKickoffProjectFromMeeting({
   const assignedProject = {
     ...peerManagedBaseProject,
     tasks: assignmentPackage.tasks,
+    leaderWorkPlan: assignmentPackage.plan,
     logs: [...assignmentPackage.acknowledgementLogs, ...assignmentPackage.assignmentLogs, ...peerManagedBaseProject.logs],
   };
   const directorBriefMessage = attachMessageReceipts({
@@ -8520,35 +9154,18 @@ function transcriptRecoveredMessages(project = {}) {
     });
   });
 
-  (project.logs || []).forEach((log) => {
-    const messageId = String(log.id || '').startsWith('log_') ? String(log.id).slice(4) : log.messageId;
-    if (!messageId) return;
-    recovered.push({
-      id: messageId,
-      projectId: project.id || null,
-      channelId: log.sourceChannelId || 'main',
-      type: chatTypeForTranscriptProof('', log.eventType),
-      author: log.agent || 'Agent',
-      role: log.eventType || '',
-      time: log.time || 'Recovered Proof',
-      text: log.log || '',
-      directTargetIds: log.directTargetIds || [],
-      receiptCount: log.receiptCount || 0,
-      recoveredProof: true,
-      source: 'timeline-log',
-      logId: log.id || null,
-    });
-  });
-
   const byId = new Map();
   recovered.forEach((message) => {
-    if (!byId.has(message.id)) byId.set(message.id, message);
+    if (isConversationMessage(message) && !byId.has(message.id)) byId.set(message.id, message);
   });
   return [...byId.values()];
 }
 
 function buildTranscriptIndex({ project = {}, messages = [] } = {}) {
-  const currentMessages = messages.filter((message) => !project.id || message.projectId === project.id);
+  const currentMessages = messages.filter((message) => (
+    (!project.id || message.projectId === project.id)
+    && isConversationMessage(message)
+  ));
   const recoveredMessages = transcriptRecoveredMessages(project);
   const currentIds = new Set(currentMessages.map((message) => String(message.id || '')));
   const archivedMessages = recoveredMessages.filter((message) => !currentIds.has(String(message.id || '')));
@@ -8563,6 +9180,7 @@ function buildTranscriptIndex({ project = {}, messages = [] } = {}) {
     'decisions',
     ...currentMessages.map((message) => message.channelId || 'main'),
     ...recoveredMessages.map((message) => message.channelId || 'main'),
+    ...(project.transcriptChannelReceipts || []).map((receipt) => receipt.channelId || 'main'),
     ...channelPinReceipts.map((receipt) => receipt.channelId || 'main'),
     ...pinReceipts.map((receipt) => receipt.channelId || 'main'),
     ...replyReceipts.map((receipt) => receipt.channelId || 'main'),
@@ -8599,6 +9217,15 @@ function buildTranscriptIndex({ project = {}, messages = [] } = {}) {
     const channelMessages = currentMessages.filter((message) => (message.channelId || 'main') === channelId);
     const channelArchived = archivedMessages.filter((message) => (message.channelId || 'main') === channelId);
     const allProofMessages = [...channelMessages, ...channelArchived];
+    const channelCreationReceipts = (project.transcriptChannelReceipts || [])
+      .filter((receipt) => (receipt.channelId || 'main') === channelId);
+    const channelCreationProofIds = uniqueStrings(channelCreationReceipts.flatMap((receipt) => [
+      receipt.messageId,
+      receipt.timelineLogId,
+      receipt.eventId,
+      receipt.id,
+      receipt.checksum,
+    ].filter(Boolean)));
     const channelPinsForChannel = channelPinReceipts.filter((receipt) => (receipt.channelId || 'main') === channelId);
     const channelPins = pinReceipts.filter((receipt) => (receipt.channelId || 'main') === channelId);
     const channelReplies = replyReceipts.filter((receipt) => (receipt.channelId || 'main') === channelId);
@@ -8644,7 +9271,10 @@ function buildTranscriptIndex({ project = {}, messages = [] } = {}) {
       channelId,
       messageCount: channelMessages.length,
       archivedProofCount: channelArchived.length,
-      totalProofCount: allProofMessages.length,
+      operationalProofCount: channelCreationReceipts.length,
+      totalProofCount: allProofMessages.length + channelCreationReceipts.length,
+      channelCreationReceiptCount: channelCreationReceipts.length,
+      latestChannelCreationReceipt: channelCreationReceipts[0] || null,
       channelPinned: channelPinsForChannel.length > 0,
       channelPinCount: channelPinsForChannel.length,
       channelPinnedProofIds,
@@ -8666,6 +9296,7 @@ function buildTranscriptIndex({ project = {}, messages = [] } = {}) {
       receiptCoverage,
       proofIds: uniqueStrings([
         ...allProofMessages.map((message) => message.id).filter(Boolean),
+        ...channelCreationProofIds,
         ...channelPinnedProofIds,
         ...pinnedProofIds,
         ...replyProofIds,
@@ -8690,10 +9321,13 @@ function buildChannelTranscript({ project = {}, messages = [], channelId = 'main
   const currentMessages = messages.filter((message) => (
     (!project.id || message.projectId === project.id)
     && (message.channelId || 'main') === channelId
+    && isConversationMessage(message)
   ));
   const currentIds = new Set(currentMessages.map((message) => String(message.id || '')));
   const archivedProofMessages = transcriptRecoveredMessages(project)
     .filter((message) => (message.channelId || 'main') === channelId && !currentIds.has(String(message.id || '')));
+  const channelCreationReceipts = (project.transcriptChannelReceipts || [])
+    .filter((receipt) => (receipt.channelId || 'main') === channelId);
   const messageById = new Map([...currentMessages, ...archivedProofMessages].map((message) => [String(message.id || ''), message]));
   const channelPins = (project.transcriptChannelPinReceipts || [])
     .filter((receipt) => receipt.active !== false && (receipt.channelId || 'main') === channelId)
@@ -8842,6 +9476,7 @@ function buildChannelTranscript({ project = {}, messages = [], channelId = 'main
     channelId,
     messages: currentMessages,
     archivedProofMessages,
+    channelCreationReceipts,
     channelPins,
     pinnedMessages,
     replies,
@@ -8849,6 +9484,13 @@ function buildChannelTranscript({ project = {}, messages = [], channelId = 'main
     attachments,
     proofIds: uniqueStrings([
       ...[...currentMessages, ...archivedProofMessages].map((message) => message.id).filter(Boolean),
+      ...channelCreationReceipts.flatMap((receipt) => [
+        receipt.messageId,
+        receipt.timelineLogId,
+        receipt.eventId,
+        receipt.id,
+        receipt.checksum,
+      ].filter(Boolean)),
       ...channelPins.flatMap((receipt) => receipt.proofIds || []),
       ...pinnedMessages.flatMap((receipt) => receipt.proofIds || []),
       ...replies.flatMap((receipt) => receipt.proofIds || []),
@@ -9547,9 +10189,25 @@ function updateProjectMembershipPolicy(project = {}, {
   };
 }
 
+function effectiveProjectLanguage(project = {}, fallbackLanguage = 'en') {
+  return normalizeLanguage(
+    project.language
+      || project.projectSettings?.language
+      || project.projectSettings?.effectiveLanguage
+      || project.effectiveLanguage
+      || fallbackLanguage,
+  );
+}
+
 function buildProjectSettingsReadModel(project = {}) {
   const settings = project.projectSettings || {};
   const explicitLanguage = project.language || settings.language || null;
+  const effectiveLanguage = normalizeLanguage(
+    explicitLanguage
+      || settings.effectiveLanguage
+      || project.effectiveLanguage
+      || 'en',
+  );
   const privacyPolicy = normalizeProjectPrivacyPolicy(undefined, settings.privacyPolicy);
   const providerBudgetPolicy = normalizeProjectProviderBudgetPolicy(undefined, settings.providerBudgetPolicy);
   const workspacePolicy = normalizeProjectWorkspacePolicy(undefined, settings.workspacePolicy);
@@ -9560,7 +10218,7 @@ function buildProjectSettingsReadModel(project = {}) {
     schemaVersion: 'project-settings/v1',
     projectId: project.id || null,
     language: explicitLanguage,
-    effectiveLanguage: normalizeLanguage(explicitLanguage || 'en'),
+    effectiveLanguage,
     privacyPolicy,
     providerBudgetPolicy,
     workspacePolicy,
@@ -10004,6 +10662,7 @@ function normalizeProjectToolGrantPolicy(input, previous = {}) {
 function updateProjectSettings(project = {}, input = {}) {
   const {
     language,
+    inheritedLanguage,
     privacyPolicy,
     providerBudgetPolicy,
     workspacePolicy,
@@ -10015,10 +10674,18 @@ function updateProjectSettings(project = {}, input = {}) {
   const languageProvided = Object.prototype.hasOwnProperty.call(input, 'language');
   const toolGrantPolicyProvided = Object.prototype.hasOwnProperty.call(input, 'toolGrantPolicy');
   const previousLanguage = project.language || project.projectSettings?.language || null;
+  const previousEffectiveLanguage = project.projectSettings?.effectiveLanguage
+    || project.effectiveLanguage
+    || previousLanguage
+    || 'en';
   const inheritsLanguage = languageProvided && (language === undefined || language === null || language === '' || language === 'inherit');
   const normalizedLanguage = languageProvided
     ? (inheritsLanguage ? null : normalizeLanguage(language))
     : (previousLanguage ? normalizeLanguage(previousLanguage) : null);
+  const normalizedEffectiveLanguage = normalizeLanguage(
+    normalizedLanguage
+      || (inheritsLanguage && inheritedLanguage ? inheritedLanguage : previousEffectiveLanguage),
+  );
   const timestamp = Date.parse(now) || Date.now();
   const nextRevision = (project.projectSettings?.revision || 0) + 1;
   const normalizedPrivacyPolicy = normalizeProjectPrivacyPolicy(privacyPolicy, project.projectSettings?.privacyPolicy);
@@ -10045,7 +10712,7 @@ function updateProjectSettings(project = {}, input = {}) {
     schemaVersion: 'project-settings/v1',
     projectId: project.id,
     language: normalizedLanguage,
-    effectiveLanguage: normalizeLanguage(normalizedLanguage || 'en'),
+    effectiveLanguage: normalizedEffectiveLanguage,
     privacyPolicy: normalizedPrivacyPolicy,
     providerBudgetPolicy: normalizedProviderBudgetPolicy,
     workspacePolicy: normalizedWorkspacePolicy,
@@ -17104,17 +17771,21 @@ function buildManagerDashboardSnapshot({ project = {}, messages = [] } = {}) {
       transcript: roleTranscript,
       clarifications: managerClarifications,
     });
-  if (!roleQuestionResolutionRows.length && (charter?.meeting?.roleQuestionCount || 0) > 0 && charter?.status === 'approved') {
+  if (!project.initiation?.roleQuestionResolutions?.length && charter?.status === 'approved') {
     const charterRoleQuestionIds = (charter?.evidence?.roleTranscriptIds || []).slice(0, charter.meeting.roleQuestionCount);
-    roleQuestionResolutionRows = charterRoleQuestionIds.map((questionId, index) => ({
-      questionId,
-      speakerId: null,
-      speakerName: 'Kickoff participant',
-      questionText: 'Recovered role question from approved kickoff charter.',
+    const recoveredRows = roleQuestionResolutionRows.length
+      ? roleQuestionResolutionRows
+      : charterRoleQuestionIds.map((questionId) => ({ questionId }));
+    roleQuestionResolutionRows = recoveredRows.map((row, index) => ({
+      ...row,
+      questionId: row.questionId || charterRoleQuestionIds[index],
+      speakerId: row.speakerId || null,
+      speakerName: row.speakerName || 'Kickoff participant',
+      questionText: row.questionText || 'Recovered role question from approved kickoff charter.',
       answered: true,
-      answerIds: [charter.id].filter(Boolean),
-      answerText: 'Director approved the kickoff charter after role clarification, team confirmation, and first execution planning.',
-      answeredAt: charter.createdAt || project.updatedAt || project.createdAt || null,
+      answerIds: uniqueStrings([...(row.answerIds || []), charter.id].filter(Boolean)),
+      answerText: row.answerText || 'Director approved the kickoff charter after role clarification, team confirmation, and first execution planning.',
+      answeredAt: row.answeredAt || charter.createdAt || project.updatedAt || project.createdAt || null,
       source: 'approved-kickoff-charter',
       ordinal: index + 1,
     }));
@@ -22114,6 +22785,9 @@ function buildRuntimeAutonomyStatus({
   workerQueueAdapterDryRun = {},
   autonomousRunControl = {},
   productTeamOperatingLoop = {},
+  schedulerStatus = {},
+  modelStatus = {},
+  searchStatus = {},
   now = nowIso(),
 } = {}) {
   const projectId = project.id || managerDashboard.projectId || autonomousRunControl.projectId || productTeamOperatingLoop.projectId || null;
@@ -22137,6 +22811,23 @@ function buildRuntimeAutonomyStatus({
     || persistenceSnapshot.integrity?.eventLedgerContiguous
     || (persistenceSummary.totalRecordCount || persistenceSnapshot.totalRecordCount || 0) > 0
   );
+  const workKind = classifyProjectWork(project).kind;
+  const schedulerEnabled = Boolean(schedulerStatus.enabled);
+  const schedulerRunning = Boolean(schedulerEnabled && schedulerStatus.acceptingTicks !== false);
+  const providerOperational = (status = {}) => {
+    const circuit = status.transportReliability?.circuit || {};
+    return Boolean(
+      status.enabled
+      && status.configured !== false
+      && !['open', 'half-open'].includes(String(circuit.state || '').toLowerCase())
+      && Number(circuit.failureCount || 0) === 0
+    );
+  };
+  const requiredProvidersReady = Boolean(
+    providerOperational(modelStatus)
+    && (workKind !== 'research' || providerOperational(searchStatus))
+  );
+  const materialOutcomeCount = (project.tasks || []).filter((task) => task.outcome?.material === true).length;
   const recoverableAutopilotQueueCount = autopilotQueue.filter((row) => (
     row.idempotencyKey
     && row.leaseKey
@@ -22223,6 +22914,32 @@ function buildRuntimeAutonomyStatus({
     eventIds: eventIds.slice(0, 24),
   });
   const gates = [
+    gate({
+      id: 'autonomous-scheduler-running',
+      label: 'Autonomous scheduler is enabled and running',
+      ready: schedulerRunning,
+      detail: schedulerRunning
+        ? 'The local scheduler is enabled for unattended outcome cycles.'
+        : 'The local scheduler is disabled or stopped; autonomous work cannot continue after kickoff.',
+      apiPath: backendRoutes.schedulerStatus,
+      blocker: 'autonomous-scheduler-not-running',
+    }),
+    gate({
+      id: 'required-work-providers-ready',
+      label: 'Required work-plane providers are ready',
+      ready: requiredProvidersReady,
+      detail: `${workKind} work requires operational model=${providerOperational(modelStatus)}${workKind === 'research' ? ` and search=${providerOperational(searchStatus)}` : ''}.`,
+      apiPath: workKind === 'research' ? '/search/status' : '/llm/status',
+      blocker: 'required-work-provider-not-ready',
+    }),
+    gate({
+      id: 'material-output-observed',
+      label: 'At least one material project outcome is observable',
+      ready: materialOutcomeCount > 0,
+      detail: `${materialOutcomeCount} task(s) have content-bearing, policy-compliant material output.`,
+      apiPath: projectId ? `/projects/${projectId}/product-team-delivery-trace` : null,
+      blocker: 'material-output-not-observed',
+    }),
     gate({
       id: 'mission-runner-started',
       label: 'C-side mission runner started A-side autonomy',
@@ -22335,6 +23052,17 @@ function buildRuntimeAutonomyStatus({
       eventIdCount: eventIds.length,
       flowGraphRoute: backendRoutes.managerFlowGraph,
       proofMapRoute: backendRoutes.readinessProofMap,
+    },
+    workPlane: {
+      workKind,
+      schedulerEnabled,
+      schedulerRunning,
+      modelProviderReady: Boolean(modelStatus.enabled && modelStatus.configured !== false),
+      searchProviderReady: Boolean(searchStatus.enabled && searchStatus.configured !== false),
+      requiredProvidersReady,
+      materialOutcomeCount,
+      noMaterialDeltaStatus: project.outcomeHealth?.status || null,
+      consecutiveNoMaterialCycles: project.outcomeHealth?.consecutiveNoMaterialCycles || 0,
     },
     workerQueue: {
       schemaVersion: workerQueueSnapshot.schemaVersion || null,
@@ -34069,7 +34797,7 @@ function compactProjectEvidenceArchiveContents(contents = {}, manifest = [], bac
         status: contents.runtimeEvidence?.persistenceSnapshot?.integrity?.status || null,
         checksum: persistenceChecksum(contents.runtimeEvidence?.persistenceSnapshot || {}),
       },
-      workerQueue: {
+    workerQueue: {
         schemaVersion: contents.runtimeEvidence?.workerQueueSnapshot?.schemaVersion || null,
         status: contents.runtimeEvidence?.workerQueueSnapshot?.status || null,
         receiptCount: contents.runtimeEvidence?.workerQueueSnapshot?.summary?.workerRunReceiptCount || 0,
@@ -35295,7 +36023,7 @@ function buildProductionPersistenceSnapshot({
     id: projectId,
     name: project.name || '',
     status: project.status || '',
-    language: project.language || 'en',
+    language: effectiveProjectLanguage(project),
     teamCount: project.team?.length || 0,
     taskCount: project.tasks?.length || 0,
     createdAt: project.createdAt || project.initiation?.createdAt || null,
@@ -42971,18 +43699,32 @@ function buildManagerFlowGraphSnapshot({ project = {}, messages = [], managerRea
     if (!input.id) return null;
     const id = String(input.id);
     const category = inferWorkflowNodeFamily(input);
+    const task = input.taskId ? taskById.get(String(input.taskId)) : null;
+    const displayTitle = input.displayTitle || activitySentence({
+      ...input,
+      eventType: input.eventType || input.subtype || input.type,
+      actor: input.actor || input.agentName || agentLabel(input.agentId),
+      targetName: input.targetName || agentLabel(input.targetAgentId),
+      taskTitle: input.taskTitle || task?.text,
+      object: input.object || task?.text,
+    });
     const proofIds = makeProofIds(
       input.proofIds,
       input.timelineLogIds,
       input.eventIds,
       input.taskId ? [input.taskId] : [],
     );
+    const controlPlaneOnly = isControlPlaneActivity(input);
+    const secondaryInternalNode = ['evidence', 'monitoring', 'coordination', 'thinking'].includes(category)
+      || /^(?:agentStates|timeline logs|task evidence|event-ledger|managerDashboard|kickoffCharter|evidenceSearches|evidenceSourceReviews|submissionReviewWorkflow)$/i.test(String(input.source || ''));
     const node = decorateWorkflowNode({
       id,
       category,
       categoryLabel: MANAGER_FLOW_CATEGORIES[category].label,
       subtype: input.subtype || 'record',
       title: input.title || id,
+      displayTitle,
+      publiclyVisible: controlPlaneOnly || secondaryInternalNode ? false : (input.publiclyVisible ?? isMeaningfulActivitySentence(displayTitle)),
       description: input.description || input.agentDescription || '',
       descriptionSource: input.descriptionSource || null,
       agentId: input.agentId || null,
@@ -43452,6 +44194,8 @@ function buildManagerFlowGraphSnapshot({ project = {}, messages = [], managerRea
 
   (dashboard.assignmentFlow?.rows || []).forEach((row) => {
     const task = taskById.get(String(row.taskId || '')) || {};
+    const ownerAgent = team.find(member => member.id === row.ownerId || member.name === row.ownerName) || {};
+    const taskAsset = describeTaskAsset({ project, task, agent: ownerAgent, language: effectiveProjectLanguage(project) });
     const progressRow = (dashboard.assignmentWorkProgress?.rows || []).find((item) => String(item.taskId || '') === String(row.taskId || '')) || {};
     const assignmentNodeId = `assignment-${row.taskId}`;
     const executionNodeId = `task-execution-${row.taskId}`;
@@ -43460,7 +44204,9 @@ function buildManagerFlowGraphSnapshot({ project = {}, messages = [], managerRea
       id: assignmentNodeId,
       category: 'collaboration',
       subtype: 'leader-assignment',
-      title: `Leader assigned ${row.ownerName || row.ownerId || 'Agent'}`,
+      title: effectiveProjectLanguage(project) === 'zh'
+        ? `《${taskAsset.title}》由${row.ownerName || row.ownerId || '待分配成员'}负责`
+        : `“${taskAsset.title}” — ${row.ownerName || row.ownerId || 'unassigned'} owns it`,
       agentId: row.ownerId,
       taskId: row.taskId,
       summary: row.text || task.text || 'Leader assignment',
@@ -43496,6 +44242,7 @@ function buildManagerFlowGraphSnapshot({ project = {}, messages = [], managerRea
       category: 'execution',
       subtype: task.status === 'done' ? 'complete-task' : row.workSeen ? 'advance-task' : 'start-task',
       title: `${row.ownerName || row.ownerId || 'Agent'} execution path`,
+      publiclyVisible: false,
       agentId: row.ownerId,
       taskId: row.taskId,
       summary: progressRow.latestProgressText || task.text || row.text || 'Agent work path',
@@ -43528,6 +44275,7 @@ function buildManagerFlowGraphSnapshot({ project = {}, messages = [], managerRea
         category: 'submission',
         subtype: task.status === 'done' ? 'stage-summary' : 'report',
         title: `${row.ownerName || row.ownerId || 'Agent'} published work evidence`,
+        publiclyVisible: false,
         agentId: row.ownerId,
         taskId: row.taskId,
         summary: progressRow.latestProgressText || task.text || 'Work evidence published',
@@ -43588,6 +44336,7 @@ function buildManagerFlowGraphSnapshot({ project = {}, messages = [], managerRea
       category: 'submission',
       subtype: submission.artifactType || 'artifact',
       title: submission.title || `${submission.agentName || submission.agentId || 'Agent'} submitted artifact`,
+      displayTitle: submission.title || submission.artifact?.title || null,
       description: submission.description || '',
       descriptionSource: submission.descriptionSource || null,
       agentId: submission.agentId,
@@ -44253,6 +45002,22 @@ function buildManagerFlowGraphSnapshot({ project = {}, messages = [], managerRea
     const reviewedSubmissionRoute = projectId && review.submissionId ? `/projects/${projectId}/submissions/${encodeURIComponent(review.submissionId)}` : null;
     const submissionNodeId = review.submissionId ? `agent-submission-${review.submissionId}` : null;
     const taskExecutionNodeId = review.taskId ? `task-execution-${review.taskId}` : null;
+    const reviewedSubmission = (project.agentSubmissions || []).find(submission => String(submission.id || '') === String(review.submissionId || '')) || {};
+    const reviewedTask = review.taskId ? taskById.get(String(review.taskId)) : null;
+    const reviewedOwner = team.find(member => member.id === reviewedSubmission.agentId || member.id === reviewedTask?.ownerId) || {};
+    const reviewedAsset = describeTaskAsset({ project, task: reviewedTask || {}, agent: reviewedOwner, language: effectiveProjectLanguage(project) });
+    const reviewedTitle = reviewedSubmission.title || reviewedAsset.title;
+    const reviewDisplayTitle = effectiveProjectLanguage(project) === 'zh'
+      ? review.verdict === 'accepted'
+        ? `《${reviewedTitle}》已通过审阅`
+        : review.verdict === 'changes-requested' || review.verdict === 'rejected'
+          ? `《${reviewedTitle}》需要修改`
+          : `《${reviewedTitle}》审阅意见`
+      : review.verdict === 'accepted'
+        ? `“${reviewedTitle}” accepted`
+        : review.verdict === 'changes-requested' || review.verdict === 'rejected'
+          ? `“${reviewedTitle}” needs changes`
+          : `Review feedback for “${reviewedTitle}”`;
     const revisionNodes = (project.agentSubmissions || [])
       .filter((submission) => String(submission.respondsToReviewId || '') === String(review.id))
       .map((submission) => ({
@@ -44266,7 +45031,8 @@ function buildManagerFlowGraphSnapshot({ project = {}, messages = [], managerRea
       id: nodeId,
       category: 'review',
       subtype: review.verdict || 'submission-review',
-      title: `${review.reviewerAgentName || review.reviewerAgentId || 'Reviewer'} reviewed submission`,
+      title: reviewDisplayTitle,
+      displayTitle: reviewDisplayTitle,
       agentId: review.reviewerAgentId,
       taskId: review.taskId || null,
       submissionId: review.submissionId || null,
@@ -46706,12 +47472,29 @@ function buildManagerFlowGraphSnapshot({ project = {}, messages = [], managerRea
             ? 'review'
             : lowerType || 'timeline-log';
     const agent = team.find((item) => item.id === log.agentId || item.name === log.agent);
+    const targetAgent = team.find((item) => item.id === log.targetAgentId || item.name === log.targetAgent);
+    const task = log.taskId ? taskById.get(String(log.taskId)) : null;
+    const displayTitle = activitySentence({
+      eventType: lowerType,
+      actor: log.actor || log.agent || agent?.name,
+      targetName: log.targetName || targetAgent?.name,
+      taskTitle: task?.text,
+      object: log.object || log.changeText || task?.text,
+      outcome: log.outcome || log.result,
+      commitMessage: log.commitMessage || log.timelineSubmission?.commitMessage,
+      summary: log.log || log.text,
+    });
     const nodeId = `timeline-log-${log.id || index}`;
     addNode({
       id: nodeId,
       category,
       subtype,
       title: log.agent || log.actor || log.eventType || 'Timeline log',
+      displayTitle,
+      publiclyVisible: isMeaningfulActivitySentence(displayTitle),
+      eventType: lowerType,
+      targetAgentId: log.targetAgentId || null,
+      targetName: log.targetName || targetAgent?.name || null,
       description: log.timelineSubmission?.description || '',
       descriptionSource: log.timelineSubmission?.descriptionSource || null,
       agentId: log.agentId || agent?.id || null,
@@ -48997,6 +49780,7 @@ export function createAgentProjectService({
   searchProvider = null,
   providerPolicy = {},
   secretVault = null,
+  runtimeControls = {},
   rateLimitLedger = null,
   store = createAgentProjectMemoryStore({
     projects,
@@ -49041,8 +49825,11 @@ export function createAgentProjectService({
   const autopilotCancellationKey = (projectId, sessionId) => `${projectId}:${sessionId}`;
   const durableTaskCancellationKey = (projectId, jobId, fenceToken) => `${projectId}:${jobId}:${fenceToken}`;
   const readModelCache = new Map();
+  const readModelCacheKeyByScope = new Map();
+  const securityAuditStreamTailByScope = new Map();
   const clearReadModelCache = () => {
     readModelCache.clear();
+    readModelCacheKeyByScope.clear();
   };
   const cacheLimitedReadModel = (key, build) => {
     if (readModelCache.has(key)) return readModelCache.get(key);
@@ -49065,6 +49852,7 @@ export function createAgentProjectService({
     forceAgentRun: Boolean(options.forceAgentRun),
     maxAgentsPerProject: options.maxAgentsPerProject ?? null,
     maxProjects: options.maxProjects ?? null,
+    runtimeStateSignature: options.runtimeStateSignature || null,
   });
   const projectReadModelSignature = (projectId, options = {}) => {
     const project = store.getProject(projectId) || {};
@@ -49232,8 +50020,18 @@ export function createAgentProjectService({
   };
   const cachedReadModel = (kind, projectId, options = {}, build) => {
     if (options.fresh || options.skipCache) return build();
-    const key = `${kind}:${projectId}:${projectReadModelSignature(projectId, options)}`;
-    return cacheLimitedReadModel(key, build);
+    const scope = `${kind}:${projectId}:${readModelOptionSignature(options)}`;
+    const storeRevision = typeof store.getRevision === 'function' ? store.getRevision() : null;
+    const cachedScope = readModelCacheKeyByScope.get(scope);
+    if (
+      storeRevision !== null
+      && cachedScope?.revision === storeRevision
+      && readModelCache.has(cachedScope.key)
+    ) return readModelCache.get(cachedScope.key);
+    const key = `${scope}:${projectReadModelSignature(projectId, options)}`;
+    const value = cacheLimitedReadModel(key, build);
+    readModelCacheKeyByScope.set(scope, { key, revision: storeRevision });
+    return value;
   };
   const attachLocalRuntime = (project) => (
     projectRuntime && typeof projectRuntime.attachProject === 'function'
@@ -49324,6 +50122,7 @@ export function createAgentProjectService({
   const persistResult = (result) => {
     if (result.project?.id && result.messages?.length && typeof store.saveProjectAndAppendMessages === 'function') {
       const persisted = store.saveProjectAndAppendMessages(result.project, result.messages);
+      clearReadModelCache();
       return {
         ...result,
         project: persisted.project,
@@ -53517,6 +54316,17 @@ export function createAgentProjectService({
     listProjects() {
       return store.listProjects();
     },
+    listProjectCatalog() {
+      return store.listProjects().map((project) => ({
+        id: project.id,
+        name: project.name || project.id || 'Untitled project',
+        status: project.status || 'initiated',
+        progress: Number.isFinite(Number(project.progress)) ? Number(project.progress) : 0,
+        language: project.language || project.projectSettings?.language || null,
+        createdAt: project.createdAt || project.initiation?.approvedAt || null,
+        updatedAt: project.updatedAt || project.lastAutonomousRunAt || project.initiation?.approvedAt || null,
+      }));
+    },
     getProjectTrace(projectId, traceId) {
       const project = store.getProject(projectId);
       const normalizedTraceId = normalizeLocalTraceId(traceId);
@@ -53587,11 +54397,12 @@ export function createAgentProjectService({
           purpose: 'create kickoff meeting',
           language: input.language || 'en',
           expectedShape: {
-            roleTurns: [{ agentId: 'agent id from team', type: 'role-question or role-volunteer', text: 'opening clarification turn', hears: ['agent ids'] }],
+            roleTurns: [{ agentId: 'agent id from team', type: 'role-question, role-volunteer, deliverable-question, or deliverable-proposal', text: 'opening clarification turn', hears: ['agent ids'] }],
             leaderCampaigns: [],
             recommendedLeaderId: 'agent id from team',
             reviewerId: 'agent id from team',
             nextActions: [],
+            deliverables: [{ title: 'file title', fileName: 'file name with extension', format: 'file format', ownerId: 'agent id', purpose: 'user purpose', acceptanceCriteria: ['completion condition'] }],
             decisionSummary: 'one sentence opening state',
             risks: ['risk'],
           },
@@ -53697,34 +54508,20 @@ export function createAgentProjectService({
         now,
       });
       let completion = await llmProvider.createChatCompletion({
-        messages: buildModelKickoffTurnLineMessages({
+        messages: buildModelKickoffMeetingTurnMessages({
           meeting: clarifiedMeeting,
           latestDirectorInput: input.text || '',
           language: input.language || clarifiedMeeting.language || 'en',
           now,
         }),
-        json: false,
-        maxTokens: Math.max(420, Number(input.maxTokens) || 0),
+        json: true,
+        maxTokens: Math.max(1200, Number(input.maxTokens) || 0),
         timeoutMs: input.timeoutMs || 30_000,
       });
-      let modelPayload = completion.ok ? parseModelTurnLinePayload(completion.content, clarifiedMeeting) : null;
+      let modelPayload = completion.ok ? parseModelCompletionJson(completion) : null;
       const meetingLanguage = input.language || clarifiedMeeting.language || 'en';
       if (modelPayload && !modelKickoffPayloadMatchesLanguage({ ...clarifiedMeeting, language: meetingLanguage }, modelPayload)) {
         modelPayload = null;
-      }
-
-      if (!modelPayload) {
-        completion = await llmProvider.createChatCompletion({
-          messages: buildModelKickoffMeetingTurnMessages({
-            meeting: clarifiedMeeting,
-            latestDirectorInput: input.text || '',
-            language: input.language || clarifiedMeeting.language || 'en',
-            now,
-          }),
-          json: true,
-          maxTokens: Math.max(8192, Number(input.maxTokens) || 0),
-          timeoutMs: input.timeoutMs || 30_000,
-        });
       }
       if (!completion.ok) {
         throw new Error(`model-kickoff-meeting-turn-failed:${completion.error || completion.reason || 'unknown'}`);
@@ -53736,9 +54533,25 @@ export function createAgentProjectService({
           purpose: 'continue kickoff meeting after Director input',
           language: meetingLanguage,
           expectedShape: {
-            agentTurns: [{ agentId: 'agent id from team', type: 'clarifying-question or role-volunteer or task-decomposition or leader-campaign or adjustment or next-action', text: 'natural meeting turn', score: 8 }],
+            agentTurns: [{
+              agentId: 'agent id from team',
+              type: 'clarifying-question, role-volunteer, task-decomposition, leader-campaign, adjustment, next-action, deliverable-question, or deliverable-proposal',
+              text: 'natural meeting turn',
+              score: 8,
+              replyToTurnId: 'id of an earlier meeting or agent turn',
+              targetSpeakerId: 'agent id being answered, or director for the opening response',
+              interactionIntent: 'support, challenge, clarify, compete, synthesize, escalate, or yield',
+            }],
             recommendedLeaderId: 'optional agent id from team',
             nextActions: [{ text: 'optional concrete first action', ownerId: 'agent id from team' }],
+            deliverables: [{
+              title: 'human-readable file name without extension',
+              fileName: 'exact file name including extension',
+              format: 'explicit file format',
+              ownerId: 'agent id from team',
+              purpose: 'what the user can do with it',
+              acceptanceCriteria: ['observable completion condition'],
+            }],
             decisionSummary: 'optional one sentence',
             risks: ['optional risk'],
           },
@@ -53797,6 +54610,19 @@ export function createAgentProjectService({
         route: 'kickoff-meeting-next-actions-confirmed',
       };
     },
+    confirmKickoffMeetingDeliverables({ meetingId, ...input } = {}) {
+      const meeting = requireKickoffMeeting(meetingId);
+      const confirmedMeeting = confirmKickoffMeetingDeliverables({
+        meeting,
+        ...input,
+      });
+      saveKickoffMeeting(confirmedMeeting);
+      return {
+        meeting: confirmedMeeting,
+        messages: [],
+        route: 'kickoff-meeting-deliverables-confirmed',
+      };
+    },
     approveKickoffMeeting({ meetingId, ...input } = {}) {
       const meeting = requireKickoffMeeting(meetingId);
       return persistMeetingResult(approveKickoffMeetingSession({
@@ -53845,9 +54671,17 @@ export function createAgentProjectService({
       if (input.confirmNextActions !== false) {
         meeting = this.confirmKickoffMeetingNextActions({
           meetingId: meeting.id,
-          tasks: config.tasks,
+          tasks: config.nextActions,
           selectedLeaderId: confirmedLeaderId,
           now: offsetIso(now, 500),
+        }).meeting;
+      }
+      if (input.confirmDeliverables !== false) {
+        meeting = this.confirmKickoffMeetingDeliverables({
+          meetingId: meeting.id,
+          deliverables: config.deliverables,
+          language: config.language,
+          now: offsetIso(now, 625),
         }).meeting;
       }
       const approvalResult = this.approveKickoffMeeting({
@@ -54255,11 +55089,13 @@ export function createAgentProjectService({
       return cachedReadModel('manager-dashboard', projectId, options, () => localizeReadModel(buildManagerDashboardSnapshot({
           project: store.getProject(projectId),
           messages: store.getMessages(projectId),
-        }), options.language || store.getProject(projectId)?.language || 'en'));
+        }), options.language || effectiveProjectLanguage(store.getProject(projectId))));
     },
     getManagerFlowGraph(projectId, options = {}) {
       return cachedReadModel('manager-flow-graph', projectId, options, () => {
         const project = store.getProject(projectId);
+        const messages = store.getMessages(projectId);
+        const language = options.language || effectiveProjectLanguage(project);
         const publicProductionStartupReadiness = buildPublicProductionStartupReadiness();
         const productionLaunchGapRegister = buildProductionLaunchGapRegister({
           project,
@@ -54268,14 +55104,18 @@ export function createAgentProjectService({
             summary: null,
           },
         });
-        return localizeReadModel(buildManagerFlowGraphSnapshot({
+        const localizedGraph = localizeReadModel(buildManagerFlowGraphSnapshot({
           project,
-          messages: store.getMessages(projectId),
+          messages,
           managerReadyPackage: {
             publicProductionStartupReadiness,
             productionLaunchGapRegister,
           },
-        }), options.language || project?.language || 'en');
+        }), language);
+        return localizeManagerFlowGraphReadModel(localizedGraph, {
+          language,
+          userAuthoredFragments: managerFlowUserAuthoredFragments(project, messages),
+        });
       });
     },
     confirmManagerFlowGraphNode({
@@ -54364,12 +55204,15 @@ export function createAgentProjectService({
         project: updatedProject,
         messages: [],
         confirmation,
-        managerFlowGraph: buildManagerFlowGraphSnapshot({
+        managerFlowGraph: localizeManagerFlowGraphReadModel(localizeReadModel(buildManagerFlowGraphSnapshot({
           project: updatedProject,
           messages: store.getMessages(projectId),
           managerReadyPackage: {
             publicProductionStartupReadiness: buildPublicProductionStartupReadiness(),
           },
+        }), effectiveProjectLanguage(updatedProject)), {
+          language: effectiveProjectLanguage(updatedProject),
+          userAuthoredFragments: managerFlowUserAuthoredFragments(updatedProject, store.getMessages(projectId)),
         }),
       };
     },
@@ -54649,7 +55492,7 @@ export function createAgentProjectService({
     getGovernanceProtocol(projectId, options = {}) {
       return cachedReadModel('governance-protocol', projectId, options, () => {
         const project = store.getProject(projectId) || {};
-        const language = options.language || project.language || 'en';
+        const language = options.language || effectiveProjectLanguage(project);
         const team = project.team || [];
         const charter = project.kickoffCharter || null;
         const governance = charter?.governance || {};
@@ -56210,7 +57053,33 @@ export function createAgentProjectService({
       });
     },
     getRuntimeAutonomyStatus(projectId, options = {}) {
-      return cachedReadModel('runtime-autonomy-status', projectId, options, () => {
+      const schedulerStatus = typeof runtimeControls.schedulerStatus === 'function'
+        ? runtimeControls.schedulerStatus()
+        : {
+            enabled: Boolean(runtimeControls.autonomousSchedulerEnabled),
+            running: runtimeControls.autonomousSchedulerRunning,
+          };
+      const modelStatus = modelProviderStatus();
+      const searchStatus = searchProviderStatus();
+      const providerState = (status = {}) => ({
+        enabled: status.enabled,
+        configured: status.configured,
+        blockedByPolicy: status.blockedByPolicy,
+        circuitState: status.transportReliability?.circuit?.state || null,
+        circuitFailureCount: status.transportReliability?.circuit?.failureCount || 0,
+      });
+      const runtimeStateSignature = persistenceChecksum({
+        scheduler: {
+          enabled: schedulerStatus.enabled,
+          acceptingTicks: schedulerStatus.acceptingTicks,
+        },
+        model: providerState(modelStatus),
+        search: providerState(searchStatus),
+      });
+      return cachedReadModel('runtime-autonomy-status', projectId, {
+        ...options,
+        runtimeStateSignature,
+      }, () => {
         const language = options.language || store.getProject(projectId)?.language || 'en';
         const project = store.getProject(projectId);
         const managerDashboard = this.getManagerDashboard(projectId, { language });
@@ -56240,6 +57109,9 @@ export function createAgentProjectService({
           workerQueueAdapterDryRun,
           autonomousRunControl,
           productTeamOperatingLoop,
+          schedulerStatus,
+          modelStatus,
+          searchStatus,
           now: options.now || nowIso(),
         }), language);
       });
@@ -57173,7 +58045,7 @@ export function createAgentProjectService({
         ticks,
         autonomousRunControl: this.getAutonomousRunControl(projectId, {
           now: options.now || nowIso(),
-          language: options.language || project?.language || 'en',
+          language: options.language || effectiveProjectLanguage(project),
           skipCache: true,
         }),
       };
@@ -57203,7 +58075,7 @@ export function createAgentProjectService({
           messages: [],
           autonomousRunControlSession: activeSession,
           autonomousRunControlSessions: this.getAutonomousRunControlSessions(projectId, { now, language: bodyOverrides.language }),
-          autonomousRunControl: this.getAutonomousRunControl(projectId, { now, language: bodyOverrides.language || project.language || 'en', skipCache: true }),
+          autonomousRunControl: this.getAutonomousRunControl(projectId, { now, language: bodyOverrides.language || effectiveProjectLanguage(project), skipCache: true }),
         };
       }
       const loopBudget = Math.max(1, Math.min(50, Number(maxLoops) || 6));
@@ -57211,7 +58083,7 @@ export function createAgentProjectService({
       const totalStepBudget = Math.max(1, Math.min(250, Number(maxTotalSteps) || loopBudget * stepsPerLoopBudget));
       const timestamp = Date.parse(now) || Date.now();
       const sessionId = input.sessionId || `autonomous_run_control_session_${projectId}_${timestamp}`;
-      const language = bodyOverrides.language || requestBodyOverrides.language || project.language || 'en';
+      const language = bodyOverrides.language || requestBodyOverrides.language || effectiveProjectLanguage(project);
       const targetSnapshot = buildAutopilotDeliveryTargetSnapshot({
         projectId,
         targetKind,
@@ -57341,7 +58213,7 @@ export function createAgentProjectService({
         autonomousRunControlSession: immediateTick?.autonomousRunControlSession || session,
         autonomousRunControlSessionTick: immediateTick?.autonomousRunControlSessionTick || null,
         autonomousRunControlSessions: this.getAutonomousRunControlSessions(projectId, { now: offsetIso(now, 1000), language: bodyOverrides.language }),
-        autonomousRunControl: this.getAutonomousRunControl(projectId, { now: offsetIso(now, 1000), language: bodyOverrides.language || project.language || 'en', skipCache: true }),
+        autonomousRunControl: this.getAutonomousRunControl(projectId, { now: offsetIso(now, 1000), language: bodyOverrides.language || effectiveProjectLanguage(project), skipCache: true }),
       };
     },
     tickAutonomousRunControlSession(input = {}) {
@@ -58537,7 +59409,7 @@ export function createAgentProjectService({
         messages: [],
         autonomousRunControlSession: updatedSession,
         autonomousRunControlSessions: this.getAutonomousRunControlSessions(projectId, { now, language: input.language }),
-        autonomousRunControl: this.getAutonomousRunControl(projectId, { now, language: input.language || project.language || 'en', skipCache: true }),
+        autonomousRunControl: this.getAutonomousRunControl(projectId, { now, language: input.language || effectiveProjectLanguage(project), skipCache: true }),
       };
     },
     cancelAutonomousRunControlSession(input = {}) {
@@ -58565,7 +59437,7 @@ export function createAgentProjectService({
           messages: [],
           autonomousRunControlSession: session,
           autonomousRunControlSessions: this.getAutonomousRunControlSessions(projectId, { now, language: input.language }),
-          autonomousRunControl: this.getAutonomousRunControl(projectId, { now, language: input.language || project.language || 'en', skipCache: true }),
+          autonomousRunControl: this.getAutonomousRunControl(projectId, { now, language: input.language || effectiveProjectLanguage(project), skipCache: true }),
           idempotent: true,
         };
       }
@@ -58644,7 +59516,7 @@ export function createAgentProjectService({
         messages: [],
         autonomousRunControlSession: updatedSession,
         autonomousRunControlSessions: this.getAutonomousRunControlSessions(projectId, { now, language: input.language }),
-        autonomousRunControl: this.getAutonomousRunControl(projectId, { now, language: input.language || project.language || 'en', skipCache: true }),
+        autonomousRunControl: this.getAutonomousRunControl(projectId, { now, language: input.language || effectiveProjectLanguage(project), skipCache: true }),
         idempotent: false,
       };
     },
@@ -58878,7 +59750,7 @@ export function createAgentProjectService({
         force,
         providerPreflight: autonomousProviderPreflight,
       });
-      if (!requestBody.useProviderEvidenceSearch) {
+      if (!requestBody.useProviderEvidenceSearch && !requestBody.useOutcomeModelExecution) {
         return this.runAgentAutonomousActionQueueItem({
           projectId,
           agentId,
@@ -58886,6 +59758,94 @@ export function createAgentProjectService({
           now,
           force,
         });
+      }
+
+      if (!requestBody.useProviderEvidenceSearch) {
+        const cycle = this.runAgentAutonomousActionQueueItem({
+          projectId,
+          agentId,
+          requestBodyOverrides: {
+            ...requestBodyOverrides,
+            skipEvidenceSearchRecording: Boolean(requestBody.existingEvidenceSearchIds?.length),
+          },
+          now,
+          force,
+        });
+        const latestProject = cycle.project;
+        const outcomeTask = (latestProject.tasks || []).find((candidate) => String(candidate.id || '') === String(requestBody.taskId || cycle.task?.id || '')) || cycle.task || null;
+        const outcomeAgent = (latestProject.team || []).find((candidate) => String(candidate.id || '') === String(row.agentId || '')) || {};
+        const outcomeWorkContract = normalizeOutcomeWorkContract({ project: latestProject, task: outcomeTask || {}, agent: outcomeAgent });
+        if (!outcomeTask || ['technical-delivery', 'operations'].includes(outcomeWorkContract.actionType)) {
+          return {
+            ...cycle,
+            outcomeExecutor: {
+              schemaVersion: 'outcome-executor-receipt/v1',
+              status: outcomeTask ? 'blocked-specialized-tool-proof-required' : 'no-owned-task',
+              actionType: outcomeWorkContract.actionType,
+              blocker: outcomeTask ? 'specialized-tool-proof-required' : 'no-owned-task',
+              requiredTools: outcomeWorkContract.requiredTools,
+            },
+          };
+        }
+        const existingEvidenceSearchIds = uniqueStrings(requestBody.existingEvidenceSearchIds || []);
+        if (outcomeWorkContract.actionType === 'research' && !existingEvidenceSearchIds.length) {
+          return {
+            ...cycle,
+            outcomeExecutor: {
+              schemaVersion: 'outcome-executor-receipt/v1',
+              status: 'blocked-provider-evidence-required',
+              actionType: outcomeWorkContract.actionType,
+              blocker: 'provider-evidence-required',
+              requiredTools: outcomeWorkContract.requiredTools,
+            },
+          };
+        }
+        const generatedArtifact = await this.generateAgentArtifactDraft({
+          projectId,
+          agentId: row.agentId,
+          traceId: cycle.cycle?.traceId || requestBody.traceId,
+          artifactType: outcomeWorkContract.actionType === 'research'
+            ? 'evidence-packet'
+            : outcomeWorkContract.actionType === 'creative'
+              ? 'creative-work'
+              : 'decision-proposal',
+          taskId: outcomeTask.id,
+          instruction: [
+            `Produce the material deliverable required by the work contract: ${outcomeWorkContract.deliverable}.`,
+            outcomeWorkContract.actionType === 'research'
+              ? 'Synthesize the existing provider-backed sources into task-specific findings, conflicts, limitations, and at least one testable hypothesis.'
+              : outcomeWorkContract.actionType === 'creative'
+              ? 'Create at least two materially different alternatives, evaluate both against the objective, and select one with explicit reasons.'
+              : 'Produce task-specific analysis, a concrete recommendation or decision, risks, and immediately usable next actions.',
+            'Do not write a coordination update, progress receipt, or generic handoff template.',
+          ].join(' '),
+          evidenceSearchIds: existingEvidenceSearchIds,
+          useModel: true,
+          requireModel: true,
+          submit: true,
+          reviewerAgentId: outcomeWorkContract.reviewerAgentId,
+          status: 'submitted',
+          reviewStatus: 'pending-review',
+          channelId: requestBody.channelId || 'main',
+          now,
+        });
+        return {
+          ...cycle,
+          project: generatedArtifact.project,
+          messages: [...(cycle.messages || []), ...(generatedArtifact.messages || [])],
+          submission: generatedArtifact.submission || null,
+          artifact: generatedArtifact.artifact || null,
+          workSubmission: generatedArtifact.submission || null,
+          generatedArtifact,
+          materialHandoff: generatedArtifact.materialHandoff || null,
+          outcomeExecutor: {
+            schemaVersion: 'outcome-executor-receipt/v1',
+            status: 'material-submission-created',
+            actionType: outcomeWorkContract.actionType,
+            submissionId: generatedArtifact.submission?.id || null,
+            artifactId: generatedArtifact.artifact?.id || null,
+          },
+        };
       }
 
       let activeDurableTask = null;
@@ -60599,7 +61559,7 @@ export function createAgentProjectService({
     recordPrivatePilotReleaseCandidate({ projectId, ...input } = {}) {
       const project = store.getProject(projectId);
       const now = input.now || nowIso();
-      const language = input.language || project?.language || 'en';
+      const language = input.language || effectiveProjectLanguage(project);
       const managerReadyPackage = this.getManagerReadyPackage(projectId, { language, fresh: true });
       const exportRequestId = input.exportRequestId
         || input.requestId
@@ -60714,7 +61674,7 @@ export function createAgentProjectService({
     recordPrivatePilotLaunchRun({ projectId, ...input } = {}) {
       const project = store.getProject(projectId);
       const now = input.now || nowIso();
-      const language = input.language || project?.language || 'en';
+      const language = input.language || effectiveProjectLanguage(project);
       const managerReadyPackage = this.getManagerReadyPackage(projectId, { language, fresh: true });
       const launchRun = buildPrivatePilotLaunchRunRecord({
         project,
@@ -60816,7 +61776,7 @@ export function createAgentProjectService({
     recordPrivatePilotLaunchHealthCheck({ projectId, ...input } = {}) {
       const project = store.getProject(projectId);
       const now = input.now || nowIso();
-      const language = input.language || project?.language || 'en';
+      const language = input.language || effectiveProjectLanguage(project);
       const managerReadyPackage = this.getManagerReadyPackage(projectId, { language, fresh: true });
       const launchHealthCheck = buildPrivatePilotLaunchHealthCheckRecord({
         project,
@@ -60947,7 +61907,7 @@ export function createAgentProjectService({
       } = input;
       const project = store.getProject(projectId);
       if (!project) throw new Error(`Project not found: ${projectId}`);
-      const language = bodyOverrides.language || requestBodyOverrides.language || project.language || 'en';
+      const language = bodyOverrides.language || requestBodyOverrides.language || effectiveProjectLanguage(project);
       const launchOperationsOverview = this.getLaunchOperationsOverview(projectId, { language, fresh: true });
       const normalizedStepId = String(stepId || 'next');
       const nextStep = normalizedStepId === 'next'
@@ -61127,7 +62087,7 @@ export function createAgentProjectService({
     recordPrivatePilotAcceptanceReport({ projectId, ...input } = {}) {
       const project = store.getProject(projectId);
       const now = input.now || nowIso();
-      const language = input.language || project?.language || 'en';
+      const language = input.language || effectiveProjectLanguage(project);
       const managerReadyPackage = this.getManagerReadyPackage(projectId, { language, fresh: true });
       const acceptanceReport = buildPrivatePilotAcceptanceReportRecord({
         project,
@@ -61235,7 +62195,7 @@ export function createAgentProjectService({
     recordProjectEvidenceExport({ projectId, ...input } = {}) {
       const project = store.getProject(projectId);
       const now = input.now || nowIso();
-      const language = input.language || project?.language || 'en';
+      const language = input.language || effectiveProjectLanguage(project);
       const managerReadyPackage = this.getManagerReadyPackage(projectId, { language });
       const archive = managerReadyPackage.projectEvidenceArchive
         || this.getProjectEvidenceArchive(projectId, { language, includeContents: false });
@@ -61439,7 +62399,7 @@ export function createAgentProjectService({
       } = input;
       const project = store.getProject(projectId);
       if (!project) throw new Error(`Project not found: ${projectId}`);
-      const language = bodyOverrides.language || requestBodyOverrides.language || project.language || 'en';
+      const language = bodyOverrides.language || requestBodyOverrides.language || effectiveProjectLanguage(project);
       const managerDashboard = this.getManagerDashboard(projectId, { language, skipCache: true });
       const managerFlowGraph = this.getManagerFlowGraph(projectId, { language, skipCache: true });
       const mvpReadiness = buildMvpReadiness({ managerDashboard, managerFlowGraph });
@@ -61801,7 +62761,7 @@ export function createAgentProjectService({
       const project = store.getProject(projectId);
       if (!project?.id) throw new Error(`Project not found: ${projectId}`);
       const now = input.now || nowIso();
-      const language = input.language || project.language || 'en';
+      const language = input.language || effectiveProjectLanguage(project);
       const providerControlledRun = this.getProviderControlledRun(projectId, { language, fresh: true });
       const providerEvalRun = buildProviderEvalRunRecord({
         project,
@@ -61901,7 +62861,7 @@ export function createAgentProjectService({
       const project = store.getProject(projectId);
       if (!project?.id) throw new Error(`Project not found: ${projectId}`);
       const now = input.now || nowIso();
-      const language = input.language || project.language || 'en';
+      const language = input.language || effectiveProjectLanguage(project);
       const managerReadyPackage = this.getManagerReadyPackage(projectId, { language, fresh: true });
       const receipt = buildProductionProviderControlReceipt({
         project,
@@ -64152,8 +65112,9 @@ export function createAgentProjectService({
     },
     getSecurityAccessAudit(projectId) {
       const project = store.getProject(projectId);
-      const summary = summarizeSecurityAccessAudit(project.securityAccessAudit || []);
-      const streamSummary = summarizeSecurityAuditStream(listSecurityAuditStreamRecords(projectId));
+      const streamRows = listSecurityAuditStreamRecords(projectId);
+      const summary = summarizeSecurityAccessAudit(streamRows.length ? streamRows : project.securityAccessAudit || []);
+      const streamSummary = summarizeSecurityAuditStream(streamRows);
       return {
         projectId,
         generatedAt: nowIso(),
@@ -64383,7 +65344,7 @@ export function createAgentProjectService({
     recordProductionOperationsControlReceipt({ projectId, ...input } = {}) {
       const project = store.getProject(projectId);
       const now = input.now || nowIso();
-      const language = input.language || project?.language || 'en';
+      const language = input.language || effectiveProjectLanguage(project);
       const managerReadyPackage = this.getManagerReadyPackage(projectId, { language, fresh: true });
       const receipt = buildProductionOperationsControlReceipt({
         project,
@@ -64703,7 +65664,7 @@ export function createAgentProjectService({
       const project = store.getProject(projectId);
       if (!project?.id) throw new Error(`Project not found: ${projectId}`);
       const now = input.now || nowIso();
-      const language = input.language || project.language || 'en';
+      const language = input.language || effectiveProjectLanguage(project);
       const managerReadyPackage = this.getManagerReadyPackage(projectId, { language, fresh: true });
       const receipt = buildProductionDeploymentControlReceipt({
         project,
@@ -64802,7 +65763,7 @@ export function createAgentProjectService({
     recordProductionSecurityControlReceipt({ projectId, ...input } = {}) {
       const project = store.getProject(projectId);
       const now = input.now || nowIso();
-      const language = input.language || project?.language || 'en';
+      const language = input.language || effectiveProjectLanguage(project);
       const managerReadyPackage = this.getManagerReadyPackage(projectId, { language, fresh: true });
       const receipt = buildProductionSecurityControlReceipt({
         project,
@@ -65374,6 +66335,8 @@ export function createAgentProjectService({
         ? (project.tasks || []).find((item) => String(item.id) === String(taskId))
         : null;
       if (taskId && !task) throw new Error(`Task not found: ${taskId}`);
+      const outcomeWorkContract = normalizeOutcomeWorkContract({ project, task: task || {}, agent });
+      const effectiveRequireModel = Boolean(requireModel || (submit && outcomeWorkContract.actionType === 'research'));
       const normalizedEvidenceSearchIds = new Set((Array.isArray(evidenceSearchIds) ? evidenceSearchIds : [evidenceSearchIds]).filter(Boolean).map(String));
       const normalizedSubmissionIds = new Set((Array.isArray(priorSubmissionIds) ? priorSubmissionIds : [priorSubmissionIds]).filter(Boolean).map(String));
       const normalizedReviewIds = new Set((Array.isArray(reviewIds) ? reviewIds : [reviewIds]).filter(Boolean).map(String));
@@ -65442,7 +66405,7 @@ export function createAgentProjectService({
           project = usage.project;
           providerUsage = usage.record;
           degradationReason = 'policy-denied';
-          if (requireModel) throw new Error(`model-provider-denied:${policyDecision.reason}`);
+          if (effectiveRequireModel) throw new Error(`model-provider-denied:${policyDecision.reason}`);
         } else {
           const circuitDecision = evaluateProviderCircuitBreaker({
             project,
@@ -65478,7 +66441,7 @@ export function createAgentProjectService({
             project = usage.project;
             providerUsage = usage.record;
             degradationReason = 'circuit-open';
-            if (requireModel) throw new Error(`model-provider-circuit-open:${circuitDecision.reason}`);
+            if (effectiveRequireModel) throw new Error(`model-provider-circuit-open:${circuitDecision.reason}`);
           } else {
             const budgetReservation = reserveProviderBudget({
               projectId,
@@ -65512,7 +66475,7 @@ export function createAgentProjectService({
               project = usage.project;
               providerUsage = usage.record;
               degradationReason = 'budget-denied';
-              if (requireModel) throw new Error(`model-provider-denied:${policyDecision.reason}`);
+              if (effectiveRequireModel) throw new Error(`model-provider-denied:${policyDecision.reason}`);
             } else {
               project = budgetReservation.project;
               promptBoundary = buildArtifactDraftPromptBoundary({
@@ -65555,6 +66518,11 @@ export function createAgentProjectService({
                   messages: promptBoundary.messages,
                   json: true,
                   maxTokens: 1200,
+                  timeoutMs: 60_000,
+                  emptyLengthRetryMessages: promptBoundary.messages,
+                  emptyLengthRetryJson: true,
+                  emptyLengthRetryMaxTokens: 8000,
+                  emptyLengthRetryTimeoutMs: 90_000,
                   idempotencyKey: providerOperationKey,
                   traceId: normalizedTraceId,
                 }),
@@ -65564,28 +66532,72 @@ export function createAgentProjectService({
                 retry: modelAttempt.retry,
               };
               if (modelResult.ok) {
-                const languagePayload = modelResult.json || { body: modelResult.content || '' };
-                const languageMatches = modelOutputMatchesLanguage({
-                  text: [languagePayload.title, languagePayload.summary, languagePayload.body].filter(Boolean).join('\n'),
-                  language: project.language || 'en',
-                  allowedTerms: [
-                    project.name,
-                    agent.id,
-                    agent.name,
-                    ...(project.team || []).flatMap((member) => [member.id, member.name]),
-                    'Agent',
-                    'Hall of Fame Studio',
-                  ],
+                const outputLanguage = effectiveProjectLanguage(project);
+                const allowedTerms = [
+                  project.name,
+                  agent.id,
+                  agent.name,
+                  ...(project.team || []).flatMap((member) => [member.id, member.name]),
+                  ...evidenceSearches.flatMap((record) => (record.sources || []).flatMap((source) => [
+                    source.title,
+                    source.author,
+                    source.publisher,
+                    source.siteName,
+                  ])),
+                  'Agent',
+                  'Hall of Fame Studio',
+                ];
+                const payloadMatchesLanguage = (payload = {}) => modelOutputMatchesLanguage({
+                  text: [payload.title, payload.summary, payload.body, ...(payload.tags || [])].filter(Boolean).join('\n'),
+                  language: outputLanguage,
+                  allowedTerms,
                 });
-                if (!languageMatches) {
-                  modelResult = {
-                    ...modelResult,
-                    ok: false,
-                    error: 'model-output-language-mismatch',
-                    reason: 'language-policy-violation',
-                    json: null,
-                    content: '',
-                  };
+                const languagePayload = modelResult.json || { body: modelResult.content || '' };
+                if (!payloadMatchesLanguage(languagePayload)) {
+                  const languageRepairMessages = [
+                    {
+                      role: 'system',
+                      content: [
+                        'You repair only the language of an artifact JSON object.',
+                        modelOutputLanguageInstruction(outputLanguage),
+                        'Preserve every fact, citation identifier, URL, limitation, and hypothesis.',
+                        'Return compact JSON only with title, summary, body, and tags.',
+                      ].join('\n'),
+                    },
+                    { role: 'user', content: JSON.stringify(languagePayload) },
+                  ];
+                  const repairedResult = await llmProvider.createChatCompletion({
+                    messages: languageRepairMessages,
+                    json: true,
+                    maxTokens: 4000,
+                    timeoutMs: 60_000,
+                    emptyLengthRetryMessages: languageRepairMessages,
+                    emptyLengthRetryJson: true,
+                    emptyLengthRetryMaxTokens: 8000,
+                    emptyLengthRetryTimeoutMs: 90_000,
+                    idempotencyKey: `${providerOperationKey}:language-repair`,
+                    traceId: normalizedTraceId,
+                  });
+                  const repairedPayload = repairedResult.json || { body: repairedResult.content || '' };
+                  modelResult = repairedResult.ok && payloadMatchesLanguage(repairedPayload)
+                    ? {
+                        ...repairedResult,
+                        languageRepair: {
+                          schemaVersion: 'model-artifact-language-repair/v1',
+                          applied: true,
+                          sourceResponseId: modelResult.id || modelResult.responseId || null,
+                          repairedResponseId: repairedResult.id || repairedResult.responseId || null,
+                        },
+                        retry: modelAttempt.retry,
+                      }
+                    : {
+                        ...modelResult,
+                        ok: false,
+                        error: repairedResult.error || 'model-output-language-mismatch',
+                        reason: repairedResult.ok ? 'language-policy-violation' : (repairedResult.reason || 'language-repair-failed'),
+                        json: null,
+                        content: '',
+                      };
                 }
               }
               const providerOperationSettlement = settleProviderIdempotentOperation({
@@ -65635,7 +66647,7 @@ export function createAgentProjectService({
                 modelPayload = modelResult.json || { body: modelResult.content || '' };
                 draftSource = 'model-artifact-draft';
                 degradationReason = null;
-              } else if (requireModel) {
+              } else if (effectiveRequireModel) {
                 throw new Error(`model-artifact-draft-failed:${modelResult.error || modelResult.reason || 'unknown'}`);
               } else {
                 degradationReason = 'transport-failed';
@@ -65643,7 +66655,7 @@ export function createAgentProjectService({
             }
           }
         }
-      } else if (requireModel) {
+      } else if (effectiveRequireModel) {
         const reason = modelStatus.blockedByPolicy ? 'model-blocked' : modelStatus.configured ? 'provider-disabled' : 'missing-api-key';
         throw new Error(`model-provider-unavailable:${reason}`);
       }
@@ -65654,7 +66666,7 @@ export function createAgentProjectService({
         taskId: task?.id || null,
         artifactType,
         modelRequested: Boolean(useModel),
-        modelRequired: Boolean(requireModel),
+        modelRequired: effectiveRequireModel,
         modelResult,
         modelStatus,
         degradationReason,
@@ -65683,6 +66695,40 @@ export function createAgentProjectService({
         traceId: normalizedTraceId,
         providerVaultBinding,
       };
+      const draftPreviewSubmission = {
+        id: artifactDraft.id,
+        taskId: artifactDraft.taskId,
+        artifactType: artifactDraft.artifactType,
+        title: artifactDraft.title,
+        summary: artifactDraft.summary,
+        body: artifactDraft.body,
+        checksum: artifactDraft.checksum,
+        version: 1,
+        agentId: agent.id,
+        requestedReviewAgentId: reviewerAgentId || outcomeWorkContract.reviewerAgentId,
+      };
+      const draftMaterialOutcome = evaluateMaterialOutcome({
+        project,
+        task: task || {},
+        agent,
+        artifact: {
+          id: artifactDraft.id,
+          content: artifactDraft.body,
+          checksum: artifactDraft.checksum,
+          version: 1,
+        },
+        evidenceSearches,
+        submissions: [draftPreviewSubmission],
+        reviews: [],
+      });
+      const submissionBlockers = draftMaterialOutcome.blockers.filter((blocker) => ![
+        'accepted-review-required',
+        'technical-change-and-verification-proof-required',
+        'inspection-change-and-verification-proof-required',
+      ].includes(blocker));
+      if (submit && submissionBlockers.length) {
+        throw new Error(`artifact-draft-not-material:${submissionBlockers.join(',')}`);
+      }
       const provenanceLog = {
         id: `log_${generationProvenance.id}`,
         time: now,
@@ -65749,14 +66795,54 @@ export function createAgentProjectService({
         reviewStatus,
         reviewerAgentId,
         sourceRefs: artifactDraft.sourceRefs,
+        evidenceSearchIds: evidenceSearches.map((record) => record.id).filter(Boolean),
         tags: artifactDraft.tags,
         originDraft: artifactDraft,
         channelId,
         now,
         artifactWriter: artifactWriter || (projectRuntime?.writeArtifact ? projectRuntime.writeArtifact.bind(projectRuntime) : null),
       }));
+      const materialOutcome = evaluateMaterialOutcome({
+        project: result.project,
+        task: task || {},
+        agent,
+        artifact: result.artifact,
+        evidenceSearches,
+        submissions: [result.submission, ...(result.project.agentSubmissions || []).filter((submission) => submission.id !== result.submission?.id)],
+        reviews: result.project.submissionReviews || [],
+      });
+      const outcomeHealth = buildNoMaterialDeltaState({
+        previous: result.project.outcomeHealth || null,
+        material: materialOutcome.material,
+        now,
+      });
+      const tasksWithOutcome = (result.project.tasks || []).map((candidateTask) => (
+        String(candidateTask.id || '') === String(task?.id || '')
+          ? {
+              ...candidateTask,
+              status: materialOutcome.accepted ? 'done' : materialOutcome.material ? 'awaiting-review' : 'blocked-no-material-outcome',
+              outcomeWorkContract,
+              outcome: materialOutcome,
+              completedAt: materialOutcome.accepted ? (candidateTask.completedAt || now) : null,
+            }
+          : candidateTask
+      ));
+      const outcomeProgress = calculateOutcomeProgress({ ...result.project, tasks: tasksWithOutcome });
+      const outcomeBaselineProgress = Number(result.project.outcomeBaselineProgress ?? result.project.progress ?? 0);
+      const outcomeAdjustedProgress = Math.min(100, Math.round(
+        outcomeBaselineProgress + ((100 - outcomeBaselineProgress) * outcomeProgress / 100),
+      ));
+      const projectWithOutcome = saveProject({
+        ...result.project,
+        tasks: tasksWithOutcome,
+        progress: outcomeAdjustedProgress,
+        outcomeProgress,
+        outcomeBaselineProgress,
+        outcomeHealth,
+      });
       return {
         ...result,
+        project: projectWithOutcome,
         route: 'agent-artifact-draft-submitted',
         artifactDraft,
         providerUsage,
@@ -65764,6 +66850,10 @@ export function createAgentProjectService({
         modelProviderStatus: modelStatus,
         providerVaultBinding,
         modelGenerationProvenance: publicModelGenerationProvenance(generationProvenance),
+        materialOutcome,
+        materialHandoff: materialOutcome.handoff,
+        outcomeWorkContract,
+        outcomeHealth,
       };
     },
     submitAgentArtifact({ projectId, agentId, ...input } = {}) {
@@ -65774,7 +66864,11 @@ export function createAgentProjectService({
         ...input,
       }));
       const sealed = sealProjectTrace(result.project, result.submission?.traceId || input.traceId, { reason: 'artifact-submission-created', actorId: agentId, now: input.now });
-      return { ...result, project: sealed.project, traceGraphReceipt: sealed.receipt };
+      return {
+        ...result,
+        project: sealed.project,
+        traceGraphReceipt: sealed.receipt,
+      };
     },
     recordAgentEvidenceSearch({ projectId, agentId, ...input } = {}) {
       const result = persistResult(recordAgentEvidenceSearch({
@@ -66044,10 +67138,43 @@ export function createAgentProjectService({
         submissionId,
         ...input,
       }));
-      const sealed = sealProjectTrace(result.project, result.review?.traceId || input.traceId, {
+      const team = result.project.team || [];
+      const tasksWithOutcomes = (result.project.tasks || []).map((task) => {
+        const taskAgent = team.find((agent) => taskBelongsToAgent(task, agent)) || {};
+        const outcome = evaluateMaterialOutcome({ project: result.project, task, agent: taskAgent });
+        return {
+          ...task,
+          outcomeWorkContract: normalizeOutcomeWorkContract({ project: result.project, task, agent: taskAgent }),
+          outcome,
+          status: outcome.accepted ? 'done' : outcome.material ? 'awaiting-review' : task.status === 'done' ? 'in-progress' : task.status,
+          completedAt: outcome.accepted ? (task.completedAt || input.now || nowIso()) : null,
+        };
+      });
+      const outcomeProgress = calculateOutcomeProgress({ ...result.project, tasks: tasksWithOutcomes });
+      const outcomeBaselineProgress = Number(result.project.outcomeBaselineProgress ?? result.project.progress ?? 0);
+      const progress = Math.min(100, Math.round(outcomeBaselineProgress + ((100 - outcomeBaselineProgress) * outcomeProgress / 100)));
+      const reviewedTask = tasksWithOutcomes.find((task) => String(task.id || '') === String(result.review?.taskId || result.submission?.taskId || '')) || null;
+      const projectWithOutcomes = saveProject({
+        ...result.project,
+        tasks: tasksWithOutcomes,
+        progress,
+        outcomeProgress,
+        outcomeBaselineProgress,
+        outcomeHealth: buildNoMaterialDeltaState({
+          previous: result.project.outcomeHealth || null,
+          material: Boolean(reviewedTask?.outcome?.material),
+          now: input.now || nowIso(),
+        }),
+      });
+      const sealed = sealProjectTrace(projectWithOutcomes, result.review?.traceId || input.traceId, {
         reason: 'submission-review-completed', actorId: result.review?.reviewerAgentId || 'local-reviewer', now: input.now,
       });
-      return { ...result, project: sealed.project, traceGraphReceipt: sealed.receipt };
+      return {
+        ...result,
+        project: sealed.project,
+        task: reviewedTask,
+        traceGraphReceipt: sealed.receipt,
+      };
     },
     reviewEvidenceSource({ projectId, ...input } = {}) {
       return persistResult(reviewEvidenceSource({
@@ -66059,13 +67186,14 @@ export function createAgentProjectService({
       return buildProjectSettingsReadModel(store.getProject(projectId));
     },
     setProjectSettings(input = {}) {
-      const { projectId, language, privacyPolicy, providerBudgetPolicy, workspacePolicy, toolGrantPolicy, updatedBy = '', source = '', now = nowIso() } = input;
+      const { projectId, language, inheritedLanguage, privacyPolicy, providerBudgetPolicy, workspacePolicy, toolGrantPolicy, updatedBy = '', source = '', now = nowIso() } = input;
       const settingsInput = {
         updatedBy,
         source,
         now,
       };
       if (Object.prototype.hasOwnProperty.call(input, 'language')) settingsInput.language = language;
+      if (Object.prototype.hasOwnProperty.call(input, 'inheritedLanguage')) settingsInput.inheritedLanguage = inheritedLanguage;
       if (Object.prototype.hasOwnProperty.call(input, 'privacyPolicy')) settingsInput.privacyPolicy = privacyPolicy;
       if (Object.prototype.hasOwnProperty.call(input, 'providerBudgetPolicy')) settingsInput.providerBudgetPolicy = providerBudgetPolicy;
       if (Object.prototype.hasOwnProperty.call(input, 'workspacePolicy')) settingsInput.workspacePolicy = workspacePolicy;
@@ -66596,19 +67724,58 @@ export function createAgentProjectService({
         log,
       };
     },
-    getTimeline(projectId) {
+    getTimeline(projectId, pageOptions) {
       const project = store.getProject(projectId);
+      const allLogs = project.logs || [];
+      if (pageOptions?.limit) {
+        const offset = Math.max(0, Number(pageOptions.offset) || 0);
+        const limit = Math.max(1, Number(pageOptions.limit) || 1);
+        const end = Math.max(0, allLogs.length - offset);
+        const start = Math.max(0, end - limit);
+        const logs = allLogs.slice(start, end);
+        return {
+          projectId,
+          logs,
+          logCount: allLogs.length,
+          page: {
+            limit,
+            offset,
+            hasMore: start > 0,
+            nextOffset: start > 0 ? offset + logs.length : null,
+          },
+        };
+      }
       return {
         projectId,
-        logs: project.logs || [],
-        logCount: project.logs?.length || 0,
+        logs: allLogs,
+        logCount: allLogs.length,
       };
     },
-    getEventLedger(projectId) {
+    getEventLedger(projectId, pageOptions) {
       const project = store.getProject(projectId);
+      const allEvents = project.eventLedger || [];
+      if (pageOptions?.limit) {
+        const offset = Math.max(0, Number(pageOptions.offset) || 0);
+        const limit = Math.max(1, Number(pageOptions.limit) || 1);
+        const end = Math.max(0, allEvents.length - offset);
+        const start = Math.max(0, end - limit);
+        const eventLedger = allEvents.slice(start, end);
+        return {
+          projectId,
+          eventLedger,
+          eventCount: allEvents.length,
+          summary: summarizeProjectEventLedger(project),
+          page: {
+            limit,
+            offset,
+            hasMore: start > 0,
+            nextOffset: start > 0 ? offset + eventLedger.length : null,
+          },
+        };
+      }
       return {
         projectId,
-        eventLedger: project.eventLedger || [],
+        eventLedger: allEvents,
         summary: summarizeProjectEventLedger(project),
       };
     },
@@ -66936,8 +68103,9 @@ export function createAgentProjectService({
       };
     },
     recordAccessDecision({ projectId, decision = {}, method = 'GET', path = '/', statusCode = null, outcome = '', traceId = null, now = nowIso() } = {}) {
-      const project = projectId
-        ? store.listProjects().find((row) => row.id === projectId) || null
+      const readOnlyAccess = ['GET', 'HEAD', 'OPTIONS'].includes(String(method || 'GET').toUpperCase());
+      const project = projectId && !readOnlyAccess && decision.enforced
+        ? (store.listProjects?.() || []).find((candidate) => String(candidate.id || '') === String(projectId)) || null
         : null;
       const auditRecord = buildSecurityAccessAuditRecord({
         projectId: projectId || null,
@@ -66949,30 +68117,35 @@ export function createAgentProjectService({
         outcome,
         now,
       });
-      const existingStreamRecords = projectId
-        ? listSecurityAuditStreamRecords(projectId)
-        : listRuntimeSecurityAuditStreamRecords();
-      const streamSequence = existingStreamRecords.reduce((max, record) => {
-        const sequence = Number(record.streamSequence);
-        return Number.isFinite(sequence) && sequence > max ? sequence : max;
-      }, 0) + 1;
-      const previousStreamRecord = existingStreamRecords
-        .slice()
-        .sort((a, b) => Number(b.streamSequence || 0) - Number(a.streamSequence || 0))[0] || null;
+      const auditScopeKey = projectId ? `project:${projectId}` : 'runtime';
+      let previousStreamRecord = securityAuditStreamTailByScope.get(auditScopeKey) || null;
+      if (!securityAuditStreamTailByScope.has(auditScopeKey)) {
+        const existingStreamRecords = projectId
+          ? listSecurityAuditStreamRecords(projectId)
+          : listRuntimeSecurityAuditStreamRecords();
+        previousStreamRecord = existingStreamRecords.reduce((latest, record) => (
+          Number(record.streamSequence || 0) > Number(latest?.streamSequence || 0) ? record : latest
+        ), null);
+        securityAuditStreamTailByScope.set(auditScopeKey, previousStreamRecord);
+      }
+      const streamSequence = Number(previousStreamRecord?.streamSequence || 0) + 1;
       const streamRecord = buildSecurityAuditStreamRecord(auditRecord, {
         sequence: streamSequence,
         previousStreamHash: previousStreamRecord?.streamHash || SECURITY_AUDIT_STREAM_GENESIS_HASH,
       });
-      if (!project) {
+      const appendAuditStreamRecord = () => {
         if (typeof store.appendSecurityAuditRecords !== 'function') return null;
         const appended = store.appendSecurityAuditRecords([streamRecord]);
-        return appended.some((record) => record.id === streamRecord.id) ? streamRecord : null;
+        const confirmed = appended.some((record) => record.id === streamRecord.id);
+        if (confirmed) securityAuditStreamTailByScope.set(auditScopeKey, streamRecord);
+        return confirmed ? streamRecord : null;
+      };
+      if (!project || readOnlyAccess || !decision.enforced) {
+        return appendAuditStreamRecord();
       }
       const projectEventIntegrity = verifyProjectEventLedger(project);
       if (!projectEventIntegrity.valid && ['event-recovery-read', 'event-recovery-write'].includes(decision.route?.routeKey)) {
-        if (typeof store.appendSecurityAuditRecords !== 'function') return null;
-        const appended = store.appendSecurityAuditRecords([streamRecord]);
-        return appended.some((record) => record.id === streamRecord.id) ? streamRecord : null;
+        return appendAuditStreamRecord();
       }
       const updatedProject = appendProjectEvents({
         ...project,
@@ -67026,9 +68199,7 @@ export function createAgentProjectService({
         }),
       ]);
       saveProject(updatedProject);
-      if (typeof store.appendSecurityAuditRecords === 'function') {
-        store.appendSecurityAuditRecords([streamRecord]);
-      }
+      appendAuditStreamRecord();
       return streamRecord;
     },
     listTasks(projectId) {
@@ -67296,6 +68467,38 @@ export function createAgentProjectService({
         localRuntime: attached.localRuntime || null,
       };
     },
+    reconcileProjectLeaderWorkPlan({ projectId, now = nowIso() } = {}) {
+      const project = store.getProject(projectId);
+      const leaderId = project.kickoffCharter?.governance?.leaderId
+        || project.initiation?.leaderId
+        || project.team?.find((agent) => agent.isLeader)?.id
+        || project.team?.[0]?.id;
+      if (!leaderId) throw new Error('Leader work plan requires a confirmed project Leader.');
+      const assignmentPackage = createLeaderAssignmentPackage({ project, leaderId, now });
+      const nextProject = appendProjectEvents({
+        ...project,
+        tasks: assignmentPackage.tasks,
+        leaderWorkPlan: assignmentPackage.plan,
+        logs: [
+          ...assignmentPackage.acknowledgementLogs,
+          ...assignmentPackage.assignmentLogs,
+          ...(project.logs || []),
+        ],
+      }, assignmentPackage.ledgerEvents || []);
+      const result = persistResult({
+        route: 'leader-work-plan-reconciled',
+        project: nextProject,
+        messages: [
+          ...assignmentPackage.assignmentMessages,
+          ...assignmentPackage.acknowledgementMessages,
+        ].map((message) => ({ ...message, projectId })),
+        leaderWorkPlan: assignmentPackage.plan,
+      });
+      return {
+        ...result,
+        leaderWorkPlan: assignmentPackage.plan,
+      };
+    },
     prepareProjectWorkspace(input = {}) {
       if (!projectRuntime?.prepareWorkspace) throw new Error('Local project runtime is not configured.');
       return {
@@ -67324,7 +68527,27 @@ export function createAgentProjectService({
     },
     listWorkspaceFiles({ projectId, ...input } = {}) {
       if (!projectRuntime?.listWorkspace) throw new Error('Local project runtime is not configured.');
-      return projectRuntime.listWorkspace(store.getProject(projectId), input);
+      const project = store.getProject(projectId);
+      const previousWorkspacePath = project.localRuntime?.workspacePath;
+      const result = projectRuntime.listWorkspace(project, input);
+      if (result.workspacePath && result.workspacePath !== previousWorkspacePath) saveProject(project);
+      return result;
+    },
+    async waitForWorkspaceChange({ projectId, ...input } = {}) {
+      if (!projectRuntime?.waitForWorkspaceChange) throw new Error('Local workspace mirror is not configured.');
+      const project = store.getProject(projectId);
+      const result = await projectRuntime.waitForWorkspaceChange(project, input);
+      if (result.workspacePath && result.workspacePath !== project.localRuntime?.workspacePath) {
+        saveProject({
+          ...project,
+          localRuntime: {
+            ...(project.localRuntime || {}),
+            workspacePath: result.workspacePath,
+            workspaceRelocatedAt: input.now || nowIso(),
+          },
+        });
+      }
+      return result;
     },
     readWorkspaceFile({ projectId, ...input } = {}) {
       if (!projectRuntime?.readWorkspaceFile) throw new Error('Local project runtime is not configured.');
@@ -67337,6 +68560,31 @@ export function createAgentProjectService({
     deleteWorkspacePath({ projectId, ...input } = {}) {
       if (!projectRuntime?.deleteWorkspacePath) throw new Error('Local project runtime is not configured.');
       return projectRuntime.deleteWorkspacePath(store.getProject(projectId), input);
+    },
+    createWorkspaceDirectory({ projectId, ...input } = {}) {
+      if (!projectRuntime?.createWorkspaceDirectory) throw new Error('Local project runtime is not configured.');
+      return projectRuntime.createWorkspaceDirectory(store.getProject(projectId), input);
+    },
+    moveWorkspacePath({ projectId, ...input } = {}) {
+      if (!projectRuntime?.moveWorkspacePath) throw new Error('Local project runtime is not configured.');
+      const result = projectRuntime.moveWorkspacePath(store.getProject(projectId), input);
+      const project = store.getProject(projectId);
+      const fromPath = String(input.fromPath || '').replace(/\\/g, '/');
+      const toPath = String(result.entry?.path || input.toPath || '').replace(/\\/g, '/');
+      const savedProject = saveProject({
+        ...project,
+        localRuntime: {
+          ...(project.localRuntime || {}),
+          workspacePathAliases: {
+            ...(project.localRuntime?.workspacePathAliases || {}),
+            [fromPath]: toPath,
+          },
+        },
+      });
+      return {
+        ...result,
+        localRuntime: savedProject.localRuntime,
+      };
     },
     executeWorkspaceCommand({ projectId, ...input } = {}) {
       if (!projectRuntime?.executeWorkspaceCommand) throw new Error('Local project runtime is not configured.');
@@ -68524,6 +69772,165 @@ export function createAgentProjectService({
         ...input,
       }));
     },
+    startProjectMeeting({ projectId, ...input }) {
+      return persistResult(createProjectMeetingSession({
+        project: store.getProject(projectId),
+        ...input,
+      }));
+    },
+    completeProjectMeeting({ projectId, meetingSessionId, now = nowIso(), language } = {}) {
+      if (!projectRuntime?.requireWorkspace) throw new Error('Local project runtime is not configured.');
+      const project = store.getProject(projectId);
+      projectRuntime.requireWorkspace(project);
+      const session = projectMeetingSessionById(project, meetingSessionId);
+      if (!session || session.status !== 'active') {
+        throw new Error(`project-meeting-session-not-active:${meetingSessionId}`);
+      }
+      const recorder = (project.team || []).find((member) => member.id === session.recorderId);
+      if (!recorder?.id) throw new Error('project-meeting-recorder-not-found');
+      if (!(session.rounds || []).length) throw new Error('project-meeting-requires-discussion-before-completion');
+
+      const currentLanguage = normalizeLanguage(language || effectiveProjectLanguage(project));
+      const allMessages = store.getMessages(projectId);
+      const sessionMessages = allMessages.filter((message) => message.meetingSessionId === session.id);
+      const transcriptLines = sessionMessages
+        .filter((message) => message.text)
+        .map((message) => `- ${message.author || message.speaker || 'Participant'}: ${message.text}`);
+      const datePrefix = String(now).slice(0, 10) || 'meeting';
+      const agendaSlug = String(session.agenda || '')
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '')
+        .slice(0, 48) || 'project-meeting';
+      const workspaceRelativePath = `meeting-notes/${datePrefix}-${agendaSlug}.md`;
+      const promiseText = currentLanguage === 'zh'
+        ? `OK，我负责把本次《${session.agenda}》会议纪要上传到本地 ${workspaceRelativePath}，并按照项目提交流程提交。`
+        : `OK. I will upload the minutes for “${session.agenda}” to ${workspaceRelativePath} in the local workspace and submit them through the project workflow.`;
+      const promiseMessage = attachMessageReceipts({
+        id: `${session.id}_recorder_commitment_${Date.parse(now) || Date.now()}`,
+        projectId,
+        meetingSessionId: session.id,
+        channelId: 'main',
+        type: 'meeting-recorder-commitment',
+        schemaVersion: 'project-meeting-recorder-commitment/v1',
+        author: recorder.name || recorder.id,
+        authorId: recorder.id,
+        role: recorder.role || 'Meeting recorder',
+        time: 'War Room',
+        source: 'project-meeting-recorder-commitment',
+        text: promiseText,
+        replyToTurnId: session.agentTurnIds?.[session.agentTurnIds.length - 1] || null,
+        interactionIntent: 'commit',
+        meetingTurn: {
+          schemaVersion: 'meeting-agent-turn/v1',
+          projectId,
+          meetingSessionId: session.id,
+          speakerId: recorder.id,
+          speaker: recorder.name || recorder.id,
+          role: recorder.role || 'Meeting recorder',
+          interactionIntent: 'commit',
+          backendAuthored: true,
+        },
+      }, project.team || [], { seenAt: now });
+      const sessionCompleting = {
+        ...session,
+        status: 'completing',
+        recorderCommitmentMessageId: promiseMessage.id,
+        transcriptMessageIds: uniqueStrings([...(session.transcriptMessageIds || []), promiseMessage.id]),
+      };
+      const projectWithCommitment = applyChatMessagesToAgentStates({
+        project: replaceProjectMeetingSession(project, sessionCompleting),
+        team: project.team || [],
+        messages: [promiseMessage],
+        now,
+        source: 'project-meeting-recorder-commitment',
+        language: currentLanguage,
+      });
+      const reportBody = [
+        `# ${project.name || project.id} — Meeting Minutes`,
+        '',
+        `- Agenda: ${session.agenda}`,
+        `- Started: ${session.startedAt}`,
+        `- Completed: ${now}`,
+        `- Participants: ${session.participants.map((participant) => participant.name).join(', ')}`,
+        `- Recorder: ${recorder.name || recorder.id}`,
+        '',
+        '## Discussion record',
+        '',
+        ...transcriptLines,
+        '',
+        '## Decisions and next work',
+        '',
+        ...((project.tasks || []).filter((task) => task.status !== 'done').slice(0, 8).map((task) => (
+          `- ${task.ownerName || task.assignee || 'Unassigned'}: ${task.text || task.title || task.id}`
+        ))),
+        '',
+        '## Recorder commitment',
+        '',
+        promiseText,
+      ].join('\n');
+      const artifactResult = submitAgentArtifact({
+        project: projectWithCommitment,
+        agentId: recorder.id,
+        artifactType: 'progress-brief',
+        title: `${session.agenda} — Meeting Minutes`,
+        summary: `${recorder.name || recorder.id} recorded the meeting decisions and submitted the local minutes.`,
+        body: reportBody,
+        reviewerAgentId: (project.team || []).find((member) => member.id !== recorder.id)?.id || null,
+        sourceRefs: [{
+          type: 'project-meeting-session',
+          id: session.id,
+          agenda: session.agenda,
+          participantIds: session.participantIds,
+          transcriptMessageIds: session.transcriptMessageIds,
+        }],
+        tags: ['meeting', 'meeting-minutes', 'recorder-authored', 'local-workspace'],
+        relativePath: workspaceRelativePath,
+        workspaceRelativePath,
+        channelId: 'main',
+        now,
+        artifactWriter: artifactWriter || projectRuntime.writeArtifact.bind(projectRuntime),
+      });
+      const actualWorkspaceRelativePath = artifactResult.submission?.workspaceRelativePath
+        || artifactResult.artifact?.workspaceRelativePath
+        || workspaceRelativePath;
+      const completedSession = {
+        ...sessionCompleting,
+        status: 'completed',
+        completedAt: now,
+        summary: {
+          schemaVersion: 'project-meeting-summary/v1',
+          workspaceRelativePath: actualWorkspaceRelativePath,
+          submissionId: artifactResult.submission?.id || null,
+          recorderId: recorder.id,
+          recorderName: recorder.name || recorder.id,
+          transcriptMessageIds: sessionCompleting.transcriptMessageIds,
+        },
+      };
+      const completedProject = replaceProjectMeetingSession(artifactResult.project, completedSession);
+      const closingTurn = {
+        schemaVersion: 'meeting-agent-turn/v1',
+        id: `${recorder.id}_${Date.parse(now) || Date.now()}_recorder_commitment`,
+        messageId: promiseMessage.id,
+        speakerId: recorder.id,
+        speaker: recorder.name || recorder.id,
+        role: recorder.role || 'Meeting recorder',
+        text: promiseText,
+        interactionIntent: 'commit',
+        meetingSessionId: session.id,
+        proofIds: uniqueStrings([promiseMessage.id, artifactResult.submission?.id]),
+        backendAuthored: true,
+      };
+      return persistResult({
+        ...artifactResult,
+        route: 'project-meeting-completed',
+        project: completedProject,
+        messages: [promiseMessage, ...(artifactResult.messages || [])],
+        meetingSession: completedSession,
+        meetingAgentTurns: [closingTurn],
+        meetingReport: completedSession.summary,
+      });
+    },
     publishKickoffMeetingReport({ projectId, now = nowIso() } = {}) {
       if (!projectRuntime?.requireWorkspace) throw new Error('Local project runtime is not configured.');
       const project = store.getProject(projectId);
@@ -69111,9 +70518,49 @@ export function createAgentProjectService({
         actualCostCents: usage.record?.costCents ?? null,
         now: completedAt,
       });
+      const latestProject = settled.project;
+      const outcomeTask = (latestProject.tasks || []).find((candidate) => String(candidate.id || '') === String(input.taskId || cycle.task?.id || '')) || cycle.task || null;
+      const outcomeAgent = (latestProject.team || []).find((candidate) => String(candidate.id || '') === String(agentId || '')) || {};
+      const outcomeWorkContract = normalizeOutcomeWorkContract({ project: latestProject, task: outcomeTask || {}, agent: outcomeAgent });
+      let generatedArtifact = null;
+      const providerSourceCount = (providerResult.sources || []).filter((source) => source?.url || source?.id || source?.title).length;
+      const providerEvidenceReady = providerSourceCount >= outcomeWorkContract.evidencePolicy.minimumSources;
+      if (outcomeTask && outcomeWorkContract.actionType === 'research' && requireProvider && !providerEvidenceReady) {
+        throw new Error(`search-provider-insufficient-sources:${providerSourceCount}/${outcomeWorkContract.evidencePolicy.minimumSources}`);
+      }
+      if (outcomeTask && outcomeWorkContract.actionType === 'research' && providerEvidenceReady) {
+        generatedArtifact = await this.generateAgentArtifactDraft({
+          projectId,
+          agentId,
+          traceId: normalizedTraceId,
+          artifactType: 'evidence-packet',
+          taskId: outcomeTask.id,
+          instruction: [
+            `Produce the material deliverable required by the work contract: ${outcomeWorkContract.deliverable}.`,
+            'Synthesize the provider-backed sources into task-specific findings, conflicts, limitations, and at least one testable hypothesis.',
+            'Do not write a coordination update, progress receipt, or generic handoff template.',
+          ].join(' '),
+          evidenceSearchIds: [cycle.evidenceSearch?.id].filter(Boolean),
+          useModel: true,
+          requireModel: true,
+          submit: true,
+          reviewerAgentId: outcomeWorkContract.reviewerAgentId,
+          status: 'submitted',
+          reviewStatus: 'pending-review',
+          channelId: input.channelId || 'main',
+          now: completedAt,
+        });
+      }
+      const finalOutcomeProject = generatedArtifact?.project || latestProject;
       const result = {
         ...cycle,
-        project: settled.project,
+        project: finalOutcomeProject,
+        messages: [...(cycle.messages || []), ...(generatedArtifact?.messages || [])],
+        submission: generatedArtifact?.submission || cycle.submission || null,
+        artifact: generatedArtifact?.artifact || cycle.artifact || null,
+        workSubmission: generatedArtifact?.submission || cycle.workSubmission || null,
+        generatedArtifact,
+        materialHandoff: generatedArtifact?.materialHandoff || cycle.materialHandoff || null,
         providerUsage: usage.record,
         providerBudgetReservation: settled.reservation,
         providerEvidenceSearch: {
@@ -69163,7 +70610,7 @@ export function createAgentProjectService({
             schedulerReason: row.reason,
             dueAt: row.dueAt,
             source: input.source || 'backend-scheduler-autonomous-chat',
-            language: acquisition.project.language || 'en',
+            language: effectiveProjectLanguage(acquisition.project),
             traceId: acquisition.job.traceId,
             workerIdempotencyKey: acquisition.job.idempotencyKey,
             workerLeaseKey: acquisition.job.fenceToken,
@@ -69405,7 +70852,7 @@ export function createAgentProjectService({
               includeReadModels: false,
               schedulerWorker: 'autopilot-due-worker',
             },
-            language: language || project.language || 'en',
+            language: language || effectiveProjectLanguage(project),
           });
           const tickReceipt = result.autonomousRunControlSessionTick || null;
           const executionReceipt = tickReceipt?.executionReceipt || null;
@@ -69599,7 +71046,7 @@ export function createAgentProjectService({
               schedulerWorker: 'autopilot-due-worker',
               useProviderEvidenceSearch: true,
             },
-            language: language || project.language || 'en',
+            language: language || effectiveProjectLanguage(project),
           });
           const tickReceipt = result.autonomousRunControlSessionTick || null;
           const executionReceipt = tickReceipt?.executionReceipt || null;

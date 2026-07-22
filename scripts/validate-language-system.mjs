@@ -20,6 +20,10 @@ import {
   handleFeatureChangeRequest,
   startAgentSession,
 } from '../src/agents/agentRuntime.js';
+import {
+  localizeManagerFlowDisplayText,
+  managerFlowUserAuthoredFragments,
+} from '../src/i18n/managerFlowChinese.js';
 
 const ROOT_DIR = fileURLToPath(new URL('..', import.meta.url));
 const DIST_DIR = join(ROOT_DIR, 'dist');
@@ -50,6 +54,216 @@ const MIME_TYPES = {
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
+}
+
+async function validateRealProjectFlowGraphLanguage() {
+  const storePath = process.env.HOFS_REAL_PROJECT_STORE_PATH || join(ROOT_DIR, '.tmp', 'agent-project-store.json');
+  let snapshot;
+  try {
+    snapshot = JSON.parse(await readFile(storePath, 'utf8'));
+  } catch (error) {
+    if (error?.code === 'ENOENT') {
+      console.log(`[language] real project store not present; skipped ${storePath}`);
+      return;
+    }
+    throw error;
+  }
+
+  const requestedProjectId = process.env.HOFS_REAL_PROJECT_ID || 'project_project_c73bccad';
+  const project = (snapshot.projects || []).find(item => item.id === requestedProjectId)
+    || (snapshot.projects || []).find(item => item.projectSettings?.effectiveLanguage === 'zh' || item.language === 'zh');
+  assert(project, `No Chinese real project found in ${storePath}.`);
+
+  const messages = (snapshot.messages || []).filter(message => message.projectId === project.id);
+  const service = createAgentProjectService({
+    projects: snapshot.projects || [],
+    messages: snapshot.messages || [],
+    kickoffMeetings: snapshot.kickoffMeetings || [],
+  });
+  const graph = service.getManagerFlowGraph(project.id, { language: 'zh', skipCache: true });
+  const userAuthoredFragments = managerFlowUserAuthoredFragments(project, messages);
+  const issues = [];
+  const inspect = (node, field, value, fallback) => {
+    if (typeof value !== 'string' || !value) return;
+    const visible = localizeManagerFlowDisplayText(value, {
+      language: 'zh',
+      fallback,
+      userAuthoredFragments,
+    });
+    const exactUserContent = userAuthoredFragments.some(fragment => fragment.trim() === visible.trim());
+    const technicalValue = /^https?:\/\//i.test(visible)
+      || /^\/[A-Za-z0-9_./:#?=&%-]+$/.test(visible)
+      || /^[A-Za-z0-9]+(?:_[A-Za-z0-9]+)+$/.test(visible);
+    if (/[A-Za-z]{2,}/.test(visible) && !exactUserContent && !technicalValue) {
+      issues.push(`${node.id || 'graph'}.${field}: ${visible}`);
+    }
+  };
+
+  for (const node of graph.nodes || []) {
+    inspect(node, 'categoryLabel', node.categoryLabel, '流程');
+    inspect(node, 'subtype', node.subtypeLabel || node.subtype, '记录');
+    inspect(node, 'title', node.title, '流程记录');
+    inspect(node, 'description', node.description || node.summary, '流程说明');
+    inspect(node, 'summary', node.summary, '流程摘要');
+    inspect(node, 'commitMessage', node.submission?.commitMessage || node.commitMessage, '流程记录');
+    inspect(node, 'agentName', node.agentName, '项目成员');
+    inspect(node, 'status', node.statusLabel || node.status, '已记录');
+    inspect(node, 'importance', node.importanceLabel || node.importance, '普通');
+    inspect(node, 'intent', node.submission?.intent, '智能体已提交此流程记录，等待经理复核。');
+    for (const item of node.thinkingFrame?.checklist || []) inspect(node, 'checklist', item, '流程检查项');
+    for (const item of node.submission?.submissionMotivation?.evidencePlan || []) inspect(node, 'evidencePlan', item, '证据计划');
+  }
+
+  assert(issues.length === 0, `Real Chinese project flow graph has unexpected generated English:\n${issues.slice(0, 30).join('\n')}`);
+  console.log(`[language] real project ${project.id}: ${(graph.nodes || []).length} nodes and ${(graph.edges || []).length} edges verified`);
+}
+
+async function loadRealChineseProjectSnapshot() {
+  const storePath = process.env.HOFS_REAL_PROJECT_STORE_PATH || join(ROOT_DIR, '.tmp', 'agent-project-store.json');
+  try {
+    const snapshot = JSON.parse(await readFile(storePath, 'utf8'));
+    const requestedProjectId = process.env.HOFS_REAL_PROJECT_ID || 'project_project_c73bccad';
+    const project = (snapshot.projects || []).find(item => item.id === requestedProjectId)
+      || (snapshot.projects || []).find(item => item.projectSettings?.effectiveLanguage === 'zh' || item.language === 'zh');
+    return project ? { snapshot, project, storePath } : null;
+  } catch (error) {
+    if (error?.code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
+async function visibleUnexpectedEnglish(page, userAuthoredFragments = [], rootSelector = 'body') {
+  return page.locator(rootSelector).first().evaluate((root, fragments) => {
+    const issues = [];
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    while (walker.nextNode()) {
+      const textNode = walker.currentNode;
+      const parent = textNode.parentElement;
+      if (!parent || parent.closest('script, style, code, pre, [data-user-content], [aria-hidden="true"]')) continue;
+      const style = getComputedStyle(parent);
+      if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0 || parent.getClientRects().length === 0) continue;
+      let text = String(textNode.nodeValue || '').replace(/\s+/g, ' ').trim();
+      if (!text) continue;
+      for (const fragment of [...fragments].sort((a, b) => b.length - a.length)) {
+        if (fragment) text = text.split(fragment).join(' ');
+      }
+      text = text
+        .replace(/\{[\s\S]*$/g, ' ')
+        .replace(/https?:\/\/\S+/gi, ' ')
+        .replace(/\/[A-Za-z0-9_./:#?=&%-]+/g, ' ')
+        .replace(/\b(?=[A-Za-z0-9_-]*_)[A-Za-z0-9_-]+\b/g, ' ')
+        .replace(/\b(?=[A-Za-z]*[a-z][A-Z])[A-Za-z]+\b/g, ' ')
+        .replace(/\b[A-Za-z0-9]+(?:_[A-Za-z0-9]+)+\b/g, ' ')
+        .replace(/\b(?=[A-Za-z0-9_.:-]*\d)(?=[A-Za-z0-9_.:-]*[-_.:])[A-Za-z0-9_.:-]+\b/g, ' ')
+        .replace(/\b(?:API|ID|URL|URI|HTTP|HTTPS|JSON|OAuth|JWT|MCP|BYOK|OpenAI)\b/gi, ' ')
+        .replace(/\b(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\b/gi, ' ')
+        .replace(/\b[A-Fa-f0-9]{12,}\b/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+      if (/[A-Za-z]{2,}/.test(text)) {
+        issues.push({
+          text,
+          element: parent.outerHTML.slice(0, 500),
+        });
+      }
+    }
+    return issues.slice(0, 60);
+  }, userAuthoredFragments);
+}
+
+async function assertStrictChineseSurface(page, scope, userAuthoredFragments, rootSelector = 'body') {
+  const issues = await visibleUnexpectedEnglish(page, userAuthoredFragments, rootSelector);
+  assert(
+    issues.length === 0,
+    `Real Chinese project ${scope} has unexpected visible English:\n${issues.map(issue => `${issue.text}\n${issue.element}`).join('\n')}`,
+  );
+}
+
+async function validateRealProjectChineseSurfaces(browser, url) {
+  const loaded = await loadRealChineseProjectSnapshot();
+  if (!loaded) {
+    console.log('[language] real project browser snapshot not present; skipped');
+    return;
+  }
+  const { snapshot, project } = loaded;
+  validationBackendStore.saveProject(structuredClone(project));
+  validationBackendStore.appendMessages(structuredClone((snapshot.messages || []).filter(message => message.projectId === project.id)));
+  for (const meeting of (snapshot.kickoffMeetings || []).filter(item => item.projectId === project.id)) {
+    validationBackendStore.saveKickoffMeeting(structuredClone(meeting));
+  }
+
+  const projectMessages = (snapshot.messages || []).filter(message => message.projectId === project.id);
+  const userAuthoredFragments = managerFlowUserAuthoredFragments(project, projectMessages);
+  const page = await openWithLanguage(browser, url, 'zh');
+  try {
+    const projectButton = page.getByRole('button', { name: `打开项目：${project.name}` });
+    await projectButton.waitFor({ state: 'visible', timeout: 15000 });
+    await projectButton.click();
+    await page.getByTestId('project-dashboard-view').waitFor({ state: 'visible', timeout: 20000 });
+    await page.waitForTimeout(200);
+    await assertStrictChineseSurface(page, 'project dashboard', userAuthoredFragments);
+    await page.getByTestId('project-open-chat').waitFor({ state: 'visible', timeout: 20000 }).catch(async (error) => {
+      const body = await page.locator('body').innerText().catch(() => '');
+      throw new Error(`${error.message}\nReal project body after open:\n${body.slice(0, 3000)}`);
+    });
+    await page.waitForTimeout(200);
+    await assertStrictChineseSurface(page, 'project dashboard', userAuthoredFragments);
+
+    await page.getByTestId('project-open-chat').click();
+    await page.getByTestId('project-chat-panel').waitFor({ state: 'visible', timeout: 15000 });
+    await page.waitForTimeout(200);
+    await assertStrictChineseSurface(page, 'chat', userAuthoredFragments);
+    await page.getByTestId('project-scene-back').first().click();
+    await page.getByTestId('project-open-timeline').waitFor({ state: 'visible', timeout: 10000 });
+
+    await page.getByTestId('project-open-timeline').click();
+    await page.getByTestId('manager-flow-graph').waitFor({ state: 'visible', timeout: 20000 });
+    await page.waitForTimeout(200);
+    for (let pass = 0; pass < 5; pass += 1) {
+      const collapsed = page.locator('[data-testid^="manager-flow-overflow-"][data-expanded="false"]');
+      const count = await collapsed.count();
+      if (!count) break;
+      for (let index = 0; index < count; index += 1) {
+        await collapsed.nth(index).evaluate(button => button.click()).catch(() => {});
+      }
+      await page.waitForTimeout(100);
+    }
+    await assertStrictChineseSurface(page, 'flow graph', userAuthoredFragments);
+
+    const nodes = page.locator('[data-testid^="manager-flow-node-"]:not([data-testid*="-logo-"])');
+    const nodeIds = [...new Set(await nodes.evaluateAll(elements => elements.map(element => element.dataset.timelineEventId).filter(Boolean)))];
+    let verifiedNodeDetailCount = 0;
+    for (let index = 0; index < nodeIds.length; index += 1) {
+      const nodeId = nodeIds[index];
+      const clicked = await page.evaluate(id => {
+        const button = [...document.querySelectorAll('[data-timeline-event-id]')]
+          .find(element => element.dataset.timelineEventId === id);
+        button?.click();
+        return Boolean(button);
+      }, nodeId);
+      if (!clicked) continue;
+      const detail = page.getByTestId('timeline-node-metadata-detail');
+      const opened = await detail.waitFor({ state: 'visible', timeout: 1500 }).then(() => true).catch(() => false);
+      if (!opened) {
+        await page.evaluate(id => {
+          [...document.querySelectorAll('[data-timeline-event-id]')]
+            .find(element => element.dataset.timelineEventId === id)?.click();
+        }, nodeId);
+        await detail.waitFor({ state: 'visible', timeout: 5000 });
+      }
+      await assertStrictChineseSurface(page, `flow graph node detail ${index + 1}/${nodeIds.length}`, userAuthoredFragments, 'aside');
+      verifiedNodeDetailCount += 1;
+      await page.getByTestId('manager-flow-detail-close').click();
+      await page.waitForTimeout(20);
+    }
+    assert(verifiedNodeDetailCount > 0, 'Real Chinese project graph did not expose any node detail for browser verification.');
+    console.log(`[language] real project browser ${project.id}: dashboard, chat, graph, and ${verifiedNodeDetailCount}/${nodeIds.length} rendered node details verified`);
+  } finally {
+    await page.close();
+    if (validationBackendStore.listProjects().some(item => item.id === project.id)) {
+      validationBackendStore.deleteProject(project.id);
+    }
+  }
 }
 
 async function launchLocalBrowser() {
@@ -112,7 +326,9 @@ async function startServer() {
 async function pageText(page) {
   await page.waitForFunction(() => document.body && document.body.innerText.length > 100, null, { timeout: 10000 });
   await page.waitForTimeout(500);
-  return page.locator('body').innerText({ timeout: 5000 });
+  const bodyText = await page.locator('body').innerText({ timeout: 5000 });
+  const userText = await page.locator('[data-user-content]').allTextContents({ timeout: 5000 });
+  return userText.filter(Boolean).reduce((text, value) => text.split(value).join(' '), bodyText);
 }
 
 function uniqueLinesMatching(text, pattern, allowPattern = null) {
@@ -120,7 +336,18 @@ function uniqueLinesMatching(text, pattern, allowPattern = null) {
     text
       .split(/\n+/)
       .map((line) => line.trim())
-      .filter((line) => line && pattern.test(line) && !(allowPattern && allowPattern.test(line)))
+      .filter((line) => {
+        if (!line) return false;
+        const withoutTechnicalTokens = line
+          .replace(/https?:\/\/\S+/gi, ' ')
+          .replace(/\/[A-Za-z0-9_./#?=&%-]+/g, ' ')
+          .replace(/\b[A-Z][A-Z0-9]*(?:[-_][A-Z0-9]+)+\b/g, ' ');
+        const inspectable = allowPattern
+          ? withoutTechnicalTokens.replace(new RegExp(allowPattern.source, `${allowPattern.flags.replace('g', '')}g`), ' ')
+          : withoutTechnicalTokens;
+        pattern.lastIndex = 0;
+        return pattern.test(inspectable);
+      })
   )];
 }
 
@@ -194,7 +421,7 @@ function validateAgentGenerationLanguage() {
   assert(englishChinese.length === 0, `English Agent generation has Chinese text:\n${englishChinese.slice(0, 20).join('\n')}`);
 
   const allowedChineseModeEnglish = /Steve Jobs|Alan Turing|Agent|Google Chat|API|Test Project|Add export summary|Product Visionary|System Architect/i;
-  const chineseEnglish = generatedByLanguage.zh.filter((line) => /[A-Za-z]{4,}/.test(line) && !allowedChineseModeEnglish.test(line));
+  const chineseEnglish = uniqueLinesMatching(generatedByLanguage.zh.join('\n'), /[A-Za-z]{4,}/, allowedChineseModeEnglish);
   assert(chineseEnglish.length === 0, `Chinese Agent generation has unexpected English text:\n${chineseEnglish.slice(0, 20).join('\n')}`);
 }
 
@@ -427,6 +654,7 @@ async function clickSurfaceByText(page, labels) {
   const targetSelector = route?.target || null;
   if (targetSelector) {
     await page.locator(targetSelector).first().waitFor({ state: 'visible', timeout: 10000 }).catch(async (error) => {
+      await page.getByText(/查看错误详情|View error details/i).click().catch(() => {});
       const body = await page.locator('body').innerText().catch(() => '');
       throw new Error(`${error.message}\nSurface body after launch:\n${body.slice(0, 1800)}`);
     });
@@ -443,7 +671,7 @@ async function openManagerDemoProject(page) {
     const body = await page.locator('body').innerText({ timeout: 3000 }).catch(() => '');
     throw new Error(`${error.message}\nBody after opening manager demo:\n${body.slice(0, 1200)}`);
   });
-  await page.getByTestId('project-open-chat').waitFor({ state: 'visible', timeout: 10000 });
+  await page.getByTestId('project-open-chat').waitFor({ state: 'visible', timeout: 20000 });
 }
 
 async function openSettings(page) {
@@ -504,7 +732,16 @@ async function validateProjectSurfaces(browser, url, language) {
       assert(unexpectedChinese.length === 0, `English ${name} surface has unexpected Chinese UI text:\n${unexpectedChinese.slice(0, 20).join('\n')}`);
     } else {
       const unexpectedEnglish = uniqueLinesMatching(text, /[A-Za-z]{4,}/, allowedEnglish);
-      assert(unexpectedEnglish.length === 0, `Chinese ${name} surface has unexpected English UI text:\n${unexpectedEnglish.slice(0, 20).join('\n')}`);
+      let unexpectedEnglishContext = [];
+      if (unexpectedEnglish.length > 0) {
+        unexpectedEnglishContext = await page.evaluate((lines) => lines.slice(0, 3).map((line) => {
+          const candidates = [...document.querySelectorAll('body *')]
+            .filter((element) => (element.innerText || '').includes(line))
+            .sort((a, b) => (a.innerText || '').length - (b.innerText || '').length);
+          return candidates[0]?.outerHTML?.slice(0, 1200) || '';
+        }), unexpectedEnglish);
+      }
+      assert(unexpectedEnglish.length === 0, `Chinese ${name} surface has unexpected English UI text:\n${unexpectedEnglish.slice(0, 20).join('\n')}\nContext:\n${unexpectedEnglishContext.join('\n')}`);
     }
     await page.getByTestId('project-scene-back').first().click();
     await page.getByTestId('project-open-chat').waitFor({ state: 'visible', timeout: 5000 });
@@ -737,6 +974,8 @@ try {
   };
   await runStep('agent generation', () => validateAgentGenerationLanguage());
   await runStep('manager read models', () => validateManagerReadModelLanguage());
+  await runStep('real project flow graph zh', () => validateRealProjectFlowGraphLanguage());
+  await runStep('real project browser zh', () => validateRealProjectChineseSurfaces(browser, url));
   await runStep('home zh', () => validateChinese(browser, url));
   await runStep('home en', () => validateEnglish(browser, url));
   await runStep('settings en', () => validateEnglishSettings(browser, url));

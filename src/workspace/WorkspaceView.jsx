@@ -49,6 +49,8 @@ export default function WorkspaceView({ view }) {
         <Suspense fallback={<LazyPanelFallback />}>
           <ProjectHub
             projects={projects.filter(project => !isManagerDemoProject(project))}
+            catalogStatus={backendStation.projectCatalogStatus}
+            activeLanguage={activeLanguage}
             modelReady={Boolean(providerRuntimeStatus.modelProvider?.enabled && providerRuntimeStatus.modelProvider?.configured)}
             lastSyncedAt={backendStation.lastProjectCatalogSyncAt}
             onCreateProject={navToInitiation}

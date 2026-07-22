@@ -4,6 +4,7 @@ import {
   LANGUAGE_STORAGE_KEY,
   createTranslator,
   localizeText,
+  localizeVisibleSystemText,
   normalizeLanguage,
 } from './runtime.js';
 
@@ -12,6 +13,7 @@ export {
   LANGUAGE_STORAGE_KEY,
   createTranslator,
   localizeText,
+  localizeVisibleSystemText,
   normalizeLanguage,
 } from './runtime.js';
 
@@ -29,13 +31,15 @@ const localizedAttributeSources = new WeakMap();
 
 function localizeDom(root, language) {
   if (!root || language == null) return;
-  const skipTags = new Set(['SCRIPT', 'STYLE', 'TEXTAREA']);
+  const skipTags = new Set(['SCRIPT', 'STYLE', 'TEXTAREA', 'CODE', 'PRE', 'KBD', 'SAMP']);
   const translateNode = (node) => {
-    if (!node || skipTags.has(node.parentElement?.tagName)) return;
+    if (!node || skipTags.has(node.parentElement?.tagName) || node.parentElement?.closest?.('[data-no-localize], [data-user-content]')) return;
     const value = node.nodeValue;
+    const trimmed = value?.trim?.() || '';
+    if (/^(?:https?:\/\/|\/[A-Za-z0-9_.:@?=&%/-]+$|[A-Za-z]:\\)/.test(trimmed)) return;
     const previous = localizedTextSources.get(node);
     const source = previous && value === previous.rendered ? previous.source : value;
-    const localized = localizeText(source, language);
+    const localized = localizeVisibleSystemText(source, language);
     localizedTextSources.set(node, { source, rendered: localized });
     if (localized !== value) node.nodeValue = localized;
   };
@@ -46,13 +50,14 @@ function localizeDom(root, language) {
   textNodes.forEach(translateNode);
 
   root.querySelectorAll?.('[placeholder], [title], [aria-label]').forEach((element) => {
+    if (element.closest?.('[data-no-localize], [data-user-content]')) return;
     const records = localizedAttributeSources.get(element) || new Map();
     ['placeholder', 'title', 'aria-label'].forEach((attribute) => {
       const value = element.getAttribute(attribute);
       if (!value) return;
       const previous = records.get(attribute);
       const source = previous && value === previous.rendered ? previous.source : value;
-      const localized = localizeText(source, language);
+      const localized = localizeVisibleSystemText(source, language);
       records.set(attribute, { source, rendered: localized });
       if (localized !== value) element.setAttribute(attribute, localized);
     });

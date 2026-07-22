@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Check, ChevronDown, Cpu, Globe2, MapPinned, Sparkles, X } from 'lucide-react';
 import openaiLogo from '@lobehub/icons-static-svg/icons/openai.svg';
 import anthropicLogo from '@lobehub/icons-static-svg/icons/anthropic.svg';
@@ -68,24 +68,95 @@ function ProviderLogo({ provider, size = 'h-8 w-8' }) {
     : <Cpu aria-hidden="true" className={size} strokeWidth={1.6} />;
 }
 
-function BottomDrawer({ open, title, testId, onClose, children, activeLanguage = 'zh' }) {
+function useDialogFocus(open, onClose) {
+  const overlayRef = useRef(null);
+  const dialogRef = useRef(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+
   useEffect(() => {
     if (!open) return undefined;
-    const closeOnEscape = (event) => {
-      if (event.key === 'Escape') onClose();
+    const overlay = overlayRef.current;
+    const dialog = dialogRef.current;
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const backgroundSiblings = [];
+    let activeBranch = overlay;
+    while (activeBranch?.parentElement) {
+      const parent = activeBranch.parentElement;
+      Array.from(parent.children).filter(sibling => sibling !== activeBranch).forEach((sibling) => {
+        backgroundSiblings.push({
+          sibling,
+          hadInert: sibling.hasAttribute('inert'),
+          ariaHidden: sibling.getAttribute('aria-hidden'),
+        });
+        sibling.setAttribute('inert', '');
+        sibling.setAttribute('aria-hidden', 'true');
+      });
+      activeBranch = parent;
+      if (parent === document.body) break;
+    }
+
+    const focusableElements = () => Array.from(dialog?.querySelectorAll(
+      'button:not([disabled]), select:not([disabled]), input:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex="-1"])'
+    ) || []).filter(element => (
+      element.getAttribute('aria-hidden') !== 'true'
+      && !element.closest('[aria-hidden="true"]')
+      && element.getClientRects().length > 0
+    ));
+    const initialFocus = focusableElements()[0];
+    if (initialFocus) initialFocus.focus();
+    else dialog?.focus();
+
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        onCloseRef.current?.();
+        return;
+      }
+      if (event.key !== 'Tab') return;
+      const focusable = focusableElements();
+      if (!focusable.length) {
+        event.preventDefault();
+        dialog?.focus();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
     };
-    window.addEventListener('keydown', closeOnEscape);
-    return () => window.removeEventListener('keydown', closeOnEscape);
-  }, [open, onClose]);
+    document.addEventListener('keydown', handleKeyDown, true);
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown, true);
+      backgroundSiblings.forEach(({ sibling, hadInert, ariaHidden }) => {
+        if (!hadInert) sibling.removeAttribute('inert');
+        if (ariaHidden === null) sibling.removeAttribute('aria-hidden');
+        else sibling.setAttribute('aria-hidden', ariaHidden);
+      });
+      previousFocus?.focus();
+    };
+  }, [open]);
+
+  return { overlayRef, dialogRef };
+}
+
+function BottomDrawer({ open, title, testId, onClose, children, activeLanguage = 'zh' }) {
+  const { overlayRef, dialogRef } = useDialogFocus(open, onClose);
 
   if (!open) return null;
   const reducedMotionMediaQuery = '(prefers-reduced-motion: reduce)';
   void reducedMotionMediaQuery;
   return (
-    <div className="fixed inset-0 z-[90] flex items-end bg-black/35" onMouseDown={(event) => {
+    <div ref={overlayRef} className="fixed inset-0 z-[90] flex items-end bg-black/35" onMouseDown={(event) => {
       if (event.target === event.currentTarget) onClose();
     }}>
-      <section role="dialog" aria-modal="true" aria-label={title} data-testid={testId} className="max-h-[min(520px,70vh)] w-full overflow-y-auto border-t border-[#1a1a1a] bg-[#f5f4f0] shadow-[0_-18px_50px_rgba(0,0,0,0.2)] transition-transform duration-200 motion-reduce:transition-none">
+      <section ref={dialogRef} tabIndex={-1} role="dialog" aria-modal="true" aria-label={title} data-testid={testId} className="max-h-[min(520px,70vh)] w-full overflow-y-auto border-t border-[#1a1a1a] bg-[#f5f4f0] shadow-[0_-18px_50px_rgba(0,0,0,0.2)] transition-transform duration-200 motion-reduce:transition-none">
         <div className="sticky top-0 z-10 flex items-center justify-between border-b border-[#d1d0c9] bg-[#f5f4f0]/95 px-5 py-4 backdrop-blur-sm sm:px-8">
           <div>
             <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-[#8f1e18]">AI MODEL</div>
@@ -102,22 +173,15 @@ function BottomDrawer({ open, title, testId, onClose, children, activeLanguage =
 }
 
 function StepfunRegionDialog({ open, selectedRegionId, onClose, onSelect, activeLanguage = 'zh' }) {
-  useEffect(() => {
-    if (!open) return undefined;
-    const closeOnEscape = (event) => {
-      if (event.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', closeOnEscape);
-    return () => window.removeEventListener('keydown', closeOnEscape);
-  }, [open, onClose]);
+  const { overlayRef, dialogRef } = useDialogFocus(open, onClose);
 
   if (!open) return null;
   const text = (chinese, english) => activeLanguage === 'en' ? english : chinese;
   return (
-    <div className="stepfun-region-backdrop-in fixed inset-0 z-[100] flex items-center justify-center bg-[#111]/55 p-4 backdrop-blur-[3px]" onMouseDown={(event) => {
+    <div ref={overlayRef} className="stepfun-region-backdrop-in fixed inset-0 z-[100] flex items-center justify-center bg-[#111]/55 p-4 backdrop-blur-[3px]" onMouseDown={(event) => {
       if (event.target === event.currentTarget) onClose();
     }}>
-      <section role="dialog" aria-modal="true" aria-labelledby="stepfun-region-title" data-testid="settings-stepfun-region-dialog" className="stepfun-region-dialog-in relative w-full max-w-2xl overflow-hidden border border-[#1a1a1a] bg-[#f8f6ee] shadow-[12px_14px_0_rgba(0,0,0,0.28)]">
+      <section ref={dialogRef} tabIndex={-1} role="dialog" aria-modal="true" aria-labelledby="stepfun-region-title" data-testid="settings-stepfun-region-dialog" className="stepfun-region-dialog-in relative w-full max-w-2xl overflow-hidden border border-[#1a1a1a] bg-[#f8f6ee] shadow-[12px_14px_0_rgba(0,0,0,0.28)]">
         <div className="h-1.5 bg-[linear-gradient(90deg,#635bff_0%,#20c997_52%,#eeaa38_100%)]" />
         <div className="relative border-b border-[#d1d0c9] px-6 py-6 sm:px-8">
           <div className="absolute right-20 top-5 h-20 w-20 rounded-full bg-[#6d5dfc]/10 blur-2xl" />
@@ -196,8 +260,8 @@ export default function ModelProviderPicker({ providerId, modelId, baseURL = '',
         <div className="text-sm text-[#4f4b43]">{text('模型名称', 'Model name')}</div>
         <button type="button" data-testid="settings-model-name-trigger" disabled={disabled} onClick={() => setModelOpen(true)} className="mt-2 flex w-full items-center justify-between gap-4 border border-[#b8b4a8] bg-white px-4 py-3 text-left transition-colors hover:border-[#1a1a1a] disabled:cursor-not-allowed disabled:opacity-50">
           <span>
-            <span className="block text-sm font-medium text-[#1a1a1a]">{selectedModel?.name || modelId || text('选择模型', 'Choose a model')}</span>
-            <span className="mt-1 block font-mono text-[10px] text-[#777166]">{modelNote(selectedModel) || modelId || text('请选择一个模型', 'Choose a model')}</span>
+            <span data-user-content={!selectedModel && modelId ? '' : undefined} className="block text-sm font-medium text-[#1a1a1a]">{selectedModel?.name || modelId || text('选择模型', 'Choose a model')}</span>
+            <span data-user-content={!selectedModel && modelId ? '' : undefined} className="mt-1 block font-mono text-[10px] text-[#777166]">{modelNote(selectedModel) || modelId || text('请选择一个模型', 'Choose a model')}</span>
           </span>
           <ChevronDown size={18} className="shrink-0" />
         </button>

@@ -369,12 +369,8 @@ async function startInitiationFromWorkspace(page) {
   await page.getByTestId('start-initiation-button').click();
 }
 
-async function openAdvancedProjectDashboard(page) {
+async function openProjectDashboard(page) {
   await page.getByTestId('project-dashboard-view').waitFor({ state: 'visible', timeout: 65000 });
-  const simpleDashboard = page.getByTestId('project-simple-dashboard');
-  if (await simpleDashboard.count()) {
-    await page.getByTestId('project-overview').locator('header button').nth(1).click();
-  }
   await page.waitForFunction(
     () => document.body.innerText.includes('Roundtable Initiation System') && document.body.innerText.includes('PROJECT DASHBOARD'),
     null,
@@ -1982,7 +1978,7 @@ try {
   await page.getByTestId('leader-candidate-turing').click();
   await assertPageContains(page, 'Director selected', 'Manager must be able to override the recommended Leader before approval.');
   await page.getByTestId('initiation-approve-create').click();
-  await openAdvancedProjectDashboard(page);
+  await openProjectDashboard(page);
   await assertPageContains(page, 'NEXT ACTION RESOLUTION', 'Approved project dashboard must show the meeting-confirmed next-action resolution.');
   await assertPageContains(page, 'AGENT RECEIPTS:', 'Approved project dashboard must show Agent receipt coverage for the next-action decision.');
   await page.getByTestId('kickoff-dashboard-generation-source').scrollIntoViewIfNeeded({ timeout: 10000 });

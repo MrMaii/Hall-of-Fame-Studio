@@ -435,10 +435,11 @@ export function buildSkillRoomReply(slug, taskText = '', intent = {}) {
 export function describeSkillIntent(slug, taskText = '', plan = {}) {
   const skill = getPersonSkill(slug);
   if (!skill) return null;
-  if (plan.lead?.slug === slug) return '主责推进';
-  if (plan.reviewer?.slug === slug) return '风险复核';
   const blend = buildPersonaSkillBlend(slug, taskText);
-  return `${chooseFocusLabel(skill, taskText)} / ${blend.selectedSkill.zh || blend.selectedSkill.label}`;
+  const professionalLabel = blend.selectedSkill.zh || blend.selectedSkill.label;
+  if (plan.lead?.slug === slug) return `主责推进 / ${professionalLabel}`;
+  if (plan.reviewer?.slug === slug) return `风险复核 / ${professionalLabel}`;
+  return `${chooseFocusLabel(skill, taskText)} / ${professionalLabel}`;
 }
 
 function extractSection(markdown, ...titles) {

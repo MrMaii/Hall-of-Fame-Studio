@@ -1,10 +1,12 @@
 import { localizeText } from '../i18n/index.jsx';
 import AdvancedMeetingRoom from './AdvancedMeetingRoom.jsx';
+import { isConversationMessage } from '../project/humanReadableRecords.js';
 
 export default function AdvancedMeetingRoomRouteView({ view }) {
   const {
     activeLanguage,
     backendMeetingSendRequired,
+    canCompleteMeeting,
     canSendMeeting,
     closeMeeting,
     completeMeeting,
@@ -13,6 +15,9 @@ export default function AdvancedMeetingRoomRouteView({ view }) {
     meetingElapsed,
     meetingProject,
     meetingTitle,
+    projectMeetingCompletion,
+    projectMeetingSession,
+    projectMeetingSetupError,
     roomInput,
     roomIntentions,
     roomSpeaker,
@@ -31,6 +36,7 @@ export default function AdvancedMeetingRoomRouteView({ view }) {
   } = view;
 
   const teamCount = meetingProject.team.length;
+  const conversationTranscript = roomTranscript.filter(isConversationMessage);
   const isAnySpeaking = roomSpeaker !== null;
   const formatTime = (sec) => `${String(Math.floor(sec / 60)).padStart(2, '0')}:${String(sec % 60).padStart(2, '0')}`;
   const getMeetingAvatarPos = (index, total) => {
@@ -41,7 +47,7 @@ export default function AdvancedMeetingRoomRouteView({ view }) {
     return { left: `${cx + rx * Math.cos(angle)}%`, top: `${cy + ry * Math.sin(angle)}%` };
   };
   const speakerEntry = roomSpeaker
-    ? roomTranscript.slice().reverse().find(t => {
+    ? conversationTranscript.slice().reverse().find(t => {
         if (roomSpeaker === 'director') return t.speaker === 'Director';
         const agent = meetingProject.team.find(a => a.id === roomSpeaker);
         return agent && t.speaker === agent.name;
@@ -62,6 +68,7 @@ export default function AdvancedMeetingRoomRouteView({ view }) {
       meetingTitle={meetingTitle}
       isAnySpeaking={isAnySpeaking}
       completeMeeting={completeMeeting}
+      canCompleteMeeting={canCompleteMeeting}
       formatTime={formatTime}
       meetingElapsed={meetingElapsed}
       hideMeetingTelemetry={hideMeetingTelemetry}
@@ -69,12 +76,15 @@ export default function AdvancedMeetingRoomRouteView({ view }) {
       getMeetingAvatarPos={getMeetingAvatarPos}
       teamCount={teamCount}
       roomSpeaker={roomSpeaker}
-      roomTranscript={roomTranscript}
+      roomTranscript={conversationTranscript}
       speakerEntry={speakerEntry}
       activeIntention={activeIntention}
       visibleQueue={visibleQueue}
       usesCustomMeetingSubmit={usesCustomMeetingSubmit}
       initiationMeetingSession={initiationMeetingSession}
+      projectMeetingCompletion={projectMeetingCompletion}
+      projectMeetingSession={projectMeetingSession}
+      projectMeetingSetupError={projectMeetingSetupError}
       backendMeetingSendRequired={backendMeetingSendRequired}
       setSettingsTab={setSettingsTab}
       setSettingsOpen={setSettingsOpen}

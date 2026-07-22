@@ -22,6 +22,8 @@ export default function ProjectInitiationFlowView({ view }) {
     firstLead,
     goStep,
     initiationActionDrafts,
+    initiationDeliverableDrafts,
+    initiationDeliverablesReady,
     initiationApprovalState,
     initiationBackendErrorVisible,
     initiationCanApproveProject,
@@ -70,6 +72,8 @@ export default function ProjectInitiationFlowView({ view }) {
     submitInitiationMeetingInput,
     syncSettingsProviderRuntime,
     toggleConfirmedTeamMember,
+    updateDeliverableDraft,
+    addDeliverableDraft,
     updateActionDraft,
     updateDraft,
     workingGroup,
@@ -120,8 +124,8 @@ export default function ProjectInitiationFlowView({ view }) {
                 </div>
                 <details className="mt-3 font-mono text-[9px] leading-relaxed text-[#bcae86]">
                   <summary className="cursor-pointer">{activeLanguage === 'zh' ? '查看技术信息' : 'View technical details'}</summary>
-                  <div className="mt-2 break-all">{backendStation.lastAction || 'Backend action failed'}</div>
-                  <div className="mt-1 break-all">{backendStation.error}</div>
+                  <div data-no-localize="" className="mt-2 break-all">{backendStation.lastAction || 'Backend action failed'}</div>
+                  <div data-no-localize="" className="mt-1 break-all">{backendStation.error}</div>
                 </details>
               </div>
             )}
@@ -301,6 +305,8 @@ export default function ProjectInitiationFlowView({ view }) {
                   confirmedMemberIds={confirmedMemberIds}
                   confirmedMembersCount={confirmedMembers.length}
                   actionDrafts={initiationActionDrafts}
+                  deliverableDrafts={initiationDeliverableDrafts}
+                  deliverablesReady={initiationDeliverablesReady}
                   meetingSession={initiationMeetingSession}
                   generationLabel={initiationGenerationLabel}
                   generationProvenance={initiationGenerationProvenance}
@@ -311,6 +317,8 @@ export default function ProjectInitiationFlowView({ view }) {
                   onToggleConfirmedMember={toggleConfirmedTeamMember}
                   onUpdateAction={updateActionDraft}
                   onAddAction={() => setInitiationActionDrafts(prev => [...prev, ''])}
+                  onUpdateDeliverable={updateDeliverableDraft}
+                  onAddDeliverable={addDeliverableDraft}
                   onSelectLeader={selectMeetingLeaderCandidate}
                   onApprove={approveInitiationProject}
                 />

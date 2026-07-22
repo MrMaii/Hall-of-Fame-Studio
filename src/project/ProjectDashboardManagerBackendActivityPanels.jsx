@@ -24,9 +24,6 @@ export default function ProjectDashboardManagerBackendActivityPanels({ view }) {
       <Suspense fallback={<div data-testid="project-dashboard-latest-backend-work-loading" className="min-h-24" role="status" aria-label="正在加载最近后端工作" />}>
         <ProjectDashboardLatestBackendWork {...view.latestBackendWork} />
       </Suspense>
-      {view.backendError && (
-        <div className="font-mono text-[8px] uppercase tracking-widest text-[#8f1e18] mt-1">{view.backendError}</div>
-      )}
     </>
   );
 }

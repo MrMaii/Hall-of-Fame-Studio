@@ -1,4 +1,5 @@
 import { ChevronRight, FolderKanban, Plus, Settings, Users } from 'lucide-react';
+import { projectCatalogPresentation, projectCatalogRowState } from './projectCatalogRecovery.js';
 
 const STATUS_LABELS = { executing: '进行中', initiated: '准备中', paused: '已暂停', completed: '已完成' };
 
@@ -6,9 +7,14 @@ function projectSummary(project = {}) {
   return project.goal || project.description || project.initiation?.summary || '打开项目查看当前工作、团队进展和最新结果。';
 }
 
-export default function ProjectHub({ projects = [], modelReady = false, lastSyncedAt = null, onCreateProject, onOpenProject, onOpenSettings, onOpenAdvanced } = {}) {
+export default function ProjectHub({ projects = [], modelReady = false, lastSyncedAt = null, catalogStatus = 'idle', activeLanguage = 'zh', onCreateProject, onOpenProject, onOpenSettings, onOpenAdvanced } = {}) {
   const activeCount = projects.filter((project) => ['executing', 'initiated'].includes(project.status)).length;
   const openTaskCount = projects.reduce((total, project) => total + (project.tasks || []).filter((task) => task.status !== 'done').length, 0);
+  const catalogPresentation = projectCatalogPresentation({
+    syncStatus: catalogStatus,
+    projectCount: projects.length,
+    language: activeLanguage,
+  });
 
   return (
     <div data-testid="project-hub" className="h-full overflow-y-auto bg-[#f5f4f0] px-4 py-6 text-[#1a1a1a] sm:px-6 md:px-10 md:py-10">
@@ -40,8 +46,17 @@ export default function ProjectHub({ projects = [], modelReady = false, lastSync
 
         <section className="mt-8">
           <h2 className="font-serif text-3xl">我的项目</h2>
-          <p className="mt-1 text-sm text-[#6b665c]">{lastSyncedAt ? '本地项目已同步' : '项目保存在这台电脑'}</p>
-          {projects.length === 0 ? (
+          <p data-testid="project-catalog-status" role="status" className="mt-1 text-sm text-[#6b665c]">
+            {['checking', 'offline'].includes(catalogPresentation.state)
+              ? catalogPresentation.label
+              : lastSyncedAt ? '本地项目已同步' : '项目保存在这台电脑'}
+          </p>
+          {projects.length === 0 && ['checking', 'offline'].includes(catalogPresentation.state) ? (
+            <div className="mt-4 border border-dashed border-[#b8b2a5] bg-white px-5 py-10 text-center">
+              <div className="font-serif text-2xl">{catalogPresentation.label}</div>
+              <p className="mt-2 text-sm text-[#6b665c]">{catalogPresentation.state === 'checking' ? '正在恢复上次的项目目录。' : '当前无法连接本地服务，也没有可显示的上次项目目录。'}</p>
+            </div>
+          ) : projects.length === 0 ? (
             <div className="mt-4 border border-dashed border-[#b8b2a5] bg-white px-5 py-10 text-center"><div className="font-serif text-2xl">还没有项目</div><p className="mt-2 text-sm text-[#6b665c]">创建项目后，团队、任务和工作结果会显示在这里。</p></div>
           ) : (
             <div className="mt-4 grid gap-4 lg:grid-cols-2">
@@ -49,9 +64,11 @@ export default function ProjectHub({ projects = [], modelReady = false, lastSync
                 const teamCount = Array.isArray(project.team) ? project.team.length : 0;
                 const progress = Number.isFinite(Number(project.progress)) ? Math.max(0, Math.min(100, Number(project.progress))) : 0;
                 const progressLabel = progress >= 100 && project.status !== 'completed' ? '当前阶段完成' : `${progress}%`;
+                const rowState = projectCatalogRowState(project, catalogStatus);
+                const recovered = rowState !== 'verified';
                 return (
-                  <button key={project.id} type="button" onClick={() => onOpenProject?.(project.id)} className="group min-w-0 border border-[#d1d0c9] bg-white p-5 text-left transition-colors hover:border-[#251b13] sm:p-6" aria-label={`打开项目：${project.name}`}>
-                    <div className="flex items-start justify-between gap-5"><div className="min-w-0"><div className="flex items-center gap-2 text-sm text-[#59684b]"><FolderKanban size={15} /> {STATUS_LABELS[project.status] || '进行中'}</div><h3 className="mt-3 line-clamp-2 break-words font-serif text-3xl leading-tight">{project.name}</h3></div><ChevronRight size={21} className="mt-1 shrink-0 text-[#9b968c] group-hover:text-[#251b13]" /></div>
+                  <button key={project.id} type="button" onClick={() => onOpenProject?.(project.id)} disabled={recovered} className="group min-w-0 border border-[#d1d0c9] bg-white p-5 text-left transition-colors hover:border-[#251b13] disabled:cursor-wait disabled:hover:border-[#d1d0c9] sm:p-6" aria-label={`打开项目：${project.name}`}>
+                    <div className="flex items-start justify-between gap-5"><div className="min-w-0"><div className="flex items-center gap-2 text-sm text-[#59684b]"><FolderKanban size={15} /> {recovered ? rowState === 'offline' ? '离线目录' : '正在校验' : STATUS_LABELS[project.status] || '进行中'}</div><h3 className="mt-3 line-clamp-2 break-words font-serif text-3xl leading-tight">{project.name}</h3></div><ChevronRight size={21} className="mt-1 shrink-0 text-[#9b968c] group-hover:text-[#251b13]" /></div>
                     <p className="mt-4 line-clamp-2 min-h-10 break-words text-sm leading-relaxed text-[#5c574d]">{projectSummary(project)}</p>
                     <div className="mt-5 flex items-center justify-between gap-4 border-t border-[#e1ded5] pt-4 text-sm text-[#6b665c]"><span className="inline-flex items-center gap-2"><Users size={15} /> {teamCount} 位成员</span><span>{progressLabel}</span></div>
                     <div className="mt-2 h-1.5 bg-[#e7e3d9]" aria-label={`项目进度 ${progress}%`}><div className="h-full bg-[#59684b]" style={{ width: `${progress}%` }} /></div>

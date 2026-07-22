@@ -19,6 +19,13 @@ test('project initiation result stays lazy and keeps approval, team, plan, and L
     'confirmed-team-count',
     'initiation-next-action-',
     'initiation-add-next-action',
+    'initiation-deliverables-confirmation',
+    'initiation-deliverables-readiness',
+    'initiation-deliverable-title-',
+    'initiation-deliverable-file-',
+    'initiation-deliverable-owner-',
+    'initiation-deliverable-acceptance-',
+    'initiation-add-deliverable',
     'initiation-result-session-proof',
     'initiation-result-generation-source',
     'leader-candidate-',
@@ -29,6 +36,8 @@ test('project initiation result stays lazy and keeps approval, team, plan, and L
     'onToggleConfirmedMember',
     'onUpdateAction',
     'onAddAction',
+    'onUpdateDeliverable',
+    'onAddDeliverable',
     'onSelectLeader',
     'onApprove',
   ]) {
@@ -36,4 +45,8 @@ test('project initiation result stays lazy and keeps approval, team, plan, and L
   }
   assert.ok(appSource.includes('initiationApprovalInFlightRef.current'));
   assert.ok(appSource.includes('setInitiationApprovalState'));
+  for (const decision of ['01 · 明确项目', '02 · 确认各自职责', '03 · 选定 Leader', '04 · 确定下一步', '05 · 确认最终交付物']) {
+    assert.ok(resultStepSource.includes(decision), `project initiation result must show ${decision}`);
+  }
+  assert.ok(appSource.includes('kickoffDeliverablesReady(initiationDeliverableConfirmation)'));
 });

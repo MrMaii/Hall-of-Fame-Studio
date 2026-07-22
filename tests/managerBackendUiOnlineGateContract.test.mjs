@@ -98,11 +98,10 @@ test('the long backend validation starts initiation from either restored workspa
   assert.match(validationSource, /await startInitiationFromWorkspace\(page\);/);
 });
 
-test('the long backend validation opens the restored full project console after initiation', () => {
-  assert.match(validationSource, /async function openAdvancedProjectDashboard\(page\)/);
-  assert.match(validationSource, /getByTestId\('project-simple-dashboard'\)/);
-  assert.match(validationSource, /getByTestId\('project-overview'\)\.locator\('header button'\)\.nth\(1\)\.click\(\)/);
-  assert.match(validationSource, /await openAdvancedProjectDashboard\(page\);/);
+test('the long backend validation opens the full project console after initiation', () => {
+  assert.match(validationSource, /async function openProjectDashboard\(page\)/);
+  assert.match(validationSource, /await openProjectDashboard\(page\);/);
+  assert.doesNotMatch(validationSource, /project-simple-dashboard/);
 });
 
 test('the long backend validation accepts structurally ready local drafts without bypassing human review', () => {

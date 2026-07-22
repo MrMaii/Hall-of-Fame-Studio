@@ -379,6 +379,7 @@ Status: covered for the prototype flow.
 Evidence:
 
 - `createLeaderAssignmentPackage` converts open project tasks into Leader-authored `@agent` assignment messages.
+- Meeting coordination now uses a bounded causal peer-interaction Harness. Provider-backed kickoff continuation and deterministic War Room replies persist `replyToTurnId`, `targetSpeakerId`, `interactionIntent`, `topicId`, and `exchangeIndex`; invalid speakers or dangling/self reply edges are rejected before persistence. A topic permits at most three peer exchanges before the confirmed or recommended Leader synthesizes/escalates to the Director. Model prompts receive a bounded context packet with stable project/leadership/decision/risk/question state plus at most six recent turns instead of fourteen raw transcript rows. Meeting evidence exposes peer-edge, convergence-topic, and dropped-turn counters, while Director approval and floor precedence remain unchanged. This is a local/private coordination Harness, not a claim of distributed resident Agent processes.
 - Those assignment messages are appended to group chat after project creation.
 - Every assignment also produces an immediate assignee acknowledgement with `assignmentReceipt`, showing the mentioned Agent saw the work and started it.
 - The assigned task records persist `assignmentMessageId`, `acknowledgementMessageId`, `acknowledgedAt`, and `timelineLogIds`, so the dashboard can connect each task to chat and timeline proof directly.

@@ -5,7 +5,9 @@ import { createAgentProjectApi } from '../src/agents/agentProjectApi.js';
 import {
   createAgentProjectService,
   createKickoffProjectFromMeeting,
+  hydrateAgentProject,
 } from '../src/agents/agentProjectService.js';
+import { verifyProjectEventLedger } from '../src/agents/agentRuntime.js';
 
 const projectId = 'local_sensitive_write_audit_project';
 const now = '2026-07-10T19:00:00.000Z';
@@ -101,7 +103,53 @@ test('fails a sensitive write closed when its local audit sink is unavailable', 
   assert.equal(businessWriteCount, 0);
 });
 
-test('returns event-ledger proof for every retained project access decision beyond forty rows', () => {
+test('project reads are retained in the audit stream without mutating the business event ledger', () => {
+  const seed = createKickoffProjectFromMeeting({
+    projectId,
+    name: 'Read-only access audit',
+    brief: 'Keep read auditing separate from the project business history.',
+    now,
+    team: [
+      { id: 'leader', name: 'Ada Lovelace', title: 'Technical Leader', skill: 'system design' },
+    ],
+  });
+  const service = createAgentProjectService({ projects: [seed.project], messages: seed.messages });
+  const decision = {
+    allowed: true,
+    status: 'allowed',
+    enforced: true,
+    mode: 'enforced',
+    route: {
+      routeKey: 'project-read',
+      capability: 'Read project',
+      sensitivity: 'project-data',
+      projectId,
+    },
+    actor: { role: 'manager', userId: 'local-manager' },
+  };
+  const eventCountBefore = service.getEventLedger(projectId).eventLedger.length;
+
+  service.recordAccessDecision({
+    projectId,
+    decision,
+    method: 'GET',
+    path: `/projects/${projectId}`,
+    now: '2026-07-10T19:01:00.000Z',
+  });
+  service.recordAccessDecision({
+    projectId,
+    decision,
+    method: 'GET',
+    path: `/projects/${projectId}/events`,
+    now: '2026-07-10T19:01:01.000Z',
+  });
+
+  assert.equal(service.getEventLedger(projectId).eventLedger.length, eventCountBefore);
+  assert.equal(service.getSecurityAuditStream(projectId).count, 2);
+  assert.equal(service.getSecurityAccessAudit(projectId).stream.count, 2);
+});
+
+test('retains high-volume project reads in the hash-chained audit stream without business events', () => {
   const seed = createKickoffProjectFromMeeting({
     projectId,
     name: 'Local sensitive write audit',
@@ -138,7 +186,42 @@ test('returns event-ledger proof for every retained project access decision beyo
 
   const audit = service.getSecurityAccessAudit(projectId);
   assert.equal(audit.count, 41);
-  assert.equal(audit.eventIds.length, audit.count);
-  assert.equal(new Set(audit.eventIds).size, audit.count);
-  assert.ok(audit.rows.every((row) => audit.eventIds.includes(`evt_${row.id}`)));
+  assert.equal(audit.eventIds.length, 0);
+  assert.equal(audit.stream.count, audit.count);
+  assert.equal(audit.stream.hashChainReady, true);
+  assert.equal(service.getSecurityAuditStream(projectId).rows.length, 20);
+});
+
+test('hydration compacts legacy prototype access events out of business history while preserving enforced audit proof', () => {
+  const hydrated = hydrateAgentProject({
+    id: 'legacy-access-event-project',
+    eventLedger: [
+      { id: 'prototype-1', sequence: 1, type: 'security-access', payload: { enforced: false } },
+      { id: 'business-1', sequence: 2, type: 'agent-submission', payload: {} },
+      { id: 'enforced-1', sequence: 3, type: 'security-access', payload: { enforced: true } },
+    ],
+    eventLedgerChainVersion: 0,
+  });
+
+  assert.deepEqual(hydrated.eventLedger.map((event) => event.id), ['business-1', 'enforced-1']);
+  assert.equal(hydrated.prototypeAccessEventCompaction.removedEventCount, 1);
+  assert.equal(verifyProjectEventLedger(hydrated).valid, true);
+});
+
+test('hydration caps duplicated enforced access events while the dedicated audit stream remains authoritative', () => {
+  const hydrated = hydrateAgentProject({
+    id: 'high-volume-access-event-project',
+    eventLedger: Array.from({ length: 105 }, (_, index) => ({
+      id: `enforced-${index + 1}`,
+      sequence: index + 1,
+      type: 'security-access',
+      payload: { enforced: true },
+    })),
+    eventLedgerChainVersion: 0,
+  });
+
+  assert.equal(hydrated.eventLedger.length, 100);
+  assert.equal(hydrated.eventLedger[0].id, 'enforced-6');
+  assert.equal(hydrated.prototypeAccessEventCompaction.removedEventCount, 5);
+  assert.equal(verifyProjectEventLedger(hydrated).valid, true);
 });

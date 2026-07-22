@@ -24,7 +24,6 @@ import {
   appendProjectEvents,
   applyChatMessagesToAgentStates,
   attachMessageReceipts,
-  backfillProjectEventLedger,
   createKickoffCharter,
   createKickoffRoleNegotiation,
   createLeaderAssignmentPackage,
@@ -42,27 +41,68 @@ import {
   startAgentSession,
   summarizeProjectEventLedger,
 } from './agents/agentRuntime.js';
-import {
-  applyPeerManagementMatrix,
-  approveKickoffMeetingSession,
-  buildNextActionResolution,
-  buildPeerManagementMatrix,
-  createKickoffProjectFromMeeting,
-  runAgentWorkCycle,
-  submitProjectMultiChannelChangeRequest,
-  submitProjectChatMessage,
-  submitProjectMeetingMessage,
-} from './agents/agentProjectService.js';
+import { buildPeerManagementMatrix } from './agents/peerManagementMatrix.js';
 import {
   MEETING_TURN_SPEAK_DURATION_MS,
   meetingTurnDelayMs,
 } from './agents/meetingQueueProtocol.js';
 import {
   createMeetingUserEntry,
+  meetingTranscriptEntryFromMessage,
   updateMeetingMessageStatus,
 } from './meeting/meetingMessageState.js';
+import { createMeetingTurnQueue } from './meeting/meetingFloorControl.js';
 import { mergeBackendEventReadModel } from './project/projectEventReadModel.js';
+import { hydrateUiProject } from './project/projectHydration.js';
+import { buildProjectDashboardBriefing } from './project/projectDashboardBriefing.js';
+import {
+  beginProjectDashboardCoreSync,
+  completeProjectDashboardCoreSync,
+  coreSyncStatusForView,
+  createProjectDashboardCoreSyncState,
+  failProjectDashboardCoreSync,
+  resetProjectDashboardCoreSync,
+  shouldStartProjectDashboardCoreSync,
+} from './project/projectDashboardCoreSyncState.js';
+import { createProjectReadCoordinator } from './project/projectReadCoordinator.js';
+import { projectWorkspaceLaunchGate } from './project/projectWorkspaceLaunchGate.js';
+import {
+  LOCAL_BACKEND_RECOVERY_INTERVAL_MS,
+  shouldHydrateRestoredProject,
+  shouldRetryManagerFlowGraph,
+  shouldRunLocalBackendRecovery,
+} from './project/projectConnectionRecovery.js';
+import { projectCommandRefreshPlan } from './project/projectCommandRefreshPlan.js';
+import { isConversationMessage } from './project/humanReadableRecords.js';
+import {
+  createLastKnownProjectCatalog,
+  reconcileVerifiedProjectCatalog,
+  restoreLastKnownProjectCatalog,
+} from './project/projectCatalogRecovery.js';
+import {
+  projectTranscriptPresentation,
+  resolveProjectTranscriptStatus,
+  shouldShowLocalTranscriptRecovery,
+  transcriptRecoveryKey,
+  transcriptRecoveryStatusesFromResults,
+} from './project/projectTranscriptRecovery.js';
+import {
+  createProjectNavigationSnapshot,
+  reconcileProjectNavigation,
+  restoreProjectNavigationSnapshot,
+} from './project/projectNavigationRecovery.js';
 import { initiationStartupAllowsModelWork } from './onboarding/initiationStartupReadiness.js';
+import {
+  buildKickoffDeliverableResolution,
+  defaultKickoffDeliverables,
+  kickoffDeliverablesReady,
+  kickoffDeliverablesToTasks,
+} from './agents/kickoffDeliverables.js';
+import { canCreateLocalProject, resolveLocalStartupSurface } from './onboarding/localFirstRunModel.js';
+import {
+  localAuthSessionPersistenceTarget,
+  selectStoredLocalAuthSession,
+} from './onboarding/localAuthSessionPersistence.js';
 
 const AgentMarketRouteView = lazy(() => import('./scenes/AgentMarketRouteView.jsx'));
 const AgentDossierRouteView = lazy(() => import('./scenes/AgentDossierRouteView.jsx'));
@@ -70,7 +110,6 @@ const SettingsModalView = lazy(() => import('./settings/SettingsModalView.jsx'))
 const WorkspaceView = lazy(() => import('./workspace/WorkspaceView.jsx'));
 const LocalFirstRunFlow = lazy(() => import('./onboarding/LocalFirstRunFlow.jsx'));
 const ProjectInitiationFlowView = lazy(() => import('./onboarding/ProjectInitiationFlowView.jsx'));
-const ProjectOverview = lazy(() => import('./project/ProjectOverview.jsx'));
 const ProjectSimpleChat = lazy(() => import('./project/ProjectSimpleChat.jsx'));
 const ProjectDashboardAdvancedView = lazy(() => import('./project/ProjectDashboardAdvancedView.jsx'));
 const ProjectDashboardManagerBody = lazy(() => import('./project/ProjectDashboardManagerBody.jsx'));
@@ -81,7 +120,9 @@ const ProjectTimelineSummary = lazy(() => import('./project/ProjectTimelineSumma
 const AgentContractProjectPicker = lazy(() => import('./project/AgentContractProjectPicker.jsx'));
 const ProjectSimpleMeetingRouteView = lazy(() => import('./meeting/ProjectSimpleMeetingRouteView.jsx'));
 const AdvancedMeetingRoomRouteView = lazy(() => import('./meeting/AdvancedMeetingRoomRouteView.jsx'));
+const ProjectMeetingSetup = lazy(() => import('./meeting/ProjectMeetingSetup.jsx'));
 const LegacyWarRoomView = lazy(() => import('./project/LegacyWarRoomView.jsx'));
+const loadAgentProjectService = () => import('./agents/agentProjectFallbacks.js');
 
 const LazyPanelFallback = () => (
   <div data-testid="local-panel-loading" role="status" className="grid min-h-32 flex-1 place-items-center px-6 py-10 text-sm text-[#7d6a49]">
@@ -90,6 +131,7 @@ const LazyPanelFallback = () => (
 );
 
 const DEFAULT_AGENT_BACKEND_URL = import.meta.env?.VITE_AGENT_BACKEND_URL || 'http://127.0.0.1:8787';
+const PROJECT_DASHBOARD_CORE_SYNC_TIMEOUT_MS = 12_000;
 const normalizeBackendBaseUrl = (value = DEFAULT_AGENT_BACKEND_URL) => (
   String(value || DEFAULT_AGENT_BACKEND_URL).trim().replace(/\/+$/, '')
 );
@@ -199,11 +241,7 @@ function generateBarcode(seed = '') {
 // --- Global CSS & Typography ---
 
 const BRAND_LOGO_SRC = '/hall-of-fame-studio-logo.png';
-const DEFAULT_INITIATION_PROJECT_ID = 'p_roundtable_001';
-const CLIENT_PLATFORM = typeof navigator === 'undefined'
-  ? 'Windows'
-  : navigator.userAgentData?.platform || navigator.platform || '';
-const DEFAULT_INITIATION_WORKSPACE_BASE_PATH = /win/i.test(CLIENT_PLATFORM) ? 'C:\\projects' : './projects';
+const DEFAULT_INITIATION_WORKSPACE_BASE_PATH = './projects';
 const workspaceSlug = (value = 'project') => String(value || 'project')
   .trim()
   .toLowerCase()
@@ -256,6 +294,8 @@ const INITIAL_PROJECTS = [];
 
 const STORAGE_KEYS = {
   projects: 'hall_of_fame_studio.projects.v1',
+  projectCatalogSnapshot: 'hall_of_fame_studio.project_catalog_snapshot.v1',
+  projectNavigationSnapshot: 'hall_of_fame_studio.project_navigation_snapshot.v1',
   chatMessages: 'hall_of_fame_studio.chat_messages.v1',
   backendUrl: 'hall_of_fame_studio.agent_backend_url.v1',
   localAuthSession: 'hall_of_fame_studio.local_auth_session.v1',
@@ -349,6 +389,7 @@ const hasBackendManagedProjectMarker = (project = {}) => (
     project.backendSyncStatus === 'online'
     || project.dataSource === 'backend-backed'
     || project.dataSource === 'backend-managed'
+    || project.dataSource === 'backend-catalog-snapshot'
     || [
       project.managerDashboard,
       project.managerReadyPackage,
@@ -383,9 +424,10 @@ const hasBackendManagedProjectMarker = (project = {}) => (
 
 const isBackendManagedBrowserCacheProject = (project = {}) => (
   Boolean(project?.id)
-  && !isManagerDemoProject(project)
-  && !isDevelopmentFallbackProject(project)
-  && hasBackendManagedProjectMarker(project)
+  && (
+    isManagerDemoProject(project)
+    || (!isDevelopmentFallbackProject(project) && (isBackendKickoffProject(project) || hasBackendManagedProjectMarker(project)))
+  )
 );
 
 const isManagerDemoMessage = (message = {}) => (
@@ -394,18 +436,7 @@ const isManagerDemoMessage = (message = {}) => (
   || String(message.id || '').startsWith('manager_demo_')
 );
 
-const hydrateProject = (project) => backfillProjectEventLedger({
-  ...project,
-  autonomy: project.autonomy || { enabled: false, cadence: 'hourly' },
-  eventLedger: project.eventLedger || [],
-  eventLedgerFirstSequence: project.eventLedgerFirstSequence || project.eventLedger?.[0]?.sequence || 0,
-  eventLedgerLastSequence: project.eventLedgerLastSequence || project.eventLedger?.[project.eventLedger.length - 1]?.sequence || 0,
-  eventLedgerEventCount: project.eventLedgerEventCount || project.eventLedgerLastSequence || project.eventLedger?.length || 0,
-  autonomousLedger: project.autonomousLedger || [],
-  autonomousSchedulerLedger: project.autonomousSchedulerLedger || [],
-  lastAutonomousRunAt: project.lastAutonomousRunAt || null,
-  nextAutonomousRunAt: project.nextAutonomousRunAt || null,
-});
+const hydrateProject = hydrateUiProject;
 
 const extractChatTargets = (text = '', team = []) => {
   const normalized = text.toLowerCase();
@@ -501,7 +532,7 @@ const recoverProofMessages = (project = {}, proofIds = [], fallbackChannelId = '
 
   const recovered = new Map();
   const addRecovered = (message) => {
-    if (!message?.id || !wanted.has(message.id) || recovered.has(message.id)) return;
+    if (!message?.id || !wanted.has(message.id) || recovered.has(message.id) || !isConversationMessage(message)) return;
     recovered.set(message.id, {
       projectId: project.id,
       channelId: message.channelId || fallbackChannelId || 'main',
@@ -539,29 +570,22 @@ const recoverProofMessages = (project = {}, proofIds = [], fallbackChannelId = '
     weight: item.type === 'director-clarification' ? 'Director Clarification' : item.weight,
   }));
 
-  (project.logs || []).forEach(log => {
-    const messageId = String(log.id || '').startsWith('log_') ? String(log.id).slice(4) : log.messageId;
-    addRecovered({
-      id: messageId,
-      channelId: log.sourceChannelId || fallbackChannelId || 'main',
-      type: chatTypeForRecoveredProof('', log.eventType),
-      author: log.agent || 'Agent',
-      role: log.eventType || '',
-      time: formatRecoveredProofTime(log.time),
-      text: log.log,
-      targets: log.eventType === 'change-sync' ? ['all'] : [],
-      weight: log.cadence || log.source || 'Recovered',
-      directTargetIds: log.directTargetIds || [],
-      visibility: log.receiptCount ? {
-        scope: 'project-team',
-        channelId: log.sourceChannelId || fallbackChannelId || 'main',
-        receiptCount: log.receiptCount,
-        directTargetCount: log.directTargetIds?.length || 0,
-      } : undefined,
-    });
-  });
-
   return Array.from(recovered.values());
+};
+
+const BROWSER_STORAGE_WARNING_EVENT = 'hof-browser-storage-warning';
+
+const reportBrowserStorageIssue = ({ operation, key, error }) => {
+  if (typeof window === 'undefined') return;
+  const detail = {
+    operation,
+    key,
+    message: error?.message || String(error || 'Browser storage is unavailable.'),
+  };
+  window.__HOF_BROWSER_STORAGE_WARNING__ = detail;
+  if (typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function') {
+    window.dispatchEvent(new CustomEvent(BROWSER_STORAGE_WARNING_EVENT, { detail }));
+  }
 };
 
 const readStoredJson = (key, fallback) => {
@@ -569,7 +593,8 @@ const readStoredJson = (key, fallback) => {
   try {
     const stored = window.localStorage.getItem(key);
     return stored ? JSON.parse(stored) : fallback;
-  } catch {
+  } catch (error) {
+    reportBrowserStorageIssue({ operation: 'read', key, error });
     return fallback;
   }
 };
@@ -578,8 +603,8 @@ const writeStoredJson = (key, value) => {
   if (typeof window === 'undefined') return;
   try {
     window.localStorage.setItem(key, JSON.stringify(value));
-  } catch {
-    // Storage can fail in private mode or under quota pressure; runtime state still works in memory.
+  } catch (error) {
+    reportBrowserStorageIssue({ operation: 'write', key, error });
   }
 };
 
@@ -595,20 +620,36 @@ const loadBackendBaseUrl = () => {
     : DEFAULT_AGENT_BACKEND_URL;
 };
 
+const loadProjectNavigation = () => restoreProjectNavigationSnapshot(
+  readStoredJson(STORAGE_KEYS.projectNavigationSnapshot, null),
+  loadBackendBaseUrl(),
+);
+
 const loadLocalAuthSession = () => {
   if (typeof window === 'undefined') return null;
-  let stored = null;
+  let sessionSession = null;
+  let persistentSession = null;
   try {
-    stored = JSON.parse(window.sessionStorage.getItem(STORAGE_KEYS.localAuthSession) || 'null');
+    sessionSession = JSON.parse(window.sessionStorage.getItem(STORAGE_KEYS.localAuthSession) || 'null');
   } catch {
-    return null;
+    sessionSession = null;
   }
+  try {
+    persistentSession = JSON.parse(window.localStorage.getItem(STORAGE_KEYS.localAuthSession) || 'null');
+  } catch {
+    persistentSession = null;
+  }
+  const { session: stored, persistence } = selectStoredLocalAuthSession({
+    sessionSession,
+    persistentSession,
+  });
   if (!stored?.token || !isValidBackendBaseUrl(stored.baseUrl)) return null;
   return {
     token: String(stored.token),
     baseUrl: normalizeBackendBaseUrl(stored.baseUrl),
     user: stored.user || null,
     expiresAt: stored.expiresAt || null,
+    persistence,
   };
 };
 
@@ -722,6 +763,10 @@ const defaultInitiationActionDrafts = (output = 'the first execution artifact', 
     ];
 };
 
+const defaultInitiationDeliverableDrafts = (output = '', language = 'en') => (
+  defaultKickoffDeliverables({ output, language })
+);
+
 const buildInitiationMeetingSkillBrief = ({ draft, output, language }) => {
   const isZh = language === 'zh';
   const projectName = draft?.name || (isZh ? '未命名立项' : 'Untitled Initiation');
@@ -735,6 +780,7 @@ const buildInitiationMeetingSkillBrief = ({ draft, output, language }) => {
       `意图：${projectIntent}`,
       `预期产出：${expectedOutput}`,
       '每个 Agent 都应在正常会议发言中确认责任、Leader 支持、首个动作、依赖、风险和期限。',
+      '会议结束前，Agent 必须主动提出最终交付文件，并明确文件名、格式、负责人、用途和验收条件。',
       '这些确认必须来自会议记录，而不是本地模拟 UI 面板。'
     ].join('\n')
     : [
@@ -743,14 +789,27 @@ const buildInitiationMeetingSkillBrief = ({ draft, output, language }) => {
       `Intent: ${projectIntent}`,
       `Expected output: ${expectedOutput}`,
       'Each Agent should naturally confirm in their meeting turn whether the project should proceed, what responsibility they can own, whether they campaign for or support a Leader, what the first step should be, and what dependencies, risks, or deadlines matter.',
+      'Before the meeting ends, Agents must proactively propose the final files and make each filename, format, owner, purpose, and acceptance condition explicit.',
       'These confirmations happen through normal meeting speech, without special UI panels.'
     ].join('\n');
 };
 
 const readStoredProjectArray = () => {
-  const stored = readStoredJson(STORAGE_KEYS.projects, null);
-  return Array.isArray(stored) ? stored : [];
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEYS.projects);
+    if (!raw) return [];
+    const stored = JSON.parse(raw);
+    return Array.isArray(stored) ? stored : [];
+  } catch (error) {
+    reportBrowserStorageIssue({ operation: 'read', key: STORAGE_KEYS.projects, error });
+    return [];
+  }
 };
+
+const readStoredProjectCatalogSnapshot = () => (
+  readStoredJson(STORAGE_KEYS.projectCatalogSnapshot, null)
+);
 
 const cachedBrowserProjectIds = () => new Set(
   readStoredProjectArray()
@@ -762,7 +821,17 @@ const cachedBrowserProjectIds = () => new Set(
 const loadInitialProjects = () => {
   const storedProjects = readStoredProjectArray()
     .filter(project => !isBackendManagedBrowserCacheProject(project));
-  return storedProjects.map(hydrateProject);
+  const recoveredProjects = restoreLastKnownProjectCatalog(
+    readStoredProjectCatalogSnapshot(),
+    loadBackendBaseUrl(),
+  ).map(hydrateProject);
+  const recoveredIds = new Set(recoveredProjects.map(project => String(project.id).toLowerCase()));
+  return [
+    ...recoveredProjects,
+    ...storedProjects
+      .filter(project => !recoveredIds.has(String(project.id || '').toLowerCase()))
+      .map(hydrateProject),
+  ];
 };
 
 const INITIATION_MEMBERS = [
@@ -1058,7 +1127,14 @@ const hydrateChatMessage = (message) => ({
 });
 
 const loadInitialChatMessages = () => {
-  const stored = readStoredJson(STORAGE_KEYS.chatMessages, null);
+  let stored = null;
+  try {
+    const raw = typeof window === 'undefined' ? null : window.localStorage.getItem(STORAGE_KEYS.chatMessages);
+    stored = raw ? JSON.parse(raw) : null;
+  } catch (error) {
+    reportBrowserStorageIssue({ operation: 'read', key: STORAGE_KEYS.chatMessages, error });
+    stored = null;
+  }
   const browserProjectIds = cachedBrowserProjectIds();
   return (Array.isArray(stored) ? stored : [])
     .map(hydrateChatMessage)
@@ -1114,7 +1190,7 @@ function pantheonAvatarSrc(agentId = '') {
   return pantheonAvatarMeta(agentId).src || '';
 }
 
-function PantheonAvatar({ agent }) {
+function PantheonAvatar({ agent, accessibleName = agent.name }) {
   const [broken, setBroken] = useState(false);
   const avatar = pantheonAvatarMeta(agent.id);
   const patternBg = {
@@ -1125,7 +1201,7 @@ function PantheonAvatar({ agent }) {
     return (
       <div
         className="w-16 h-16 border-2 border-black flex items-center justify-center bg-white relative overflow-hidden shrink-0"
-        title={avatar?.credit || agent.name}
+        title={accessibleName}
       >
         <div className="absolute inset-0 opacity-[0.05]" style={patternBg} />
         <span className="font-serif text-2xl font-bold z-10">{avatar?.mark || agentCardInitial(agent)}</span>
@@ -1139,7 +1215,7 @@ function PantheonAvatar({ agent }) {
     <div className="w-16 h-16 border-2 border-black shrink-0 overflow-hidden bg-[#f5f4f0] relative">
       <img
         src={pantheonAvatarSrc(agent.id)}
-        alt={agent.name}
+        alt={accessibleName}
         width={64}
         height={64}
         className="w-full h-full object-cover object-top scale-[1.06]"
@@ -1162,23 +1238,24 @@ export default function EngineWorkspace() {
   const { language, setLanguage, setProjectLanguage, t } = useLanguage();
   // --- Engine State ---
   const [projects, setProjects] = useState(loadInitialProjects);
-  const [activeRoute, setActiveRoute] = useState('dashboard'); // 'dashboard', 'project_detail', 'war_room', 'agent_market'
-  const [selectedProjectId, setSelectedProjectId] = useState(null);
+  const [initialProjectNavigation] = useState(loadProjectNavigation);
+  const [activeRoute, setActiveRoute] = useState(initialProjectNavigation.activeRoute); // 'dashboard', 'project_detail', 'war_room', 'agent_market'
+  const [selectedProjectId, setSelectedProjectId] = useState(initialProjectNavigation.selectedProjectId);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [projectMode, setProjectMode] = useState('dashboard'); // dashboard, meeting, chat, timeline
-  const [projectDashboardAdvancedOpen, setProjectDashboardAdvancedOpen] = useState(false);
-  const [projectDashboardCoreSync, setProjectDashboardCoreSync] = useState({
-    projectId: null,
-    status: 'idle',
-    error: null,
-  });
+  const [projectMode, setProjectMode] = useState(initialProjectNavigation.projectMode); // dashboard, meeting, chat, timeline
+  const [projectDashboardAdvancedOpen, setProjectDashboardAdvancedOpen] = useState(true);
+  const [projectDashboardCoreSync, setProjectDashboardCoreSync] = useState(createProjectDashboardCoreSyncState);
   const [workspaceAdvancedOpen, setWorkspaceAdvancedOpen] = useState(false);
   const [workspaceHubRequested, setWorkspaceHubRequested] = useState(false);
   const [sceneTransition, setSceneTransition] = useState(null);
   const [projectLauncherOpen, setProjectLauncherOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [focusedModelSetup, setFocusedModelSetup] = useState(false);
   const [settingsTab, setSettingsTab] = useState('keys');
   const [firstRunNotice, setFirstRunNotice] = useState('');
+  const [browserStorageWarning, setBrowserStorageWarning] = useState(() => (
+    typeof window === 'undefined' ? null : window.__HOF_BROWSER_STORAGE_WARNING__ || null
+  ));
   const [localAuthSession, setLocalAuthSession] = useState(loadLocalAuthSession);
   const [localAuthStatus, setLocalAuthStatus] = useState({
     loading: false,
@@ -1192,6 +1269,7 @@ export default function EngineWorkspace() {
     username: '',
     password: '',
     displayName: '',
+    keepSignedIn: localAuthSession?.persistence === 'persistent',
     pending: false,
   });
   const [localAuthUsers, setLocalAuthUsers] = useState({ loading: false, rows: [], error: null });
@@ -1258,7 +1336,6 @@ export default function EngineWorkspace() {
   const [signingAgentId, setSigningAgentId] = useState(null);
   const [contractProjectPickerAgentId, setContractProjectPickerAgentId] = useState(null);
   const [marketMode, setMarketMode] = useState('global');
-  const [isDecrypting, setIsDecrypting] = useState(false);
 
   // --- War Room State ---
   const [meetingState, setMeetingState] = useState('idle'); // 'idle', 'active'
@@ -1269,7 +1346,7 @@ export default function EngineWorkspace() {
   const [initiationPhase, setInitiationPhase] = useState('discussion');
   const [initiationStep, setInitiationStep] = useState('brief');
   const [selectedInitiationMemberId, setSelectedInitiationMemberId] = useState('mira');
-  const [initiationProjectId, setInitiationProjectId] = useState(() => DEFAULT_INITIATION_PROJECT_ID);
+  const [initiationProjectId, setInitiationProjectId] = useState(() => createProjectId('project'));
   const [selectedLeaderCandidateId, setSelectedLeaderCandidateId] = useState(null);
   const [initiationMeetingSession, setInitiationMeetingSession] = useState(null);
   const [initiationMeetingStartState, setInitiationMeetingStartState] = useState({
@@ -1285,6 +1362,7 @@ export default function EngineWorkspace() {
   const initialInitiationName = language === 'zh' ? '圆桌立项系统' : 'Roundtable Initiation System';
   const initialInitiationOutput = language === 'zh' ? '首个执行产物' : 'the first execution artifact';
   const [initiationActionDrafts, setInitiationActionDrafts] = useState(() => defaultInitiationActionDrafts(initialInitiationOutput, language));
+  const [initiationDeliverableDrafts, setInitiationDeliverableDrafts] = useState(() => defaultInitiationDeliverableDrafts(initialInitiationOutput, language));
   const [initiationConfirmedTeamIds, setInitiationConfirmedTeamIds] = useState([]);
   const [selectedInitiationClarificationQuestionId, setSelectedInitiationClarificationQuestionId] = useState(null);
   const [initiationClarificationDraft, setInitiationClarificationDraft] = useState('I will clarify ownership during this meeting: each Agent should state the first artifact they can own, and I will confirm the final assignment before approval.');
@@ -1333,10 +1411,19 @@ export default function EngineWorkspace() {
   const [roomTranscript, setRoomTranscript] = useState([
     { id: 'r0', speaker: 'System', role: 'System', text: 'Meeting room ready.', score: 0 },
   ]);
+  const [projectMeetingSetupDraft, setProjectMeetingSetupDraft] = useState({ agenda: '', participantIds: [], recorderId: '' });
+  const [projectMeetingSetupError, setProjectMeetingSetupError] = useState('');
+  const [projectMeetingStarting, setProjectMeetingStarting] = useState(false);
+  const [projectMeetingSession, setProjectMeetingSession] = useState(null);
+  const [projectMeetingCompletion, setProjectMeetingCompletion] = useState(null);
   const [meetingExpandedLogIds, setMeetingExpandedLogIds] = useState([]);
   const [meetingStartTime, setMeetingStartTime] = useState(null);
   const [meetingElapsed, setMeetingElapsed] = useState(0);
-  const [activeChannelDrafts, setActiveChannelDrafts] = useState({});
+  const [activeChannelDrafts, setActiveChannelDrafts] = useState(() => (
+    initialProjectNavigation.selectedProjectId
+      ? { [initialProjectNavigation.selectedProjectId]: initialProjectNavigation.activeChannelId }
+      : {}
+  ));
   const [chatChannels, setChatChannels] = useState(PROJECT_CHANNELS);
   const [chatMessages, setChatMessages] = useState(loadInitialChatMessages);
   const [chatInputDrafts, setChatInputDrafts] = useState({});
@@ -1385,6 +1472,9 @@ export default function EngineWorkspace() {
     lastManagerDashboardSyncAt: null,
     managerDashboardSyncCount: 0,
     managerFlowGraph: null,
+    managerFlowGraphLoadingProjectId: null,
+    managerFlowGraphError: null,
+    managerFlowGraphErrorProjectId: null,
     lastManagerFlowGraphSyncAt: null,
     managerFlowGraphSyncCount: 0,
     managerCommandCenter: null,
@@ -1473,10 +1563,13 @@ export default function EngineWorkspace() {
     lastRuntimeAutonomyStatusSyncAt: null,
     runtimeAutonomyStatusSyncCount: 0,
     projectCatalog: [],
+    projectCatalogStatus: 'idle',
+    projectCatalogError: null,
     lastProjectCatalogSyncAt: null,
     projectCatalogSyncCount: 0,
     transcriptIndex: null,
     transcriptChannels: {},
+    transcriptRecoveryStatuses: {},
     transcriptSearches: {},
     transcriptMemberPresence: {},
     lastTranscriptSyncAt: null,
@@ -1515,10 +1608,9 @@ export default function EngineWorkspace() {
   const [selectedAgentFocusId, setSelectedAgentFocusId] = useState(null);
   const [agentDashboardSnapshots, setAgentDashboardSnapshots] = useState({});
   const sceneTransitionTimerRef = useRef(null);
-  const roomSimulationTimersRef = useRef([]);
   const roomSpeechRecognitionRef = useRef(null);
-  const roomUserIntentActiveRef = useRef(false);
-  const roomPendingSpeechRef = useRef(new Map());
+  const roomTurnQueueRef = useRef(null);
+  if (!roomTurnQueueRef.current) roomTurnQueueRef.current = createMeetingTurnQueue();
   const meetingTimerRef = useRef(null);
   const lastTimelineWheelRef = useRef(0);
   const tlPreviewTimerRef = useRef(null);
@@ -1532,14 +1624,24 @@ export default function EngineWorkspace() {
   const backendProjectSeedInFlightRef = useRef({});
   const backendProjectSeedConfirmedRef = useRef({});
   const initiationApprovalInFlightRef = useRef(false);
-  const backendProjectCommandRefreshTimerRef = useRef(null);
   const backendSchedulerRefreshTimerRef = useRef(null);
   const backendAgentPulseRefreshTimerRef = useRef(null);
   const backendAgentAutonomousActionRefreshTimerRef = useRef(null);
   const backendAutopilotSessionRefreshTimerRef = useRef(null);
+  const activeProjectIdRef = useRef(null);
+  const projectDashboardCoreSyncInFlightRef = useRef(new Map());
+  const managerFlowGraphSyncInFlightRef = useRef(new Map());
+  const projectReadCoordinatorRef = useRef(null);
+  if (!projectReadCoordinatorRef.current) {
+    projectReadCoordinatorRef.current = createProjectReadCoordinator({ maxConcurrent: 4 });
+  }
+  useEffect(() => {
+    const onStorageWarning = event => setBrowserStorageWarning(event.detail || null);
+    window.addEventListener(BROWSER_STORAGE_WARNING_EVENT, onStorageWarning);
+    return () => window.removeEventListener(BROWSER_STORAGE_WARNING_EVENT, onStorageWarning);
+  }, []);
   const cancelPendingBackendReadModelRefreshes = () => {
     for (const timerRef of [
-      backendProjectCommandRefreshTimerRef,
       backendSchedulerRefreshTimerRef,
       backendAgentPulseRefreshTimerRef,
       backendAgentAutonomousActionRefreshTimerRef,
@@ -1550,23 +1652,11 @@ export default function EngineWorkspace() {
       timerRef.current = null;
     }
     const coordinator = projectReadCoordinatorRef.current;
-    for (const job of coordinator.queue.splice(0)) {
-      job.controller.abort();
-      coordinator.inFlight.delete(job.key);
-      const error = new Error('Background project read canceled for an interactive operation.');
-      error.name = 'AbortError';
-      job.reject(error);
-    }
-    for (const job of coordinator.running) {
-      job.controller.abort();
-    }
+    coordinator.cancelBackground();
   };
   const readyPackageSubmodelSyncInFlightRef = useRef({});
   const readyPackageSubmodelSyncPendingRef = useRef({});
   const managerAutoTimelineEventSyncRef = useRef({});
-  const managerAutoReadyProofSyncRef = useRef({});
-  const managerAutoControlSyncRef = useRef({});
-  const managerAutoDiagnosticSyncRef = useRef({});
   const managerAutoTranscriptSyncRef = useRef({});
   const settingsAutoProviderSyncRef = useRef({});
   const providerRuntimeCoordinator = useRef(null);
@@ -1579,26 +1669,10 @@ export default function EngineWorkspace() {
   const dashboardStartupSyncRef = useRef({});
   const initiationStartupSyncRef = useRef({});
   const projectDashboardAdvancedOpenRef = useRef(projectDashboardAdvancedOpen);
-  const projectReadCoordinatorRef = useRef({ active: 0, queue: [], inFlight: new Map(), running: new Set() });
 
   useEffect(() => {
     projectDashboardAdvancedOpenRef.current = projectDashboardAdvancedOpen;
   }, [projectDashboardAdvancedOpen]);
-
-  const drainProjectReadQueue = () => {
-    const coordinator = projectReadCoordinatorRef.current;
-    while (coordinator.active < 2 && coordinator.queue.length > 0) {
-      const job = coordinator.queue.shift();
-      coordinator.active += 1;
-      coordinator.running.add(job);
-      job.run().then(job.resolve, job.reject).finally(() => {
-        coordinator.active -= 1;
-        coordinator.running.delete(job);
-        coordinator.inFlight.delete(job.key);
-        drainProjectReadQueue();
-      });
-    }
-  };
 
   const projectInputUiStateKey = selectedProjectId || DEFAULT_CHAT_PROJECT_ID;
   const activeChannelId = activeChannelDrafts[projectInputUiStateKey] || 'main';
@@ -1612,6 +1686,15 @@ export default function EngineWorkspace() {
       };
     });
   };
+  useEffect(() => {
+    writeStoredJson(STORAGE_KEYS.projectNavigationSnapshot, createProjectNavigationSnapshot({
+      baseUrl: backendStation.baseUrl,
+      activeRoute,
+      selectedProjectId,
+      projectMode,
+      activeChannelId,
+    }));
+  }, [activeRoute, selectedProjectId, projectMode, activeChannelId, backendStation.baseUrl]);
   const chatInput = chatInputDrafts[projectInputUiStateKey] || '';
   const setChatInput = (value) => {
     setChatInputDrafts(prev => {
@@ -1647,50 +1730,42 @@ export default function EngineWorkspace() {
     });
   };
   const resetRoomAgentSpeech = () => {
-    roomSimulationTimersRef.current.forEach(timer => clearTimeout(timer));
-    roomSimulationTimersRef.current = [];
-    roomPendingSpeechRef.current.forEach(turn => clearTimeout(turn.timer));
-    roomPendingSpeechRef.current.clear();
+    roomTurnQueueRef.current.cancelAll();
     setRoomSpeaker(null);
   };
   const setRoomUserIntentActive = (active) => {
     const nextActive = Boolean(active);
-    roomUserIntentActiveRef.current = nextActive;
     setRoomUserIntentActiveState(nextActive);
-    if (!nextActive) return;
-    setRoomSpeaker(null);
-    roomPendingSpeechRef.current.forEach((turn, intentId) => {
-      if (turn.phase !== 'speaking') return;
-      clearTimeout(turn.timer);
-      roomPendingSpeechRef.current.delete(intentId);
-    });
-    setRoomIntentions(prev => prev.map(intent => (
-      intent.status === 'speaking' ? { ...intent, status: 'paused' } : intent
-    )));
+    roomTurnQueueRef.current.setUserActive(nextActive);
   };
-  const scheduleRoomAgentTurn = ({ intentId, delayMs, onStart, onYield }) => {
-    const turn = { intentId, phase: 'queued', timer: null };
-    const defer = (waitMs, phase) => {
-      turn.timer = setTimeout(() => {
-        if (roomPendingSpeechRef.current.get(intentId) !== turn) return;
-        if (roomUserIntentActiveRef.current) {
-          defer(250, phase);
-          return;
-        }
-        turn.phase = phase;
-        if (phase === 'start') {
-          onStart();
-          defer(MEETING_TURN_SPEAK_DURATION_MS, 'yield');
-          return;
-        }
-        onYield();
-        roomPendingSpeechRef.current.delete(intentId);
-      }, waitMs);
-      roomSimulationTimersRef.current.push(turn.timer);
-    };
-    roomPendingSpeechRef.current.set(intentId, turn);
-    defer(delayMs, 'start');
-  };
+  const scheduleRoomAgentTurn = ({
+    intentId,
+    speakerId,
+    delayMs,
+    speakDurationMs = MEETING_TURN_SPEAK_DURATION_MS,
+    onStart,
+    onYield,
+  }) => (
+    roomTurnQueueRef.current.schedule({
+      intentId,
+      delayMs,
+      speakDurationMs,
+      onStart,
+      onPause: () => {
+        setRoomSpeaker(null);
+        setRoomIntentions(prev => prev.map(intent => (
+          intent.id === intentId ? { ...intent, status: 'paused' } : intent
+        )));
+      },
+      onResume: () => {
+        if (speakerId) setRoomSpeaker(speakerId);
+        setRoomIntentions(prev => prev.map(intent => (
+          intent.id === intentId ? { ...intent, status: 'speaking' } : intent
+        )));
+      },
+      onYield,
+    })
+  );
   const focusedChatProofIds = focusedChatProofIdDrafts[projectInputUiStateKey] || [];
   const setFocusedChatProofIds = (value) => {
     setFocusedChatProofIdDrafts(prev => {
@@ -1774,6 +1849,15 @@ export default function EngineWorkspace() {
   }, [projects, backendStation.projectCatalog, backendStation.lastProjectSyncAt, backendStation.lastManagerDashboardSyncAt]);
 
   useEffect(() => {
+    if (!backendStation.lastProjectCatalogSyncAt) return;
+    writeStoredJson(STORAGE_KEYS.projectCatalogSnapshot, createLastKnownProjectCatalog({
+      baseUrl: backendStation.baseUrl,
+      syncedAt: backendStation.lastProjectCatalogSyncAt,
+      projects: backendStation.projectCatalog,
+    }));
+  }, [backendStation.baseUrl, backendStation.lastProjectCatalogSyncAt, backendStation.projectCatalog]);
+
+  useEffect(() => {
     const projectById = new Map(projects.map(project => [project.id, project]));
     const browserCacheMessages = chatMessages
       .filter(message => canPersistChatMessageToBrowserCache(message, projectById))
@@ -1787,7 +1871,7 @@ export default function EngineWorkspace() {
 
   useEffect(() => () => {
     if (sceneTransitionTimerRef.current) clearTimeout(sceneTransitionTimerRef.current);
-    roomSimulationTimersRef.current.forEach(timer => clearTimeout(timer));
+    roomTurnQueueRef.current?.cancelAll();
     roomSpeechRecognitionRef.current?.stop?.();
     tlEntranceTimersRef.current.forEach(timer => clearTimeout(timer));
     if (meetingTimerRef.current) clearInterval(meetingTimerRef.current);
@@ -1991,17 +2075,15 @@ export default function EngineWorkspace() {
         return;
       }
       const nodeCenterX = node.offsetLeft + node.offsetWidth / 2;
-      const nodeCenterY = node.offsetTop + node.offsetHeight / 2;
       const viewportCenterX = viewport.clientWidth / 2;
-      const viewportCenterY = viewport.clientHeight / 2;
-      setTlPan({
-        x: viewportCenterX - nodeCenterX * tlZoom,
-        y: viewportCenterY - nodeCenterY * tlZoom,
-      });
+      setTlPan(previousPan => ({
+        x: viewportCenterX - nodeCenterX,
+        y: previousPan.y,
+      }));
     };
     focusRetryTimer = window.setTimeout(focusTimelineProofNode, 180);
     return () => window.clearTimeout(focusRetryTimer);
-  }, [projectMode, selectedTimelineEventId, focusedTimelineProofIds, tlZoom]);
+  }, [projectMode, selectedTimelineEventId, focusedTimelineProofIds]);
 
   // Auto-scroll transcript
   useEffect(() => {
@@ -2072,6 +2154,30 @@ export default function EngineWorkspace() {
 
   // Derived Data
   const activeProject = projects.find(p => p.id === selectedProjectId);
+  activeProjectIdRef.current = activeProject?.id || null;
+  useEffect(() => {
+    if (activeRoute !== 'project_detail') return;
+    const reconciled = reconcileProjectNavigation({
+      navigation: { activeRoute, selectedProjectId, projectMode, activeChannelId },
+      projectIds: projects.map(project => project.id),
+      catalogStatus: backendStation.projectCatalogStatus,
+    });
+    if (
+      reconciled.activeRoute === activeRoute
+      && reconciled.selectedProjectId === selectedProjectId
+      && reconciled.projectMode === projectMode
+      && reconciled.activeChannelId === activeChannelId
+    ) return;
+    setActiveRoute(reconciled.activeRoute);
+    setSelectedProjectId(reconciled.selectedProjectId);
+    setProjectMode(reconciled.projectMode);
+    if (reconciled.selectedProjectId) {
+      setActiveChannelDrafts(prev => ({
+        ...prev,
+        [reconciled.selectedProjectId]: reconciled.activeChannelId,
+      }));
+    }
+  }, [activeRoute, selectedProjectId, projectMode, activeChannelId, projects, backendStation.projectCatalogStatus]);
   const activeLanguage = activeProject?.language || language;
   const projectDashboardCoreSyncMatches = Boolean(
     activeProject?.id
@@ -2254,7 +2360,7 @@ export default function EngineWorkspace() {
     }
   };
 
-  const requestAgentBackend = async (path, { method = 'GET', body, timeoutMs = 900, baseUrl = backendStation.baseUrl, authToken = '' } = {}) => {
+  const requestAgentBackend = async (path, { method = 'GET', body, timeoutMs = 900, baseUrl = backendStation.baseUrl, authToken = '', priority = 'background', signal = null } = {}) => {
     const localizedBody = body && typeof body === 'object'
       ? {
         ...body,
@@ -2262,12 +2368,12 @@ export default function EngineWorkspace() {
         ...(body.project ? { project: { ...body.project, language: body.project.language || activeLanguage } } : {}),
       }
       : body;
-    const runRequest = async (externalSignal = null) => {
+    const runRequest = async (externalSignal = null, effectiveTimeoutMs = timeoutMs) => {
       const controller = new AbortController();
       const abortFromExternalSignal = () => controller.abort();
       if (externalSignal?.aborted) controller.abort();
       else externalSignal?.addEventListener('abort', abortFromExternalSignal, { once: true });
-      const timeout = setTimeout(() => controller.abort(), timeoutMs);
+      const timeout = setTimeout(() => controller.abort(), effectiveTimeoutMs);
       try {
       const normalizedBaseUrl = normalizeBackendBaseUrl(baseUrl || DEFAULT_AGENT_BACKEND_URL);
       const headers = localizedBody ? { 'content-type': 'application/json' } : {};
@@ -2279,7 +2385,7 @@ export default function EngineWorkspace() {
       if (sessionToken) {
         headers['x-hofs-local-auth-token'] = sessionToken;
       }
-      const response = await fetch(`${baseUrl}${path}`, {
+      const response = await fetch(`${normalizedBaseUrl}${path}`, {
         method,
         headers: Object.keys(headers).length ? headers : undefined,
         body: localizedBody ? JSON.stringify(localizedBody) : undefined,
@@ -2301,37 +2407,39 @@ export default function EngineWorkspace() {
     };
     const pathname = String(path || '').split('?')[0];
     const projectPathParts = pathname.split('/').filter(Boolean);
+    const isWorkspaceWatch = pathname.endsWith('/workspace/watch');
     const isNestedProjectRead = method === 'GET'
       && projectPathParts[0] === 'projects'
-      && projectPathParts.length > 2;
-    const isInteractiveProjectRead = /\/(?:transcripts(?:\/|$)|timeline$|events$|manager-flow-graph(?:\/|$)|membership-policy$)/.test(pathname);
-    if (!isNestedProjectRead || isInteractiveProjectRead) return runRequest();
+      && projectPathParts.length > 2
+      && !isWorkspaceWatch;
+    if (!isNestedProjectRead) return runRequest(signal);
 
     const coordinator = projectReadCoordinatorRef.current;
-    const requestKey = `${normalizeBackendBaseUrl(baseUrl || DEFAULT_AGENT_BACKEND_URL)}:${pathname}:${authToken || localAuthSession?.token || ''}`;
-    const existingRequest = coordinator.inFlight.get(requestKey);
-    if (existingRequest) return existingRequest;
-    const jobController = new AbortController();
-    const coordinatedRequest = new Promise((resolve, reject) => {
-      coordinator.queue.push({
-        key: requestKey,
-        controller: jobController,
-        run: () => runRequest(jobController.signal),
-        resolve,
-        reject,
-      });
-      drainProjectReadQueue();
+    const requestKey = `${normalizeBackendBaseUrl(baseUrl || DEFAULT_AGENT_BACKEND_URL)}:${method}:${path}:${authToken || localAuthSession?.token || ''}`;
+    return coordinator.schedule({
+      key: requestKey,
+      priority,
+      timeoutMs,
+      run: ({ signal, timeoutMs: remainingMs }) => runRequest(signal, remainingMs),
     });
-    coordinator.inFlight.set(requestKey, coordinatedRequest);
-    return coordinatedRequest;
   };
 
-  const persistLocalAuthSession = (session = null) => {
-    setLocalAuthSession(session);
+  const persistLocalAuthSession = (session = null, { keepSignedIn = false } = {}) => {
+    const persistence = localAuthSessionPersistenceTarget(keepSignedIn);
+    const nextSession = session ? { ...session, persistence } : null;
+    setLocalAuthSession(nextSession);
     if (typeof window !== 'undefined') {
       try {
-        if (session) window.sessionStorage.setItem(STORAGE_KEYS.localAuthSession, JSON.stringify(session));
-        else window.sessionStorage.removeItem(STORAGE_KEYS.localAuthSession);
+        if (!session) {
+          window.sessionStorage.removeItem(STORAGE_KEYS.localAuthSession);
+          window.localStorage.removeItem(STORAGE_KEYS.localAuthSession);
+        } else if (persistence === 'persistent') {
+          window.localStorage.setItem(STORAGE_KEYS.localAuthSession, JSON.stringify(nextSession));
+          window.sessionStorage.removeItem(STORAGE_KEYS.localAuthSession);
+        } else {
+          window.sessionStorage.setItem(STORAGE_KEYS.localAuthSession, JSON.stringify(nextSession));
+          window.localStorage.removeItem(STORAGE_KEYS.localAuthSession);
+        }
       } catch {
         // The in-memory session remains usable when browser storage is unavailable.
       }
@@ -2399,7 +2507,7 @@ export default function EngineWorkspace() {
           baseUrl: normalizeBackendBaseUrl(backendStation.baseUrl || DEFAULT_AGENT_BACKEND_URL),
           user: result.user,
           expiresAt: result.session?.expiresAt || null,
-        });
+        }, { keepSignedIn: localAuthDraft.keepSignedIn });
         setFirstRunNotice('');
         setLocalAuthDraft(previous => ({ ...previous, password: '' }));
       }
@@ -3253,23 +3361,23 @@ export default function EngineWorkspace() {
     Array.isArray(projectList)
       ? projectList
         .filter(project => project?.id)
-        .map(project => hydrateProject(project))
+        .map(project => hydrateProject({ ...project, dataSource: 'backend-catalog' }))
       : []
   );
 
   const mergeBackendProjectsIntoState = (backendProjects = []) => {
     const incoming = normalizeBackendProjects(backendProjects);
-    if (!incoming.length) return incoming;
-    const incomingIds = new Set(incoming.map(project => String(project.id).toLowerCase()));
-    setProjects(prev => [
-      ...incoming,
-      ...prev.filter(project => !incomingIds.has(String(project.id).toLowerCase())),
-    ]);
+    setProjects(prev => reconcileVerifiedProjectCatalog(prev, incoming));
     return incoming;
   };
 
   const syncBackendProjectCatalog = async ({ silent = true, baseUrl = null, authToken = '' } = {}) => {
     if (!baseUrl && !backendUrlConfigured) {
+      setBackendStation(prev => ({
+        ...prev,
+        projectCatalogStatus: 'offline',
+        projectCatalogError: 'Backend URL required',
+      }));
       if (!silent) {
         setBackendStation(prev => ({
           ...prev,
@@ -3282,7 +3390,12 @@ export default function EngineWorkspace() {
       return null;
     }
     const targetBaseUrl = normalizeBackendBaseUrl(baseUrl || backendStation.baseUrl || DEFAULT_AGENT_BACKEND_URL);
-    if (!silent) setBackendStation(prev => ({ ...prev, loading: true }));
+    setBackendStation(prev => ({
+      ...prev,
+      loading: silent ? prev.loading : true,
+      projectCatalogStatus: 'checking',
+      projectCatalogError: null,
+    }));
     try {
       const payload = await requestAgentBackend('/projects', {
         baseUrl: targetBaseUrl,
@@ -3295,6 +3408,8 @@ export default function EngineWorkspace() {
         connectionStatus: 'online',
         loading: silent ? prev.loading : false,
         projectCatalog: backendProjects,
+        projectCatalogStatus: 'ready',
+        projectCatalogError: null,
         lastProjectCatalogSyncAt: new Date().toISOString(),
         projectCatalogSyncCount: (prev.projectCatalogSyncCount || 0) + 1,
         lastAction: silent ? prev.lastAction || 'Backend project catalog synced' : 'Backend project catalog synced',
@@ -3306,6 +3421,8 @@ export default function EngineWorkspace() {
         ...prev,
         connectionStatus: silent ? prev.connectionStatus : 'offline',
         loading: silent ? prev.loading : false,
+        projectCatalogStatus: 'offline',
+        projectCatalogError: error.name === 'AbortError' ? 'Backend project catalog sync timed out.' : error.message || String(error),
         lastAction: silent ? prev.lastAction : 'Backend project catalog sync failed',
         error: silent ? prev.error : error.name === 'AbortError' ? 'Backend project catalog sync timed out.' : error.message || String(error),
       }));
@@ -3315,9 +3432,10 @@ export default function EngineWorkspace() {
 
   useEffect(() => {
     const authToken = localAuthSessionForCurrentBackend?.token || '';
-    if (!authToken || !backendUrlConfigured) return;
+    if (!backendUrlConfigured) return;
+    if (localAuthStatus.available === true && !authToken) return;
     syncBackendProjectCatalog({ silent: true, authToken });
-  }, [localAuthSessionForCurrentBackend?.token, backendStation.baseUrl, backendUrlConfigured]);
+  }, [localAuthSessionForCurrentBackend?.token, localAuthStatus.available, backendStation.baseUrl, backendUrlConfigured]);
 
   const transcriptMessagesFromBackendChannels = (projectId, channelPayloads = []) => (
     channelPayloads.flatMap((channelPayload) => {
@@ -3341,14 +3459,27 @@ export default function EngineWorkspace() {
     channelId = null,
     timeoutMs = null,
     indexOnly = false,
+    acceptResult = () => true,
+    priority = 'background',
   } = {}) => {
     if (!projectId) return null;
-    if (!silent) setBackendStation(prev => ({ ...prev, loading: true }));
+    const recoveryKey = channelId && !indexOnly ? transcriptRecoveryKey(projectId, channelId) : null;
+    if (!silent || recoveryKey) {
+      setBackendStation(prev => ({
+        ...prev,
+        loading: silent ? prev.loading : true,
+        transcriptRecoveryStatuses: recoveryKey ? {
+          ...(prev.transcriptRecoveryStatuses || {}),
+          [recoveryKey]: 'checking',
+        } : prev.transcriptRecoveryStatuses,
+      }));
+    }
     try {
       await ensureBackendProjectSeedForReadModelSync(projectId);
-      const requestTimeoutMs = timeoutMs ?? (silent ? 1200 : 3000);
+      const requestTimeoutMs = timeoutMs ?? (channelId ? (silent ? 5000 : 10000) : (silent ? 1200 : 3000));
       const transcriptIndex = await requestAgentBackend(`/projects/${encodeURIComponent(projectId)}/transcripts`, {
         timeoutMs: requestTimeoutMs,
+        priority,
       });
       const channelIds = indexOnly ? [] : Array.from(new Set([
         channelId,
@@ -3358,12 +3489,19 @@ export default function EngineWorkspace() {
       const channelResults = await Promise.allSettled(channelIds.map(id => (
         requestAgentBackend(`/projects/${encodeURIComponent(projectId)}/transcripts/${encodeURIComponent(id)}`, {
           timeoutMs: requestTimeoutMs,
+          priority,
         })
       )));
       const channelPayloads = channelResults
         .filter(result => result.status === 'fulfilled' && result.value?.channelId)
         .map(result => result.value);
+      if (!acceptResult()) return { transcriptIndex, channels: channelPayloads };
       const channelMap = Object.fromEntries(channelPayloads.map(channel => [channel.channelId, channel]));
+      const recoveredChannelStatuses = transcriptRecoveryStatusesFromResults({
+        projectId,
+        channelIds,
+        channelResults,
+      });
       setChatChannels(prev => mergeTranscriptChannelsIntoUi(prev, transcriptIndex.channels || []));
       const transcriptMessages = transcriptMessagesFromBackendChannels(projectId, channelPayloads);
       if (transcriptMessages.length) {
@@ -3381,6 +3519,10 @@ export default function EngineWorkspace() {
             ...channelMap,
           },
         },
+        transcriptRecoveryStatuses: channelIds.length ? {
+          ...(prev.transcriptRecoveryStatuses || {}),
+          ...recoveredChannelStatuses,
+        } : prev.transcriptRecoveryStatuses,
         lastTranscriptSyncAt: new Date().toISOString(),
         transcriptSyncCount: (prev.transcriptSyncCount || 0) + 1,
         lastAction: silent ? prev.lastAction || 'Backend transcripts synced' : 'Backend transcripts synced',
@@ -3392,6 +3534,10 @@ export default function EngineWorkspace() {
         ...prev,
         connectionStatus: silent ? prev.connectionStatus : 'offline',
         loading: silent ? prev.loading : false,
+        transcriptRecoveryStatuses: recoveryKey ? {
+          ...(prev.transcriptRecoveryStatuses || {}),
+          [recoveryKey]: 'offline',
+        } : prev.transcriptRecoveryStatuses,
         lastAction: silent ? prev.lastAction : 'Backend transcript sync failed',
         error: silent ? prev.error : error.name === 'AbortError' ? 'Backend transcript sync timed out.' : error.message || String(error),
       }));
@@ -3829,6 +3975,9 @@ export default function EngineWorkspace() {
     silent = true,
     projectId = activeProject?.id,
     timeoutMs = null,
+    acceptResult = () => true,
+    priority = 'background',
+    recentLimit = null,
   } = {}) => {
     if (!projectId) return null;
     if (!silent) setBackendStation(prev => ({ ...prev, loading: true }));
@@ -3844,15 +3993,18 @@ export default function EngineWorkspace() {
       }));
       return null;
     }
+    const pageQuery = recentLimit ? `?limit=${Math.max(1, Number(recentLimit) || 1)}` : '';
     const [
       timelineResult,
       eventsResult,
     ] = await Promise.allSettled([
-      requestAgentBackend(`/projects/${encodeURIComponent(projectId)}/timeline`, {
+      requestAgentBackend(`/projects/${encodeURIComponent(projectId)}/timeline${pageQuery}`, {
         timeoutMs: timeoutMs ?? (silent ? 1200 : 3000),
+        priority,
       }),
-      requestAgentBackend(`/projects/${encodeURIComponent(projectId)}/events`, {
+      requestAgentBackend(`/projects/${encodeURIComponent(projectId)}/events${pageQuery}`, {
         timeoutMs: timeoutMs ?? (silent ? 1200 : 3000),
+        priority,
       }),
     ]);
     const timeline = timelineResult.status === 'fulfilled' ? timelineResult.value : null;
@@ -3868,6 +4020,7 @@ export default function EngineWorkspace() {
       }));
       return null;
     }
+    if (!acceptResult()) return { timeline, events };
     applyBackendTimelineEventReadModels({ projectId, timeline, events });
     setBackendStation(prev => ({
       ...prev,
@@ -4309,6 +4462,8 @@ export default function EngineWorkspace() {
     silent = true,
     projectId = activeProject?.id,
     timeoutMs = null,
+    priority = silent ? 'background' : 'user-visible',
+    acceptResult = () => true,
   } = {}) => {
     if (!projectId) return null;
     if (!silent) setBackendStation(prev => ({ ...prev, loading: true }));
@@ -4317,7 +4472,9 @@ export default function EngineWorkspace() {
       const requestTimeoutMs = timeoutMs ?? (silent ? 1100 : 10000);
       const payload = await requestAgentBackend(`/projects/${encodeURIComponent(projectId)}/manager-dashboard`, {
         timeoutMs: requestTimeoutMs,
+        priority,
       });
+      if (!acceptResult()) return payload;
       setBackendStation(prev => ({
         ...prev,
         connectionStatus: 'online',
@@ -4371,76 +4528,8 @@ export default function EngineWorkspace() {
         lastAction: silent ? prev.lastAction || 'Backend manager dashboard synced' : 'Backend manager dashboard synced',
         error: null,
       }));
-      if (!payload.managerFlowGraph) {
-        syncBackendManagerFlowGraph({ silent: true, projectId: payload.project?.id || activeProject.id });
-      }
       return payload;
     } catch (error) {
-      try {
-        const fallbackDashboard = await requestAgentBackend(`/projects/${encodeURIComponent(projectId)}/manager-dashboard`, {
-          timeoutMs: timeoutMs ?? (silent ? 1100 : 10000),
-        });
-        if (fallbackDashboard.managerScenarioTrail) {
-          setBackendStation(prev => ({
-            ...prev,
-            connectionStatus: 'online',
-            loading: silent ? prev.loading : false,
-            managerDashboard: fallbackDashboard,
-            managerCommandCenter: fallbackDashboard.managerCommandCenter || prev.managerCommandCenter,
-            managerScenarioTrail: fallbackDashboard.managerScenarioTrail,
-            managerScenarioWalkthrough: fallbackDashboard.managerScenarioWalkthrough || prev.managerScenarioWalkthrough,
-            managerRequirementMatrix: fallbackDashboard.managerRequirementMatrix || prev.managerRequirementMatrix,
-            managerUseCaseAudit: fallbackDashboard.managerUseCaseAudit || prev.managerUseCaseAudit,
-            managerActionQueue: fallbackDashboard.managerActionQueue || prev.managerActionQueue,
-            agentStateSummary: Array.isArray(fallbackDashboard.agents?.states) ? {
-              schemaVersion: 'agent-state-summary/v1',
-              projectId: fallbackDashboard.projectId,
-              dataSource: 'backend-backed',
-              count: fallbackDashboard.agents.states.length,
-              rows: fallbackDashboard.agents.states,
-            } : prev.agentStateSummary,
-            assignmentTimelineMatrix: fallbackDashboard.assignmentTimelineMatrix || prev.assignmentTimelineMatrix,
-            changeFlow: fallbackDashboard.changeFlow ? {
-              ...fallbackDashboard.changeFlow,
-              sourceIntake: fallbackDashboard.changeSourceIntake || fallbackDashboard.changeFlow.sourceIntake || null,
-            } : prev.changeFlow,
-            continuousWorkLoop: fallbackDashboard.continuousWorkLoop || prev.continuousWorkLoop,
-            agentAutonomousActionQueue: fallbackDashboard.agentAutonomousActionQueue || prev.agentAutonomousActionQueue,
-            autonomousRunControl: fallbackDashboard.autonomousRunControl || prev.autonomousRunControl,
-            lastManagerDashboardSyncAt: new Date().toISOString(),
-            managerDashboardSyncCount: (prev.managerDashboardSyncCount || 0) + 1,
-            lastManagerCommandCenterSyncAt: fallbackDashboard.managerCommandCenter ? new Date().toISOString() : prev.lastManagerCommandCenterSyncAt,
-            managerCommandCenterSyncCount: fallbackDashboard.managerCommandCenter ? (prev.managerCommandCenterSyncCount || 0) + 1 : prev.managerCommandCenterSyncCount,
-            lastManagerScenarioTrailSyncAt: new Date().toISOString(),
-            managerScenarioTrailSyncCount: (prev.managerScenarioTrailSyncCount || 0) + 1,
-            lastManagerScenarioWalkthroughSyncAt: fallbackDashboard.managerScenarioWalkthrough ? new Date().toISOString() : prev.lastManagerScenarioWalkthroughSyncAt,
-            managerScenarioWalkthroughSyncCount: fallbackDashboard.managerScenarioWalkthrough ? (prev.managerScenarioWalkthroughSyncCount || 0) + 1 : prev.managerScenarioWalkthroughSyncCount,
-            lastManagerRequirementMatrixSyncAt: fallbackDashboard.managerRequirementMatrix ? new Date().toISOString() : prev.lastManagerRequirementMatrixSyncAt,
-            managerRequirementMatrixSyncCount: fallbackDashboard.managerRequirementMatrix ? (prev.managerRequirementMatrixSyncCount || 0) + 1 : prev.managerRequirementMatrixSyncCount,
-            lastManagerUseCaseAuditSyncAt: fallbackDashboard.managerUseCaseAudit ? new Date().toISOString() : prev.lastManagerUseCaseAuditSyncAt,
-            managerUseCaseAuditSyncCount: fallbackDashboard.managerUseCaseAudit ? (prev.managerUseCaseAuditSyncCount || 0) + 1 : prev.managerUseCaseAuditSyncCount,
-            lastManagerActionQueueSyncAt: fallbackDashboard.managerActionQueue ? new Date().toISOString() : prev.lastManagerActionQueueSyncAt,
-            managerActionQueueSyncCount: fallbackDashboard.managerActionQueue ? (prev.managerActionQueueSyncCount || 0) + 1 : prev.managerActionQueueSyncCount,
-            lastAgentStateSummarySyncAt: Array.isArray(fallbackDashboard.agents?.states) ? new Date().toISOString() : prev.lastAgentStateSummarySyncAt,
-            agentStateSummarySyncCount: Array.isArray(fallbackDashboard.agents?.states) ? (prev.agentStateSummarySyncCount || 0) + 1 : prev.agentStateSummarySyncCount,
-            lastAssignmentTimelineMatrixSyncAt: fallbackDashboard.assignmentTimelineMatrix ? new Date().toISOString() : prev.lastAssignmentTimelineMatrixSyncAt,
-            assignmentTimelineMatrixSyncCount: fallbackDashboard.assignmentTimelineMatrix ? (prev.assignmentTimelineMatrixSyncCount || 0) + 1 : prev.assignmentTimelineMatrixSyncCount,
-            lastChangeFlowSyncAt: fallbackDashboard.changeFlow ? new Date().toISOString() : prev.lastChangeFlowSyncAt,
-            changeFlowSyncCount: fallbackDashboard.changeFlow ? (prev.changeFlowSyncCount || 0) + 1 : prev.changeFlowSyncCount,
-            lastContinuousWorkLoopSyncAt: fallbackDashboard.continuousWorkLoop ? new Date().toISOString() : prev.lastContinuousWorkLoopSyncAt,
-            continuousWorkLoopSyncCount: fallbackDashboard.continuousWorkLoop ? (prev.continuousWorkLoopSyncCount || 0) + 1 : prev.continuousWorkLoopSyncCount,
-            lastAgentAutonomousActionQueueSyncAt: fallbackDashboard.agentAutonomousActionQueue ? new Date().toISOString() : prev.lastAgentAutonomousActionQueueSyncAt,
-            agentAutonomousActionQueueSyncCount: fallbackDashboard.agentAutonomousActionQueue ? (prev.agentAutonomousActionQueueSyncCount || 0) + 1 : prev.agentAutonomousActionQueueSyncCount,
-            lastAutonomousRunControlSyncAt: fallbackDashboard.autonomousRunControl ? new Date().toISOString() : prev.lastAutonomousRunControlSyncAt,
-            autonomousRunControlSyncCount: fallbackDashboard.autonomousRunControl ? (prev.autonomousRunControlSyncCount || 0) + 1 : prev.autonomousRunControlSyncCount,
-            lastAction: silent ? prev.lastAction || 'Backend scenario trail synced from dashboard' : 'Backend scenario trail synced from dashboard',
-            error: null,
-          }));
-          return fallbackDashboard.managerScenarioTrail;
-        }
-      } catch {
-        // Fall through to the visible sync error below.
-      }
       setBackendStation(prev => ({
         ...prev,
         connectionStatus: silent ? prev.connectionStatus : 'offline',
@@ -5039,34 +5128,67 @@ export default function EngineWorkspace() {
     }
   };
 
-  const syncBackendManagerFlowGraph = async ({ silent = true, projectId = activeProject?.id } = {}) => {
-    if (!projectId) return null;
-    if (!silent) setBackendStation(prev => ({ ...prev, loading: true }));
-    try {
-      const payload = await requestAgentBackend(`/projects/${encodeURIComponent(projectId)}/manager-flow-graph`, {
-        timeoutMs: silent ? 8000 : 12000,
-      });
+  const syncBackendManagerFlowGraph = ({ silent = true, projectId = activeProject?.id } = {}) => {
+    if (!projectId) return Promise.resolve(null);
+    const syncKey = `${normalizeBackendBaseUrl(backendStation.baseUrl)}:${String(projectId).toLowerCase()}`;
+    const existingSync = managerFlowGraphSyncInFlightRef.current.get(syncKey);
+    if (existingSync) return existingSync;
+    const syncPromise = (async () => {
       setBackendStation(prev => ({
         ...prev,
-        connectionStatus: 'online',
-        loading: silent ? prev.loading : false,
-        managerFlowGraph: payload,
-        lastManagerFlowGraphSyncAt: new Date().toISOString(),
-        managerFlowGraphSyncCount: (prev.managerFlowGraphSyncCount || 0) + 1,
-        lastAction: silent ? prev.lastAction || 'Backend manager flow graph synced' : 'Backend manager flow graph synced',
-        error: null,
+        loading: silent ? prev.loading : true,
+        managerFlowGraphLoadingProjectId: projectId,
+        managerFlowGraphError: null,
+        managerFlowGraphErrorProjectId: null,
       }));
-      return payload;
-    } catch (error) {
-      setBackendStation(prev => ({
-        ...prev,
-        connectionStatus: silent ? prev.connectionStatus : 'offline',
-        loading: silent ? prev.loading : false,
-        lastAction: silent ? prev.lastAction : 'Backend manager flow graph sync failed',
-        error: silent ? prev.error : error.name === 'AbortError' ? 'Backend manager flow graph sync timed out.' : error.message || String(error),
-      }));
-      return null;
-    }
+      try {
+        const payload = await requestAgentBackend(`/projects/${encodeURIComponent(projectId)}/manager-flow-graph`, {
+          timeoutMs: silent ? 20_000 : 30_000,
+          priority: silent ? 'background' : 'user-visible',
+        });
+        if (String(activeProjectIdRef.current || '').toLowerCase() !== String(projectId).toLowerCase()) return payload;
+        setBackendStation(prev => ({
+          ...prev,
+          connectionStatus: 'online',
+          loading: silent ? prev.loading : false,
+          managerFlowGraph: payload,
+          managerFlowGraphLoadingProjectId: String(prev.managerFlowGraphLoadingProjectId || '').toLowerCase() === String(projectId).toLowerCase()
+            ? null
+            : prev.managerFlowGraphLoadingProjectId,
+          managerFlowGraphError: null,
+          managerFlowGraphErrorProjectId: null,
+          lastManagerFlowGraphSyncAt: new Date().toISOString(),
+          managerFlowGraphSyncCount: (prev.managerFlowGraphSyncCount || 0) + 1,
+          lastAction: silent ? prev.lastAction || 'Backend manager flow graph synced' : 'Backend manager flow graph synced',
+          error: null,
+        }));
+        return payload;
+      } catch (error) {
+        if (String(activeProjectIdRef.current || '').toLowerCase() !== String(projectId).toLowerCase()) return null;
+        const flowGraphError = error.name === 'AbortError'
+          ? 'Backend manager flow graph sync timed out.'
+          : error.message || String(error);
+        setBackendStation(prev => ({
+          ...prev,
+          connectionStatus: silent ? prev.connectionStatus : 'offline',
+          loading: silent ? prev.loading : false,
+          managerFlowGraphLoadingProjectId: String(prev.managerFlowGraphLoadingProjectId || '').toLowerCase() === String(projectId).toLowerCase()
+            ? null
+            : prev.managerFlowGraphLoadingProjectId,
+          managerFlowGraphError: flowGraphError,
+          managerFlowGraphErrorProjectId: projectId,
+          lastAction: silent ? prev.lastAction : 'Backend manager flow graph sync failed',
+          error: silent ? prev.error : flowGraphError,
+        }));
+        return null;
+      }
+    })().finally(() => {
+      if (managerFlowGraphSyncInFlightRef.current.get(syncKey) === syncPromise) {
+        managerFlowGraphSyncInFlightRef.current.delete(syncKey);
+      }
+    });
+    managerFlowGraphSyncInFlightRef.current.set(syncKey, syncPromise);
+    return syncPromise;
   };
   const openManagerFlowNode = async (nodeId, {
     project = activeProject,
@@ -5418,15 +5540,21 @@ export default function EngineWorkspace() {
     countKey,
     label,
     fallbackFromDashboard,
+    timeoutMs = null,
+    priority = silent ? 'background' : 'user-visible',
+    acceptResult = () => true,
+    fallbackEnabled = true,
   } = {}) => {
     if (!projectId || !routeAction || !payloadKey || !stationKey) return null;
     if (!silent) setBackendStation(prev => ({ ...prev, loading: true }));
     try {
       await ensureBackendProjectSeedForReadModelSync(projectId);
       const response = await requestAgentBackend(`/projects/${encodeURIComponent(projectId)}/${routeAction}`, {
-        timeoutMs: silent ? 900 : 1400,
+        timeoutMs: timeoutMs ?? (silent ? 900 : 1400),
+        priority,
       });
       const payload = response[payloadKey] || response;
+      if (!acceptResult()) return payload;
       setBackendStation(prev => ({
         ...prev,
         connectionStatus: 'online',
@@ -5440,10 +5568,13 @@ export default function EngineWorkspace() {
       return payload;
     } catch (error) {
       try {
+        if (!fallbackEnabled) throw error;
         const dashboard = await requestAgentBackend(`/projects/${encodeURIComponent(projectId)}/manager-dashboard`, {
-          timeoutMs: silent ? 1100 : 1600,
+          timeoutMs: timeoutMs ?? (silent ? 1100 : 1600),
+          priority,
         });
         const fallbackPayload = typeof fallbackFromDashboard === 'function' ? fallbackFromDashboard(dashboard) : null;
+        if (!acceptResult()) return fallbackPayload;
         if (fallbackPayload) {
           setBackendStation(prev => ({
             ...prev,
@@ -6014,6 +6145,9 @@ export default function EngineWorkspace() {
       managerReadyPackage: null,
       managerDashboard: null,
       managerFlowGraph: null,
+      managerFlowGraphLoadingProjectId: null,
+      managerFlowGraphError: null,
+      managerFlowGraphErrorProjectId: null,
       managerCommandCenter: null,
       managerCommandCenterRun: null,
       managerActionRun: null,
@@ -6077,10 +6211,13 @@ export default function EngineWorkspace() {
       lastRuntimeAutonomyStatusSyncAt: null,
       runtimeAutonomyStatusSyncCount: 0,
       projectCatalog: [],
+      projectCatalogStatus: 'idle',
+      projectCatalogError: null,
       lastProjectCatalogSyncAt: null,
       projectCatalogSyncCount: 0,
       transcriptIndex: null,
       transcriptChannels: {},
+      transcriptRecoveryStatuses: {},
       lastTranscriptSyncAt: null,
       transcriptSyncCount: 0,
       timelineReadModel: null,
@@ -6283,7 +6420,7 @@ export default function EngineWorkspace() {
     if (!projectId) return null;
     if (!silent) setBackendStation(prev => ({ ...prev, loading: true }));
     try {
-      const payload = await requestAgentBackend(`/projects/${encodeURIComponent(projectId)}`, {
+      const payload = await requestAgentBackend(`/projects/${encodeURIComponent(projectId)}?view=dashboard`, {
         timeoutMs: silent ? 1600 : 3000,
       });
       if (!payload.project?.id) {
@@ -6387,7 +6524,7 @@ export default function EngineWorkspace() {
     }
     if (!silent) setBackendStation(prev => ({ ...prev, loading: true }));
     try {
-      const payload = await requestAgentBackend(`/projects/${encodeURIComponent(activeProject.id)}`, {
+      const payload = await requestAgentBackend(`/projects/${encodeURIComponent(activeProject.id)}?view=dashboard`, {
         timeoutMs: silent ? 900 : 1400,
       });
       applyBackendProjectSnapshot(payload);
@@ -6428,7 +6565,7 @@ export default function EngineWorkspace() {
     if (!activeProject) return null;
     cancelPendingBackendReadModelRefreshes();
     await ensureBackendProjectSeed();
-    const interactiveCommand = action === 'meeting' || action === 'chat';
+    const interactiveCommand = action === 'meeting' || action.startsWith('meeting/') || action === 'chat';
     const payload = await requestAgentBackend(`/projects/${encodeURIComponent(activeProject.id)}/${action}`, {
       method: 'POST',
       body: {
@@ -6438,7 +6575,7 @@ export default function EngineWorkspace() {
       timeoutMs: interactiveCommand || backendStation.connectionStatus === 'online' ? 60_000 : 5_000,
     });
     applyBackendProjectSnapshot(payload);
-    const commandLabel = action === 'meeting'
+    const commandLabel = action === 'meeting' || action.startsWith('meeting/')
       ? 'Meeting'
       : action === 'transcripts'
         ? 'Transcript channel'
@@ -6457,21 +6594,23 @@ export default function EngineWorkspace() {
     const managerDashboardApplied = applyBackendManagerDashboardPayload(payload);
     const refreshProjectId = payload.project?.id || activeProject.id;
     const refreshChannelId = body.channelId || activeChannelId;
-    backendProjectCommandRefreshTimerRef.current = setTimeout(async () => {
-      backendProjectCommandRefreshTimerRef.current = null;
-      if (shouldRefreshAdvancedReadModels && !managerDashboardApplied) {
-        await syncBackendManagerDashboard({ silent: true, projectId: refreshProjectId });
-      }
-      await syncBackendProjectTranscripts({ silent: true, projectId: refreshProjectId, channelId: refreshChannelId });
-      await syncBackendTimelineAndEvents({ silent: true, projectId: refreshProjectId });
-      if (shouldRefreshAdvancedReadModels) {
-        await syncBackendManagerFlowGraph({ silent: true, projectId: refreshProjectId });
-        await syncBackendReadinessProofMap({ silent: true, projectId: refreshProjectId });
-        await syncBackendReadyPackageSubmodels({ silent: true, projectId: refreshProjectId });
-        await syncBackendCollaborationIntentQueue({ silent: true, projectId: refreshProjectId });
-        await syncBackendAgentAutonomousActionQueue({ silent: true, projectId: refreshProjectId });
-      }
-    }, 5000);
+    const refreshPlan = projectCommandRefreshPlan({
+      action,
+      projectMode,
+      refreshAdvanced: shouldRefreshAdvancedReadModels,
+    });
+    const refreshReadModel = (key) => ({
+      transcript: () => syncBackendProjectTranscripts({ silent: true, projectId: refreshProjectId, channelId: refreshChannelId }),
+      timeline: () => syncBackendTimelineAndEvents({ silent: true, projectId: refreshProjectId }),
+      'manager-dashboard': () => managerDashboardApplied ? null : syncBackendManagerDashboard({ silent: true, projectId: refreshProjectId }),
+      'manager-flow-graph': () => syncBackendManagerFlowGraph({ silent: true, projectId: refreshProjectId }),
+      'readiness-proof-map': () => syncBackendReadinessProofMap({ silent: true, projectId: refreshProjectId }),
+      'ready-package-submodels': () => syncBackendReadyPackageSubmodels({ silent: true, projectId: refreshProjectId }),
+      'collaboration-intent-queue': () => syncBackendCollaborationIntentQueue({ silent: true, projectId: refreshProjectId }),
+      'agent-autonomous-action-queue': () => syncBackendAgentAutonomousActionQueue({ silent: true, projectId: refreshProjectId }),
+    })[key]?.();
+    await Promise.allSettled(refreshPlan.immediate.map(refreshReadModel));
+    void Promise.allSettled(refreshPlan.background.map(refreshReadModel));
     return payload;
   };
 
@@ -6527,14 +6666,23 @@ export default function EngineWorkspace() {
     }
   };
 
-  const updateProjectLanguageSetting = async (nextLanguage = null) => {
+  const updateProjectLanguageSetting = async (nextLanguage = null, inheritedLanguage = language) => {
     if (!activeProject) return null;
     const normalizedLanguage = nextLanguage || null;
+    const normalizedInheritedLanguage = inheritedLanguage || language;
     const applyLocalLanguage = () => {
       setProjectLanguage(normalizedLanguage);
       setProjects(prev => prev.map(project => (
         project.id === activeProject.id
-          ? { ...project, ...(normalizedLanguage ? { language: normalizedLanguage } : { language: undefined }) }
+          ? {
+              ...project,
+              ...(normalizedLanguage ? { language: normalizedLanguage } : { language: undefined }),
+              projectSettings: {
+                ...(project.projectSettings || {}),
+                language: normalizedLanguage,
+                effectiveLanguage: normalizedLanguage || normalizedInheritedLanguage,
+              },
+            }
           : project
       )));
     };
@@ -6548,6 +6696,7 @@ export default function EngineWorkspace() {
           body: {
             includeReadModels: false,
             language: normalizedLanguage,
+            inheritedLanguage: normalizedInheritedLanguage,
             updatedBy: 'Director',
             source: 'settings-project-language',
             now,
@@ -6587,6 +6736,13 @@ export default function EngineWorkspace() {
     applyLocalLanguage();
     return null;
   };
+
+  useEffect(() => {
+    if (!activeProject || activeProject.language) return;
+    const persistedEffectiveLanguage = activeProject.projectSettings?.effectiveLanguage || null;
+    if (persistedEffectiveLanguage === language) return;
+    updateProjectLanguageSetting(null, language);
+  }, [activeProject?.id, activeProject?.language, activeProject?.projectSettings?.effectiveLanguage, language]);
 
   const updateProjectPrivacyPolicySetting = async (patch = {}) => {
     if (!activeProject) return null;
@@ -7186,6 +7342,7 @@ export default function EngineWorkspace() {
       error: 'Save the backend API URL in Settings Deployment before broadcasting changes for this backend-managed project.',
     })) return null;
 
+    const { submitProjectMultiChannelChangeRequest } = await loadAgentProjectService();
     const result = submitProjectMultiChannelChangeRequest({
       project: activeProject,
       language: activeLanguage,
@@ -7251,6 +7408,7 @@ export default function EngineWorkspace() {
       error: 'Save the backend API URL in Settings Deployment before sending Manager changes for this backend-managed project.',
     })) return null;
 
+    const { submitProjectMeetingMessage, submitProjectChatMessage } = await loadAgentProjectService();
     const result = isMeeting
       ? submitProjectMeetingMessage({ project: activeProject, language: activeLanguage, ...body })
       : submitProjectChatMessage({ project: activeProject, language: activeLanguage, ...body });
@@ -7306,6 +7464,7 @@ export default function EngineWorkspace() {
       error: 'Save the backend API URL in Settings Deployment before assigning work for this backend-managed project.',
     })) return null;
 
+    const { submitProjectChatMessage } = await loadAgentProjectService();
     const result = submitProjectChatMessage({
       project: activeProject,
       language: activeLanguage,
@@ -9183,11 +9342,55 @@ export default function EngineWorkspace() {
   }, [activeRoute, projectMode, selectedProjectId, backendUrlConfigured]);
 
   useEffect(() => {
+    if (!shouldHydrateRestoredProject({
+      activeRoute,
+      project: activeProject,
+      configured: backendUrlConfigured,
+      authAvailable: localAuthStatus.available,
+      hasSession: Boolean(localAuthSessionForCurrentBackend),
+      lastSyncedProjectId: backendStation.lastProjectSyncProjectId,
+    })) return;
+    loadBackendProjectSnapshot(activeProject.id, { silent: true });
+  }, [
+    activeRoute,
+    selectedProjectId,
+    activeProject?.dataSource,
+    activeProject?.catalogRecoveryStatus,
+    backendUrlConfigured,
+    localAuthStatus.available,
+    localAuthSessionForCurrentBackend?.token,
+    backendStation.lastProjectSyncProjectId,
+  ]);
+
+  useEffect(() => {
+    if (!shouldRunLocalBackendRecovery({
+      configured: backendUrlConfigured,
+      authAvailable: localAuthStatus.available,
+      hasSession: Boolean(localAuthSessionForCurrentBackend),
+      catalogStatus: backendStation.projectCatalogStatus,
+      connectionStatus: backendStation.connectionStatus,
+    })) return undefined;
+    const timer = setInterval(() => {
+      syncBackendProjectCatalog({
+        silent: true,
+        authToken: localAuthSessionForCurrentBackend?.token || '',
+      });
+    }, LOCAL_BACKEND_RECOVERY_INTERVAL_MS);
+    return () => clearInterval(timer);
+  }, [
+    backendUrlConfigured,
+    localAuthStatus.available,
+    localAuthSessionForCurrentBackend?.token,
+    backendStation.projectCatalogStatus,
+    backendStation.connectionStatus,
+  ]);
+
+  useEffect(() => {
     if (activeRoute !== 'project_detail' || projectMode !== 'dashboard' || !activeProject) return;
     if (backendStation.connectionStatus !== 'online') return;
     const timer = setInterval(() => {
       syncBackendProjectState({ silent: true });
-    }, 15_000);
+    }, 30_000);
     return () => clearInterval(timer);
   }, [activeRoute, projectMode, selectedProjectId, backendStation.connectionStatus]);
 
@@ -9195,36 +9398,75 @@ export default function EngineWorkspace() {
     if (activeRoute !== 'project_detail' || projectMode !== 'timeline' || !activeProject) return;
     if (!shouldAttemptBackendProjectWrite(activeProject)) return;
     syncBackendManagerFlowGraph({ silent: true, projectId: activeProject.id });
-  }, [activeRoute, projectMode, selectedProjectId, backendStation.connectionStatus]);
+  }, [activeRoute, projectMode, selectedProjectId, backendStation.baseUrl]);
+
+  useEffect(() => {
+    if (!shouldRetryManagerFlowGraph({
+      activeRoute,
+      projectMode,
+      projectId: activeProject?.id,
+      errorProjectId: backendStation.managerFlowGraphErrorProjectId,
+      error: backendStation.managerFlowGraphError,
+    })) return undefined;
+    const timer = setInterval(() => {
+      syncBackendManagerFlowGraph({ silent: true, projectId: activeProject.id });
+    }, LOCAL_BACKEND_RECOVERY_INTERVAL_MS);
+    return () => clearInterval(timer);
+  }, [
+    activeRoute,
+    projectMode,
+    selectedProjectId,
+    backendStation.managerFlowGraphErrorProjectId,
+    backendStation.managerFlowGraphError,
+  ]);
 
   useEffect(() => {
     if (activeRoute !== 'project_detail' || projectMode !== 'dashboard' || !activeProject) return;
     if (!projectDashboardAdvancedOpen || isManagerDemoProject(activeProject)) return;
-    if (!shouldAttemptBackendProjectWrite(activeProject) || backendStation.loading) return;
-    if (projectDashboardCoreSyncMatches && ['loading', 'ready'].includes(projectDashboardCoreSync.status)) return;
+    if (!shouldAttemptBackendProjectWrite(activeProject)) return;
+    if (!shouldStartProjectDashboardCoreSync(projectDashboardCoreSync, activeProject.id)) return;
 
     const projectId = activeProject.id;
-    setProjectDashboardCoreSync({ projectId, status: 'loading', error: null });
+    const syncKey = `${normalizeBackendBaseUrl(backendStation.baseUrl)}:${String(projectId).toLowerCase()}`;
+    if (projectDashboardCoreSyncInFlightRef.current.has(syncKey)) return;
+    const nextState = beginProjectDashboardCoreSync(projectDashboardCoreSync, projectId);
+    const { attemptId } = nextState;
+    const syncToken = { attemptId };
+    projectDashboardCoreSyncInFlightRef.current.set(syncKey, syncToken);
+    setProjectDashboardCoreSync(nextState);
+    const acceptResult = () => (
+      projectDashboardCoreSyncInFlightRef.current.get(syncKey) === syncToken
+      && String(activeProjectIdRef.current || '').toLowerCase() === String(projectId).toLowerCase()
+    );
     Promise.all([
-      syncBackendManagerDashboard({ silent: true, projectId, timeoutMs: 10_000 }),
-      syncBackendProjectTranscripts({ silent: true, projectId, timeoutMs: 10_000, indexOnly: true }),
-      syncBackendTimelineAndEvents({ silent: true, projectId, timeoutMs: 10_000 }),
-    ]).then(([managerDashboard, transcripts, timelineAndEvents]) => {
-      const complete = Boolean(
-        managerDashboard
-        && transcripts?.transcriptIndex
-        && timelineAndEvents?.timeline
-        && timelineAndEvents?.events
-      );
-      setProjectDashboardCoreSync(prev => (
-        String(prev.projectId || '').toLowerCase() !== String(projectId).toLowerCase()
-          ? prev
-          : {
-              projectId,
-              status: complete ? 'ready' : 'error',
-              error: complete ? null : 'Core project read models did not finish syncing.',
-            }
-      ));
+      syncBackendAgentStateSummary({ silent: true, projectId, timeoutMs: 10_000, priority: 'user-visible', acceptResult, fallbackEnabled: false }),
+      syncBackendProjectTranscripts({ silent: true, projectId, timeoutMs: 10_000, indexOnly: true, acceptResult, priority: 'user-visible' }),
+      syncBackendTimelineAndEvents({ silent: true, projectId, timeoutMs: 10_000, acceptResult, priority: 'user-visible', recentLimit: 200 }),
+    ]).then(([agentStateSummary, transcripts, timelineAndEvents]) => {
+      const complete = Boolean(agentStateSummary);
+      const missingReadModels = [
+        !agentStateSummary && (activeLanguage === 'zh' ? '团队工作状态' : 'team work status'),
+        !transcripts?.transcriptIndex && (activeLanguage === 'zh' ? '频道索引' : 'channel index'),
+        (!timelineAndEvents?.timeline || !timelineAndEvents?.events) && (activeLanguage === 'zh' ? '时间线记录' : 'timeline records'),
+      ].filter(Boolean);
+      setProjectDashboardCoreSync(prev => completeProjectDashboardCoreSync(prev, {
+        projectId,
+        attemptId,
+        complete,
+        error: activeLanguage === 'zh'
+          ? `${missingReadModels.join('、')}同步失败，系统将自动重试。`
+          : `${missingReadModels.join(', ')} failed to sync. The system will retry automatically.`,
+      }));
+    }).catch((error) => {
+      setProjectDashboardCoreSync(prev => failProjectDashboardCoreSync(prev, {
+        projectId,
+        attemptId,
+        error: error?.message || 'Core project read models did not finish syncing.',
+      }));
+    }).finally(() => {
+      if (projectDashboardCoreSyncInFlightRef.current.get(syncKey) === syncToken) {
+        projectDashboardCoreSyncInFlightRef.current.delete(syncKey);
+      }
     });
   }, [
     activeRoute,
@@ -9233,13 +9475,36 @@ export default function EngineWorkspace() {
     projectDashboardAdvancedOpen,
     projectDashboardCoreSync.projectId,
     projectDashboardCoreSync.status,
+    projectDashboardCoreSync.attemptId,
     backendStation.baseUrl,
-    backendStation.loading,
   ]);
 
   useEffect(() => {
+    if (projectDashboardCoreSync.status !== 'loading' || !projectDashboardCoreSync.projectId) return undefined;
+    const projectId = projectDashboardCoreSync.projectId;
+    const attemptId = projectDashboardCoreSync.attemptId;
+    const timeout = setTimeout(() => {
+      setProjectDashboardCoreSync(prev => failProjectDashboardCoreSync(prev, {
+        projectId,
+        attemptId,
+        error: 'Core project read models timed out; the current console remains usable.',
+      }));
+    }, PROJECT_DASHBOARD_CORE_SYNC_TIMEOUT_MS);
+    return () => clearTimeout(timeout);
+  }, [projectDashboardCoreSync.projectId, projectDashboardCoreSync.status, projectDashboardCoreSync.attemptId]);
+
+  useEffect(() => {
+    if (projectDashboardCoreSync.status !== 'error' || !projectDashboardCoreSync.projectId || !projectDashboardCoreSync.retryAt) return undefined;
+    const delay = Math.max(0, projectDashboardCoreSync.retryAt - Date.now());
+    const timeout = setTimeout(() => {
+      setProjectDashboardCoreSync(prev => resetProjectDashboardCoreSync(prev, prev.projectId));
+    }, delay);
+    return () => clearTimeout(timeout);
+  }, [projectDashboardCoreSync.projectId, projectDashboardCoreSync.status, projectDashboardCoreSync.retryAt]);
+
+  useEffect(() => {
     if (activeRoute !== 'project_detail' || !['dashboard', 'timeline'].includes(projectMode) || !activeProject) return;
-    if (projectMode === 'dashboard' && projectDashboardAdvancedOpen && !projectDashboardCoreReady) return;
+    if (projectMode === 'dashboard' && projectDashboardAdvancedOpen) return;
     if (!shouldAttemptBackendProjectWrite(activeProject) || backendStation.loading) return;
     const baseUrl = committedBackendBaseUrl();
     const syncKey = `${activeProject.id}:${projectMode}:${baseUrl}`;
@@ -9250,7 +9515,7 @@ export default function EngineWorkspace() {
 
   useEffect(() => {
     if (activeRoute !== 'project_detail' || !['dashboard', 'chat'].includes(projectMode) || !activeProject) return;
-    if (projectMode === 'dashboard' && projectDashboardAdvancedOpen && !projectDashboardCoreReady) return;
+    if (projectMode === 'dashboard' && projectDashboardAdvancedOpen) return;
     if (!shouldAttemptBackendProjectWrite(activeProject) || backendStation.loading) return;
     const baseUrl = committedBackendBaseUrl();
     const syncKey = `${activeProject.id}:${projectMode}:${activeChannelId || 'main'}:${baseUrl}`;
@@ -9261,57 +9526,6 @@ export default function EngineWorkspace() {
       : { silent: true, projectId: activeProject.id };
     syncBackendProjectTranscripts(transcriptSyncOptions);
   }, [activeRoute, projectMode, selectedProjectId, activeChannelId, projectDashboardAdvancedOpen, projectDashboardCoreReady, backendStation.baseUrl, backendStation.loading]);
-
-  useEffect(() => {
-    if (activeRoute !== 'project_detail' || projectMode !== 'dashboard' || !activeProject) return;
-    if (!projectDashboardAdvancedOpen && !isManagerDemoProject(activeProject)) return;
-    if (!projectDashboardCoreReady) return;
-    if (!shouldAttemptBackendProjectWrite(activeProject) || backendStation.loading) return;
-    const baseUrl = committedBackendBaseUrl();
-    const syncKey = `${activeProject.id}:${baseUrl}`;
-    if (managerAutoReadyProofSyncRef.current[syncKey]) return;
-    managerAutoReadyProofSyncRef.current[syncKey] = true;
-    Promise.allSettled([
-      syncBackendManagerReadyPackage({ silent: true, projectId: activeProject.id }),
-      syncBackendReadinessProofMap({ silent: true, projectId: activeProject.id }),
-    ]);
-  }, [activeRoute, projectMode, selectedProjectId, projectDashboardAdvancedOpen, projectDashboardCoreReady, backendStation.baseUrl, backendStation.loading]);
-
-  useEffect(() => {
-    if (activeRoute !== 'project_detail' || projectMode !== 'dashboard' || !activeProject) return;
-    if (!projectDashboardAdvancedOpen && !isManagerDemoProject(activeProject)) return;
-    if (!projectDashboardCoreReady) return;
-    if (!shouldAttemptBackendProjectWrite(activeProject) || backendStation.loading) return;
-    const baseUrl = committedBackendBaseUrl();
-    const syncKey = `${activeProject.id}:${baseUrl}`;
-    if (managerAutoControlSyncRef.current[syncKey]) return;
-    managerAutoControlSyncRef.current[syncKey] = true;
-    Promise.allSettled([
-      syncBackendManagerCommandCenter({ silent: true, projectId: activeProject.id }),
-      syncBackendManagerActionQueue({ silent: true, projectId: activeProject.id }),
-      syncBackendAutonomousControlBundle({ silent: true, projectId: activeProject.id }),
-      syncBackendCollaborationIntentQueue({ silent: true, projectId: activeProject.id }),
-    ]);
-  }, [activeRoute, projectMode, selectedProjectId, projectDashboardAdvancedOpen, projectDashboardCoreReady, backendStation.baseUrl, backendStation.loading]);
-
-  useEffect(() => {
-    if (activeRoute !== 'project_detail' || projectMode !== 'dashboard' || !activeProject) return;
-    if (!projectDashboardAdvancedOpen && !isManagerDemoProject(activeProject)) return;
-    if (!projectDashboardCoreReady) return;
-    if (!shouldAttemptBackendProjectWrite(activeProject) || backendStation.loading) return;
-    const baseUrl = committedBackendBaseUrl();
-    const syncKey = `${activeProject.id}:${baseUrl}`;
-    if (managerAutoDiagnosticSyncRef.current[syncKey]) return;
-    managerAutoDiagnosticSyncRef.current[syncKey] = true;
-    Promise.allSettled([
-      syncBackendManagerScenarioWalkthrough({ silent: true, projectId: activeProject.id }),
-      syncBackendManagerScenarioTrail({ silent: true, projectId: activeProject.id }),
-      syncBackendManagerRequirementMatrix({ silent: true, projectId: activeProject.id }),
-      syncBackendSyncProtocolAudit({ silent: true, projectId: activeProject.id }),
-      syncBackendManagerUseCaseAudit({ silent: true, projectId: activeProject.id }),
-      syncBackendCockpitReadModels({ silent: true, projectId: activeProject.id }),
-    ]);
-  }, [activeRoute, projectMode, selectedProjectId, projectDashboardAdvancedOpen, projectDashboardCoreReady, backendStation.baseUrl, backendStation.loading]);
 
   useEffect(() => {
     if (activeRoute !== 'project_detail' || projectMode !== 'dashboard' || !activeProject) return;
@@ -9391,27 +9605,27 @@ export default function EngineWorkspace() {
     setActiveRoute('agent_market');
     setSelectedProjectId(null);
     setSelectedMarketAgentId(null);
-    setIsDecrypting(true);
-    setTimeout(() => setIsDecrypting(false), 800);
   };
   const navToProject = (id) => {
+    cancelPendingBackendReadModelRefreshes();
     setSelectedProjectId(id);
     setProjectMode('dashboard');
-    setProjectDashboardAdvancedOpen(false);
+    setProjectDashboardAdvancedOpen(true);
     setActiveRoute('project_detail');
     if (shouldAttemptBackendProjectWrite({ id })) {
       loadBackendProjectSnapshot(id, { silent: true });
     }
   };
   const navToInitiation = () => {
-    if (!localAuthSessionForCurrentBackend) {
+    if (!canCreateLocalProject({
+      authAvailable: localAuthStatus.available,
+      hasSession: Boolean(localAuthSessionForCurrentBackend),
+    })) {
       setFirstRunNotice(activeLanguage === 'zh' ? '请先创建或登录本地账户，再创建项目。' : 'Create or sign in to a local account before creating a project.');
       setActiveRoute('dashboard');
       return;
     }
-    const nextProjectId = projects.some(project => project.id === DEFAULT_INITIATION_PROJECT_ID)
-      ? createProjectId(initiationDraft.name || 'project')
-      : DEFAULT_INITIATION_PROJECT_ID;
+    const nextProjectId = createProjectId(initiationDraft.name || 'project');
     setMarketMode('initiation');
     setContractProjectPickerAgentId(null);
     setSelectedProjectId(null);
@@ -9424,6 +9638,7 @@ export default function EngineWorkspace() {
     setSelectedLeaderCandidateId(null);
     setInitiationMeetingSession(null);
     setInitiationActionDrafts(defaultInitiationActionDrafts(initiationDraft.output, activeLanguage));
+    setInitiationDeliverableDrafts(defaultInitiationDeliverableDrafts(initiationDraft.output, activeLanguage));
     setInitiationConfirmedTeamIds([]);
     setInitiationInviteIds([]);
     setSelectedInitiationClarificationQuestionId(null);
@@ -9447,8 +9662,6 @@ export default function EngineWorkspace() {
     setSelectedMarketAgentId(null);
     setContractProjectPickerAgentId(null);
     setActiveRoute('agent_market');
-    setIsDecrypting(true);
-    setTimeout(() => setIsDecrypting(false), 600);
   };
   const continueInitiationFromMarket = () => {
     setMarketMode('initiation');
@@ -9457,7 +9670,13 @@ export default function EngineWorkspace() {
     setActiveRoute('project_initiation');
   };
   const navToWarRoom = () => { setActiveRoute('war_room'); setMeetingState('idle'); setMeetingLogs([]); setTargetNodeIds([]); };
-  const launchManagerDemoProject = () => {
+  const launchManagerDemoProject = async () => {
+    const {
+      applyPeerManagementMatrix,
+      buildNextActionResolution,
+      runAgentWorkCycle,
+      submitProjectMultiChannelChangeRequest,
+    } = await loadAgentProjectService();
     const projectId = 'p_manager_demo_001';
     const projectName = 'Manager Demo: Autonomous Agent Studio';
     const directorBriefId = `director_brief_${projectId}`;
@@ -9908,13 +10127,24 @@ export default function EngineWorkspace() {
     const invitedMembers = initiationRosterMembers;
     const taskText = `${initiationDraft.name} ${initiationDraft.summary} ${initiationDraft.intent} ${initiationDraft.output} ${initiationDraft.reason}`;
     const skillPlan = createRoundtablePlan(invitedMembers.map(member => member.id), taskText);
-    const plannedTasks = initiationActionDrafts
+    const plannedActions = initiationActionDrafts
       .map((text, index) => ({
-        id: 102 + index,
+        id: `next_action_${index + 1}`,
         text: text.trim(),
         status: 'pending',
       }))
       .filter(task => task.text);
+    const selectedLeaderId = selectedLeaderCandidateId || skillPlan.lead?.slug || invitedMembers[0]?.id;
+    const deliverableResolution = buildKickoffDeliverableResolution({
+      deliverables: initiationDeliverableDrafts,
+      team: invitedMembers,
+      selectedLeaderId,
+      managerConfirmed: false,
+      now,
+      source: 'manager-ui-kickoff-deliverable-drafts',
+      language: activeLanguage,
+    });
+    const deliverableTasks = kickoffDeliverablesToTasks(deliverableResolution, { language: activeLanguage });
     return {
       projectId,
       language: activeLanguage,
@@ -9923,15 +10153,16 @@ export default function EngineWorkspace() {
       workMode: initiationWorkMode,
       meetingSkillBrief: buildInitiationMeetingSkillBrief({
         draft: initiationDraft,
-        output: plannedTasks[0]?.text,
+        output: deliverableResolution.deliverables.map(item => item.fileName).join(' / ') || initiationDraft.output,
         language: activeLanguage,
       }),
       team: invitedMembers,
-      selectedLeaderId: selectedLeaderCandidateId || undefined,
+      selectedLeaderId: selectedLeaderId || undefined,
       reviewerId: skillPlan.reviewer?.slug,
-      tasks: plannedTasks.length ? plannedTasks : [
-        { id: 102, text: initiationDraft.output || 'Convert initiation consensus into the first execution artifact', status: 'pending' },
-      ],
+      tasks: deliverableTasks,
+      nextActions: plannedActions.length ? plannedActions : defaultInitiationActionDrafts(initiationDraft.output, activeLanguage)
+        .map((text, index) => ({ id: `next_action_${index + 1}`, text, status: 'pending' })),
+      deliverables: deliverableResolution.deliverables,
       now,
       source: 'mandatory_roundtable',
     };
@@ -10139,6 +10370,9 @@ export default function EngineWorkspace() {
     }
 
     setInitiationMeetingSession(meeting);
+    if (meeting?.deliverableResolution?.deliverables?.length) {
+      setInitiationDeliverableDrafts(meeting.deliverableResolution.deliverables);
+    }
     setSelectedInitiationClarificationQuestionId(
       (meeting.roleQuestionResolutions || []).find(row => !row.answered)?.questionId
       || (meeting.transcript || []).find(item => item.stage === 'role-clarification' || item.type === 'role-question')?.id
@@ -10147,9 +10381,9 @@ export default function EngineWorkspace() {
     setInitiationConfirmedTeamIds(kickoffPayload.team.map(member => member.id));
     setSelectedLeaderCandidateId(null);
     setInitiationPhase('discussion');
-    roomSimulationTimersRef.current.forEach(timer => clearTimeout(timer));
-    roomSimulationTimersRef.current = [];
+    resetRoomAgentSpeech();
     setRoomInput('');
+    setRoomUserIntentActive(false);
     setRoomSpeaker(null);
     setRoomIntentions([]);
     setMeetingStartTime(null);
@@ -10162,7 +10396,6 @@ export default function EngineWorkspace() {
     )) || (meeting.transcript || []).find(item => item.speakerId && item.speakerId !== 'director' && item.text);
     if (openingTurn) {
       const openingIntentId = `initiation_opening_${openingTurn.id || Date.now()}`;
-      setRoomSpeaker(openingTurn.speakerId || null);
       setRoomIntentions([{
         id: openingIntentId,
         name: openingTurn.speaker || 'Agent',
@@ -10173,7 +10406,7 @@ export default function EngineWorkspace() {
         rank: 1,
         speakerRank: 0,
         wait: 1,
-        status: 'speaking',
+        status: 'queued',
         proofIds: [openingTurn.id].filter(Boolean),
       }]);
       setRoomTranscript([{
@@ -10185,13 +10418,24 @@ export default function EngineWorkspace() {
         source: openingTurn.source || 'backend-kickoff-opening-turn',
         proofIds: [openingTurn.id].filter(Boolean),
       }]);
-      const openingTimer = setTimeout(() => {
-        setRoomSpeaker(null);
-        setRoomIntentions(prev => prev.map(intent => (
-          intent.id === openingIntentId ? { ...intent, status: 'yielded' } : intent
-        )));
-      }, 1600);
-      roomSimulationTimersRef.current.push(openingTimer);
+      scheduleRoomAgentTurn({
+        intentId: openingIntentId,
+        speakerId: openingTurn.speakerId || null,
+        delayMs: 0,
+        speakDurationMs: 1600,
+        onStart: () => {
+          setRoomSpeaker(openingTurn.speakerId || null);
+          setRoomIntentions(prev => prev.map(intent => (
+            intent.id === openingIntentId ? { ...intent, status: 'speaking' } : intent
+          )));
+        },
+        onYield: () => {
+          setRoomSpeaker(null);
+          setRoomIntentions(prev => prev.map(intent => (
+            intent.id === openingIntentId ? { ...intent, status: 'yielded' } : intent
+          )));
+        },
+      });
     } else {
       setRoomTranscript([{
         id: `initiation_meeting_ready_${Date.now()}`,
@@ -10299,6 +10543,7 @@ export default function EngineWorkspace() {
     };
     let kickoffResult = null;
     let kickoffReadModelRefresh = null;
+    let kickoffReadModelRefreshPromise = null;
 
     try {
       const sessionId = initiationMeetingSession?.id;
@@ -10356,13 +10601,11 @@ export default function EngineWorkspace() {
           : prev.agentAutonomousActionQueueSyncCount,
         error: null,
       }));
-      kickoffReadModelRefresh = await refreshProjectInitiationReadModels({
+      kickoffReadModelRefreshPromise = refreshProjectInitiationReadModels({
         payload: kickoffResult,
         projectId: kickoffResult.project?.id || confirmedKickoffPayload.projectId || kickoffPayload.projectId,
       });
-      if (!kickoffReadModelRefresh?.dashboard) {
-        applyBackendManagerDashboardPayload(kickoffResult);
-      }
+      applyBackendManagerDashboardPayload(kickoffResult);
     } catch (error) {
       if (confirmedKickoffPayload.workMode || !isDevelopmentInitiationFallbackEnabled()) {
         setBackendStation(prev => ({
@@ -10382,6 +10625,7 @@ export default function EngineWorkspace() {
         return;
       }
       const session = initiationMeetingSession;
+      const { approveKickoffMeetingSession, createKickoffProjectFromMeeting } = await loadAgentProjectService();
       kickoffResult = session
         ? approveKickoffMeetingSession({
           meeting: { ...session, language: activeLanguage },
@@ -10433,64 +10677,19 @@ export default function EngineWorkspace() {
     }
 
     let projectReadyForWork = {
-      ...(kickoffReadModelRefresh?.project || kickoffResult.project),
-      language: (kickoffReadModelRefresh?.project || kickoffResult.project)?.language || activeLanguage,
+      ...kickoffResult.project,
+      language: kickoffResult.project?.language || activeLanguage,
     };
     const createdProjectId = projectReadyForWork.id || kickoffPayload.projectId;
-    if (shouldAttemptBackendProjectWrite(projectReadyForWork) && !kickoffReadModelRefresh?.project) {
-      try {
-        const hydratedProject = await requestAgentBackend(`/projects/${encodeURIComponent(createdProjectId)}`, {
-          timeoutMs: 10_000,
-        });
-        if (hydratedProject.project?.id) {
-          projectReadyForWork = {
-            ...projectReadyForWork,
-            ...hydratedProject.project,
-            language: hydratedProject.project.language || projectReadyForWork.language || activeLanguage,
-          };
-        }
-      } catch {
-        // Keep the approval receipt visible; later explicit sync can recover the full backend snapshot.
-      }
-    }
-    setProjects(previous => {
-      const exists = previous.some(project => project.id === createdProjectId);
-      return exists
-        ? previous.map(project => (project.id === createdProjectId ? projectReadyForWork : project))
-        : [projectReadyForWork, ...previous];
-    });
-    setSelectedProjectId(createdProjectId);
     setInitiationApprovalState(prev => ({
       ...prev,
-      label: activeLanguage === 'zh' ? '项目已创建，正在打开 Dashboard' : 'Project created, opening Dashboard',
+      label: activeLanguage === 'zh' ? '项目已创建，正在验证本地工作区' : 'Project created, verifying the local workspace',
     }));
-    setProjectMode('dashboard');
-    setProjectDashboardAdvancedOpen(false);
-    setMeetingStartTime(null);
-    setMeetingElapsed(0);
-    setRoomSpeaker(null);
-    setRoomIntentions([]);
-    setRoomInput('');
-    setRoomTranscript([
-      {
-        id: `approved_project_open_${Date.now()}`,
-        speaker: 'System',
-        role: 'System',
-        text: `${projectReadyForWork.name} is approved. The project roundtable is open for the first execution discussion.`,
-        score: 0,
-      },
-      ...(kickoffResult.messages || []).slice(0, 8).map((message, index) => ({
-        id: message.id || `approved_kickoff_${index}`,
-        speaker: message.author || 'Agent',
-        role: message.role || message.type || 'Kickoff',
-        text: message.text || '',
-        score: message.author === 'Director' ? 10 : 8,
-      })),
-    ]);
-    setActiveRoute('project_detail');
 
     const preparedWorkspacePath = initiationWorkspaceDraft.receipt?.workspacePath || initiationWorkspaceDraft.preparedPath || '';
-    if (preparedWorkspacePath && shouldAttemptBackendProjectWrite(projectReadyForWork)) {
+    const workspaceRequiredForLaunch = shouldAttemptBackendProjectWrite(projectReadyForWork);
+    let workspaceVerification = null;
+    if (preparedWorkspacePath && workspaceRequiredForLaunch) {
       try {
         const boundAt = new Date().toISOString();
         const bindPayload = await requestAgentBackend(`/projects/${encodeURIComponent(createdProjectId)}/workspace/bind`, {
@@ -10572,6 +10771,7 @@ export default function EngineWorkspace() {
           meetingReportPath: meetingReportResult.meetingReport?.workspaceRelativePath || null,
           verifiedAt: new Date().toISOString(),
         };
+        workspaceVerification = verification;
         setInitiationWorkspaceDraft(prev => ({
           ...prev,
           preparedPath: verification.workspacePath,
@@ -10600,7 +10800,7 @@ export default function EngineWorkspace() {
           ...prev,
           verification: null,
           error: error.name === 'AbortError'
-            ? 'Workspace bind/write verification timed out after project approval.'
+            ? 'Workspace bind/write verification timed out during project setup.'
             : error.message || String(error),
         }));
         setBackendStation(prev => ({
@@ -10608,7 +10808,74 @@ export default function EngineWorkspace() {
           lastAction: 'Initiation workspace bind/write verification failed',
           error: error.message || String(error),
         }));
+        setInitiationPhase('decision');
+        finishInitiationApproval();
+        return;
       }
+    }
+    const workspaceLaunchGate = projectWorkspaceLaunchGate({
+      workspaceRequired: workspaceRequiredForLaunch,
+      preparedWorkspacePath,
+      verification: workspaceVerification,
+    });
+    if (!workspaceLaunchGate.ready) {
+      const error = activeLanguage === 'zh'
+        ? '本地工作区尚未完成绑定和文件验证，项目不会提前进入 Dashboard。请重新准备工作区后再试。'
+        : 'The local workspace has not been bound and verified. The project will not open in Dashboard yet; prepare the workspace and retry.';
+      setInitiationWorkspaceDraft(prev => ({ ...prev, verification: null, error }));
+      setBackendStation(prev => ({
+        ...prev,
+        lastAction: 'Initiation workspace verification required before Dashboard launch',
+        error,
+      }));
+      setInitiationPhase('decision');
+      finishInitiationApproval();
+      return;
+    }
+
+    setProjects(previous => {
+      const exists = previous.some(project => project.id === createdProjectId);
+      return exists
+        ? previous.map(project => (project.id === createdProjectId ? projectReadyForWork : project))
+        : [projectReadyForWork, ...previous];
+    });
+    setSelectedProjectId(createdProjectId);
+    setInitiationApprovalState(prev => ({
+      ...prev,
+      label: activeLanguage === 'zh' ? '工作区验证完成，正在打开 Dashboard' : 'Workspace verified, opening Dashboard',
+    }));
+    setProjectMode('dashboard');
+    setProjectDashboardAdvancedOpen(true);
+    setMeetingStartTime(null);
+    setMeetingElapsed(0);
+    setRoomSpeaker(null);
+    setRoomIntentions([]);
+    setRoomInput('');
+    setRoomTranscript([
+      {
+        id: `approved_project_open_${Date.now()}`,
+        speaker: 'System',
+        role: 'System',
+        text: `${projectReadyForWork.name} is approved. The project roundtable is open for the first execution discussion.`,
+        score: 0,
+      },
+      ...(kickoffResult.messages || []).slice(0, 8).map((message, index) => ({
+        id: message.id || `approved_kickoff_${index}`,
+        speaker: message.author || 'Agent',
+        role: message.role || message.type || 'Kickoff',
+        text: message.text || '',
+        score: message.author === 'Director' ? 10 : 8,
+      })),
+    ]);
+    setActiveRoute('project_detail');
+
+    kickoffReadModelRefresh = await kickoffReadModelRefreshPromise?.catch(() => null) || null;
+    if (kickoffReadModelRefresh?.project?.id) {
+      projectReadyForWork = {
+        ...projectReadyForWork,
+        ...kickoffReadModelRefresh.project,
+        language: kickoffReadModelRefresh.project.language || projectReadyForWork.language || activeLanguage,
+      };
     }
     let approvedManagerDashboard = kickoffReadModelRefresh?.dashboard || kickoffResult.managerDashboard || null;
     if (shouldAttemptBackendProjectWrite(projectReadyForWork) && !approvedManagerDashboard) {
@@ -10666,6 +10933,26 @@ export default function EngineWorkspace() {
   };
   const enterProjectScene = (mode) => {
     if (sceneTransition || projectMode === mode) return;
+    if (mode === 'meeting' && activeProject) {
+      const activeSession = (activeProject.meetingSessions || []).find((session) => session.status === 'active') || null;
+      setProjectMeetingSession(activeSession);
+      setProjectMeetingCompletion(null);
+      setProjectMeetingSetupError('');
+      setProjectMeetingSetupDraft(activeSession ? {
+        agenda: activeSession.agenda || '',
+        participantIds: activeSession.participantIds || [],
+        recorderId: activeSession.recorderId || '',
+      } : {
+        agenda: activeProject.currentObjective || activeProject.objective || activeProject.brief || '',
+        participantIds: [],
+        recorderId: '',
+      });
+      setRoomIntentions([]);
+      setRoomSpeaker(null);
+      setRoomTranscript(activeSession
+        ? [{ id: `${activeSession.id}_resume`, speaker: 'System', role: 'Meeting', text: activeLanguage === 'zh' ? `继续会议：${activeSession.agenda}` : `Resuming meeting: ${activeSession.agenda}`, score: 0 }]
+        : []);
+    }
     cancelPendingBackendReadModelRefreshes();
     if (sceneTransitionTimerRef.current) clearTimeout(sceneTransitionTimerRef.current);
     setProjectLauncherOpen(false);
@@ -10681,9 +10968,7 @@ export default function EngineWorkspace() {
     cancelPendingBackendReadModelRefreshes();
     if (sceneTransitionTimerRef.current) clearTimeout(sceneTransitionTimerRef.current);
     setProjectLauncherOpen(false);
-    roomSimulationTimersRef.current.forEach(timer => clearTimeout(timer));
-    roomSimulationTimersRef.current = [];
-    setRoomSpeaker(null);
+    resetRoomAgentSpeech();
     setSceneTransition('dashboard');
     sceneTransitionTimerRef.current = setTimeout(() => {
       setProjectMode('dashboard');
@@ -10714,7 +10999,7 @@ export default function EngineWorkspace() {
     setContractProjectPickerAgentId(null);
     setSelectedProjectId(projectId);
     setProjectMode('dashboard');
-    setProjectDashboardAdvancedOpen(false);
+    setProjectDashboardAdvancedOpen(true);
     setActiveRoute('project_detail');
   };
 
@@ -10986,11 +11271,12 @@ export default function EngineWorkspace() {
     backendTurns.forEach((turn, index) => {
       const delayMs = meetingTurnDelayMs(index, turn.delayMs);
       const intentId = `backend_meeting_${turn.messageId || turn.id || index}`;
+      const agent = team.find(item => item.id === turn.speakerId || item.name === turn.speaker);
       scheduleRoomAgentTurn({
         intentId,
+        speakerId: turn.speakerId || agent?.id || null,
         delayMs,
         onStart: () => {
-        const agent = team.find(item => item.id === turn.speakerId || item.name === turn.speaker);
         if (turn.speakerId || agent?.id) setRoomSpeaker(turn.speakerId || agent.id);
         setRoomIntentions(prev => prev.map(intent => (
           intent.id === intentId ? { ...intent, status: 'speaking' } : intent
@@ -11004,6 +11290,12 @@ export default function EngineWorkspace() {
           source: turn.source || 'war-room-meeting-agent-turn',
           proofIds: turn.proofIds || [],
           eventIds: turn.eventIds || [],
+          replyToTurnId: turn.replyToTurnId || null,
+          targetSpeakerId: turn.targetSpeakerId || null,
+          addressedAgentIds: turn.addressedAgentIds || [],
+          interactionIntent: turn.interactionIntent || null,
+          topicId: turn.topicId || null,
+          exchangeIndex: turn.exchangeIndex || 0,
         });
         },
         onYield: () => {
@@ -11055,6 +11347,7 @@ export default function EngineWorkspace() {
       const delayMs = meetingTurnDelayMs(index, response.delayMs);
       scheduleRoomAgentTurn({
         intentId: response.speakerId,
+        speakerId: response.speakerId,
         delayMs,
         onStart: () => {
         setRoomSpeaker(response.speakerId);
@@ -11066,6 +11359,12 @@ export default function EngineWorkspace() {
           score: response.score,
           text: response.text,
           source: response.source || 'local-room-runtime',
+          replyToTurnId: response.replyToTurnId || null,
+          targetSpeakerId: response.targetSpeakerId || null,
+          addressedAgentIds: response.addressedAgentIds || [],
+          interactionIntent: response.interactionIntent || null,
+          topicId: response.topicId || null,
+          exchangeIndex: response.exchangeIndex || 0,
         });
         },
         onYield: () => {
@@ -11104,6 +11403,7 @@ export default function EngineWorkspace() {
       const intentId = `change_${message.id}`;
       scheduleRoomAgentTurn({
         intentId,
+        speakerId: agent?.id || null,
         delayMs,
         onStart: () => {
         if (agent) setRoomSpeaker(agent.id);
@@ -11129,6 +11429,81 @@ export default function EngineWorkspace() {
     });
   };
 
+  const updateProjectMeetingSetupDraft = (field, value) => {
+    setProjectMeetingSetupDraft(prev => ({ ...prev, [field]: value }));
+    setProjectMeetingSetupError('');
+  };
+
+  const toggleProjectMeetingParticipant = (participantId) => {
+    setProjectMeetingSetupDraft(prev => {
+      const selected = prev.participantIds.includes(participantId);
+      const participantIds = selected
+        ? prev.participantIds.filter(id => id !== participantId)
+        : [...prev.participantIds, participantId];
+      return {
+        ...prev,
+        participantIds,
+        recorderId: participantIds.includes(prev.recorderId) ? prev.recorderId : '',
+      };
+    });
+    setProjectMeetingSetupError('');
+  };
+
+  const startConfirmedProjectMeeting = async () => {
+    if (!activeProject || projectMeetingStarting) return;
+    setProjectMeetingStarting(true);
+    setProjectMeetingSetupError('');
+    try {
+      const payload = await runBackendProjectCommand('meeting/start', {
+        agenda: projectMeetingSetupDraft.agenda.trim(),
+        participantIds: projectMeetingSetupDraft.participantIds,
+        recorderId: projectMeetingSetupDraft.recorderId,
+        now: new Date().toISOString(),
+      });
+      const session = payload?.meetingSession;
+      if (!session?.id) throw new Error('会议没有返回可保存的会议实例。');
+      setProjectMeetingSession(session);
+      setProjectMeetingCompletion(null);
+      setMeetingStartTime(Date.now());
+      setMeetingElapsed(0);
+      setRoomIntentions(payload.meetingIntentions || []);
+      setRoomTranscript((payload.messages || [])
+        .map(meetingTranscriptEntryFromMessage)
+        .filter(Boolean));
+      setChatMessages(prev => mergeProjectMessages(prev, payload.messages || []));
+    } catch (error) {
+      setProjectMeetingSetupError(error?.message || '会议创建失败，请检查议题、参会人和记录负责人。');
+    } finally {
+      setProjectMeetingStarting(false);
+    }
+  };
+
+  const completeConfirmedProjectMeeting = async () => {
+    if (!activeProject || !projectMeetingSession?.id || projectMeetingCompletion) return;
+    try {
+      const payload = await runBackendProjectCommand('meeting/complete', {
+        meetingSessionId: projectMeetingSession.id,
+        now: new Date().toISOString(),
+      });
+      if (!payload?.meetingReport?.workspaceRelativePath) {
+        throw new Error('会议纪要没有写入本地工作区。');
+      }
+      setProjectMeetingSession(payload.meetingSession || projectMeetingSession);
+      setProjectMeetingCompletion({
+        report: payload.meetingReport,
+        submission: payload.submission || null,
+      });
+      setChatMessages(prev => mergeProjectMessages(prev, payload.messages || []));
+      playBackendMeetingTurns({
+        meetingAgentTurns: payload.meetingAgentTurns || [],
+        submittedText: '',
+        projectOverride: activeProject,
+      });
+    } catch (error) {
+      setProjectMeetingSetupError(error?.message || '会议结束失败，会议仍保持打开。');
+    }
+  };
+
   const submitRoomInput = async (projectOverride = activeProject) => {
     const text = roomInput.trim();
     if (!text) return;
@@ -11138,19 +11513,35 @@ export default function EngineWorkspace() {
     setRoomInput('');
     stageMeetingUserTurn({ text, messageId, submittedAt });
     setMeetingMessageDeliveryStatus(messageId, 'processing');
-    const previewExchange = queueMeetingIntentPreview(text, projectOverride, {
+    const useBackendMeeting = shouldAttemptBackendProjectWrite(projectOverride) && projectOverride?.id === activeProject?.id;
+    const previewExchange = useBackendMeeting ? null : queueMeetingIntentPreview(text, projectOverride, {
       submittedAt,
       messageId,
     });
+    if (useBackendMeeting && projectMeetingSession?.participantIds?.length) {
+      setRoomIntentions(projectMeetingSession.participantIds.map((participantId) => {
+        const participant = projectOverride.team?.find((member) => member.id === participantId);
+        return {
+          id: participantId,
+          name: participant?.name || participantId,
+          role: participant?.role || 'Meeting participant',
+          status: 'listening',
+          target: projectMeetingSession.agenda,
+          interactionIntent: 'consider',
+        };
+      }));
+    }
 
-    if (shouldAttemptBackendProjectWrite(projectOverride) && projectOverride?.id === activeProject?.id) {
+    if (useBackendMeeting) {
       try {
         const backendResult = await runBackendProjectCommand('meeting', {
           text,
           now: submittedAt,
           messageId,
+          meetingSessionId: projectMeetingSession?.id || null,
           compactResult: true,
         });
+        if (backendResult?.meetingSession) setProjectMeetingSession(backendResult.meetingSession);
         const nextProject = backendResult?.project || projectOverride;
         const renderedBackendTurns = playBackendMeetingTurns({
           userMessage: backendResult?.userMessage || backendResult?.messages?.[0],
@@ -11200,6 +11591,7 @@ export default function EngineWorkspace() {
       }
     }
 
+    const { submitProjectMeetingMessage } = await loadAgentProjectService();
     const meetingResult = submitProjectMeetingMessage({
       project: projectOverride,
       text,
@@ -11280,6 +11672,7 @@ export default function EngineWorkspace() {
       }
     }
 
+    const { submitProjectChatMessage } = await loadAgentProjectService();
     const chatResult = submitProjectChatMessage({
       project: activeProject,
       text,
@@ -11837,6 +12230,8 @@ export default function EngineWorkspace() {
           setProjectToolGrantSetting,
           setProviderSecretDrafts,
           setSettingsOpen,
+          focusedModelSetup,
+          setFocusedModelSetup,
           setSettingsTab,
           setWorkspaceBindDraft,
           settingsTab,
@@ -11863,7 +12258,10 @@ export default function EngineWorkspace() {
     </Suspense>
   );
 
-  const openProductSettings = () => setSettingsOpen(true);
+  const openProductSettings = () => {
+    setFocusedModelSetup(false);
+    setSettingsOpen(true);
+  };
   const renderSidebar = () => (
     <ProductSidebar
       collapsed={sidebarCollapsed}
@@ -11872,6 +12270,7 @@ export default function EngineWorkspace() {
       onDashboard={navToDashboard}
       onMarket={navToMarket}
       projects={projects}
+      projectCatalogStatus={backendStation.projectCatalogStatus}
       onCreateProject={navToInitiation}
       onProject={navToProject}
       selectedProjectId={selectedProjectId}
@@ -11897,7 +12296,6 @@ export default function EngineWorkspace() {
           getDossierProfile,
           initiationInviteIds,
           initiationTalentMembers,
-          isDecrypting,
           marketCategory,
           marketMode,
           marketSearch,
@@ -12136,7 +12534,7 @@ export default function EngineWorkspace() {
       name: initiationDraft.name || 'Untitled Initiation',
       meetingSkillBrief: buildInitiationMeetingSkillBrief({
         draft: initiationDraft,
-        output: initiationActionDrafts.find(action => action.trim()) || initiationDraft.output,
+        output: initiationDeliverableDrafts.map(item => item.fileName).filter(Boolean).join(' / ') || initiationDraft.output,
         language: activeLanguage,
       }),
       team: [INITIATION_MEMBERS[0], ...invitedMembers].map(member => ({
@@ -12169,6 +12567,11 @@ export default function EngineWorkspace() {
       tone: item.stage || item.type || 'meeting turn',
       text: item.text,
       hears: item.hears || item.hearsOthers || [],
+      replyToTurnId: item.replyToTurnId || item.repliesTo || null,
+      targetSpeakerId: item.targetSpeakerId || null,
+      interactionIntent: item.interactionIntent || null,
+      topicId: item.topicId || null,
+      exchangeIndex: item.exchangeIndex || 0,
     })) : [
       {
         who: 'Director',
@@ -12217,6 +12620,7 @@ export default function EngineWorkspace() {
     const initiationBackendErrorVisible = Boolean(
       backendStation.error
       && /kickoff|initiation|leader confirmation|next-action|clarification/i.test(backendStation.lastAction || '')
+      && !['brief', 'workspace', 'invite'].includes(initiationStep)
     );
     const initiationStartupReadiness = providerRuntimeStatus.localMvpStartupReadiness?.schemaVersion === 'local-mvp-startup-readiness/v1'
       ? providerRuntimeStatus.localMvpStartupReadiness
@@ -12249,7 +12653,18 @@ export default function EngineWorkspace() {
       ? 'border-[#59684b] bg-[#eef5df] text-[#3f5136]'
       : 'border-[#b9a55f] bg-[#fbf7df] text-[#75631d]';
     const initiationCanStartKickoff = initiationStartupAllowsKickoff && initiationWorkspaceReady;
-    const initiationCanApproveProject = initiationCanStartKickoff && (Boolean(initiationMeetingSession) || initiationDevelopmentFallbackAllowed);
+    const initiationDeliverableConfirmation = buildKickoffDeliverableResolution({
+      deliverables: initiationDeliverableDrafts,
+      team: confirmedMembers,
+      selectedLeaderId: firstLead.id,
+      managerConfirmed: true,
+      source: 'manager-ui-deliverable-confirmation-preview',
+      language: activeLanguage,
+    });
+    const initiationDeliverablesReady = kickoffDeliverablesReady(initiationDeliverableConfirmation);
+    const initiationCanApproveProject = initiationCanStartKickoff
+      && (Boolean(initiationMeetingSession) || initiationDevelopmentFallbackAllowed)
+      && initiationDeliverablesReady;
     const updateDraft = (key, value) => setInitiationDraft(prev => ({ ...prev, [key]: value }));
     const openInitiationWorkspaceFolderPicker = async () => {
       try {
@@ -12442,10 +12857,30 @@ export default function EngineWorkspace() {
     const updateActionDraft = (index, value) => setInitiationActionDrafts(prev => prev.map((action, actionIndex) => (
       actionIndex === index ? value : action
     )));
+    const updateDeliverableDraft = (index, field, value) => setInitiationDeliverableDrafts(prev => prev.map((deliverable, deliverableIndex) => {
+      if (deliverableIndex !== index) return deliverable;
+      if (field === 'ownerId') {
+        const owner = confirmedMembers.find(member => member.id === value);
+        return { ...deliverable, ownerId: value, ownerName: owner?.name || value };
+      }
+      if (field === 'acceptanceCriteria') {
+        return { ...deliverable, acceptanceCriteria: [value] };
+      }
+      return { ...deliverable, [field]: value };
+    }));
+    const addDeliverableDraft = () => setInitiationDeliverableDrafts(prev => [
+      ...prev,
+      ...defaultKickoffDeliverables({
+        output: activeLanguage === 'zh' ? '新的项目交付物' : 'New project deliverable',
+        team: confirmedMembers,
+        ownerId: firstLead.id,
+        language: activeLanguage,
+      }).map((deliverable, index) => ({ ...deliverable, id: `kickoff_deliverable_${prev.length + index + 1}` })),
+    ]);
     const saveInitiationNextActionsToMeeting = async () => {
       if (!initiationMeetingSession) return;
       const now = new Date().toISOString();
-      const tasks = buildInitiationKickoffPayload(now).tasks;
+      const tasks = buildInitiationKickoffPayload(now).nextActions;
       let meeting = null;
       try {
         const payload = await requestAgentBackend(`/kickoff-meetings/${encodeURIComponent(initiationMeetingSession.id)}/next-actions`, {
@@ -12528,6 +12963,7 @@ export default function EngineWorkspace() {
         }]);
         return;
       }
+      setRoomUserIntentActive(false);
       setRoomInput('');
       const now = new Date().toISOString();
       const previousTranscriptIds = new Set((initiationMeetingSession.transcript || []).map(item => item.id).filter(Boolean));
@@ -12561,6 +12997,9 @@ export default function EngineWorkspace() {
           }
         }
         setInitiationMeetingSession(meeting);
+        if (meeting?.deliverableResolution?.deliverables?.length) {
+          setInitiationDeliverableDrafts(meeting.deliverableResolution.deliverables);
+        }
         setSelectedInitiationClarificationQuestionId(
           (meeting.roleQuestionResolutions || []).find(row => !row.answered)?.questionId
           || selectedClarificationQuestion?.questionId
@@ -12609,6 +13048,15 @@ export default function EngineWorkspace() {
           error: playedAgentTurns ? null : (payload.modelKickoffMeetingTurn?.error || null),
         }));
       } catch (error) {
+        setRoomInput(text);
+        setRoomTranscript(prev => [...prev, {
+          id: `initiation_input_error_${Date.parse(new Date().toISOString()) || Date.now()}`,
+          speaker: 'System',
+          role: 'Runtime',
+          text: '智能体回复没有完成。请重试；如果仍失败，请结束会议并在设置中测试模型。',
+          score: 0,
+          source: 'backend-kickoff-meeting-turn-error',
+        }]);
         setBackendStation(prev => ({
           ...prev,
           connectionStatus: 'offline',
@@ -12636,6 +13084,8 @@ export default function EngineWorkspace() {
             firstLead,
             goStep,
             initiationActionDrafts,
+            initiationDeliverableDrafts,
+            initiationDeliverablesReady,
             initiationApprovalState,
             initiationBackendErrorVisible,
             initiationCanApproveProject,
@@ -12684,6 +13134,8 @@ export default function EngineWorkspace() {
             submitInitiationMeetingInput,
             syncSettingsProviderRuntime,
             toggleConfirmedTeamMember,
+            updateDeliverableDraft,
+            addDeliverableDraft,
             updateActionDraft,
             updateDraft,
             workingGroup,
@@ -12727,98 +13179,16 @@ export default function EngineWorkspace() {
 
   const renderProjectDashboard = () => {
     const projectText = (value) => localizeText(String(value ?? ''), activeLanguage);
-    if (!isManagerDemoProject(activeProject) && !projectDashboardAdvancedOpen) {
-      return (
-        <div data-testid="project-dashboard-view" className="relative flex-1 overflow-hidden bg-[#f5f4f0] text-[#251b13]">
-          <div data-testid="project-simple-dashboard" className="h-full">
-            <Suspense fallback={<LazyPanelFallback />}>
-            <ProjectOverview
-              project={activeProject}
-              onEnterMeeting={() => enterProjectScene('meeting')}
-              onEnterChat={() => enterProjectScene('chat')}
-              onEnterTimeline={() => enterProjectScene('timeline')}
-              onOpenAdvanced={() => setProjectDashboardAdvancedOpen(true)}
-            />
-            </Suspense>
-          </div>
-        </div>
-      );
-    }
     const projectDashboardNeedsCoreSync = Boolean(
       !isManagerDemoProject(activeProject)
       && shouldAttemptBackendProjectWrite(activeProject)
     );
-    if (projectDashboardNeedsCoreSync && !projectDashboardCoreReady) {
-      const coreSyncFailed = projectDashboardCoreSyncMatches && projectDashboardCoreSync.status === 'error';
-      const coreSyncCopy = activeLanguage === 'zh'
-        ? coreSyncFailed
-          ? {
-              eyebrow: '项目面板同步需要处理',
-              title: '核心项目数据尚未完成加载',
-              detail: '页面没有把缺失数据渲染成错误卡片。你可以重试核心同步，或先返回简洁视图。',
-              retry: '重新同步',
-              back: '返回简洁视图',
-            }
-          : {
-              eyebrow: '正在同步项目面板',
-              title: '正在加载最新项目数据…',
-              detail: '经理状态、频道、任务、时间线和事件记录同步完成后，完整面板会自动显示。',
-              retry: '重新同步',
-              back: '返回简洁视图',
-            }
-        : coreSyncFailed
-          ? {
-              eyebrow: 'Project dashboard sync needs attention',
-              title: 'The core project data did not finish loading.',
-              detail: 'The panel has not replaced missing data with error cards. Retry the core sync or return to the concise view.',
-              retry: 'Retry sync',
-              back: 'Return to concise view',
-            }
-          : {
-              eyebrow: 'Syncing project dashboard',
-              title: 'Loading the latest project data…',
-              detail: 'Manager status, channels, tasks, timeline, and event records are being synchronized before the full panel is shown.',
-              retry: 'Retry sync',
-              back: 'Return to concise view',
-            };
-      return (
-        <div data-testid="project-dashboard-view" className="relative flex-1 overflow-hidden bg-[#15110d] p-5 text-[#ead9a6] md:p-10">
-          <section
-            data-testid={coreSyncFailed ? 'project-dashboard-core-models-error' : 'project-dashboard-core-models-loading'}
-            className={`mx-auto mt-8 max-w-4xl border p-7 ${coreSyncFailed ? 'border-[#9e2f27] bg-[#241711]' : 'border-[#8d793d] bg-[#211b12]'}`}
-            role={coreSyncFailed ? 'alert' : 'status'}
-          >
-            <p className="font-mono text-xs uppercase tracking-[0.28em] text-[#bcae86]">
-              {coreSyncCopy.eyebrow}
-            </p>
-            <h2 className="mt-3 font-serif text-2xl text-[#f4e7bc]">
-              {coreSyncCopy.title}
-            </h2>
-            <p className="mt-3 max-w-2xl font-mono text-sm leading-relaxed text-[#bcae86]">
-              {coreSyncCopy.detail}
-            </p>
-            <div className="mt-6 flex flex-wrap gap-3">
-              {coreSyncFailed && (
-                <button
-                  type="button"
-                  onClick={() => setProjectDashboardCoreSync({ projectId: activeProject.id, status: 'idle', error: null })}
-                  className="border border-[#ead9a6] bg-[#ead9a6] px-5 py-2 font-mono text-xs uppercase tracking-widest text-[#251b13]"
-                >
-                  {coreSyncCopy.retry}
-                </button>
-              )}
-              <button
-                type="button"
-                onClick={() => setProjectDashboardAdvancedOpen(false)}
-                className="border border-[#8d793d] px-5 py-2 font-mono text-xs uppercase tracking-widest text-[#ead9a6]"
-              >
-                {coreSyncCopy.back}
-              </button>
-            </div>
-          </section>
-        </div>
-      );
-    }
+    const projectDashboardCoreSyncStatus = coreSyncStatusForView({
+      required: projectDashboardNeedsCoreSync,
+      verified: projectDashboardCoreReady,
+      state: projectDashboardCoreSync,
+      projectId: activeProject?.id,
+    });
     const isInitiatedProject = Boolean(activeProject.initiation);
     const fixtureMeta = sampleFixtureMeta(activeProject);
     const projectDashboardSnapshotSourceMeta = fixtureMeta
@@ -12968,10 +13338,12 @@ export default function EngineWorkspace() {
     const recentLineBackendRequired = isInitiatedProject && timelineEventReadModelsRequired && !backendTimelineLogs;
     const recentLine = isInitiatedProject
       ? timelineDisplayLogs.map((log, index) => ({
-          id: `init-log-${log.id || 'row'}-${index}`,
-          sourceLogId: log.id || null,
-          type: index === 0 ? 'approved' : 'record',
-          day: 'Just now',
+        id: `init-log-${log.id || 'row'}-${index}`,
+        sourceLogId: log.id || null,
+        type: index === 0 ? 'approved' : 'record',
+        eventType: log.eventType || log.type || null,
+        timestamp: log.time || null,
+        day: 'Just now',
           hour: log.time,
           title: log.log,
           contributor: log.agent,
@@ -16167,6 +16539,12 @@ export default function EngineWorkspace() {
     const operationsBoardRows = (agentStateSummary.rows || []).map(row => normalizeAgentStateSummaryRow(row, {
       allowLocalProofFallback: agentStateSummaryAllowsLocalProofFallback,
     }));
+    const projectBriefing = buildProjectDashboardBriefing({
+      project: activeProject,
+      agentRows: operationsBoardRows,
+      recentEvents: recentLine,
+      language: activeLanguage,
+    });
     const routineRows = operationsBoardRows;
     const backendContinuousWorkLoopReadModel = scopedBackendStationReadModel(backendStation.continuousWorkLoop) || backendManagerDashboard?.continuousWorkLoop || null;
     const backendContinuousWorkLoop = Array.isArray(backendContinuousWorkLoopReadModel?.rows)
@@ -20469,22 +20847,30 @@ export default function EngineWorkspace() {
       <Suspense fallback={<LazyPanelFallback />}>
         <ProjectDashboardAdvancedView
           sceneTransition={sceneTransition}
+          coreSyncStatus={projectDashboardCoreSyncStatus}
+          coreSyncError={projectDashboardCoreSync.error}
+          language={activeLanguage}
+          onRetryCoreSync={() => setProjectDashboardCoreSync(prev => resetProjectDashboardCoreSync(prev, activeProject.id))}
           contentLayoutView={{
             topPanelsFallback: <div data-testid="project-dashboard-top-panels-loading" className="col-span-12 min-h-96" role="status" aria-label="正在加载完整项目概览" />,
             topPanelsView: {
                   header: {
                   activeProject,
+                  briefing: projectBriefing,
+                  briefingRefreshDisabled: backendWorkerStationSyncDisabled,
                   fixtureMeta,
+                  language: activeLanguage,
                   projectDashboardSnapshotSourceMeta,
                   projectText,
-                  showSimpleViewButton: !isManagerDemoProject(activeProject),
+                  onRefreshBriefing: () => syncBackendManagerDashboard({ silent: false, projectId: activeProject.id }),
                   onOpenMeeting: () => enterProjectScene('meeting'),
                   onOpenChat: () => enterProjectScene('chat'),
                   onOpenTimeline: () => enterProjectScene('timeline'),
-                  onOpenSimpleView: () => setProjectDashboardAdvancedOpen(false),
                   },
                   summary: {
                     activeProject,
+                    briefing: projectBriefing,
+                    language: activeLanguage,
                     backendWorkerStationSyncDisabled,
                     isInitiatedProject,
                     managerDashboardStats,
@@ -20499,6 +20885,8 @@ export default function EngineWorkspace() {
                   },
                   agentOverview: {
                     activeProject,
+                    briefing: projectBriefing,
+                    language: activeLanguage,
                     agentStateSummary,
                     agentStateSummaryAllowsLocalProofFallback,
                     backendCommandAvailable,
@@ -21196,7 +21584,6 @@ export default function EngineWorkspace() {
                             backendLatestTriggerText,
                             projectText,
                           },
-                          backendError: backendStation.error,
                           },
                           },
                     },
@@ -21684,9 +22071,11 @@ export default function EngineWorkspace() {
             recentCommitFallback: <aside data-testid="project-dashboard-recent-commit-line-loading" className="col-span-12 min-h-72 lg:col-span-5" role="status" aria-label="正在加载最近时间线" />,
             recentCommitView: {
                   backendRequired: recentLineBackendRequired,
-                  events: recentLine,
+                  events: projectBriefing.updates,
                   eventStyles: EVENT_TYPE_STYLES,
+                  language: activeLanguage,
                   onSyncTimeline: () => syncBackendTimelineAndEvents({ silent: false, projectId: activeProject.id }),
+                  projectText,
                   syncDisabled: backendWorkerStationSyncDisabled,
               },
           }}
@@ -21695,7 +22084,20 @@ export default function EngineWorkspace() {
               onEnterScene: enterProjectScene,
               onOpenChange: setProjectLauncherOpen,
               open: projectLauncherOpen,
+              projectText,
               transition: sceneTransition,
+          }}
+          workspaceDrawerView={{
+              backendAvailable: backendUrlConfigured,
+              language: activeLanguage,
+              onOpenWorkspaceSettings: () => {
+                setSettingsTab('workspace');
+                setSettingsOpen(true);
+              },
+              project: activeProject,
+              projectText,
+              requestAgentBackend,
+              workspacePath: activeProject.localRuntime?.workspacePath || '',
           }}
         />
       </Suspense>
@@ -21705,15 +22107,43 @@ export default function EngineWorkspace() {
   const renderProjectMeeting = (meetingProject = activeProject, meetingOptions = {}) => {
     if (!meetingProject) return null;
     const closeMeeting = meetingOptions.onBack || (() => { exitProjectScene(); setMeetingStartTime(null); setMeetingElapsed(0); });
-    const completeMeeting = meetingOptions.onComplete;
     const meetingTitle = meetingOptions.title || 'Roundtable';
     const hideMeetingTelemetry = Boolean(meetingOptions.hideMeetingTelemetry);
     const submitMeetingInput = meetingOptions.onSubmit || submitRoomInput;
     const usesCustomMeetingSubmit = Boolean(meetingOptions.onSubmit);
+    const completeMeeting = meetingOptions.onComplete || (!usesCustomMeetingSubmit ? completeConfirmedProjectMeeting : undefined);
     const backendMeetingSendRequired = !usesCustomMeetingSubmit
       && !shouldAttemptBackendProjectWrite(meetingProject)
       && !allowLocalRuntimeFallbackForActiveProject(meetingProject);
-    const canSendMeeting = Boolean(roomInput.trim()) && !backendMeetingSendRequired;
+    const canSendMeeting = Boolean(roomInput.trim()) && !backendMeetingSendRequired && !projectMeetingCompletion;
+    const meetingRoomProject = !usesCustomMeetingSubmit && projectMeetingSession?.participantIds?.length
+      ? {
+          ...meetingProject,
+          team: (meetingProject.team || []).filter((member) => projectMeetingSession.participantIds.includes(member.id)),
+        }
+      : meetingProject;
+    const meetingAgentsSettled = !roomIntentions.some((intent) => ['listening', 'queued', 'speaking', 'paused'].includes(intent.status));
+    const canCompleteMeeting = usesCustomMeetingSubmit
+      ? true
+      : Boolean(projectMeetingSession?.rounds?.length) && meetingAgentsSettled && !projectMeetingCompletion;
+
+    if (!usesCustomMeetingSubmit && !projectMeetingSession) {
+      return (
+        <Suspense fallback={<LazyPanelFallback />}>
+          <ProjectMeetingSetup
+            activeLanguage={activeLanguage}
+            project={meetingProject}
+            draft={projectMeetingSetupDraft}
+            error={projectMeetingSetupError}
+            starting={projectMeetingStarting}
+            onBack={closeMeeting}
+            onChange={updateProjectMeetingSetupDraft}
+            onToggleParticipant={toggleProjectMeetingParticipant}
+            onStart={startConfirmedProjectMeeting}
+          />
+        </Suspense>
+      );
+    }
 
     const speechRecognitionSupported = typeof window !== 'undefined'
       && (window.SpeechRecognition || window.webkitSpeechRecognition);
@@ -21772,9 +22202,14 @@ export default function EngineWorkspace() {
               backendMeetingSendRequired,
               canSendMeeting,
               closeMeeting,
+              completeMeeting,
+              canCompleteMeeting,
+              projectMeetingCompletion,
+              projectMeetingSession,
+              projectMeetingSetupError,
               meetingElapsed,
               meetingExpandedLogIds,
-              meetingProject,
+              meetingProject: meetingRoomProject,
               roomInput,
               roomIntentions,
               roomSpeaker,
@@ -21802,12 +22237,16 @@ export default function EngineWorkspace() {
             activeLanguage,
             backendMeetingSendRequired,
             canSendMeeting,
+            canCompleteMeeting,
             closeMeeting,
             completeMeeting,
             hideMeetingTelemetry,
             initiationMeetingSession,
             meetingElapsed,
-            meetingProject,
+            meetingProject: meetingRoomProject,
+            projectMeetingCompletion,
+            projectMeetingSession,
+            projectMeetingSetupError,
             meetingTitle,
             roomInput,
             roomIntentions,
@@ -21834,11 +22273,12 @@ export default function EngineWorkspace() {
     const localVisibleMessages = chatMessages.filter(message => (
       (message.projectId || DEFAULT_CHAT_PROJECT_ID) === activeProject.id
       && message.channelId === activeChannelId
+      && isConversationMessage(message)
     ));
     const backendChannelTranscript = ((backendStation.transcriptChannels || {})[activeProject.id] || {})[activeChannelId] || null;
     const backendVisibleMessages = backendChannelTranscript
       ? transcriptMessagesFromBackendChannels(activeProject.id, [backendChannelTranscript])
-        .filter(message => message.channelId === activeChannelId)
+        .filter(message => message.channelId === activeChannelId && isConversationMessage(message))
       : [];
     const pendingLocalVisibleMessages = localVisibleMessages.filter(message => message.pendingBackendWrite);
     const backendChannelTranscriptRequired = Boolean(activeProject)
@@ -21849,13 +22289,33 @@ export default function EngineWorkspace() {
       || backendStation.connectionStatus === 'online'
       || projectHasBackendSyncEvidence(activeProject)
     );
+    const transcriptRecoveryStatus = resolveProjectTranscriptStatus({
+      required: backendChannelTranscriptRequired,
+      projectId: activeProject.id,
+      channelId: activeChannelId,
+      transcript: backendChannelTranscript,
+      statuses: backendStation.transcriptRecoveryStatuses,
+    });
+    const usingLocalTranscriptRecovery = shouldShowLocalTranscriptRecovery({
+      required: backendChannelTranscriptRequired,
+      status: transcriptRecoveryStatus,
+      localMessageCount: localVisibleMessages.length,
+    });
     const visibleMessages = backendChannelTranscriptUsable
       ? (backendChannelTranscriptRequired
           ? mergeProjectMessages(pendingLocalVisibleMessages, backendVisibleMessages)
             .filter(message => message.channelId === activeChannelId)
           : mergeProjectMessages(localVisibleMessages, backendVisibleMessages)
             .filter(message => message.channelId === activeChannelId))
-      : (backendChannelTranscriptRequired ? pendingLocalVisibleMessages : localVisibleMessages);
+      : (backendChannelTranscriptRequired
+          ? (usingLocalTranscriptRecovery ? localVisibleMessages : pendingLocalVisibleMessages)
+          : localVisibleMessages);
+    const transcriptPresentation = projectTranscriptPresentation({
+      status: transcriptRecoveryStatus,
+      messageCount: visibleMessages.length,
+      usingLocalRecovery: usingLocalTranscriptRecovery,
+      language: activeLanguage,
+    });
     const canSendLocalChat = allowLocalRuntimeFallbackForActiveProject(activeProject);
     const canSendChat = Boolean(activeProject)
       && Boolean(chatInput.trim())
@@ -21903,7 +22363,7 @@ export default function EngineWorkspace() {
             canSend={canSendChat}
             sendBlocked={backendChatSendRequired}
             sending={backendStation.loading}
-            restoring={backendChannelTranscriptRequired && backendStation.loading && visibleMessages.length === 0}
+            transcriptPresentation={transcriptPresentation}
             onBack={exitProjectScene}
             onSelectChannel={setActiveChannelId}
             onInputChange={event => setChatInput(event.target.value)}
@@ -21987,6 +22447,7 @@ export default function EngineWorkspace() {
             toggleBackendTranscriptMembers,
             transcriptSearchDraft,
             transcriptSearchResults,
+            transcriptPresentation,
             triggerBackendTranscriptAttachmentPicker,
             visibleMessages,
           }}
@@ -22924,6 +23385,7 @@ export default function EngineWorkspace() {
         <ProjectTimelineRouteView
           view={{
             DEFAULT_CHAT_PROJECT_ID,
+            activeLanguage,
             activeProject,
             allowLocalRuntimeFallbackForActiveProject,
             backendStation,
@@ -23001,18 +23463,37 @@ export default function EngineWorkspace() {
     providerRuntimeStatus.modelProvider?.enabled
     && providerRuntimeStatus.modelProvider?.configured
   );
-  const localFirstRunIdentityRequired = localAuthStatus.available !== true || !localAuthSessionForCurrentBackend;
-  const shouldShowLocalFirstRun = activeRoute === 'dashboard' && (
-    localFirstRunIdentityRequired
-    || (!workspaceHubRequested && (!localFirstRunModelReady || projects.length === 0))
-  );
+  const localStartupSurface = resolveLocalStartupSurface({
+    activeRoute,
+    authStatus: localAuthStatus,
+    hasSession: Boolean(localAuthSessionForCurrentBackend),
+    catalogStatus: backendStation.projectCatalogStatus,
+    workspaceHubRequested,
+    modelReady: localFirstRunModelReady,
+    projectCount: projects.length,
+  });
+  const projectNavigationRestoring = activeRoute === 'project_detail' && !activeProject;
 
   return (
     <div className="h-screen w-full flex bg-black">
       <div className="flex-1 flex overflow-hidden bg-white max-w-full">
         {activeRoute !== 'war_room' && activeRoute !== 'project_initiation' && activeRoute !== 'agent_dossier' && !(activeRoute === 'project_detail' && projectMode !== 'dashboard') && renderSidebar()}
         <main className="flex-1 flex flex-col relative overflow-hidden bg-white">
-          {activeRoute === 'dashboard' && (shouldShowLocalFirstRun ? (
+          {browserStorageWarning && (
+            <div data-testid="browser-storage-warning" className="relative z-[70] flex items-center justify-between gap-3 border-b border-[#9e2f27] bg-[#fff1ed] px-4 py-2 font-mono text-xs text-[#8f1e18]" role="alert">
+              <span>
+                {activeLanguage === 'zh'
+                  ? '浏览器临时缓存写入失败；当前内存中的内容仍可使用，但请不要关闭应用，并检查浏览器存储空间。'
+                  : 'Browser cache persistence failed. Current in-memory work remains available; keep the app open and check browser storage capacity.'}
+              </span>
+              <button type="button" className="shrink-0 border border-current px-2 py-1 uppercase tracking-widest" onClick={() => setBrowserStorageWarning(null)}>
+                {activeLanguage === 'zh' ? '知道了' : 'Dismiss'}
+              </button>
+            </div>
+          )}
+          {activeRoute === 'dashboard' && (localStartupSurface === 'restoring' ? (
+            <LazyPanelFallback />
+          ) : localStartupSurface === 'first-run' ? (
             <Suspense fallback={<LazyPanelFallback />}>
             <LocalFirstRunFlow
               serviceChecked={!localAuthStatus.loading && (localAuthStatus.available !== null || Boolean(localAuthStatus.error))}
@@ -23024,12 +23505,25 @@ export default function EngineWorkspace() {
               authDraft={localAuthDraft}
               notice={firstRunNotice}
               activeLanguage={activeLanguage}
+              serviceConfigured={backendUrlConfigured}
               onAuthDraftChange={(field, value) => {
                 setFirstRunNotice('');
                 setLocalAuthDraft(previous => ({ ...previous, [field]: value }));
               }}
               onSubmitAuth={submitLocalAuth}
+              onRetryService={() => syncLocalAuthStatus()}
+              onOpenServiceSettings={() => {
+                setFocusedModelSetup(false);
+                setSettingsTab('deployment');
+                setSettingsOpen(true);
+              }}
+              onOpenAccountSettings={() => {
+                setFocusedModelSetup(false);
+                setSettingsTab('account');
+                setSettingsOpen(true);
+              }}
               onOpenModelSettings={() => {
+                setFocusedModelSetup(true);
                 setSettingsTab('keys');
                 setSettingsOpen(true);
               }}
@@ -23038,7 +23532,7 @@ export default function EngineWorkspace() {
             </Suspense>
           ) : renderDashboardView())}
           {activeRoute === 'project_initiation' && renderProjectInitiationFlowView()}
-          {activeRoute === 'project_detail' && renderProjectDetailView()}
+          {activeRoute === 'project_detail' && (projectNavigationRestoring ? <LazyPanelFallback /> : renderProjectDetailView())}
           {activeRoute === 'war_room' && renderWarRoomView()}
           {activeRoute === 'agent_market' && renderAgentMarketView()}
           {activeRoute === 'agent_dossier' && renderAgentDossierScene()}

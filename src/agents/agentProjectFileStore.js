@@ -1013,6 +1013,9 @@ export function createAgentProjectFileStore({
   delete loadedSnapshot.integrity.migrationSourceRaw;
 
   return {
+    getRevision() {
+      return memoryStore.getRevision();
+    },
     listProjects() {
       return memoryStore.listProjects();
     },
@@ -1057,11 +1060,9 @@ export function createAgentProjectFileStore({
       return memoryStore.getMessages(projectId);
     },
     appendSecurityAuditRecords(records = []) {
-      refreshSecurityAuditRecords();
       const appended = memoryStore.appendSecurityAuditRecords(records);
       if (appended.length) {
         appendSecurityAuditLog(resolvedSecurityAuditLogPath, appended);
-        persist();
       }
       return appended;
     },

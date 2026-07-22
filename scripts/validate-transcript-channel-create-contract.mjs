@@ -10,6 +10,7 @@ function assert(condition, message) {
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const appSource = readFileSync(resolve(repoRoot, 'src/App.jsx'), 'utf8');
+const advancedProjectChatSource = readFileSync(resolve(repoRoot, 'src/project/AdvancedProjectChat.jsx'), 'utf8');
 const projectId = 'transcript_channel_create_contract_project';
 const service = createAgentProjectService({ messageLimit: 160 });
 const api = createAgentProjectApi({ service });
@@ -91,7 +92,9 @@ assert(response.status === 200, 'Transcript index must be readable after channel
 assert(response.body.channels?.some((row) => (
   row.channelId === 'brainstorm_room'
   && row.name === 'Brainstorm Room'
-  && row.messageCount >= 1
+  && row.messageCount === 0
+  && row.channelCreationReceiptCount === 1
+  && row.proofIds?.includes(receipt.checksum)
   && row.apiPath === `/projects/${projectId}/transcripts/brainstorm_room`
 )), 'Transcript index must expose backend-created channels with metadata and route proof.');
 
@@ -100,7 +103,8 @@ response = api.handle({
   path: `/projects/${projectId}/transcripts/brainstorm_room`,
 });
 assert(response.status === 200, 'Created channel transcript must be readable.');
-assert(response.body.messages?.some((message) => message.transcriptChannelReceiptChecksum === receipt.checksum), 'Created channel transcript must expose the channel creation proof message.');
+assert(response.body.messages?.length === 0, 'Operational channel-creation proof must not appear as a conversation message.');
+assert(response.body.channelCreationReceipts?.some((row) => row.checksum === receipt.checksum), 'Created channel transcript must expose channel proof separately from conversation messages.');
 
 response = api.handle({
   method: 'GET',
@@ -128,7 +132,7 @@ assert(response.body.nodes?.some((node) => (
   && node.proofIds?.includes(receipt.messageId)
 )), 'Manager Flow Graph must expose backend-created transcript channels as collaboration proof nodes.');
 
-assert(appSource.includes('project-chat-create-transcript-channel'), 'React Group Chat must expose the backend channel creation control.');
+assert(advancedProjectChatSource.includes('project-chat-create-transcript-channel'), 'React Group Chat must expose the backend channel creation control.');
 assert(appSource.includes("runBackendProjectCommand('transcripts'"), 'React Group Chat channel creation must call the backend transcripts route.');
 assert(appSource.includes('refreshReceiptReadModels') && appSource.includes('transcriptChannelRoute'), 'React Group Chat channel creation must refresh backend transcript channel proof routes.');
 

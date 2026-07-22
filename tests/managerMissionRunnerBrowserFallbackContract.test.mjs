@@ -28,9 +28,9 @@ test('mission runner UI validation enters the complete workspace before using th
 
 test('mission runner UI validation opens the complete project Dashboard after project creation', () => {
   assert.ok(source.includes("page.getByTestId('initiation-approval-progress')"));
-  assert.ok(source.includes("page.getByTestId('project-overview-open-advanced')"));
   assert.ok(source.includes("timeout: 90000"));
   assert.ok(source.includes("page.getByTestId('project-dashboard-view')"));
+  assert.ok(!source.includes('project-overview-open-advanced'));
 });
 
 test('mission runner UI validation returns an on-topic structured kickoff meeting fixture', () => {

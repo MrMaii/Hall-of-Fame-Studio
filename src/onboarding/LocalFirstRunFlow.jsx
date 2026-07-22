@@ -1,4 +1,4 @@
-import { buildLocalFirstRunSteps } from './localFirstRunModel.js';
+import { buildLocalFirstRunSteps, localServiceRecoveryMessage } from './localFirstRunModel.js';
 import { Check, CheckCircle2 } from 'lucide-react';
 
 const firstRunAuthErrorMessage = (error, language = 'zh') => {
@@ -23,8 +23,12 @@ export default function LocalFirstRunFlow({
   authDraft = {},
   notice = '',
   activeLanguage = 'zh',
+  serviceConfigured = true,
   onAuthDraftChange,
   onSubmitAuth,
+  onRetryService,
+  onOpenServiceSettings,
+  onOpenAccountSettings,
   onOpenModelSettings,
   onStartProject,
 } = {}) {
@@ -44,6 +48,15 @@ export default function LocalFirstRunFlow({
     event.preventDefault();
     onSubmitAuth?.(authAction);
   };
+  const runStepAction = (stepId) => {
+    if (stepId === 'service') onRetryService?.();
+    if (stepId === 'account') {
+      if (authenticated) onOpenAccountSettings?.();
+      else document.getElementById('first-run-username')?.focus();
+    }
+    if (stepId === 'model') onOpenModelSettings?.();
+    if (stepId === 'project') onStartProject?.();
+  };
 
   return (
     <div data-testid="local-first-run" className="h-full overflow-y-auto bg-[#f5f4f0] px-6 py-8 text-[#1a1a1a] md:px-12 md:py-12">
@@ -57,16 +70,32 @@ export default function LocalFirstRunFlow({
         </div>
 
         <div className="mt-7 grid gap-3 md:grid-cols-4">
-          {steps.map((step, index) => (
-            <div key={step.id} className={`border p-4 ${step.status === 'current' ? 'border-[#8f1e18] bg-[#fff8e7]' : step.status === 'complete' ? 'border-[#59684b] bg-[#edf4e9]' : 'border-[#d1d0c9] bg-white'}`}>
-              <div className="flex items-center justify-between gap-3">
-                <span className="font-mono text-xs uppercase tracking-widest">{text('步骤', 'Step')} {index + 1}</span>
-                <span className="font-mono text-xs">{step.status === 'complete' ? text('已完成', 'Complete') : step.status === 'current' ? text('当前', 'Current') : text('稍后', 'Later')}</span>
+          {steps.map((step, index) => {
+            const className = `border p-4 text-left ${step.status === 'current' ? 'border-[#8f1e18] bg-[#fff8e7]' : step.status === 'complete' ? 'border-[#59684b] bg-[#edf4e9]' : 'border-[#d1d0c9] bg-white'}`;
+            const content = (
+              <>
+                <div className="flex items-center justify-between gap-3">
+                  <span className="font-mono text-xs uppercase tracking-widest">{text('步骤', 'Step')} {index + 1}</span>
+                  <span className="font-mono text-xs">{step.status === 'complete' ? text('已完成', 'Complete') : step.status === 'current' ? text('当前', 'Current') : text('稍后', 'Later')}</span>
+                </div>
+                <div className="mt-4 font-serif text-xl">{step.title}</div>
+                <p className="mt-2 text-sm leading-relaxed text-[#6b665c]">{step.detail}</p>
+              </>
+            );
+            if (step.accessible) {
+              return (
+                <button key={step.id} type="button" data-testid={`first-run-step-${step.id}`} aria-current={step.status === 'current' ? 'step' : undefined} onClick={() => runStepAction(step.id)} className={`${className} transition-transform hover:-translate-y-0.5 hover:shadow-[4px_4px_0_rgba(37,27,19,0.12)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#8f1e18]`}>
+                  {content}
+                </button>
+              );
+            }
+            return (
+              <div key={step.id} data-testid={`first-run-step-${step.id}`} aria-disabled="true" className={`${className} opacity-75`}>
+                {content}
+                <p className="mt-3 border-t border-[#d1d0c9] pt-2 font-mono text-[10px] uppercase tracking-wider text-[#756f64]">{step.lockedReason}</p>
               </div>
-              <div className="mt-4 font-serif text-xl">{step.title}</div>
-              <p className="mt-2 text-sm leading-relaxed text-[#6b665c]">{step.detail}</p>
-            </div>
-          ))}
+            );
+          })}
         </div>
 
         <section className="mt-7 border border-[#251b13] bg-white p-6 shadow-[8px_8px_0_rgba(37,27,19,0.08)] md:p-8">
@@ -80,7 +109,16 @@ export default function LocalFirstRunFlow({
           {serviceChecked && !serviceReady && (
             <div role="alert">
               <h2 className="font-serif text-3xl">{text('本地服务需要恢复', 'Local service needs attention')}</h2>
-              <p className="mt-3 text-[#5c574d]">{text('项目数据仍保存在本机。请重新启动应用，然后再次检查。', 'Project data remains on this computer. Restart the application and check again.')}</p>
+              <p className="mt-3 text-[#5c574d]">{localServiceRecoveryMessage({ configured: serviceConfigured, error: authStatus.error, language: activeLanguage })}</p>
+              <p className="mt-2 text-sm text-[#6b665c]">{text('项目数据仍保存在本机。', 'Project data remains on this computer.')}</p>
+              <div className="mt-6 flex flex-wrap gap-3">
+                <button data-testid="first-run-retry-service" type="button" onClick={onRetryService} className="border border-[#251b13] bg-[#251b13] px-5 py-3 text-white">
+                  {text('重新检查', 'Check again')}
+                </button>
+                <button data-testid="first-run-open-service-settings" type="button" onClick={onOpenServiceSettings} className="border border-[#8f1e18] px-5 py-3 text-[#8f1e18]">
+                  {text('打开本地服务设置', 'Open local service settings')}
+                </button>
+              </div>
             </div>
           )}
 
@@ -134,6 +172,19 @@ export default function LocalFirstRunFlow({
                     <input data-testid="first-run-display-name" autoComplete="name" value={authDraft.displayName || ''} onChange={(event) => onAuthDraftChange?.('displayName', event.target.value)} className="mt-2 block w-full border border-[#9b968c] bg-[#f8f6ee] px-3 py-3 text-base outline-none focus:border-[#8f1e18]" />
                   </label>
                 )}
+                <label className="flex items-start gap-3 text-sm md:col-span-2">
+                  <input
+                    data-testid="first-run-keep-signed-in"
+                    type="checkbox"
+                    checked={Boolean(authDraft.keepSignedIn)}
+                    onChange={(event) => onAuthDraftChange?.('keepSignedIn', event.target.checked)}
+                    className="mt-1 h-4 w-4"
+                  />
+                  <span>
+                    <span className="block font-medium">{text('在这台电脑上保持登录', 'Keep me signed in on this computer')}</span>
+                    <span className="mt-1 block font-normal text-[#6b665c]">{text('选择后，会话令牌会保存在本机直到到期或退出登录。请勿在共用电脑上选择。', 'When selected, the session token stays on this computer until it expires or you sign out. Do not select this on a shared computer.')}</span>
+                  </span>
+                </label>
               </div>
               {notice && <p data-testid="first-run-auth-required-notice" role="status" className="mt-4 border border-[#b9a55f] bg-[#fbf7df] px-3 py-2 text-sm text-[#75631d]">{notice}</p>}
               {authStatus.error && <p data-testid="first-run-auth-error" role="alert" className="mt-4 border border-[#8f1e18] bg-red-50 px-3 py-2 text-sm text-[#8f1e18]">{authStatus.bootstrapRequired ? text('无法创建账户', 'Could not create account') : text('无法登录', 'Could not sign in')}{text('：', ': ')}{firstRunAuthErrorMessage(authStatus.error, activeLanguage)}</p>}
@@ -152,7 +203,7 @@ export default function LocalFirstRunFlow({
                 {projectCount === 0 && (
                   <div className="flex flex-col items-start gap-2">
                     <button data-testid="first-run-skip-model" type="button" onClick={onStartProject} className="border border-[#8f1e18] px-6 py-3 text-[#8f1e18]">{text('暂不配置，先准备项目信息', 'Configure later and prepare project details')}</button>
-                    <p className="max-w-sm font-serif text-sm leading-relaxed text-[#75631d]">{text('开始 Agent 工作前仍需完成模型设置', 'Model setup is still required before Agent work can start')}</p>
+                    <p className="max-w-sm font-serif text-sm leading-relaxed text-[#75631d]">{text('开始智能体工作前仍需完成模型设置', 'Model setup is still required before Agent work can start')}</p>
                   </div>
                 )}
               </div>

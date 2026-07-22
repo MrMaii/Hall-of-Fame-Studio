@@ -14,7 +14,7 @@ const appSource = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8
 const languageProviderSource = readFileSync(new URL('../src/i18n/index.jsx', import.meta.url), 'utf8');
 
 test('manager demo preserves the active local UI language when its project is persisted', () => {
-  const launchStart = appSource.indexOf('const launchManagerDemoProject = () => {');
+  const launchStart = appSource.indexOf('const launchManagerDemoProject = async () => {');
   const launchEnd = appSource.indexOf('const buildInitiationKickoffPayload', launchStart);
   assert.ok(launchStart >= 0 && launchEnd > launchStart, 'manager demo launcher must exist');
 

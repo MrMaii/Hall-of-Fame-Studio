@@ -29,7 +29,11 @@ export default function ProjectChatPanel({
   canSend = false,
   sendBlocked = false,
   sending = false,
-  restoring = false,
+  transcriptPresentation = {
+    state: 'empty',
+    title: '这里还没有消息',
+    detail: '发送第一条信息后，团队回复会显示在这里。',
+  },
   onBack,
   onSelectChannel,
   onInputChange,
@@ -65,14 +69,19 @@ export default function ProjectChatPanel({
 
       <main aria-label={`${channelName}消息`} className="flex-1 overflow-y-auto px-4 py-5 sm:px-6">
         <div className="mx-auto max-w-4xl space-y-4">
-          {messages.length === 0 && restoring && (
-            <div role="status" className="border border-[#7b6542] px-5 py-8 text-center text-sm text-[#bcae86]">
-              <div className="font-serif text-lg text-[#efe2bd]">聊天记录正在恢复</div>
-              <p className="mt-2">本机正在读取这个频道的历史消息。</p>
-              <button type="button" onClick={onReload} className="mt-4 border border-[#bcae86] px-4 py-2 text-sm text-[#efe2bd]">重新加载</button>
+          {((messages.length === 0 && transcriptPresentation.state !== 'ready') || transcriptPresentation.state === 'local-recovery') && (
+            <div
+              data-testid={`project-chat-transcript-${transcriptPresentation.state}`}
+              role={transcriptPresentation.state === 'empty' ? undefined : 'status'}
+              className={`px-5 py-8 text-center text-sm text-[#bcae86] ${transcriptPresentation.state === 'empty' ? 'border border-dashed border-[#3a2a1c]' : 'border border-[#7b6542]'}`}
+            >
+              <div className="font-serif text-lg text-[#efe2bd]">{transcriptPresentation.title}</div>
+              <p className="mt-2">{transcriptPresentation.detail}</p>
+              {transcriptPresentation.state !== 'empty' && (
+                <button type="button" onClick={onReload} className="mt-4 border border-[#bcae86] px-4 py-2 text-sm text-[#efe2bd]">重新加载</button>
+              )}
             </div>
           )}
-          {messages.length === 0 && !restoring && <div className="border border-dashed border-[#3a2a1c] px-5 py-10 text-center text-sm text-[#bcae86]">这里还没有消息。发送第一条信息后，团队回复会显示在这里。</div>}
           {messages.map((message, index) => {
             const author = messageAuthor(message);
             const status = deliveryLabel(message);

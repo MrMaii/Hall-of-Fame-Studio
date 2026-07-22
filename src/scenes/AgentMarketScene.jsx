@@ -1,14 +1,12 @@
 import {
   CheckCircle2,
   FileSignature,
-  Fingerprint,
   Search,
   SlidersHorizontal,
 } from 'lucide-react';
 import { localizeText } from '../i18n/index.jsx';
 
 export default function AgentMarketScene({
-  isDecrypting,
   isInitiationMarket,
   signedInitiationNames,
   initiationTalentMemberCount,
@@ -30,14 +28,6 @@ export default function AgentMarketScene({
 
   return (
     <div className="flex-1 overflow-y-auto fade-in bg-[#f5f4f0] flex flex-col relative">
-      {isDecrypting && (
-        <div className="absolute inset-0 bg-[#f5f4f0] z-50 flex flex-col items-center justify-center font-mono text-xs uppercase tracking-widest text-black">
-          <Fingerprint size={48} className="mb-4 animate-pulse" />
-          <span>{text('正在载入人才档案…', 'Loading talent profiles…')}</span>
-          <span className="text-gray-400 mt-2">{text('数据来自本机', 'Data comes from this computer')}</span>
-        </div>
-      )}
-
       <div className="sticky top-0 z-40 bg-[#f5f4f0] border-b border-[#d1d0c9] px-6 py-7 pt-8 shadow-[0_10px_30px_rgba(245,244,240,0.9)] md:px-12 md:py-8 md:pt-12">
         {isInitiationMarket && (
           <div data-testid="initiation-talent-market" className="mb-6 border border-[#1a1a1a] bg-[#1a1a1a] px-4 py-3 text-white">
@@ -96,23 +86,25 @@ export default function AgentMarketScene({
               </div>
             </div>
             <div className="p-6 border-b border-[#ebe9e0] flex gap-4 items-start relative">
-              <AvatarComponent agent={agent} />
+              <AvatarComponent agent={agent} accessibleName={localizeText(agent.name, activeLanguage)} />
               <div className="flex flex-col pt-1 min-w-0">
-                <h3 className="font-serif text-2xl font-bold leading-tight tracking-tight mb-1.5 break-words">{renderKnownName(agent.knownName)}</h3>
+                <h3 className="font-serif text-2xl font-bold leading-tight tracking-tight mb-1.5 break-words">
+                  {activeLanguage === 'zh' ? localizeText(agent.name, activeLanguage) : renderKnownName(agent.knownName)}
+                </h3>
                 <div className="mb-2 border-l-[3px] border-red-600/35 pl-2.5">
                   <span className="font-mono text-xs uppercase tracking-widest text-gray-600 block mb-0.5">{text('主要经历', 'Primary experience')}</span>
-                  <p className="font-serif text-[13px] text-gray-800 leading-snug line-clamp-2">{agent.primaryIdentity}</p>
+                  <p className="font-serif text-[13px] text-gray-800 leading-snug line-clamp-2">{localizeText(agent.primaryIdentity, activeLanguage)}</p>
                 </div>
-                <span className="font-mono text-xs uppercase tracking-widest text-gray-600 bg-gray-100 px-1.5 py-0.5 self-start border border-gray-200">{agent.role}</span>
+                <span className="font-mono text-xs uppercase tracking-widest text-gray-600 bg-gray-100 px-1.5 py-0.5 self-start border border-gray-200">{localizeText(agent.role, activeLanguage)}</span>
               </div>
               {isRecruited && <div className="absolute top-4 right-4 stamp-active pointer-events-none z-20 flex items-center justify-center"><div className="border-4 border-[#1a1a1a] text-[#1a1a1a] font-mono text-sm font-bold uppercase tracking-widest px-2 py-1 transform rotate-[-15deg] mix-blend-multiply opacity-90">{text('已加入', 'Joined')}</div></div>}
             </div>
             <div className="p-6 flex-1 bg-[#fdfdfc] border-b border-[#ebe9e0] relative">
               <div className="flex items-center gap-2 mb-4">
-                <span className="inline-block px-2 py-0.5 bg-[#1a1a1a] text-white font-mono text-xs uppercase tracking-widest">{text('专长：', 'Specialty: ')}{agent.category}</span>
+                <span className="inline-block px-2 py-0.5 bg-[#1a1a1a] text-white font-mono text-xs uppercase tracking-widest">{text('专长：', 'Specialty: ')}{localizeText(agent.category, activeLanguage)}</span>
                 {skillActive && <span className="inline-block px-2 py-0.5 bg-[#8f1e18] text-white font-mono text-xs uppercase tracking-widest">{text('能力已就绪', 'Capability ready')}</span>}
               </div>
-              <p className="font-serif text-gray-800 text-[15px] leading-relaxed relative z-10">{agent.desc}</p>
+              <p className="font-serif text-gray-800 text-[15px] leading-relaxed relative z-10">{localizeText(agent.desc, activeLanguage)}</p>
             </div>
             <div className="p-4 flex items-center justify-between border-t border-[#1a1a1a] bg-white">
               <div className="min-w-0 border-l-2 border-[#8f1e18] pl-3 pr-3">
@@ -121,7 +113,7 @@ export default function AgentMarketScene({
               </div>
               <button data-testid={`market-open-${agent.id}`} onClick={(event) => { event.stopPropagation(); onOpenDossier(agent.id); }} className={`flex items-center gap-2 font-mono text-xs uppercase tracking-widest px-4 py-2 transition-colors ${isRecruited ? 'bg-transparent text-gray-600 border border-gray-300' : 'bg-black text-white hover:bg-gray-800'}`}>
                 {isRecruited ? <CheckCircle2 size={12} /> : <FileSignature size={12} />}
-                {isRecruited ? text('查看成员', 'Review File') : text('打开档案', 'Open File')}
+                {isRecruited ? text('查看成员', 'Review File') : isInitiationMarket ? text('查看并选择', 'Review and select') : text('打开档案', 'Open File')}
               </button>
             </div>
           </article>

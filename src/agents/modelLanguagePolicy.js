@@ -18,7 +18,8 @@ export function modelOutputMatchesLanguage({ text = '', language = 'en', allowed
   let naturalText = String(text || '')
     .replace(/https?:\/\/\S+/gi, ' ')
     .replace(/`[^`]*`/g, ' ')
-    .replace(/\[[A-Za-z0-9_.:/-]+\]/g, ' ');
+    .replace(/\[[A-Za-z0-9_.:/-]+\]/g, ' ')
+    .replace(/\b[A-Z][A-Z0-9-]{1,}\b/g, ' ');
   for (const term of allowedTerms.filter(Boolean).sort((a, b) => String(b).length - String(a).length)) {
     naturalText = naturalText.replace(new RegExp(escapeRegExp(term), 'gi'), ' ');
   }

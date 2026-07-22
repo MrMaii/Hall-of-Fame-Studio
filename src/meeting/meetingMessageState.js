@@ -112,6 +112,12 @@ export function meetingTranscriptEntryFromMessage(message = {}) {
     proofIds: message.proofIds || [message.id],
     eventIds: message.eventIds || [],
     submittedAt: message.submittedAt || message.sentAt || message.createdAt || message.receipts?.[0]?.seenAt || null,
+    replyToTurnId: message.replyToTurnId || message.meetingTurn?.replyToTurnId || message.replyToMessageId || null,
+    targetSpeakerId: message.targetSpeakerId || message.meetingTurn?.targetSpeakerId || null,
+    addressedAgentIds: message.addressedAgentIds || message.meetingTurn?.addressedAgentIds || [],
+    interactionIntent: message.interactionIntent || message.meetingTurn?.interactionIntent || null,
+    topicId: message.topicId || message.meetingTurn?.topicId || null,
+    exchangeIndex: message.exchangeIndex ?? message.meetingTurn?.exchangeIndex ?? 0,
     ...(isDirector ? { deliveryStatus: 'completed', retryable: false, error: null } : {}),
   };
 }

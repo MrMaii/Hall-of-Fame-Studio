@@ -4,7 +4,7 @@ const ProjectDashboardHeader = lazy(() => import('./ProjectDashboardHeader.jsx')
 const ProjectDashboardSummary = lazy(() => import('./ProjectDashboardSummary.jsx'));
 const ProjectDashboardAgentOverview = lazy(() => import('./ProjectDashboardAgentOverview.jsx'));
 
-export default function ProjectDashboardTopPanels({ children, view }) {
+export default function ProjectDashboardTopPanels({ view }) {
   const { agentOverview, header, summary } = view;
 
   return (
@@ -14,15 +14,13 @@ export default function ProjectDashboardTopPanels({ children, view }) {
       </Suspense>
 
       <section className="col-span-12 lg:col-span-7">
-        <Suspense fallback={<div data-testid="project-dashboard-summary-loading" className="min-h-64" role="status" aria-label="正在加载项目概览" />}>
-          <ProjectDashboardSummary view={summary} />
-        </Suspense>
-
         <Suspense fallback={<div data-testid="project-dashboard-agent-overview-loading" className="min-h-80" role="status" aria-label="正在加载 Agent 工作状态" />}>
           <ProjectDashboardAgentOverview view={agentOverview} />
         </Suspense>
 
-        {children}
+        <Suspense fallback={<div data-testid="project-dashboard-summary-loading" className="min-h-16" role="status" aria-label="正在加载项目概览" />}>
+          <ProjectDashboardSummary view={summary} />
+        </Suspense>
       </section>
     </>
   );

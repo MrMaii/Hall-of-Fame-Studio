@@ -41,6 +41,12 @@ test('language policy accepts selected-language prose and rejects mixed prose', 
   assert.equal(modelOutputMatchesLanguage({ text: '这里混入 English prose。', language: 'zh' }), false);
   assert.equal(modelOutputMatchesLanguage({ text: 'English only response.', language: 'en' }), true);
   assert.equal(modelOutputMatchesLanguage({ text: 'English with 中文。', language: 'en' }), false);
+  assert.equal(modelOutputMatchesLanguage({ text: '使用 WHO 与 PHQ-9 指标进行测量。', language: 'zh' }), true);
+  assert.equal(modelOutputMatchesLanguage({
+    text: '证据来自 Adolescent Work Hours and Mental Health。',
+    language: 'zh',
+    allowedTerms: ['Adolescent Work Hours and Mental Health'],
+  }), true);
   assert.equal(modelKickoffPayloadMatchesLanguage({ language: 'zh', team }, {
     roleTurns: [{ text: 'Steve Jobs 已确认首项交付。' }],
     decisionSummary: '团队可以继续。',

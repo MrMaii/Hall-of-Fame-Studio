@@ -16,6 +16,7 @@ export function createAgentProjectMemoryStore({
   let chatMessages = retainMessages([...messages]);
   let auditRecords = [...securityAccessAuditRecords];
   let replayRecords = [...accessReplayRecords].filter((record) => record?.replayKey);
+  let revision = 0;
 
   projects.forEach((project) => {
     if (!project?.id) return;
@@ -33,6 +34,9 @@ export function createAgentProjectMemoryStore({
   };
 
   return {
+    getRevision() {
+      return revision;
+    },
     listProjects() {
       return [...projectMap.values()];
     },
@@ -43,6 +47,7 @@ export function createAgentProjectMemoryStore({
       if (!project?.id) throw new Error('Cannot save a project without an id.');
       const hydrated = hydrateProject(project);
       projectMap.set(hydrated.id, hydrated);
+      revision += 1;
       return hydrated;
     },
     deleteProject(projectId) {
@@ -51,6 +56,7 @@ export function createAgentProjectMemoryStore({
       chatMessages = chatMessages.filter((message) => message.projectId !== projectId);
       auditRecords = auditRecords.filter((record) => record.projectId !== projectId);
       replayRecords = replayRecords.filter((record) => record.projectId !== projectId);
+      revision += 1;
       return project;
     },
     listKickoffMeetings() {
@@ -64,11 +70,13 @@ export function createAgentProjectMemoryStore({
     saveKickoffMeeting(meeting) {
       if (!meeting?.id) throw new Error('Cannot save a kickoff meeting without an id.');
       kickoffMeetingMap.set(meeting.id, meeting);
+      revision += 1;
       return meeting;
     },
     appendMessages(nextMessages = []) {
       if (!nextMessages.length) return [];
       chatMessages = retainMessages([...chatMessages, ...nextMessages]);
+      revision += 1;
       return nextMessages;
     },
     getMessages(projectId) {

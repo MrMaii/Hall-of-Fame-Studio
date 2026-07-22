@@ -1,4 +1,4 @@
-import { mkdir, readFile, rm } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rm } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createFileBackedAgentProjectApi } from '../src/agents/agentProjectApi.js';
@@ -230,10 +230,17 @@ try {
   assert(storedProject?.projectSettingsAudit?.some((entry) => entry.workspaceCapabilities?.checksum === capabilities.checksum), 'File-backed store must persist the workspace capability audit entry.');
 
   const appSource = await readFile(resolve(repoRoot, 'src', 'App.jsx'), 'utf8');
-  assert(appSource.includes('settings-workspace-bind-contract'), 'Settings Workspace UI must render the backend workspace bind contract.');
-  assert(appSource.includes('settings-workspace-bind-path-input'), 'Settings Workspace UI must expose a workspace path input.');
-  assert(appSource.includes('settings-workspace-bind-submit'), 'Settings Workspace UI must expose a backend workspace bind action.');
-  assert(appSource.includes('/workspace/bind') && appSource.includes('/local-runtime'), 'Settings Workspace UI must show the workspace bind and local runtime routes.');
+  const settingsComponentSource = (await Promise.all(
+    (await readdir(resolve(repoRoot, 'src', 'settings')))
+      .filter((name) => /\.jsx$/.test(name))
+      .sort()
+      .map((name) => readFile(resolve(repoRoot, 'src', 'settings', name), 'utf8')),
+  )).join('\n');
+  const settingsUiSource = `${appSource}\n${settingsComponentSource}`;
+  assert(settingsUiSource.includes('settings-workspace-bind-contract'), 'Settings Workspace UI must render the backend workspace bind contract.');
+  assert(settingsUiSource.includes('settings-workspace-bind-path-input'), 'Settings Workspace UI must expose a workspace path input.');
+  assert(settingsUiSource.includes('settings-workspace-bind-submit'), 'Settings Workspace UI must expose a backend workspace bind action.');
+  assert(settingsUiSource.includes('/workspace/bind') && settingsUiSource.includes('/local-runtime'), 'Settings Workspace UI must show the workspace bind and local runtime routes.');
   assert(appSource.includes('bindProjectWorkspaceFromSettings') && appSource.includes('requestAgentBackend(`/projects/${encodeURIComponent(activeProject.id)}/workspace/bind`'), 'Settings Workspace bind action must call the backend workspace bind route.');
 
   const apiSource = await readFile(resolve(repoRoot, 'src', 'agents', 'agentProjectApi.js'), 'utf8');

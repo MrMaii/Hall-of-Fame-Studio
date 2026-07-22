@@ -1,15 +1,21 @@
 import ProjectSimpleMeeting from './ProjectSimpleMeeting.jsx';
 import { meetingMessageStatusLabel } from './meetingMessageState.js';
+import { isConversationMessage } from '../project/humanReadableRecords.js';
 
 export default function ProjectSimpleMeetingRouteView({ view }) {
   const {
     activeLanguage,
     backendMeetingSendRequired,
+    canCompleteMeeting,
     canSendMeeting,
     closeMeeting,
+    completeMeeting,
     meetingElapsed,
     meetingExpandedLogIds,
     meetingProject,
+    projectMeetingCompletion,
+    projectMeetingSession,
+    projectMeetingSetupError,
     roomInput,
     roomIntentions,
     roomSpeaker,
@@ -30,7 +36,8 @@ export default function ProjectSimpleMeetingRouteView({ view }) {
   const activeMember = roomSpeaker
     ? meetingProject.team.find(member => member.id === roomSpeaker)
     : null;
-  const latestDirectorMessage = roomTranscript.slice().reverse().find(entry => entry.speaker === 'Director');
+  const conversationTranscript = roomTranscript.filter(isConversationMessage);
+  const latestDirectorMessage = conversationTranscript.slice().reverse().find(entry => entry.speaker === 'Director');
   const visibleQueue = roomIntentions.filter(intent => intent.status !== 'yielded');
   const meetingStatusText = roomUserIntentActive
     ? '你正在输入，AI 回复已暂停'
@@ -52,6 +59,8 @@ export default function ProjectSimpleMeetingRouteView({ view }) {
       input={roomInput}
       latestDirectorMessageError={latestDirectorMessage?.error}
       onClose={closeMeeting}
+      onComplete={completeMeeting}
+      canComplete={canCompleteMeeting}
       onExpandedLogIdsChange={setMeetingExpandedLogIds}
       onInputChange={setRoomInput}
       onOpenSettings={() => { setSettingsTab('deployment'); setSettingsOpen(true); }}
@@ -59,10 +68,13 @@ export default function ProjectSimpleMeetingRouteView({ view }) {
       onToggleVoice={toggleRoomVoiceInput}
       onUserIntentChange={setRoomUserIntentActive}
       project={meetingProject}
+      meetingCompletion={projectMeetingCompletion}
+      meetingSession={projectMeetingSession}
+      meetingError={projectMeetingSetupError}
       responseStatus={meetingStatusText}
       speakerId={roomSpeaker}
       speechRecognitionSupported={Boolean(speechRecognitionSupported)}
-      transcript={roomTranscript}
+      transcript={conversationTranscript}
       userIntentActive={roomUserIntentActive}
       voiceStatus={roomVoiceStatus}
     />

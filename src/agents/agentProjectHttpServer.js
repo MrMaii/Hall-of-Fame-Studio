@@ -66,6 +66,15 @@ function writeJson(response, status, body, extraHeaders = {}) {
   response.end(JSON.stringify(body));
 }
 
+function publicAutonomousFailureReason(error) {
+  const message = String(error?.message || '').trim();
+  if (!message || message.length > 240) return null;
+  if (/secret|password|api[_ -]?key|bearer|credential|token\s*=/i.test(message)) return null;
+  return /^(?:search-provider-|model-provider-|model-artifact-draft-|artifact-draft-|provider-policy-|autonomous-provider-|local-durable-task-|specialized-tool-|task-|submission |agent autonomous action)/i.test(message)
+    ? message
+    : null;
+}
+
 function normalizeSchedulerLimit(value) {
   if (value === Infinity) return 'infinity';
   const numberValue = Number(value);
@@ -139,6 +148,7 @@ export function createAutonomousSchedulerController({
     agentProcessedCount: 0,
     agentSkippedCount: 0,
     agentAutonomousActionQueueCount: 0,
+    agentOutcomeActionCount: 0,
     autopilotProcessedCount: 0,
     autopilotSkippedCount: 0,
     autopilotSessionTickCount: 0,
@@ -217,7 +227,9 @@ export function createAutonomousSchedulerController({
     state.lastTickAgentControlSummary = summarizeSchedulerAgentControls(input);
     state.lastTickAutopilotControlSummary = summarizeSchedulerAutopilotControls(input);
     try {
-      const projectResult = api.handle({
+      const projectResult = input.runProjectCoordinationCycles === false
+        ? { status: 200, body: { processed: [], skipped: [{ reason: 'outcome-worker-authoritative' }], messages: [], messageCount: 0 } }
+        : api.handle({
         method: 'POST',
         path: '/workers/autonomous/due',
         headers: runtimeHeaders({ method: 'POST', path: '/workers/autonomous/due', localAuthToken: input.localAuthToken }),
@@ -231,11 +243,47 @@ export function createAutonomousSchedulerController({
           forceProjectIds: input.forceProjectIds || [],
           includeReadModels: input.includeReadModels,
         },
-      });
+        });
       if (projectResult.status >= 400) {
         throw new Error(projectResult.body?.message || projectResult.body?.error || `Autonomous worker returned ${projectResult.status}.`);
       }
-      const agentResult = api.handle({
+      const agentOutcomeActions = [];
+      if (input.runAgentOutcomeActions) {
+        const projects = api.store?.listProjects?.() || [];
+        const maxProjects = Math.max(1, Number(input.maxOutcomeProjects || input.maxAgentProjects || 1));
+        const candidates = projects.map((project) => {
+          const queue = api.service?.getAgentAutonomousActionQueue?.(project.id, { now: tickAt });
+          const row = (queue?.rows || []).find((candidate) => candidate.canRun && (candidate.due || input.forceAgentOutcomeRun));
+          return row?.runApiPath ? { project, row } : null;
+        }).filter(Boolean).sort((left, right) => (
+          String(left.row.dueAt || '').localeCompare(String(right.row.dueAt || ''))
+          || String(left.project.id || '').localeCompare(String(right.project.id || ''))
+        ));
+        for (const { project, row } of candidates.slice(0, maxProjects)) {
+          const response = await (api.handleAsync || api.handle).call(api, {
+            method: 'POST',
+            path: row.runApiPath,
+            headers: runtimeHeaders({ method: 'POST', path: row.runApiPath, localAuthToken: input.localAuthToken }),
+            body: {
+              now: tickAt,
+              includeReadModels: false,
+              force: Boolean(input.forceAgentOutcomeRun),
+            },
+          });
+          agentOutcomeActions.push({
+            projectId: project.id,
+            agentId: row.agentId,
+            selectedAction: row.selectedAction,
+            status: response.status,
+            submissionId: response.body?.submission?.id || null,
+            evidenceSearchId: response.body?.evidenceSearch?.id || null,
+            error: response.status >= 400 ? response.body?.message || response.body?.error || 'agent-outcome-action-failed' : null,
+          });
+        }
+      }
+      const agentResult = input.runLegacyAgentPulseCycles === false
+        ? { status: 200, body: { processed: [], skipped: [{ reason: 'outcome-action-queue-authoritative' }], messages: [], messageCount: 0, agentAutonomousActionQueues: [] } }
+        : api.handle({
         method: 'POST',
         path: '/workers/agents/due',
         headers: runtimeHeaders({ method: 'POST', path: '/workers/agents/due', localAuthToken: input.localAuthToken }),
@@ -263,7 +311,7 @@ export function createAutonomousSchedulerController({
           useAutonomousStrategy: Boolean(input.useAgentAutonomousStrategy || input.agentAutonomousStrategy || input.useAutonomousStrategy),
           includeReadModels: input.includeReadModels,
         },
-      });
+        });
       if (agentResult.status >= 400) {
         throw new Error(agentResult.body?.message || agentResult.body?.error || `Agent worker returned ${agentResult.status}.`);
       }
@@ -307,6 +355,7 @@ export function createAutonomousSchedulerController({
       state.agentProcessedCount += agentResult.body.processed?.length || 0;
       state.agentSkippedCount += agentResult.body.skipped?.length || 0;
       state.agentAutonomousActionQueueCount += agentAutonomousActionQueues.length;
+      state.agentOutcomeActionCount += agentOutcomeActions.filter((row) => row.status < 400).length;
       state.autopilotProcessedCount += autopilotResult.body.processed?.length || 0;
       state.autopilotSkippedCount += autopilotResult.body.skipped?.length || 0;
       state.autopilotSessionTickCount += autopilotResult.body.processed?.filter((item) => item.tickId).length || 0;
@@ -322,6 +371,7 @@ export function createAutonomousSchedulerController({
         autopilotSkipped: autopilotResult.body.skipped || [],
         agentAutonomousActionQueues,
         agentAutonomousActionQueue,
+        agentOutcomeActions,
         messageCount: (projectResult.body.messageCount || 0) + (agentResult.body.messageCount || 0) + (autopilotResult.body.messageCount || 0),
       };
       return {
@@ -331,6 +381,7 @@ export function createAutonomousSchedulerController({
           agentProcessed: agentResult.body.processed || [],
           agentSkipped: agentResult.body.skipped || [],
           agentMessages: agentResult.body.messages || [],
+          agentOutcomeActions,
           autopilotProcessed: autopilotResult.body.processed || [],
           autopilotSkipped: autopilotResult.body.skipped || [],
           autopilotMessages: autopilotResult.body.messages || [],
@@ -461,6 +512,9 @@ export function createAgentProjectHttpServer({
   localAuthRequired = false,
   telemetry = null,
 } = {}) {
+  const runtimeControls = {
+    autonomousSchedulerEnabled: Boolean(autonomousScheduler.enabled),
+  };
   const resolvedApi = api || createFileBackedAgentProjectApi({
     filePath,
     securityAuditLogPath,
@@ -475,6 +529,7 @@ export function createAgentProjectHttpServer({
     searchProvider,
     providerPolicy,
     secretVault,
+    runtimeControls,
     accessControl,
     localAuthFilePath,
     localAuthRequired,
@@ -487,6 +542,7 @@ export function createAgentProjectHttpServer({
     source: autonomousScheduler.source,
     accessControl,
   });
+  runtimeControls.schedulerStatus = () => scheduler.status();
   const resolvedTelemetry = telemetry || createLocalTelemetryPort();
   const storePath = resolvedApi.store?.filePath || null;
   let lifecycle = 'accepting';
@@ -598,6 +654,11 @@ export function createAgentProjectHttpServer({
       ? String(request.headers['x-hofs-parent-span-id'])
       : null;
     const startedAt = Date.now();
+    const requestAbortController = new AbortController();
+    request.once('aborted', () => requestAbortController.abort());
+    response.once('close', () => {
+      if (!response.writableEnded) requestAbortController.abort();
+    });
     let requestFinalized = false;
     const finalizeRequest = () => {
       if (requestFinalized) return;
@@ -733,12 +794,14 @@ export function createAgentProjectHttpServer({
       const result = await (resolvedApi.handleAsync || resolvedApi.handle).call(resolvedApi, {
         method: request.method,
         path: url.pathname,
+        url: request.url || url.pathname,
         headers: request.headers,
         body,
         traceId,
         requestSpanId,
         parentSpanId,
         traceStartedAt: new Date(startedAt).toISOString(),
+        signal: requestAbortController.signal,
       });
       send(result.status, result.body);
     } catch (error) {
@@ -759,6 +822,7 @@ export function createAgentProjectHttpServer({
         error: 'agent-project-http-error',
         errorCode: runtimeError?.errorCode || 'UNHANDLED_RUNTIME_ERROR',
         message: 'The local runtime could not complete this request. Use the trace id and /runtime-errors for recovery guidance.',
+        ...(publicAutonomousFailureReason(error) ? { failureReason: publicAutonomousFailureReason(error) } : {}),
         traceId,
       });
     }
@@ -825,6 +889,7 @@ export function createAgentProjectHttpServer({
         const shutdownStartedAt = new Date().toISOString();
         lifecycle = 'quiescing';
         scheduler.quiesce();
+        projectRuntime?.closeWorkspaceWatchers?.();
         const timeoutMs = Math.max(1, Number(drainTimeoutMs) || 5000);
         const deadlineMs = Date.now() + timeoutMs;
         const socketsAtStart = sockets.size;

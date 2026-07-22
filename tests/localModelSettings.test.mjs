@@ -11,6 +11,7 @@ test('simple local model settings use Chinese primary actions and keep diagnosti
   assert.match(source, /<details className=/);
   assert.match(source, /modelSettingsErrorMessage\(drafts\.error, activeLanguage, \{/);
   assert.match(source, /if \(checked\) update\('modelApiKey', ''\)/);
+  assert.ok(source.includes("useState(() => /^https?:\\/\\/(?:localhost|127\\.0\\.0\\.1|\\[::1\\])"));
 });
 
 test('fresh accounts can open model settings without pre-existing draft fields', () => {

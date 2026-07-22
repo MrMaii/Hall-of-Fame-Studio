@@ -50,9 +50,21 @@ test('restores persisted meeting messages after a local restart without duplicat
     text: 'Persist this answer',
     source: 'war-room-meeting-agent-turn',
     createdAt: '2026-07-12T00:20:01.000Z',
+    replyToTurnId: 'persisted-user',
+    targetSpeakerId: 'director',
+    addressedAgentIds: ['director'],
+    interactionIntent: 'clarify',
+    topicId: 'topic-1',
+    exchangeIndex: 1,
   });
   assert.equal(director.deliveryStatus, 'completed');
   assert.equal(agent.deliveryStatus, undefined);
+  assert.equal(agent.replyToTurnId, 'persisted-user');
+  assert.equal(agent.targetSpeakerId, 'director');
+  assert.deepEqual(agent.addressedAgentIds, ['director']);
+  assert.equal(agent.interactionIntent, 'clarify');
+  assert.equal(agent.topicId, 'topic-1');
+  assert.equal(agent.exchangeIndex, 1);
   assert.equal(meetingTranscriptEntryFromMessage({ id: 'chat', text: 'not a meeting', source: 'project-chat' }), null);
 
   const merged = mergeMeetingTranscript([{ id: 'system', speaker: 'System', text: 'Ready' }, director], [director, agent]);

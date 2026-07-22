@@ -1,12 +1,82 @@
+import { useEffect, useRef } from 'react';
 import { Database, Eye, FileSignature, X } from 'lucide-react';
 
 export default function AgentContractProjectPicker({ agent, rows, signing, onSelect, onClose, onCreateProject }) {
+  const overlayRef = useRef(null);
+  const dialogRef = useRef(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+
+  useEffect(() => {
+    if (!agent) return undefined;
+    const overlay = overlayRef.current;
+    const dialog = dialogRef.current;
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const backgroundSiblings = Array.from(overlay?.parentElement?.children || [])
+      .filter(sibling => sibling !== overlay)
+      .map(sibling => ({
+        sibling,
+        hadInert: sibling.hasAttribute('inert'),
+        ariaHidden: sibling.getAttribute('aria-hidden'),
+      }));
+    backgroundSiblings.forEach(({ sibling }) => {
+      sibling.setAttribute('inert', '');
+      sibling.setAttribute('aria-hidden', 'true');
+    });
+
+    const focusableElements = () => Array.from(dialog?.querySelectorAll(
+      'button:not([disabled]), select:not([disabled]), input:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex="-1"])'
+    ) || []).filter(element => (
+      element.getAttribute('aria-hidden') !== 'true'
+      && !element.closest('[aria-hidden="true"]')
+      && element.getClientRects().length > 0
+    ));
+    const initialFocus = focusableElements()[0];
+    if (initialFocus) initialFocus.focus();
+    else dialog?.focus();
+
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        onCloseRef.current?.();
+        return;
+      }
+      if (event.key !== 'Tab') return;
+      const focusable = focusableElements();
+      if (!focusable.length) {
+        event.preventDefault();
+        dialog?.focus();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && (document.activeElement === first || !dialog?.contains(document.activeElement))) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener('keydown', handleKeyDown, true);
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown, true);
+      backgroundSiblings.forEach(({ sibling, hadInert, ariaHidden }) => {
+        if (!hadInert) sibling.removeAttribute('inert');
+        if (ariaHidden === null) sibling.removeAttribute('aria-hidden');
+        else sibling.setAttribute('aria-hidden', ariaHidden);
+      });
+      previousFocus?.focus();
+    };
+  }, [agent?.id]);
+
   if (!agent) return null;
 
   return (
-    <div className="fixed inset-0 z-[130] flex items-center justify-center bg-black/55 px-4 py-4 sm:px-6 sm:py-6">
-      <button type="button" aria-label="关闭项目选择" onClick={onClose} className="absolute inset-0 z-0 cursor-default" />
-      <section role="dialog" aria-modal="true" aria-labelledby="contract-project-title" className="relative z-10 flex max-h-[88vh] w-[min(820px,94vw)] flex-col overflow-hidden border border-[#251b13] bg-[#efe2bd] text-[#251b13] shadow-[18px_18px_0_rgba(0,0,0,0.28)]">
+    <div ref={overlayRef} className="fixed inset-0 z-[130] flex items-center justify-center bg-black/55 px-4 py-4 sm:px-6 sm:py-6">
+      <button type="button" aria-hidden="true" tabIndex={-1} onClick={onClose} className="absolute inset-0 z-0 cursor-default" />
+      <section ref={dialogRef} tabIndex={-1} role="dialog" aria-modal="true" aria-labelledby="contract-project-title" className="relative z-10 flex max-h-[88vh] w-[min(820px,94vw)] flex-col overflow-hidden border border-[#251b13] bg-[#efe2bd] text-[#251b13] shadow-[18px_18px_0_rgba(0,0,0,0.28)]">
         <header className="flex items-start justify-between gap-6 border-b border-[#b8a57d] p-5 sm:p-6">
           <div>
             <div className="mb-3 font-mono text-xs tracking-[0.18em] text-[#8f1e18]">选择签约项目</div>

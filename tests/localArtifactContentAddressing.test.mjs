@@ -63,6 +63,33 @@ test('records local immutable provenance in the agent submission storage proof',
   }
 });
 
+test('keeps the canonical artifact when a bound workspace projection is not writable', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'hofs-local-artifact-projection-blocked-'));
+  try {
+    const workspacePath = join(directory, 'workspace');
+    mkdirSync(workspacePath);
+    const runtime = createLocalProjectRuntime({
+      rootPath: join(directory, 'runtime'),
+      workspaceProjectionWriteFile() {
+        const error = new Error('workspace denied');
+        error.code = 'EPERM';
+        throw error;
+      },
+    });
+    const written = runtime.writeArtifact({ id: 'report', relativePath: 'report.md', content: 'canonical report' }, {
+      project: { id: 'projection-blocked-project', localRuntime: { workspacePath } },
+    });
+
+    assert.equal(readFileSync(written.absolutePath, 'utf8'), 'canonical report');
+    assert.equal(readFileSync(written.immutableAbsolutePath, 'utf8'), 'canonical report');
+    assert.equal(written.workspaceFile, null);
+    assert.deepEqual(written.workspaceProjection, { status: 'blocked', errorCode: 'EPERM' });
+    assert.equal(written.storageEvent.workspaceProjectionStatus, 'blocked');
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('records a content-minimized retention inventory and rejects corrupt canonical reuse', () => {
   const directory = mkdtempSync(join(tmpdir(), 'hofs-local-artifact-inventory-'));
   try {

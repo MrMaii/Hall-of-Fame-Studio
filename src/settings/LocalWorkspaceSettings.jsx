@@ -44,7 +44,15 @@ export default function LocalWorkspaceSettings({
                 <div className="space-y-6" data-testid="settings-workspace-runtime-boundary">
                   <div className="grid grid-cols-2 gap-5">
                     <SettingField label={t('settings.defaultLanguage')} hint="Local UI preference; stored in the browser, not the backend project.">
-                      <select data-testid="settings-global-language" className={fieldClass} value={language} onChange={(event) => setLanguage(event.target.value)}>
+                      <select
+                        data-testid="settings-global-language"
+                        className={fieldClass}
+                        value={language}
+                        onChange={(event) => {
+                          const nextLanguage = event.target.value;
+                          setLanguage(nextLanguage);
+                        }}
+                      >
                         <option value="zh">{t('language.zh')}</option>
                         <option value="en">{t('language.en')}</option>
                       </select>
@@ -58,7 +66,7 @@ export default function LocalWorkspaceSettings({
                         onChange={(event) => {
                           if (!activeProject) return;
                           const nextLanguage = event.target.value === 'inherit' ? undefined : event.target.value;
-                          updateProjectLanguageSetting(nextLanguage || null);
+                          updateProjectLanguageSetting(nextLanguage || null, language);
                         }}
                       >
                         <option value="inherit">{t('settings.inheritGlobal')}</option>

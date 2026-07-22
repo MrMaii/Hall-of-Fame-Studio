@@ -14,6 +14,14 @@ test('talent cards avoid nested button semantics', () => {
   assert.doesNotMatch(source, /<div key=\{agent\.id\} role="button"/);
 });
 
+test('initiation talent cards explain that opening a dossier leads to selection', () => {
+  const source = readFileSync(new URL('../src/scenes/AgentMarketScene.jsx', import.meta.url), 'utf8');
+  const appSource = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
+  assert.match(source, /isInitiationMarket \? text\('查看并选择', 'Review and select'\)/);
+  assert.match(source, /accessibleName=\{localizeText\(agent\.name, activeLanguage\)\}/);
+  assert.match(appSource, /title=\{accessibleName\}/);
+});
+
 test('talent cards stay readable beside the product sidebar at common desktop widths', () => {
   const source = readFileSync(new URL('../src/scenes/AgentMarketScene.jsx', import.meta.url), 'utf8');
   assert.match(source, /lg:grid-cols-3 2xl:grid-cols-4/);

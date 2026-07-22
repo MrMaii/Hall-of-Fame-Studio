@@ -109,6 +109,23 @@ async function assertPageContains(page, text, message = `Expected page to contai
   assert(acceptedTexts.some((acceptedText) => bodyText.includes(acceptedText)), message);
 }
 
+async function assertManagerFlowAxisCentered(page, context) {
+  const state = await page.getByTestId('manager-flow-time-axis').evaluate((axis) => {
+    const viewport = axis.closest('.manager-flow-viewport');
+    const axisRect = axis.getBoundingClientRect();
+    const viewportRect = viewport?.getBoundingClientRect();
+    return viewportRect ? {
+      axisY: axisRect.top,
+      viewportCenterY: viewportRect.top + viewportRect.height / 2,
+      offset: Math.abs(axisRect.top - (viewportRect.top + viewportRect.height / 2)),
+    } : null;
+  });
+  assert(
+    state && state.offset <= 2,
+    `${context}: main time axis must stay at the vertical center of the viewport. State: ${JSON.stringify(state)}`,
+  );
+}
+
 async function scrollDashboardToBottom(page) {
   await page.evaluate(() => {
     const scrollers = [...document.querySelectorAll('.overflow-y-auto')];
@@ -287,7 +304,7 @@ try {
   await demoButton.click();
 
   await page.waitForFunction(() => document.body.innerText.includes('Manager Demo: Autonomous Agent Studio'), null, { timeout: 10000 });
-  await page.getByTestId('project-sample-fixture-banner').waitFor({ state: 'visible', timeout: 5000 });
+  await page.getByTestId('project-sample-fixture-banner').first().waitFor({ state: 'attached', timeout: 5000 });
   await assertPageContains(page, 'Sample Fixture');
   await assertPageContains(page, 'Validation and demo data only');
   await mkdir(new URL('../dist/', import.meta.url), { recursive: true });
@@ -302,13 +319,13 @@ try {
   await flowGraphButton.click();
   await page.getByTestId('manager-flow-graph').waitFor({ state: 'visible', timeout: 10000 });
   assert(
-    await page.locator('[data-testid^="manager-flow-node-"]').count() > 0,
+    await page.locator('button[data-testid^="manager-flow-node-"]').count() > 0,
     'Manager Flow Graph must render its original node cards.',
   );
   const managerFlowViewportState = await page.getByTestId('manager-flow-graph').evaluate((graph) => {
     const viewport = graph.parentElement;
     const viewportRect = viewport?.getBoundingClientRect();
-    const nodes = [...graph.querySelectorAll('[data-testid^="manager-flow-node-"]')];
+    const nodes = [...graph.querySelectorAll('button[data-testid^="manager-flow-node-"]')];
     const nodeRects = nodes.map((node) => {
       const rect = node.getBoundingClientRect();
       return {
@@ -342,6 +359,190 @@ try {
     managerFlowViewportState.visibleNodeCount > 0,
     `Manager Flow Graph must show at least one node card when opened. State: ${JSON.stringify(managerFlowViewportState)}`,
   );
+  await page.getByTestId('manager-flow-time-axis').waitFor({ state: 'visible', timeout: 5000 });
+  await assertManagerFlowAxisCentered(page, 'Initial graph entry');
+  await page.setViewportSize({ width: VIEWPORT.width, height: 900 });
+  await page.waitForTimeout(100);
+  await assertManagerFlowAxisCentered(page, 'Viewport resize');
+  await page.setViewportSize(VIEWPORT);
+  await page.waitForTimeout(100);
+  await assertManagerFlowAxisCentered(page, 'Viewport restore');
+  const curvedTimeBranches = await page.getByTestId('manager-flow-time-branches').locator('path').evaluateAll(paths => (
+    paths.map(path => path.getAttribute('d') || '')
+  ));
+  assert(curvedTimeBranches.length > 0, 'Manager Flow Graph must draw time branches from the real-time axis.');
+  assert(
+    curvedTimeBranches.every(path => /\sC\s/.test(path) && !/\s[HV]\s/.test(path)),
+    `Manager Flow Graph time branches must be curved paths. Paths: ${JSON.stringify(curvedTimeBranches.slice(0, 4))}`,
+  );
+  const relationshipPaths = await page.getByTestId('manager-flow-relationships').locator('path').evaluateAll(paths => (
+    paths.map(path => path.getAttribute('d') || '')
+  ));
+  assert(
+    relationshipPaths.every(path => /\sC\s/.test(path) && !/\s[HV]\s/.test(path)),
+    `Manager Flow Graph relationships must be curved paths. Paths: ${JSON.stringify(relationshipPaths.slice(0, 4))}`,
+  );
+  const firstVisibleManagerFlowNodeId = await page.locator('button[data-testid^="manager-flow-node-"]').evaluateAll((nodes) => {
+    const viewportRect = nodes[0]?.closest('.manager-flow-viewport')?.getBoundingClientRect();
+    if (!viewportRect) return null;
+    return nodes.find((node) => {
+      const rect = node.getBoundingClientRect();
+      return rect.right > viewportRect.left
+        && rect.bottom > viewportRect.top
+        && rect.left < viewportRect.right
+        && rect.top < viewportRect.bottom;
+    })?.getAttribute('data-testid') || null;
+  });
+  assert(firstVisibleManagerFlowNodeId, 'Manager Flow Graph must expose a visible node for selection.');
+  const firstManagerFlowNode = page.getByTestId(firstVisibleManagerFlowNodeId);
+  await firstManagerFlowNode.click();
+  await page.getByTestId('timeline-node-agent-description').waitFor({ state: 'visible', timeout: 5000 });
+  await page.getByTestId('manager-flow-focus-selected').click();
+  await assertManagerFlowAxisCentered(page, 'Focus selected');
+  await page.getByTestId('manager-flow-detail-close').click();
+  await page.getByTestId('manager-flow-focus-latest').click();
+  await assertManagerFlowAxisCentered(page, 'Focus latest');
+  await page.getByTestId('timeline-node-agent-description').waitFor({ state: 'visible', timeout: 5000 });
+  await page.getByTestId('manager-flow-detail-close').click();
+  const semanticPresetCounts = [];
+  const semanticPresetPublicationStates = [];
+  for (const preset of [
+    'manager-flow-zoom-outcome',
+    'manager-flow-zoom-phase',
+    'manager-flow-zoom-activity',
+    'manager-flow-zoom-trace',
+  ]) {
+    await page.getByTestId(preset).click();
+    await page.waitForTimeout(420);
+    await assertManagerFlowAxisCentered(page, preset);
+    const publicationState = await page.locator('button[data-testid^="manager-flow-node-"]').evaluateAll((nodes) => {
+      const countByTime = nodes.reduce((counts, node) => {
+        const time = node.getAttribute('data-timeline-time') || `unscheduled:${node.getAttribute('data-timeline-event-id')}`;
+        counts[time] = (counts[time] || 0) + 1;
+        return counts;
+      }, {});
+      const graph = document.querySelector('[data-testid="manager-flow-graph"]');
+      const graphTransform = graph ? new DOMMatrixReadOnly(getComputedStyle(graph).transform) : null;
+      const viewportRect = graph?.parentElement?.getBoundingClientRect();
+      const overflowMarkers = graph ? [...graph.querySelectorAll('button[data-testid^="manager-flow-overflow-"]')] : [];
+      return {
+        nodeCount: nodes.length,
+        maxNodesAtOneTime: Math.max(0, ...Object.values(countByTime)),
+        density: Number(graph?.getAttribute('data-timeline-density')),
+        graphScale: graphTransform ? { x: graphTransform.a, y: graphTransform.d } : null,
+        overflowMarkerCount: overflowMarkers.length,
+        expandedOverflowMarkerCount: overflowMarkers.filter(marker => marker.getAttribute('data-expanded') === 'true').length,
+        nodesOutsideViewport: viewportRect ? nodes
+          .filter((node) => {
+            const rect = node.getBoundingClientRect();
+            return rect.top < viewportRect.top - 1 || rect.bottom > viewportRect.bottom + 1;
+          })
+          .map(node => node.getAttribute('data-timeline-event-id')) : [],
+        nodes: nodes.map((node) => {
+          const rect = node.getBoundingClientRect();
+          return {
+            id: node.getAttribute('data-timeline-event-id'),
+            time: node.getAttribute('data-timeline-time'),
+            left: node.offsetLeft,
+            width: Math.round(rect.width),
+            height: Math.round(rect.height),
+          };
+        }),
+        invalidDecisionIds: nodes
+          .filter((node) => node.getAttribute('data-timeline-category') === 'decision'
+            && node.getAttribute('data-timeline-directional-decision') !== 'true')
+          .map((node) => node.getAttribute('data-timeline-event-id')),
+      };
+    });
+    semanticPresetCounts.push(publicationState.nodeCount);
+    semanticPresetPublicationStates.push(publicationState);
+  }
+  assert(
+    semanticPresetCounts.every((count, index) => index === 0 || count >= semanticPresetCounts[index - 1]),
+    `Semantic zoom must progressively reveal nodes. Counts: ${semanticPresetCounts.join(' -> ')}`,
+  );
+  assert(
+    semanticPresetPublicationStates.every((state) => state.maxNodesAtOneTime <= 2),
+    `Timeline publication must keep at most two representative nodes at each real timestamp. States: ${JSON.stringify(semanticPresetPublicationStates)}`,
+  );
+  assert(
+    semanticPresetPublicationStates.every((state) => state.invalidDecisionIds.length === 0),
+    `Decision nodes must be direction-changing choices. States: ${JSON.stringify(semanticPresetPublicationStates)}`,
+  );
+  assert(
+    semanticPresetPublicationStates.every((state) => state.graphScale?.x === 1 && state.graphScale?.y === 1),
+    `Timeline density must not scale the rendered graph. States: ${JSON.stringify(semanticPresetPublicationStates)}`,
+  );
+  assert(
+    semanticPresetPublicationStates.every((state) => state.nodesOutsideViewport.length === 0),
+    `Manager Flow Graph must never render a full node outside the vertical viewport. States: ${JSON.stringify(semanticPresetPublicationStates)}`,
+  );
+  assert(
+    semanticPresetPublicationStates.some((state) => state.overflowMarkerCount > 0),
+    `Dense timeline states must expose hidden records through an overflow marker. States: ${JSON.stringify(semanticPresetPublicationStates)}`,
+  );
+  const renderedNodeSizes = new Set(semanticPresetPublicationStates.flatMap((state) => (
+    state.nodes.map((node) => `${node.width}x${node.height}`)
+  )));
+  assert(
+    renderedNodeSizes.size === 1,
+    `Timeline cards must keep one real pixel size across every time scale. Sizes: ${[...renderedNodeSizes].join(', ')}`,
+  );
+  const timelineStretchComparisons = [];
+  for (let stateIndex = 1; stateIndex < semanticPresetPublicationStates.length; stateIndex += 1) {
+    const coarseState = semanticPresetPublicationStates[stateIndex - 1];
+    const fineState = semanticPresetPublicationStates[stateIndex];
+    const coarseById = new Map(coarseState.nodes.map((node) => [node.id, node]));
+    const commonNodes = fineState.nodes.filter((node) => coarseById.has(node.id));
+    const pair = commonNodes.flatMap((left, index) => commonNodes.slice(index + 1).map((right) => [left, right]))
+      .filter(([left, right]) => Date.parse(left.time) !== Date.parse(right.time))
+      .sort(([leftA, rightA], [leftB, rightB]) => (
+        Math.abs(Date.parse(rightB.time) - Date.parse(leftB.time))
+        - Math.abs(Date.parse(rightA.time) - Date.parse(leftA.time))
+      ))[0];
+    if (!pair) continue;
+    const [fineLeft, fineRight] = pair;
+    const coarseLeft = coarseById.get(fineLeft.id);
+    const coarseRight = coarseById.get(fineRight.id);
+    timelineStretchComparisons.push({
+      coarse: Math.abs(coarseRight.left - coarseLeft.left),
+      fine: Math.abs(fineRight.left - fineLeft.left),
+      densities: [coarseState.density, fineState.density],
+    });
+  }
+  assert(
+    timelineStretchComparisons.length > 0 && timelineStretchComparisons.every(({ coarse, fine }) => fine > coarse),
+    `Finer time scales must stretch shared real timestamps horizontally. Comparisons: ${JSON.stringify(timelineStretchComparisons)}`,
+  );
+  const overflowMarker = page.locator('button[data-testid^="manager-flow-overflow-"]').first();
+  assert(await overflowMarker.count() > 0, 'Trace view must offer a visible overflow marker for dense nearby records.');
+  const collapsedOverflowNodeCount = await page.locator('button[data-testid^="manager-flow-node-"]').count();
+  await overflowMarker.evaluate(marker => marker.click());
+  await page.waitForTimeout(420);
+  const expandedOverflowMarker = page.locator('button[data-testid^="manager-flow-overflow-"][data-expanded="true"]');
+  assert(await expandedOverflowMarker.count() === 1, 'Clicking an overflow marker must open its local time window.');
+  const expandedOverflowNodeCount = await page.locator('button[data-testid^="manager-flow-node-"]').count();
+  assert(
+    expandedOverflowNodeCount > collapsedOverflowNodeCount,
+    `Opening an overflow marker must reveal more real nodes. Counts: ${collapsedOverflowNodeCount} -> ${expandedOverflowNodeCount}`,
+  );
+  const expandedOutsideNodeIds = await page.locator('button[data-testid^="manager-flow-node-"]').evaluateAll((nodes) => {
+    const viewportRect = nodes[0]?.closest('.manager-flow-viewport')?.getBoundingClientRect();
+    if (!viewportRect) return [];
+    return nodes.filter((node) => {
+      const rect = node.getBoundingClientRect();
+      return rect.top < viewportRect.top - 1 || rect.bottom > viewportRect.bottom + 1;
+    }).map(node => node.getAttribute('data-timeline-event-id'));
+  });
+  assert(expandedOutsideNodeIds.length === 0, `Expanded overflow nodes must remain vertically visible: ${expandedOutsideNodeIds.join(', ')}`);
+  await expandedOverflowMarker.evaluate(marker => marker.click());
+  await page.waitForTimeout(320);
+  await page.getByTestId('manager-flow-fit-view').click();
+  await assertManagerFlowAxisCentered(page, 'Fit View');
+  assert(
+    await page.getByTestId('manager-flow-zoom-trace').getAttribute('aria-pressed') === 'true',
+    'Fit View must preserve the selected semantic zoom level.',
+  );
   const zoomControl = page.getByTestId('manager-flow-zoom');
   await zoomControl.evaluate((input) => {
     input.value = '60';
@@ -349,7 +550,8 @@ try {
     input.dispatchEvent(new Event('change', { bubbles: true }));
   });
   await page.waitForTimeout(120);
-  const compactNodeCount = await page.locator('[data-testid^="manager-flow-node-"]').count();
+  await assertManagerFlowAxisCentered(page, 'Compact time density');
+  const compactNodeCount = await page.locator('button[data-testid^="manager-flow-node-"]').count();
   assert(compactNodeCount > 0, 'Compact Manager Flow Graph must keep major and critical project nodes visible.');
   await zoomControl.evaluate((input) => {
     input.value = '180';
@@ -357,14 +559,27 @@ try {
     input.dispatchEvent(new Event('change', { bubbles: true }));
   });
   await page.waitForTimeout(120);
-  const expandedNodeCount = await page.locator('[data-testid^="manager-flow-node-"]').count();
+  await assertManagerFlowAxisCentered(page, 'Expanded time density');
+  const expandedNodeCount = await page.locator('button[data-testid^="manager-flow-node-"]').count();
   assert(expandedNodeCount >= compactNodeCount, 'Expanded Manager Flow Graph must retain compact nodes and reveal detailed records.');
+  const managerFlowViewport = page.locator('.manager-flow-viewport');
+  const managerFlowViewportBox = await managerFlowViewport.boundingBox();
+  assert(managerFlowViewportBox, 'Manager Flow Graph viewport must be measurable for drag validation.');
+  const dragStart = {
+    x: managerFlowViewportBox.x + managerFlowViewportBox.width - 40,
+    y: managerFlowViewportBox.y + managerFlowViewportBox.height / 2,
+  };
+  await managerFlowViewport.dispatchEvent('mousedown', { button: 0, clientX: dragStart.x, clientY: dragStart.y });
+  await managerFlowViewport.dispatchEvent('mousemove', { button: 0, clientX: dragStart.x - 80, clientY: dragStart.y + 160 });
+  await managerFlowViewport.dispatchEvent('mouseup', { button: 0, clientX: dragStart.x - 80, clientY: dragStart.y + 160 });
+  await assertManagerFlowAxisCentered(page, 'Vertical drag attempt');
   await page.getByRole('button', { name: /^RESET$/i }).click();
   await page.waitForTimeout(250);
+  await assertManagerFlowAxisCentered(page, 'Reset');
   const resetManagerFlowVisibleNodeCount = await page.getByTestId('manager-flow-graph').evaluate((graph) => {
     const viewportRect = graph.parentElement?.getBoundingClientRect();
     if (!viewportRect) return 0;
-    return [...graph.querySelectorAll('[data-testid^="manager-flow-node-"]')].filter((node) => {
+    return [...graph.querySelectorAll('button[data-testid^="manager-flow-node-"]')].filter((node) => {
       const rect = node.getBoundingClientRect();
       return (
         rect.right > viewportRect.left
@@ -773,7 +988,7 @@ try {
   await assertPageContains(page, 'I own the dependency');
   await assertPageContains(page, 'review the next manager handoff evidence');
   await backToDashboard(page);
-  await page.getByTestId('project-sample-fixture-banner').waitFor({ state: 'visible', timeout: 5000 });
+  await page.getByTestId('project-sample-fixture-banner').first().waitFor({ state: 'attached', timeout: 5000 });
   await assertPageContains(page, 'Peer Handoffs');
 
   await clickDashboardStep(page, 'timeline_evidence');
@@ -787,7 +1002,7 @@ try {
     const graph = document.querySelector('[data-testid="manager-flow-graph"]');
     const viewportRect = graph?.parentElement?.getBoundingClientRect();
     if (!graph || !viewportRect) return false;
-    const visibleCount = [...graph.querySelectorAll('[data-testid^="manager-flow-node-"]')].filter((node) => {
+    const visibleCount = [...graph.querySelectorAll('button[data-testid^="manager-flow-node-"]')].filter((node) => {
       const rect = node.getBoundingClientRect();
       return (
         rect.right > viewportRect.left
@@ -809,7 +1024,7 @@ try {
   const focusedManagerFlowVisibleNodeCount = await page.getByTestId('manager-flow-graph').evaluate((graph) => {
     const viewportRect = graph.parentElement?.getBoundingClientRect();
     if (!viewportRect) return 0;
-    return [...graph.querySelectorAll('[data-testid^="manager-flow-node-"]')].filter((node) => {
+    return [...graph.querySelectorAll('button[data-testid^="manager-flow-node-"]')].filter((node) => {
       const rect = node.getBoundingClientRect();
       return (
         rect.right > viewportRect.left
@@ -847,12 +1062,13 @@ try {
     }).catch(() => {});
     const managerFlowState = await page.getByTestId('manager-flow-graph').evaluate((graph) => {
       const viewportRect = graph.parentElement?.getBoundingClientRect();
-      const nodes = [...graph.querySelectorAll('[data-testid^="manager-flow-node-"]')];
+      const nodes = [...graph.querySelectorAll('button[data-testid^="manager-flow-node-"]')];
       const nodeState = nodes.map((node) => {
         const rect = node.getBoundingClientRect();
         return {
           id: node.getAttribute('data-testid'),
           focused: node.classList.contains('ring-2'),
+          selected: node.classList.contains('z-30'),
           offsetLeft: node.offsetLeft,
           offsetTop: node.offsetTop,
           rect: {
@@ -881,6 +1097,14 @@ try {
         nodeCount: nodes.length,
         visibleNodeCount: nodeState.filter(isVisible).length,
         focusedNodes: nodeState.filter(node => node.focused).slice(0, 6),
+        selectedNodes: nodeState.filter(node => node.selected).slice(0, 6),
+        nearestNodes: [...nodeState].sort((a, b) => {
+          const centerX = viewportRect ? (viewportRect.left + viewportRect.right) / 2 : 0;
+          const centerY = viewportRect ? (viewportRect.top + viewportRect.bottom) / 2 : 0;
+          const distance = item => Math.abs((item.rect.left + item.rect.right) / 2 - centerX)
+            + Math.abs((item.rect.top + item.rect.bottom) / 2 - centerY);
+          return distance(a) - distance(b);
+        }).slice(0, 6),
         sampleNodes: nodeState.slice(0, 6),
       };
     }).catch(() => null);

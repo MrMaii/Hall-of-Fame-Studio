@@ -1,4 +1,5 @@
 import { Mic2 } from 'lucide-react';
+import { meetingDraftClaimsFloor } from './meetingFloorControl.js';
 
 export default function MeetingInputPanel({
   backendSendRequired,
@@ -49,13 +50,12 @@ export default function MeetingInputPanel({
         <textarea
           data-testid="project-meeting-input"
           value={input}
-          onFocus={() => onUserIntentChange(true)}
-          onBlur={() => { if (!input.trim()) onUserIntentChange(false); }}
-          onCompositionStart={() => onUserIntentChange(true)}
           onChange={(event) => {
-            onUserIntentChange(true);
-            onInputChange(event.target.value);
+            const nextValue = event.target.value;
+            onInputChange(nextValue);
+            onUserIntentChange(meetingDraftClaimsFloor(nextValue));
           }}
+          onCompositionEnd={(event) => onUserIntentChange(meetingDraftClaimsFloor(event.currentTarget.value))}
           onKeyDown={(event) => {
             if (event.key === 'Enter' && !event.shiftKey) {
               event.preventDefault();

@@ -1,4 +1,6 @@
 import { ChevronLeft, Clock, Mic2 } from 'lucide-react';
+import { meetingDraftClaimsFloor } from './meetingFloorControl.js';
+import { meetingMessageStatusLabel } from './meetingMessageState.js';
 
 export default function AdvancedMeetingRoom({
   sceneTransition,
@@ -7,6 +9,7 @@ export default function AdvancedMeetingRoom({
   meetingTitle,
   isAnySpeaking,
   completeMeeting,
+  canCompleteMeeting,
   formatTime,
   meetingElapsed,
   hideMeetingTelemetry,
@@ -20,6 +23,9 @@ export default function AdvancedMeetingRoom({
   visibleQueue,
   usesCustomMeetingSubmit,
   initiationMeetingSession,
+  projectMeetingCompletion,
+  projectMeetingSession,
+  projectMeetingSetupError,
   backendMeetingSendRequired,
   setSettingsTab,
   setSettingsOpen,
@@ -36,7 +42,7 @@ export default function AdvancedMeetingRoom({
   activeLanguage,
 }) {
   const text = (chinese, english) => activeLanguage === 'zh' ? chinese : english;
-  const intentStatusText = (status) => (
+  const intentStatusText = (status) => status === 'listening' ? text('正在听取并形成判断', 'Listening and forming a view') : (
     status === 'speaking'
       ? text('发言中', 'Speaking')
       : status === 'yielded'
@@ -46,6 +52,18 @@ export default function AdvancedMeetingRoom({
   const intentTargetText = (target) => target === 'start the kickoff conversation'
     ? text('开始立项讨论', 'Start the kickoff conversation')
     : localizeText(target, activeLanguage);
+  const interactionIntentText = (intent) => ({
+    listen: text('听取', 'Listen'),
+    consider: text('形成判断', 'Consider'),
+    commit: text('承诺提交', 'Commit to submit'),
+    support: text('支持', 'Support'),
+    challenge: text('质疑', 'Challenge'),
+    clarify: text('澄清', 'Clarify'),
+    compete: text('竞选', 'Compete'),
+    synthesize: text('综合', 'Synthesize'),
+    escalate: text('上报', 'Escalate'),
+    yield: text('让出发言', 'Yield'),
+  }[intent] || localizeText(intent || '', activeLanguage));
   return (
       <div data-testid="project-meeting-room-stage" className="project-room relative h-screen overflow-hidden text-[#efe2bd]">
         {sceneTransition && <div className="absolute right-16 top-1/2 z-50 w-32 h-32 -translate-y-1/2 bg-[#8f1e18] scene-bubble" />}
@@ -67,8 +85,11 @@ export default function AdvancedMeetingRoom({
             <div className="flex items-center gap-4">
               {completeMeeting && (
                 <button
+                  data-testid="project-meeting-complete"
                   onClick={completeMeeting}
-                  className="font-mono text-[10px] uppercase tracking-widest border border-[#8f1e18] bg-[#8f1e18] px-3 py-1.5 text-white hover:bg-[#a62a22] transition-colors"
+                  disabled={!canCompleteMeeting}
+                  title={!canCompleteMeeting ? text('至少完成一轮讨论，并等待所有参会者发言结束。', 'Complete one discussion round and wait for every attendee to finish.') : ''}
+                  className="font-mono text-[10px] uppercase tracking-widest border border-[#8f1e18] bg-[#8f1e18] px-3 py-1.5 text-white hover:bg-[#a62a22] transition-colors disabled:cursor-not-allowed disabled:opacity-35"
                 >
                   {text('结束会议', 'End Meeting')}
                 </button>
@@ -164,12 +185,23 @@ export default function AdvancedMeetingRoom({
 
               {/* Right Sidebar */}
             <aside className="flex flex-col gap-3 min-h-0">
+              {projectMeetingSession && !usesCustomMeetingSubmit && (
+                <div data-testid="project-meeting-session-context" className="border border-[#7b6542] bg-[#251b13] p-4 shrink-0">
+                  <div className="font-mono text-[8px] uppercase tracking-widest text-[#bcae86]">{text('本次会议', 'This meeting')}</div>
+                  <div className="mt-2 font-serif text-lg leading-snug text-[#efe2bd]">{projectMeetingSession.agenda}</div>
+                  <div className="mt-3 flex flex-wrap gap-2 font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">
+                    <span>{projectMeetingSession.participantIds?.length || 0} {text('位参会者', 'attendees')}</span>
+                    <span>·</span>
+                    <span>{text('记录负责人', 'Recorder')}：{projectMeetingSession.recorderName}</span>
+                  </div>
+                </div>
+              )}
               {hideMeetingTelemetry && (
                 <div data-testid="project-meeting-intent-panel" className="bg-[#1a130e]/80 border border-[#3a2a1c] rounded p-4 shrink-0">
                   <div className="flex items-center justify-between gap-3 mb-3">
                     <div className="flex items-center gap-2">
-                      <span className="node-id-tag bg-[#8f1e18]">INT</span>
-                      <span className="font-mono text-[9px] uppercase tracking-widest text-[#7d6a49]">{text('Agent 发言意图', 'Agent Intent')}</span>
+                      <span data-no-localize="" className="node-id-tag bg-[#8f1e18]">INT</span>
+                      <span className="font-mono text-[9px] uppercase tracking-widest text-[#7d6a49]">{text('智能体发言意图', 'Agent Intent')}</span>
                     </div>
                     <span className="font-mono text-[8px] uppercase tracking-widest text-[#59684b]">{visibleQueue.length} {text('位排队中', 'queued')}</span>
                   </div>
@@ -184,7 +216,7 @@ export default function AdvancedMeetingRoom({
                       </div>
                     </div>
                   ) : (
-                    <p className="font-serif text-sm leading-relaxed text-[#7d6a49]">{text('下一轮会议开始后，Agent 会进入发言队列。', 'Agents will queue speaking intent after the next meeting turn.')}</p>
+                    <p className="font-serif text-sm leading-relaxed text-[#7d6a49]">{text('下一轮会议开始后，智能体会进入发言队列。', 'Agents will queue speaking intent after the next meeting turn.')}</p>
                   )}
                   {visibleQueue.length > 1 && (
                     <div className="mt-3 grid gap-2">
@@ -200,7 +232,7 @@ export default function AdvancedMeetingRoom({
               )}
               {!hideMeetingTelemetry && <div className="bg-[#1a130e]/80 border border-[#3a2a1c] rounded p-4 shrink-0">
                 <div className="flex items-center gap-2 mb-3">
-                  <span className="node-id-tag bg-[#8f1e18]">INT</span>
+                  <span data-no-localize="" className="node-id-tag bg-[#8f1e18]">INT</span>
                   <span className="font-mono text-[9px] uppercase tracking-widest text-[#7d6a49]">{text('发言意图', 'Speaking Intent')}</span>
                 </div>
                 {activeIntention ? (
@@ -214,7 +246,7 @@ export default function AdvancedMeetingRoom({
                     </div>
                   </div>
                 ) : (
-                  <p className="font-serif text-sm leading-relaxed text-[#7d6a49]">{text('等待用户输入后生成 Agent 发言意图。', 'Waiting for user input before generating Agent intent scores.')}</p>
+                  <p className="font-serif text-sm leading-relaxed text-[#7d6a49]">{text('等待用户输入后生成智能体发言意图。', 'Waiting for user input before generating Agent intent scores.')}</p>
                 )}
               </div>}
 
@@ -226,7 +258,7 @@ export default function AdvancedMeetingRoom({
                   <span className="font-mono text-[9px] uppercase tracking-widest text-[#7d6a49]">{text('发言队列', 'Intent Queue')}</span>
                 </div>
                 {visibleQueue.length === 0 ? (
-                  <p className="font-serif text-sm text-[#7d6a49]">{text('等待用户输入后生成 Agent 发言意图。', 'Waiting for user input to generate Agent intent scores.')}</p>
+                  <p className="font-serif text-sm text-[#7d6a49]">{text('等待用户输入后生成智能体发言意图。', 'Waiting for user input to generate Agent intent scores.')}</p>
                 ) : visibleQueue.map((intent, idx) => {
                   const statusColor = intent.status === 'speaking' ? '#8f1e18' : intent.status === 'yielded' ? '#59684b' : '#b9782b';
                   const statusLabel = intentStatusText(intent.status);
@@ -235,7 +267,7 @@ export default function AdvancedMeetingRoom({
                       style={{ borderColor: statusColor, background: 'rgba(26,19,14,0.5)' }}>
                       <div className="flex items-center justify-between mb-1.5">
                         <div className="flex items-center gap-2">
-                          <span className="node-id-tag" style={{ fontSize: '7px' }}>INT-{String(idx + 1).padStart(2, '0')}</span>
+                          <span data-no-localize="" className="node-id-tag" style={{ fontSize: '7px' }}>INT-{String(idx + 1).padStart(2, '0')}</span>
                           <span className="font-mono text-[9px] text-[#bcae86]">{intent.name}</span>
                         </div>
                         <span className="node-status-tag text-white" style={{ background: statusColor, fontSize: '7px' }}>{statusLabel}</span>
@@ -254,21 +286,33 @@ export default function AdvancedMeetingRoom({
               {/* Transcript */}
               <div className="bg-[#1a130e]/80 border border-[#3a2a1c] rounded p-4 flex-1 overflow-y-auto min-h-0">
                 <div className="flex items-center gap-2 mb-3">
-                  <span className="node-id-tag bg-[#8f1e18]">LOG</span>
+                  <span data-no-localize="" className="node-id-tag bg-[#8f1e18]">LOG</span>
                   <span className="font-mono text-[9px] uppercase tracking-widest text-[#7d6a49]">{localizeText('Meeting Transcript', activeLanguage)}</span>
                 </div>
                 <div className="space-y-3">
-                  {roomTranscript.slice(-8).map((log, idx) => {
-                    const isSystem = log.speaker === 'System';
-                    const isDirector = log.speaker === 'Director';
-                    return (
+                   {roomTranscript.slice(-8).map((log, idx) => {
+                     const isSystem = log.speaker === 'System';
+                     const isDirector = log.speaker === 'Director';
+                     const replyTargetName = meetingProject.team.find(agent => agent.id === log.targetSpeakerId)?.name
+                       || (log.targetSpeakerId === 'director' ? 'Director' : log.targetSpeakerId);
+                     return (
                       <div key={log.id} className={`border-l-[3px] pl-3 py-1 ${isDirector ? 'border-[#efe2bd]' : isSystem ? 'border-[#3a2a1c]' : 'border-[#8f1e18]'}`}>
                         <div className="flex items-center gap-2 mb-0.5">
-                          <span className="node-id-tag" style={{ fontSize: '7px' }}>LOG-{String(idx + 1).padStart(2, '0')}</span>
+                          <span data-no-localize="" className="node-id-tag" style={{ fontSize: '7px' }}>LOG-{String(idx + 1).padStart(2, '0')}</span>
                           <span className={`font-mono text-[9px] uppercase tracking-widest ${isDirector ? 'text-[#efe2bd]' : 'text-[#bcae86]'}`}>{log.speaker}</span>
                           {log.score > 0 && <span className="font-mono text-[8px] text-[#7d6a49] ml-auto">{log.score}/10</span>}
-                        </div>
-                        <div className="font-serif text-sm leading-relaxed text-[#d8c99f]">{log.text}</div>
+                         </div>
+                         {log.replyToTurnId && log.interactionIntent && (
+                           <div data-testid="meeting-peer-reply-context" className="mb-1 font-mono text-[7px] uppercase tracking-widest text-[#7d6a49]">
+                             {text('回应', 'Replying to')} {replyTargetName || text('上一位发言人', 'previous speaker')} · {interactionIntentText(log.interactionIntent)}
+                           </div>
+                         )}
+                         <div className="font-serif text-sm leading-relaxed text-[#d8c99f]">{log.text}</div>
+                         {isDirector && log.deliveryStatus && (
+                           <div data-testid={`meeting-message-status-${log.id}`} className="mt-1 font-mono text-xs text-[#bcae86]">
+                             {meetingMessageStatusLabel(log.deliveryStatus, activeLanguage)}
+                           </div>
+                         )}
                       </div>
                     );
                   })}
@@ -282,6 +326,17 @@ export default function AdvancedMeetingRoom({
                     {initiationMeetingSession.id} / {localizeText(initiationMeetingSession.status, activeLanguage)} / {initiationMeetingSession.evidence?.transcriptIds?.length || (initiationMeetingSession.transcript || []).length} {text('条会议记录', 'transcript proofs')}
                   </div>
                 </div>
+              )}
+
+              {projectMeetingCompletion && (
+                <div data-testid="project-meeting-completion" className="border border-[#59684b] bg-[#1d2618] px-4 py-3 shrink-0">
+                  <div className="font-mono text-[8px] uppercase tracking-widest text-[#b9d18f]">{text('会议纪要已提交', 'Meeting minutes submitted')}</div>
+                  <div className="mt-2 font-serif text-sm text-[#efe2bd]">{projectMeetingCompletion.report?.recorderName}</div>
+                  <div data-testid="project-meeting-summary-path" className="mt-1 break-all font-mono text-[8px] text-[#bcae86]">{projectMeetingCompletion.report?.workspaceRelativePath}</div>
+                </div>
+              )}
+              {projectMeetingSetupError && (
+                <div role="alert" className="border border-[#8f1e18] bg-[#251b13] px-4 py-3 text-sm text-[#e7b3ae]">{projectMeetingSetupError}</div>
               )}
 
               {/* Input */}
@@ -318,13 +373,12 @@ export default function AdvancedMeetingRoom({
                 <textarea
                   data-testid="project-meeting-input"
                   value={roomInput}
-                  onFocus={() => setRoomUserIntentActive(true)}
-                  onBlur={() => { if (!roomInput.trim()) setRoomUserIntentActive(false); }}
-                  onCompositionStart={() => setRoomUserIntentActive(true)}
                   onChange={(e) => {
-                    setRoomUserIntentActive(true);
-                    setRoomInput(e.target.value);
+                    const nextValue = e.target.value;
+                    setRoomInput(nextValue);
+                    setRoomUserIntentActive(meetingDraftClaimsFloor(nextValue));
                   }}
+                  onCompositionEnd={(event) => setRoomUserIntentActive(meetingDraftClaimsFloor(event.currentTarget.value))}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' && !e.shiftKey) {
                       e.preventDefault();
@@ -342,7 +396,7 @@ export default function AdvancedMeetingRoom({
                 </button>
               </div>
               <div data-testid="project-meeting-director-precedence" className="mt-2 font-mono text-[8px] uppercase tracking-widest text-[#bcae86]">
-                {roomUserIntentActive ? text('总监正在输入，Agent 发言已暂停', 'Director has the floor — Agent turns paused') : text('Agent 发言队列已就绪', 'Agent intent queue ready')}
+                {roomUserIntentActive ? text('总监正在输入，智能体发言已暂停', 'Director has the floor — Agent turns paused') : text('智能体发言队列已就绪', 'Agent intent queue ready')}
               </div>
               <div className="hidden">
                 <div className={`p-2 rounded ${isAnySpeaking ? 'bg-[#8f1e18]/20' : 'bg-[#3a2a1c]'}`}>

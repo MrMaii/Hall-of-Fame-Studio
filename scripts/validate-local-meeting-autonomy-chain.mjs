@@ -80,6 +80,52 @@ try {
   assert(/Local Meeting Autonomy Validation/.test(reportText), 'The local meeting report must identify the confirmed project.');
   assert(/Steve Jobs/.test(reportText), 'The local meeting report must identify its Leader author.');
 
+  response = api.handle({
+    method: 'POST',
+    path: `/projects/${projectId}/meeting/start`,
+    body: {
+      agenda: 'Decide whether the local meeting workflow is ready and assign the next work.',
+      participantIds: ['jobs', 'turing', 'curie'],
+      recorderId: 'curie',
+      meetingSessionId: 'confirmed_project_meeting',
+      now: '2026-07-09T09:04:00.000Z',
+    },
+  });
+  assert(response.status === 201 && response.body.meetingSession?.status === 'active', 'A project meeting must be created only after agenda, attendees, and recorder are confirmed.');
+  assert(response.body.messages?.length === 3, 'Every confirmed attendee must acknowledge the meeting agenda.');
+
+  response = api.handle({
+    method: 'POST',
+    path: `/projects/${projectId}/meeting`,
+    body: {
+      meetingSessionId: 'confirmed_project_meeting',
+      text: 'Review readiness, respond to one another, and converge on the next decision.',
+      messageId: 'confirmed_project_meeting_director_turn',
+      now: '2026-07-09T09:05:00.000Z',
+    },
+  });
+  assert(response.status === 200, 'The confirmed project meeting discussion must run through the backend.');
+  assert(response.body.meetingIntentions?.length === 3, 'Every attendee must form an intent after the Director speaks.');
+  assert(response.body.meetingAgentTurns?.length === 3, 'Every attendee must take part in the peer discussion chain.');
+  assert(response.body.meetingAgentTurns?.[2]?.interactionIntent === 'synthesize', 'The final attendee must synthesize the meeting discussion.');
+
+  response = api.handle({
+    method: 'POST',
+    path: `/projects/${projectId}/meeting/complete`,
+    body: {
+      meetingSessionId: 'confirmed_project_meeting',
+      now: '2026-07-09T09:06:00.000Z',
+    },
+  });
+  assert(response.status === 200 && response.body.meetingSession?.status === 'completed', 'The meeting completion must persist a completed backend session.');
+  assert(response.body.meetingAgentTurns?.[0]?.speakerId === 'curie', 'The assigned recorder must make the closing commitment.');
+  assert(/upload|上传/i.test(response.body.meetingAgentTurns?.[0]?.text || ''), 'The recorder must explicitly commit to uploading the meeting minutes.');
+  assert(response.body.meetingReport?.submissionId, 'Meeting completion must create a project submission.');
+  const projectMeetingReportPath = resolve(workspacePath, response.body.meetingReport.workspaceRelativePath);
+  const projectMeetingReportText = await readFile(projectMeetingReportPath, 'utf8');
+  assert(/Decide whether the local meeting workflow is ready/.test(projectMeetingReportText), 'The local project meeting minutes must retain the confirmed agenda.');
+  assert(/Marie Curie/.test(projectMeetingReportText), 'The local project meeting minutes must identify the assigned recorder.');
+
   response = api.handle({ method: 'GET', path: `/projects/${projectId}/manager-flow-graph` });
   const flow = response.body.managerFlowGraph || response.body;
   assert(response.status === 200, 'Manager Flow Graph must be readable after report publication.');

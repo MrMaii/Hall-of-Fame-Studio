@@ -30,6 +30,27 @@ function createRuntime(telemetryPath) {
   return createAgentProjectHttpServer({ api: throwingApi(), telemetry });
 }
 
+test('surfaces allowlisted autonomous work blockers without exposing arbitrary exceptions', async () => {
+  const runtime = createAgentProjectHttpServer({
+    api: {
+      store: { filePath: 'local-test-store' },
+      service: { getSecretVaultStatus: () => ({ enabled: true, ready: true }) },
+      async handleAsync() {
+        throw new Error('model-artifact-draft-failed:model-output-language-mismatch');
+      },
+    },
+  });
+  const listener = await runtime.listen();
+  try {
+    const response = await fetch(`${listener.url}/projects/demo/agent-autonomous-action-queue/researcher/run`, { method: 'POST' });
+    const body = await response.json();
+    assert.equal(response.status, 400);
+    assert.equal(body.failureReason, 'model-artifact-draft-failed:model-output-language-mismatch');
+  } finally {
+    await runtime.close();
+  }
+});
+
 test('deduplicates and manages local runtime error issues across restart', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'hofs-runtime-errors-'));
   const telemetryPath = join(directory, 'telemetry.jsonl');

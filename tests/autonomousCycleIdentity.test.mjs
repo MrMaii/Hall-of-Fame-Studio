@@ -34,3 +34,34 @@ test('an autonomous cycle publishes uniquely identified logs with the originatin
     'every published work pulse must retain the originating Agent identity',
   );
 });
+
+test('coordination cycles never complete tasks or increase project progress without an accepted material outcome', () => {
+  const team = [
+    { id: 'lead', name: 'Lead', role: 'Leader', isLeader: true, managedIds: ['worker'] },
+    { id: 'worker', name: 'Worker', role: 'Researcher', managerId: 'lead' },
+  ];
+  let project = {
+    id: 'no-fake-progress-project',
+    name: 'Research project',
+    objective: 'Research reliable evidence.',
+    progress: 14,
+    team,
+    tasks: [{ id: 'task-1', text: 'Search and synthesize evidence', assignee: 'Worker', status: 'pending' }],
+    agentStates: {},
+    logs: [],
+  };
+
+  for (let index = 0; index < 4; index += 1) {
+    project = advanceAutonomousProjectCycle({
+      project,
+      team,
+      cadence: 'hourly',
+      now: `2026-07-15T1${index}:00:00.000Z`,
+    }).project;
+  }
+
+  assert.equal(project.progress, 14);
+  assert.equal(project.tasks[0].status, 'in-progress');
+  assert.equal(project.tasks[0].completedAt, undefined);
+  assert.equal(project.logs.some((row) => row.eventType === 'task-completed'), false);
+});

@@ -12,7 +12,6 @@ export default function AgentMarketRouteView({ view }) {
     getDossierProfile,
     initiationInviteIds,
     initiationTalentMembers,
-    isDecrypting,
     marketCategory,
     marketMode,
     marketSearch,
@@ -48,7 +47,6 @@ export default function AgentMarketRouteView({ view }) {
 
   return (
     <AgentMarketScene
-      isDecrypting={isDecrypting}
       isInitiationMarket={isInitiationMarket}
       signedInitiationNames={signedInitiationNames}
       initiationTalentMemberCount={initiationTalentMembers.length}

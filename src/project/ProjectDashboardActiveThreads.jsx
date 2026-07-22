@@ -38,8 +38,22 @@ export default function ProjectDashboardActiveThreads({ view = {} }) {
               <div className="font-mono text-[9px] uppercase tracking-widest text-[#7d6a49]">
                 Owner: {task.assignee || task.ownerName || task.ownerId || 'Unassigned'} / {task.status || 'pending'}
               </div>
+              <div data-testid={`active-thread-deadline-${task.id}`} className={`mt-1 font-mono text-[9px] uppercase tracking-widest ${task.dueAt && task.status !== 'done' && Date.parse(task.dueAt) < Date.now() ? 'text-[#8f1e18]' : 'text-[#59684b]'}`}>
+                Deadline: {task.dueAt ? new Date(task.dueAt).toLocaleString() : 'Leader must set'}
+                {task.dueAt && task.status !== 'done' && Date.parse(task.dueAt) < Date.now() ? ' / OVERDUE' : ''}
+              </div>
+              <div data-testid={`active-thread-current-step-${task.id}`} className="mt-1 font-mono text-[8px] uppercase tracking-widest text-[#6b5a3d] leading-relaxed">
+                Current step: {task.currentWorkStep || task.workDefinition?.steps?.[Math.max(0, (task.workPulseCount || 1) - 1)] || task.workDefinition?.steps?.[0] || 'Awaiting first work step'}
+                {' '} / {task.currentWorkStepIndex || task.workPulseCount || 0}/{task.requiredWorkPulses || task.workDefinition?.steps?.length || 0}
+              </div>
+              {task.workDefinition?.deliverable && (
+                <div data-testid={`active-thread-deliverable-${task.id}`} className="mt-1 font-serif text-sm leading-snug text-[#4d412d]">
+                  Deliverable: {task.workDefinition.deliverable}
+                </div>
+              )}
               <div className="mt-1 flex flex-wrap gap-1.5">
                 {task.assignedBy && <span className="node-status-tag bg-[#251b13] text-[#efe2bd]">Assigned by Leader</span>}
+                {task.deadlineSetBy && <span className="node-status-tag bg-[#8f1e18] text-white">Deadline set by Leader</span>}
                 {(task.sourceChannelId || task.channelId) && <span className="node-status-tag bg-[#d8c99f] text-[#251b13]">From {channelNameById[task.sourceChannelId || task.channelId] || task.sourceChannelId || task.channelId}</span>}
                 {evidence.hasAssignment && <span className="node-status-tag bg-[#b9782b] text-white">Assignment proof</span>}
                 {evidence.hasAcknowledgement && <span className="node-status-tag bg-[#59684b] text-white">Accepted</span>}

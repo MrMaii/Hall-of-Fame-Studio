@@ -25,7 +25,7 @@ function asText(value) {
 
 const projectId = 'product_team_core_smoke_project';
 const missionBrief = 'Validate a generic AI product team using a research-style brief only as a sample customer goal.';
-const appSource = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
+const projectDashboardTeamSource = readFileSync(new URL('../src/project/ProjectDashboardTeam.jsx', import.meta.url), 'utf8');
 const team = [
   { id: 'jobs', name: 'Steve Jobs', role: 'Product Lead', skill: 'product framing' },
   { id: 'curie', name: 'Marie Curie', role: 'Evidence Reviewer', skill: 'evidence review' },
@@ -35,12 +35,12 @@ const team = [
 
 assert(PERSON_SKILL_COUNT >= 40, 'Product-team smoke must run against the canonical Hall of Fame persona skill registry.');
 assert(
-  appSource.includes('agent-workbench-artifact-draft-proof')
-    && appSource.includes('Draft node: {latestWorkbenchReceipt.artifactDraftId}')
-    && appSource.includes('latestWorkbenchReceipt.readModels?.managerFlowGraphRoute')
-    && appSource.includes('latestWorkbenchReceipt.readModels?.readinessProofMapRoute')
-    && appSource.includes('latestWorkbenchReceipt.readModels?.timelineRoute')
-    && appSource.includes('latestWorkbenchReceipt.readModels?.eventsRoute'),
+  projectDashboardTeamSource.includes('agent-workbench-artifact-draft-proof')
+    && projectDashboardTeamSource.includes('Draft node: {latestWorkbenchReceipt.artifactDraftId}')
+    && projectDashboardTeamSource.includes('latestWorkbenchReceipt.readModels?.managerFlowGraphRoute')
+    && projectDashboardTeamSource.includes('latestWorkbenchReceipt.readModels?.readinessProofMapRoute')
+    && projectDashboardTeamSource.includes('latestWorkbenchReceipt.readModels?.timelineRoute')
+    && projectDashboardTeamSource.includes('latestWorkbenchReceipt.readModels?.eventsRoute'),
   'Product-team smoke must pin the visible Agent Workbench artifact-draft proof receipt through Flow Graph, Proof Map, Timeline, and Event routes.',
 );
 for (const member of team) {
@@ -140,10 +140,10 @@ let personaBlendSelfNominationCount = 0;
 for (const turn of selfNominationTurns) {
   const member = team.find((item) => item.id === turn.speakerId);
   if (!member) continue;
-  const professionalLabel = professionalLabels.find((label) => String(turn.text || '').includes(label));
+  const professionalLabel = professionalLabels.find((label) => String(turn.text || '').toLocaleLowerCase().includes(String(label).toLocaleLowerCase()));
   if (!professionalLabel) continue;
   assert(
-    String(turn.text || '').includes(professionalLabel),
+    String(turn.text || '').toLocaleLowerCase().includes(String(professionalLabel).toLocaleLowerCase()),
     `${member.name} must self-market with the canonical persona professional skill blend.`,
   );
   personaBlendSelfNominationCount += 1;
@@ -544,7 +544,10 @@ const requiredTraceIds = [
 ];
 assert(flowGraph.status === 200 && requiredTraceIds.every((id) => flowText.includes(id)), 'Manager Flow Graph must trace all required generic submission/evidence/review nodes.');
 const compactFlowNodes = flowNodes.filter((node) => ['major', 'critical'].includes(node.importance));
-assert(compactFlowNodes.some((node) => node.category === 'decision'), 'Compact Manager Flow Graph must retain major project decisions.');
+assert(
+  compactFlowNodes.some((node) => node.category === 'governance' && node.subtype === 'leader-decision'),
+  'Compact Manager Flow Graph must retain the kickoff Leader governance decision.',
+);
 assert(compactFlowNodes.some((node) => node.subtype === 'leader-assignment'), 'Compact Manager Flow Graph must retain Leader assignments.');
 assert(
   requiredGenericArtifactTypes.every((artifactType) => compactFlowNodes.some((node) => (

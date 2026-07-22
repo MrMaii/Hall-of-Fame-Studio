@@ -10,6 +10,9 @@ import {
   decorateWorkflowNode,
   evaluateWorkflowNodeSubmissionQuality,
   inferWorkflowNodeFamily,
+  isDirectionalWorkflowDecision,
+  semanticLevelForWorkflowNode,
+  selectWorkflowTimelinePublications,
   workflowNodeTimeBucket,
   workflowNodeVisibleAtScale,
 } from '../src/workflow/workflowNodeProtocol.js';
@@ -35,6 +38,95 @@ test('workflow node protocol classifies representative and future Agent behavior
   assert.equal(futureNode.categoryLabel, 'Review');
   assert.equal(WORKFLOW_NODE_FAMILY_ORDER.length, 14);
   assert.deepEqual(Object.keys(WORKFLOW_NODE_FAMILIES), WORKFLOW_NODE_FAMILY_ORDER);
+});
+
+test('semantic abstraction remains independent from urgency while explicit backend levels still win', () => {
+  assert.equal(semanticLevelForWorkflowNode({
+    category: 'communication',
+    subtype: 'urgent-agent-message',
+    importance: 'critical',
+  }, 'communication'), 3);
+  assert.equal(semanticLevelForWorkflowNode({
+    category: 'execution',
+    subtype: 'urgent-fix',
+    importance: 'major',
+  }, 'execution'), 2);
+  assert.equal(semanticLevelForWorkflowNode({
+    category: 'submission',
+    subtype: 'draft-note',
+    importance: 'minor',
+  }, 'submission'), 1);
+  assert.equal(semanticLevelForWorkflowNode({
+    category: 'communication',
+    subtype: 'backend-classified-outcome',
+    importance: 'normal',
+    semanticLevel: 0,
+  }, 'communication'), 0);
+});
+
+test('Decision is reserved for direction-changing choices instead of internal Agent intent and status records', () => {
+  const productDirection = decorateWorkflowNode({
+    id: 'product-direction',
+    category: 'decision',
+    subtype: 'product-direction-decision',
+    title: 'Choose the product direction for enterprise teams',
+  });
+  const strategyIntent = decorateWorkflowNode({
+    id: 'strategy-intent',
+    category: 'decision',
+    subtype: 'agent-strategy-intent',
+    title: 'Agent selected the next work action',
+  });
+  const rosterConfirmation = decorateWorkflowNode({
+    id: 'roster',
+    category: 'decision',
+    subtype: 'personnel-assignment',
+    title: 'Team roster confirmed',
+  });
+  const commandCenter = decorateWorkflowNode({
+    id: 'command-center',
+    category: 'decision',
+    subtype: 'manager-command-center',
+    title: 'Manager command center status',
+  });
+  const leaderDecision = decorateWorkflowNode({
+    id: 'leader-election',
+    category: 'decision',
+    subtype: 'leader-decision',
+    title: 'Leader elected and marker persisted',
+  });
+
+  assert.equal(isDirectionalWorkflowDecision(productDirection), true);
+  assert.equal(productDirection.category, 'decision');
+  assert.equal(productDirection.semanticLevel, 0);
+  assert.equal(isDirectionalWorkflowDecision(strategyIntent), false);
+  assert.equal(strategyIntent.category, 'thinking');
+  assert.equal(strategyIntent.semanticLevel, 3);
+  assert.equal(rosterConfirmation.category, 'confirmation');
+  assert.equal(rosterConfirmation.semanticLevel, 1);
+  assert.equal(commandCenter.category, 'monitoring');
+  assert.equal(commandCenter.semanticLevel, 3);
+  assert.equal(leaderDecision.category, 'governance');
+  assert.equal(leaderDecision.semanticLevel, 0);
+});
+
+test('timeline publication keeps at most two representative nodes per real timestamp and a third only when explicitly focused', () => {
+  const sameTime = '2026-07-19T09:00:00.000Z';
+  const nodes = [
+    { id: 'small-idea', category: 'thinking', subtype: 'idea', title: 'Small idea', time: sameTime, importance: 'normal' },
+    { id: 'direction', category: 'decision', subtype: 'product-direction-decision', title: 'Choose product direction', time: sameTime, importance: 'critical' },
+    { id: 'final', category: 'submission', subtype: 'final-deliverable', title: 'Final deliverable', time: sameTime, importance: 'critical' },
+    { id: 'heartbeat', category: 'monitoring', subtype: 'heartbeat', title: 'Heartbeat', time: sameTime, importance: 'normal' },
+    { id: 'later', category: 'thinking', subtype: 'idea', title: 'Later idea', time: '2026-07-19T09:07:00.000Z', importance: 'normal' },
+  ];
+  const ordinary = selectWorkflowTimelinePublications({ nodes, scale: 'hour' });
+  const focused = selectWorkflowTimelinePublications({ nodes, scale: 'hour', pinnedReferenceIds: ['small-idea'] });
+
+  assert.deepEqual(ordinary.nodes.map(node => node.id), ['direction', 'final', 'later']);
+  assert.equal(ordinary.suppressedNodeCount, 2);
+  assert.equal(ordinary.maxNodesPerTimestamp, 2);
+  assert.deepEqual(focused.nodes.map(node => node.id), ['small-idea', 'direction', 'final', 'later']);
+  assert.equal(focused.nodes.filter(node => node.time === sameTime).length, 3);
 });
 
 test('semantic Timeline scales form a monotonic path from outcomes to raw trace', () => {

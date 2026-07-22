@@ -18,9 +18,7 @@ test('private-pilot browser validation authenticates against its isolated local 
     'window.sessionStorage.setItem(authStorageKey, JSON.stringify(authSession));',
     "const syncCatalogButton = page.getByTestId('backend-sync-project-catalog');",
     'if (await syncCatalogButton.count() > 0 && await syncCatalogButton.isVisible())',
-    "page.getByTestId('project-overview').waitFor",
-    "page.getByTestId('project-overview-open-advanced').waitFor",
-    "page.getByTestId('project-overview-open-advanced').click()",
+    "page.getByTestId('project-dashboard-view').waitFor",
     'Validate private-pilot handoff for a generic AI product-team project.',
     'function validationProgress(label)',
     'async function waitForButtonDisabled(page, testId, message',
@@ -42,6 +40,7 @@ test('private-pilot browser validation authenticates against its isolated local 
   ]) {
     assert.ok(source.includes(contract), `Private-pilot browser validation must keep ${contract}`);
   }
+  assert.equal(source.includes('project-overview-open-advanced'), false, 'Private-pilot validation must open the complete project Dashboard directly');
   assert.equal(source.includes('PROJECT_ID.toUpperCase()'), false, 'Private-pilot validation must not require an internal project id in the ordinary project UI');
   assert.equal(
     source.includes('validationProgress(`${label}: syncing prerequisites`);\n  await syncReadyPackageModels(page);'),

@@ -398,15 +398,22 @@ try {
   await page.getByTestId('project-meeting-send').click();
   await assertPageContains(page, 'Turing owns backend mission proof', 'Kickoff meeting must persist the Manager clarification before mission approval.');
   await page.getByRole('button', { name: 'End Meeting', exact: true }).click();
-  await assertPageContains(page, 'Director Decisions', 'Initiation result must expose Director decisions before approval.');
+  await assertPageContains(page, 'FIVE KICKOFF CONFIRMATIONS', 'Initiation result must expose the five kickoff decisions before approval.');
+  await assertPageContains(page, 'FINAL DELIVERABLES', 'Initiation result must expose final deliverables before approval.');
+  const deliverableTitle = await page.getByTestId('initiation-deliverable-title-0').inputValue();
+  const deliverableFile = await page.getByTestId('initiation-deliverable-file-0').inputValue();
+  const deliverableOwner = await page.getByTestId('initiation-deliverable-owner-0').inputValue();
+  const deliverableAcceptance = await page.getByTestId('initiation-deliverable-acceptance-0').inputValue();
+  assert(deliverableTitle.trim(), 'Kickoff approval must name the final deliverable.');
+  assert(/\.[a-z0-9]+$/i.test(deliverableFile.trim()), 'Kickoff approval must confirm an exact filename with an extension.');
+  assert(deliverableOwner.trim(), 'Kickoff approval must confirm a deliverable owner.');
+  assert(deliverableAcceptance.trim(), 'Kickoff approval must confirm a deliverable acceptance condition.');
   await page.getByTestId('initiation-next-action-0').fill('Manager decided product-team mission startup packet');
   await page.getByTestId('leader-candidate-turing').click();
   await assertPageContains(page, 'Director selected', 'Initiation result must persist the selected Leader before mission approval.');
   await page.getByTestId('initiation-approve-create').click();
   await page.getByTestId('initiation-approval-progress').waitFor({ state: 'visible', timeout: 5000 });
-  await page.getByTestId('project-overview-open-advanced').waitFor({ state: 'visible', timeout: 90000 });
-  await page.getByTestId('project-overview-open-advanced').click();
-  await page.getByTestId('project-dashboard-view').waitFor({ state: 'visible', timeout: 15000 });
+  await page.getByTestId('project-dashboard-view').waitFor({ state: 'visible', timeout: 90000 });
   await page.waitForFunction(
     () => document.body.innerText.includes('Roundtable Initiation System') && document.body.innerText.includes('PROJECT DASHBOARD'),
     null,
@@ -416,21 +423,24 @@ try {
   const missionSnapshot = await waitForBackendSnapshot(
     backendRuntime.url,
     (snapshot) => {
-      const project = snapshot.projects.find((item) => item.id === 'p_roundtable_001');
+      const project = snapshot.projects.find((item) => item.name === 'Roundtable Initiation System');
       return missionRowsFromProject(project).some((run) => (
         run.schemaVersion === 'product-team-mission-run/v1'
         && run.reusedKickoffMeeting === true
-        && run.kickoffMeetingId === 'meeting_p_roundtable_001'
+        && run.kickoffMeetingId
         && run.autonomousSessionId
         && run.autonomousSessionTickId
       ));
     },
     'Browser approval must create a reused-kickoff Product Team Mission Runner receipt with Autopilot proof.',
   );
-  const initiatedProject = missionSnapshot.projects.find((item) => item.id === 'p_roundtable_001');
+  const initiatedProject = missionSnapshot.projects.find((item) => item.name === 'Roundtable Initiation System');
+  const initiatedProjectId = initiatedProject?.id;
+  assert(initiatedProjectId, 'Browser approval must persist the initiated project with its backend-generated id.');
   const missionRun = missionRowsFromProject(initiatedProject).find((run) => (
     run.schemaVersion === 'product-team-mission-run/v1'
-    && run.kickoffMeetingId === 'meeting_p_roundtable_001'
+    && run.reusedKickoffMeeting === true
+    && run.kickoffMeetingId
   ));
   assert(missionRun?.researchOnly === false, 'Mission Runner receipt must be generic product-team, not research-only.');
   assert(missionRun?.customerAgentHandoff?.schemaVersion === 'product-team-customer-agent-handoff/v1', 'Mission Runner receipt must expose the C/A handoff contract.');
@@ -439,6 +449,16 @@ try {
   assert(missionRun?.proofIds?.some((id) => /director_brief|director_clarification|role_negotiation_|leader_bid_/i.test(id)), 'Mission Runner proof ids must include real kickoff transcript evidence.');
   assert(missionRun?.readRoutes?.productTeamOperatingLoop?.endsWith('/product-team-operating-loop'), 'Mission Runner receipt must link the product-team operating loop route.');
   assert(missionRun?.readRoutes?.runtimeAutonomyStatus?.endsWith('/runtime-autonomy-status'), 'Mission Runner receipt must link the Runtime Autonomy Status recovery route.');
+
+  const confirmedDeliverables = initiatedProject?.initiation?.deliverableResolution?.deliverables || [];
+  assert(initiatedProject?.initiation?.deliverableResolution?.managerConfirmed === true, 'Browser approval must persist the Director-confirmed deliverable resolution.');
+  assert(confirmedDeliverables.length >= 1, 'Browser approval must persist at least one confirmed deliverable.');
+  assert(initiatedProject.tasks?.length === confirmedDeliverables.length, 'Leader planning must not invent file deliverables beyond the confirmed kickoff list.');
+  assert(initiatedProject.tasks.every((task) => confirmedDeliverables.some((deliverable) => (
+    deliverable.fileName === task.workDefinition?.artifactFileName
+  ))), 'Every project file task must point to a filename confirmed in the kickoff meeting.');
+
+  if (process.env.HOF_KICKOFF_DELIVERABLES_ONLY !== '1') {
 
   await scrollDashboardToStation(page);
   await page.getByTestId('backend-product-team-mission-runs-snapshot').waitFor({ state: 'visible', timeout: 20000 });
@@ -449,14 +469,14 @@ try {
   assert(/C\/A Handoff/i.test(missionPanelText) && /Handoff Tick/i.test(missionPanelText), 'Mission Runner panel must show the C/A handoff and first tick state.');
   await assertPageContains(page, 'Mission route:', 'Mission Runner panel must expose the backend mission route.');
 
-  const runtimeStatus = await fetch(`${backendRuntime.url}/projects/p_roundtable_001/runtime-autonomy-status`).then((response) => response.json());
+  const runtimeStatus = await fetch(`${backendRuntime.url}/projects/${encodeURIComponent(initiatedProjectId)}/runtime-autonomy-status`).then((response) => response.json());
   assert(runtimeStatus.runtimeAutonomyStatus?.schemaVersion === 'runtime-autonomy-status/v1', 'Backend must expose Runtime Autonomy Status after Mission Runner approval.');
   assert(runtimeStatus.runtimeAutonomyStatus.readyForUnattendedProduction === false, 'Runtime Autonomy Status must keep unattended production autonomy blocked.');
   assert(runtimeStatus.runtimeAutonomyStatus.gates?.some((row) => row.id === 'mission-runner-started' && row.ready), 'Runtime Autonomy Status must prove Mission Runner started the A-side runtime.');
   assert(runtimeStatus.runtimeAutonomyStatus.backendRoutes?.autopilotDueWorker === '/workers/autopilot/due', 'Runtime Autonomy Status must expose the scheduler-owned Autopilot due-worker route.');
   assert(runtimeStatus.runtimeAutonomyStatus.gates?.some((row) => row.id === 'production-unattended-autonomy-blocked' && row.productionBlocker && row.ready === false), 'Runtime Autonomy Status must expose the production autonomy boundary.');
 
-  const intentQueue = await fetch(`${backendRuntime.url}/projects/p_roundtable_001/collaboration-intent-queue`).then((response) => response.json());
+  const intentQueue = await fetch(`${backendRuntime.url}/projects/${encodeURIComponent(initiatedProjectId)}/collaboration-intent-queue`).then((response) => response.json());
   assert(intentQueue.collaborationIntentQueue?.rows?.some((row) => (
     row.source === 'product-team-customer-agent-handoff'
     && row.canRun
@@ -466,7 +486,7 @@ try {
   assert((intentQueue.collaborationIntentQueue?.summary?.customerAgentHandoffIntentCount || 0) >= 1, 'Collaboration Intent Queue summary must count Mission Runner C/A handoff intents.');
   assert((intentQueue.collaborationIntentQueue?.summary?.customerAgentHandoffExecutionReadyCount || 0) >= 1, 'Collaboration Intent Queue summary must count C/A handoff execution proof.');
 
-  const intentRunResponse = await fetch(`${backendRuntime.url}/projects/p_roundtable_001/collaboration-intent-queue/customer-agent-handoff-intent/run`, {
+  const intentRunResponse = await fetch(`${backendRuntime.url}/projects/${encodeURIComponent(initiatedProjectId)}/collaboration-intent-queue/customer-agent-handoff-intent/run`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
@@ -496,7 +516,7 @@ try {
   assert(/Agent Submission/i.test(intentRunOutputText), 'Collaboration Intent Queue output panel must show the Agent submission created by the delegated backend run, not only the run receipt.');
   assert(/Output chat proof/i.test(intentRunOutputText), 'Collaboration Intent Queue output panel must expose chat proof exits for returned output evidence.');
 
-  const operatingLoop = await fetch(`${backendRuntime.url}/projects/p_roundtable_001/product-team-operating-loop`).then((response) => response.json());
+  const operatingLoop = await fetch(`${backendRuntime.url}/projects/${encodeURIComponent(initiatedProjectId)}/product-team-operating-loop`).then((response) => response.json());
   assert(operatingLoop.productTeamOperatingLoop?.customerSide?.handoffExecution?.schemaVersion === 'product-team-customer-agent-handoff-execution/v1', 'Backend must expose Mission Runner handoff execution on the Product Team Operating Loop.');
   assert(operatingLoop.productTeamOperatingLoop.customerSide.handoffExecution.ready === true && operatingLoop.productTeamOperatingLoop.customerSide.handoffExecution.runReceiptIds?.length >= 1, 'Product Team Operating Loop must prove C/A handoff A-side run receipts.');
 
@@ -533,7 +553,7 @@ try {
   await backToDashboard(page);
 
   const flowNodeId = `product-team-mission-run-${missionRun.id}`;
-  const flowGraph = await fetch(`${backendRuntime.url}/projects/p_roundtable_001/manager-flow-graph`).then((response) => response.json());
+  const flowGraph = await fetch(`${backendRuntime.url}/projects/${encodeURIComponent(initiatedProjectId)}/manager-flow-graph`).then((response) => response.json());
   const missionFlowNode = flowGraph.nodes?.find((node) => node.id === flowNodeId);
   assert(missionFlowNode, 'Manager Flow Graph must expose the Mission Runner receipt node.');
   assert(missionFlowNode.attachments?.some((attachment) => (
@@ -588,7 +608,10 @@ try {
   const selectedRuntimeRouteText = (await page.locator('[data-testid="manager-flow-selected-proof-route"]').last().textContent({ timeout: 5000 })).toLowerCase();
   assert(selectedRuntimeRouteText.includes('/runtime-autonomy-status'), 'Runtime Autonomy Status Flow node must point back to the backend status route.');
 
-  console.log('Manager Mission Runner UI validation passed.');
+  }
+  console.log(process.env.HOF_KICKOFF_DELIVERABLES_ONLY === '1'
+    ? 'Kickoff deliverables UI validation passed.'
+    : 'Manager Mission Runner UI validation passed.');
 } catch (error) {
   await mkdir(new URL('../dist/', import.meta.url), { recursive: true });
   const page = browser?.contexts?.()[0]?.pages?.()[0] || null;

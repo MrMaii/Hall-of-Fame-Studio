@@ -1,4 +1,4 @@
-import { localizeText } from '../i18n/index.jsx';
+import { localizeVisibleSystemText } from '../i18n/index.jsx';
 import AdvancedProjectChat from './AdvancedProjectChat.jsx';
 
 export default function ProjectChatRouteView({ view }) {
@@ -51,11 +51,12 @@ export default function ProjectChatRouteView({ view }) {
     toggleBackendTranscriptMembers,
     transcriptSearchDraft,
     transcriptSearchResults,
+    transcriptPresentation,
     triggerBackendTranscriptAttachmentPicker,
     visibleMessages,
   } = view;
 
-  const chatText = (value) => localizeText(value, activeLanguage);
+  const chatText = (value) => localizeVisibleSystemText(value, activeLanguage);
   const localChatCardProofRowsAllowed = !backendChannelTranscriptRequired;
   const chatBackendManagerDashboard = String(backendStation.managerDashboard?.projectId || '').toLowerCase() === String(activeProject.id || '').toLowerCase()
     ? backendStation.managerDashboard
@@ -186,7 +187,9 @@ export default function ProjectChatRouteView({ view }) {
       const isFinal = artifactType === 'final-deliverable' || submission.status === 'final';
       return {
         kind: isFinal ? 'final-deliverable' : isRevision ? 'revision' : 'submission',
-        label: isFinal ? 'Final Deliverable' : isRevision ? 'Revision Submission' : 'Agent Submission',
+        label: activeLanguage === 'zh'
+          ? (isFinal ? '最终交付物' : isRevision ? '修改稿' : '提交物')
+          : (isFinal ? 'Final Deliverable' : isRevision ? 'Revision' : 'Deliverable'),
         title: submission.title || message.text || artifactType.replace(/-/g, ' '),
         detail: submission.summary || submission.reviewStatus || submission.status || 'Submitted for review',
         status: submission.reviewStatus || submission.status || 'submitted',
@@ -204,8 +207,8 @@ export default function ProjectChatRouteView({ view }) {
       const submission = chatCardSubmissionRows.find(item => String(item.id || '') === String(message.submissionId || review.submissionId || '')) || {};
       return {
         kind: 'submission-review',
-        label: 'Submission Review',
-        title: submission.title ? `Review: ${submission.title}` : message.text || 'Submission review',
+        label: activeLanguage === 'zh' ? '审阅意见' : 'Review feedback',
+        title: submission.title ? (activeLanguage === 'zh' ? `《${submission.title}》审阅意见` : `Review: ${submission.title}`) : message.text || (activeLanguage === 'zh' ? '审阅意见' : 'Review feedback'),
         detail: review.comments || (review.requestedChanges || []).join(' / ') || message.text || 'Review recorded',
         status: review.verdict || review.status || 'reviewed',
         route: firstBackendRoute(message.submissionReviewRoute, message.resourceRoute, message.route, review.submissionReviewRoute, review.proofRoute, review.apiPath, review.route, projectId && message.reviewId ? `/projects/${projectId}/submission-reviews/${message.reviewId}` : null),
@@ -221,7 +224,7 @@ export default function ProjectChatRouteView({ view }) {
       const review = chatCardSourceReviewRows.find(item => String(item.id || '') === String(message.reviewId || '')) || {};
       return {
         kind: 'evidence-source-review',
-        label: 'Source Review',
+        label: activeLanguage === 'zh' ? '资料可信度审阅' : 'Source review',
         title: review.sourceTitle || message.text || 'Evidence source review',
         detail: review.comments || review.decision || 'Source review recorded',
         status: review.decision || review.status || 'reviewed',
@@ -237,7 +240,7 @@ export default function ProjectChatRouteView({ view }) {
     const evidenceSearch = chatCardEvidenceRows.find(item => String(item.id || '') === String(message.evidenceSearchId || '')) || {};
     return {
       kind: 'evidence-search',
-      label: 'Evidence Search',
+      label: activeLanguage === 'zh' ? '查找资料' : 'Evidence search',
       title: evidenceSearch.query || message.text || 'Evidence search',
       detail: evidenceSearch.evidenceJudgement?.summary || evidenceSearch.qualitySummary?.status || evidenceSearch.purpose || 'Evidence search recorded',
       status: evidenceSearch.evidenceJudgement?.status || evidenceSearch.status || 'recorded',
@@ -354,6 +357,7 @@ export default function ProjectChatRouteView({ view }) {
         transcriptReplyRowsByReplyMessageId,
         transcriptSearchDraft,
         transcriptSearchResult,
+        transcriptPresentation,
         triggerBackendTranscriptAttachmentPicker,
         visibleMessages,
         visibleProofCount,

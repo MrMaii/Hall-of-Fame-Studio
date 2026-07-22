@@ -46,7 +46,7 @@ The graph has four semantic scales. The camera remains pointer-anchored and cont
 | Day / Activity | Activity | ideas, collaboration, execution, evidence | raw communication and monitoring trace |
 | Hour / Trace | Trace | every retained node | nothing |
 
-Critical nodes are always visible. Explicit `semanticLevel` supplied by a trusted backend record wins over inferred defaults. The selected-node drawer remains open only while the node is visible; when a user zooms out past it, the graph should preserve its proof focus and restore selection when zooming back in.
+Urgency (`importance`) and abstraction (`semanticLevel`) are independent: a critical trace remains a trace, while a normal milestone remains a milestone. Explicit `semanticLevel` supplied by a trusted backend record wins over inferred defaults. The selected-node drawer remains open only while the node is visible; when a user zooms out past it, the graph should preserve its proof focus and restore selection when zooming back in.
 
 Interaction requirements:
 

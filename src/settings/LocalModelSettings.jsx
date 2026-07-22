@@ -50,7 +50,7 @@ export default function LocalModelSettings({
   activeLanguage = 'zh',
 } = {}) {
   const text = (chinese, english) => activeLanguage === 'en' ? english : chinese;
-  const [modelNeedsNoKey, setModelNeedsNoKey] = useState(false);
+  const [modelNeedsNoKey, setModelNeedsNoKey] = useState(() => /^https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::|\/|$)/i.test(String(drafts.modelBaseUrl || '')));
   const [customModelMode, setCustomModelMode] = useState(false);
   const selectedProvider = findModelProvider(drafts.modelProvider || providerRuntimeStatus.modelProvider?.provider || 'custom');
   const modelReady = Boolean(providerRuntimeStatus.modelProvider?.enabled && providerRuntimeStatus.modelProvider?.configured);

@@ -28,8 +28,8 @@ test('Manager backend activity panels share one lazy assembly while every comman
 
   assert.ok(assemblySource.includes('view.autonomousRunControl &&'));
   assert.ok(assemblySource.includes('view.agentAutonomousActionQueue &&'));
-  assert.ok(assemblySource.includes('view.backendError &&'));
-  assert.ok(assemblySource.includes('{view.backendError}'));
+  assert.equal(assemblySource.includes('view.backendError &&'), false);
+  assert.equal(assemblySource.includes('{view.backendError}'), false);
 
   for (const operation of [
     'onRunLoop: runAutonomousRunControlLoop',

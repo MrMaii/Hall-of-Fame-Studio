@@ -30,6 +30,19 @@ npm run dev
 - Director 提交完新的发言后，系统重新生成后端会议轮次和意图队列；旧队列不会抢占最新 Director 输入。
 - Director 的每一句发言、Agent 的每一个会议轮次均进入 transcript，并带有 timeline/event 证明，便于低延迟显示与会后审计。
 
+## Agent peer 讨论协议
+
+会议后台现在把 Agent 发言保存为因果讨论链，而不是一组互不相关的 Director 回复。每条 peer 发言都带有 `replyToTurnId`、`targetSpeakerId`、`interactionIntent`、`topicId` 和 `exchangeIndex`；界面会显示它正在回应谁，以及意图是支持、质疑、澄清、竞选、综合或上报。
+
+- 每个 Agent 仍会形成自己的发言意图，但只有与当前议题相关且能增加信息的 Agent 进入发言链。
+- 同一议题最多允许 3 条 peer response edge。达到上限后，后端强制由已确认 Leader；若尚未确认，则由推荐 Leader/synthesizer 生成综合或上报发言，不允许 A/B 无限往返。
+- Leader 的综合只能形成建议、分歧和待决问题；Leader 不能自行确认选举，也不能替 Director 结束会议。
+- Provider 输出在写入 transcript 前会校验 Agent 身份、父发言、目标 Agent、self-reply 和讨论轮数。未知 Agent、悬空回复和越界争论不会进入会议证据。
+- 模型上下文使用有预算的结构化 context packet：保留项目简报、团队、Leader/Reviewer、已有决策、风险、未答问题和最多 6 条近期发言；旧 transcript 不再逐条重放。
+- 审计证据包含 `peerInteractionEdgeCount`、`convergedTopicIds` 与 `droppedMeetingTurnCount`，可区分真实收敛和被协议拒绝的模型输出。
+
+该协议仍属于本地/私有 Harness。Agent 是由同一后端协调的独立角色上下文和可审计状态，不代表每个 Agent 都是一个常驻分布式进程。
+
 ## 会后本地成果与审计
 
 Leader 的会议报告是 `progress-brief` 类型的 Agent artifact，但使用明确的本地可见路径 `meeting-notes/kickoff-summary.md`。它同时提供：

@@ -166,12 +166,17 @@ try {
     window.localStorage.setItem('hall_of_fame_studio.language.v1', 'zh');
   }, { backendUrl });
   const externalRequests = [];
+  let delayConsoleCoreReads = false;
   await context.route('**/*', async (route) => {
-    const hostname = new URL(route.request().url()).hostname;
+    const requestUrl = new URL(route.request().url());
+    const hostname = requestUrl.hostname;
     if (!['127.0.0.1', 'localhost'].includes(hostname)) {
       externalRequests.push(route.request().url());
       await route.abort('internetdisconnected');
       return;
+    }
+    if (delayConsoleCoreReads && /\/projects\/[^/]+\/(?:manager-dashboard|transcripts|timeline|events)$/.test(requestUrl.pathname)) {
+      await new Promise(resolvePromise => setTimeout(resolvePromise, 5000));
     }
     await route.continue();
   });
@@ -235,26 +240,28 @@ try {
   await page.getByTestId('initiation-next-action-0').fill('完成本地项目的第一项技术检查并保存结果。');
   const approve = page.getByTestId('initiation-approve-create');
   await waitEnabled(approve, 20000);
+  delayConsoleCoreReads = true;
   await approve.click();
+  const consoleOpenedAt = Date.now();
   await page.getByTestId('project-overview').waitFor({ state: 'visible', timeout: 30000 });
-  await page.getByTestId('project-simple-dashboard').waitFor({ state: 'visible', timeout: 10000 });
-  await page.getByRole('button', { name: '查看完整项目控制台' }).waitFor({ state: 'visible' });
-  const ordinaryProjectText = await page.getByTestId('project-simple-dashboard').innerText();
-  assert(!ordinaryProjectText.includes('ID:'), 'The ordinary project view must not expose the internal project id.');
-  assert(!ordinaryProjectText.includes('backend-backed'), 'The ordinary project view must not expose backend source status codes.');
-  await page.getByRole('button', { name: '查看完整项目控制台' }).click();
-  await page.getByText('项目仪表盘', { exact: true }).waitFor({ state: 'visible', timeout: 10000 });
-  await page.getByRole('button', { name: '打开流程图' }).first().waitFor({ state: 'visible', timeout: 10000 });
-  await page.getByRole('button', { name: '查看完整时间线' }).click();
+  await page.getByTestId('project-dashboard-view').waitFor({ state: 'visible', timeout: 10000 });
+  await page.getByTestId('project-dashboard-core-models-preloader').waitFor({ state: 'visible', timeout: 2000 });
+  const consoleShellLatencyMs = Date.now() - consoleOpenedAt;
+  assert(consoleShellLatencyMs < 5000, `The project dashboard shell took ${consoleShellLatencyMs}ms while core reads were slow.`);
+  delayConsoleCoreReads = false;
+  await page.getByTestId('project-dashboard-briefing-header').waitFor({ state: 'visible', timeout: 20000 });
+  const ordinaryProjectText = await page.getByTestId('project-overview').innerText();
+  assert(!ordinaryProjectText.includes('ID:'), 'The project view must not expose the internal project id.');
+  assert(!ordinaryProjectText.includes('backend-backed'), 'The project view must not expose backend source status codes.');
+  console.log(`Full project console shell visible in ${consoleShellLatencyMs}ms with core reads delayed by 5000ms.`);
+  await page.getByTestId('project-open-timeline').click();
   await page.getByTestId('manager-flow-legend').waitFor({ state: 'visible', timeout: 10000 });
   await page.getByRole('button', { name: '返回项目' }).click();
-  await page.getByRole('button', { name: '返回简洁视图' }).click();
-  await page.getByTestId('project-simple-dashboard').waitFor({ state: 'visible', timeout: 10000 });
+  await page.getByTestId('project-dashboard-view').waitFor({ state: 'visible', timeout: 10000 });
 
   await page.getByRole('button', { name: '打开项目群聊' }).click();
   await page.getByTestId('project-chat-panel').waitFor({ state: 'visible' });
-  await page.getByTestId('project-simple-chat').waitFor({ state: 'visible' });
-  const ordinaryChatText = await page.getByTestId('project-simple-chat').innerText();
+  const ordinaryChatText = await page.getByTestId('project-chat-panel').innerText();
   assert(!ordinaryChatText.includes('/projects/'), 'The ordinary project chat must not expose internal routes.');
   assert(!ordinaryChatText.includes('backend'), 'The ordinary project chat must not expose backend status wording.');
   const message = '请确认这条消息立即显示，并给出下一步工作。';
@@ -265,27 +272,38 @@ try {
   assert(Date.now() - sentAt < 1000, 'The user message did not appear within one second.');
   await page.getByRole('button', { name: '返回项目' }).click();
 
-  await page.getByRole('button', { name: '进入项目会议' }).click();
-  await page.getByTestId('project-simple-meeting').waitFor({ state: 'visible', timeout: 10000 });
+  await page.getByTestId('project-open-meeting').click();
+  await page.getByTestId('project-meeting-setup').waitFor({ state: 'visible', timeout: 10000 });
+  const meetingAgenda = 'Decide whether the current build is ready and assign the next action.';
+  await page.getByTestId('project-meeting-agenda').fill(meetingAgenda);
+  for (const agentId of ['turing', 'curie', 'musk']) {
+    await page.getByTestId(`project-meeting-participant-${agentId}`).click();
+  }
+  await page.getByTestId('project-meeting-recorder').selectOption('curie');
+  await page.getByTestId('project-meeting-confirm-start').click();
+  await page.getByTestId('project-meeting-room-stage').waitFor({ state: 'visible', timeout: 10000 });
+  const meetingContext = await page.getByTestId('project-meeting-session-context').innerText();
+  assert(meetingContext.includes(meetingAgenda), 'The meeting room must preserve the confirmed agenda.');
+  assert(meetingContext.includes('3'), 'The meeting room must show all three confirmed attendees.');
   const meetingMessage = '请复核当前进度，并明确下一步工作。';
-  await page.getByLabel('会议发言').fill(meetingMessage);
+  await page.getByTestId('project-meeting-input').fill(meetingMessage);
   const meetingSentAt = Date.now();
   await page.getByTestId('project-meeting-send').click();
-  await page.getByText(meetingMessage, { exact: true }).waitFor({ state: 'visible', timeout: 1000 });
-  assert(Date.now() - meetingSentAt < 1000, 'The meeting message did not appear within one second.');
   const meetingMessageStatus = page.locator('[data-testid^="meeting-message-status-"]').last();
-  await meetingMessageStatus.waitFor({ state: 'visible', timeout: 3000 });
+  await meetingMessageStatus.waitFor({ state: 'visible', timeout: 1000 });
+  assert((await meetingMessageStatus.locator('..').innerText()).includes(meetingMessage), 'The latest meeting receipt must stay attached to the Director message.');
+  assert(Date.now() - meetingSentAt < 1000, 'The meeting message did not appear within one second.');
   await meetingMessageStatus.getByText('已完成', { exact: true }).waitFor({ state: 'visible', timeout: 15000 });
-  await page.getByRole('button', { name: '返回项目' }).click();
+  const completeMeeting = page.getByTestId('project-meeting-complete');
+  await waitEnabled(completeMeeting, 15000);
+  await completeMeeting.click();
+  await page.getByTestId('project-meeting-completion').waitFor({ state: 'visible', timeout: 15000 });
+  const meetingSummaryPath = await page.getByTestId('project-meeting-summary-path').innerText();
+  assert(meetingSummaryPath.startsWith('meeting-notes/'), 'The recorder must publish the meeting minutes into the local meeting-notes folder.');
+  await page.getByTestId('project-scene-back').click();
 
-  await page.getByRole('button', { name: '查看工作记录' }).click();
-  await page.getByTestId('project-simple-timeline').waitFor({ state: 'visible', timeout: 10000 });
-  await page.getByRole('heading', { name: '最近工作记录' }).waitFor({ state: 'visible' });
-  const ordinaryTimelineText = await page.getByTestId('project-simple-timeline').innerText();
-  assert(!ordinaryTimelineText.includes('Manager Flow Graph'), 'The ordinary work history must not expose the full flow graph controls.');
-  assert(!ordinaryTimelineText.includes('/projects/'), 'The ordinary work history must not expose internal routes.');
-  assert(!ordinaryTimelineText.toLowerCase().includes('backend-backed'), 'The ordinary work history must not expose backend source status wording.');
-  await page.getByRole('button', { name: '返回项目' }).click();
+  await page.getByTestId('project-open-timeline').click();
+  await page.getByTestId('manager-flow-legend').waitFor({ state: 'visible', timeout: 10000 });
 
   const temporarySession = await page.evaluate(() => JSON.parse(window.sessionStorage.getItem('hall_of_fame_studio.local_auth_session.v1') || 'null'));
   const directCatalogResponse = await fetch(`${backendUrl}/projects`, {
@@ -303,9 +321,18 @@ try {
   const catalogAfterReloadBody = await catalogAfterReload.json();
   assert(catalogAfterReload.status() === 200, 'The local project catalog did not reload successfully.');
   assert((catalogAfterReloadBody.projects || []).some(project => project.name === '真实项目界面验证'), 'The created project was missing from the local catalog after reload.');
-  await page.getByRole('button', { name: '打开项目：真实项目界面验证' }).click();
+  await page.waitForFunction(() => (
+    document.querySelector('[data-testid="manager-flow-legend"]')
+    || document.querySelector('[data-testid="project-dashboard-view"]')
+    || document.querySelector('[aria-label="打开项目：真实项目界面验证"]')
+  ), null, { timeout: 15_000 });
+  if (await page.getByRole('button', { name: '打开项目：真实项目界面验证' }).count()) {
+    await page.getByRole('button', { name: '打开项目：真实项目界面验证' }).click();
+  } else if (await page.getByTestId('manager-flow-legend').count()) {
+    await page.getByTestId('project-scene-back').click();
+  }
   await page.getByTestId('project-overview').waitFor({ state: 'visible' });
-  await page.getByTestId('project-simple-dashboard').waitFor({ state: 'visible' });
+  await page.getByTestId('project-dashboard-view').waitFor({ state: 'visible' });
   assert((await page.getByText('真实项目界面验证', { exact: true }).count()) > 0, 'The created local project did not survive reload.');
   assert(externalRequests.length === 0, `The local project flow attempted external network access: ${externalRequests.join(', ')}`);
   console.log('Primary real-project UI flow passed: initiation, meeting, chat, timeline, and reload recovery.');

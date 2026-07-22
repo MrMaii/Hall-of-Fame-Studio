@@ -7,6 +7,7 @@ export default function ProjectDashboardToolLauncher({ view = {} }) {
     onEnterScene,
     onOpenChange,
     open,
+    projectText = value => value,
     transition,
   } = view;
 
@@ -33,10 +34,10 @@ export default function ProjectDashboardToolLauncher({ view = {} }) {
               <item.icon size={20} />
             </span>
             <span className="min-w-0">
-              <span className="block font-serif text-lg leading-tight">{item.label}</span>
-              <span className="block font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">{item.sub}</span>
+              <span className="block font-serif text-lg leading-tight">{projectText(item.label)}</span>
+              <span className="block font-mono text-[8px] uppercase tracking-widest text-[#7d6a49]">{projectText(item.sub)}</span>
               <span className="mt-1 block font-serif text-sm leading-tight text-[#6b5a3d] opacity-0 transition-opacity group-hover:opacity-100">
-                {item.desc}
+                {projectText(item.desc)}
               </span>
             </span>
           </button>
@@ -47,7 +48,7 @@ export default function ProjectDashboardToolLauncher({ view = {} }) {
         onClick={() => onOpenChange(current => !current)}
         disabled={Boolean(transition)}
         aria-expanded={open}
-        aria-label="Open project tools"
+        aria-label={projectText('Open project tools')}
         className={`scene-object flex h-14 w-14 items-center justify-center border border-[#7b6542] bg-[#251b13] text-[#efe2bd] shadow-[7px_7px_0_rgba(0,0,0,0.22)] transition-all ${
           transition ? 'cursor-wait opacity-70' : 'hover:-translate-y-1 hover:bg-[#8f1e18]'
         }`}

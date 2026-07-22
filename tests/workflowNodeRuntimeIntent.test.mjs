@@ -104,13 +104,13 @@ test('Agent work-cycle records why it published and fills the lightweight node c
   assert.equal(result.log.timelineSubmission.submissionMotivation.schemaVersion, 'agent-workflow-node-intent/v1');
   assert.equal(result.log.timelineSubmission.submissionMotivation.decision, 'submit');
   assert.ok(result.log.timelineSubmission.submissionMotivation.whyNow.length > 20);
-  assert.equal(result.log.timelineSubmission.submissionQuality.readyForTimeline, true);
+  assert.equal(result.log.timelineSubmission.submissionQuality.readyForTimeline, false);
   assert.equal(result.log.timelineSubmission.submissionQuality.authorshipMode, 'individual');
   assert.equal(result.submission.timelineSubmission.submissionQuality.readyForTimeline, true);
   assert.equal(result.submission.descriptionSource, 'agent-authored');
 });
 
-test('public Agent work-cycle autonomously defers noise, submits a completed joint checkpoint, and declines empty monitoring', () => {
+test('public Agent work-cycle defers noise but never turns pulse checkpoints into submissions', () => {
   const project = workflowProject();
   project.tasks[0].coAuthorIds = ['turing'];
   project.tasks[0].reviewerAgentId = 'curie';
@@ -137,10 +137,8 @@ test('public Agent work-cycle autonomously defers noise, submits a completed joi
   });
   assert.equal(completionPulse.contributionIntent.decision, 'submit');
   assert.equal(completionPulse.contributionIntent.reasonCode, 'reviewable-checkpoint');
-  assert.equal(completionPulse.submission.timelineSubmission.submissionMotivation.reasonCode, 'reviewable-checkpoint');
-  assert.deepEqual(completionPulse.submission.committerIds, ['jobs', 'turing']);
-  assert.equal(completionPulse.submission.relationshipRoles.turing, 'co-committer');
-  assert.equal(completionPulse.submission.timelineSubmission.submissionQuality.readyForTimeline, true);
+  assert.equal(completionPulse.submission, null, 'a pulse checkpoint is not itself a material deliverable');
+  assert.equal(completionPulse.task.status, 'blocked-no-material-outcome');
 
   const monitoringPulse = service.runAgentWorkCycle({
     projectId: project.id,
@@ -149,7 +147,9 @@ test('public Agent work-cycle autonomously defers noise, submits a completed joi
     trigger: 'workflow-node-autonomous-intent-test',
     useAutonomousStrategy: true,
   });
-  assert.equal(monitoringPulse.contributionIntent.decision, 'decline');
-  assert.equal(monitoringPulse.contributionIntent.reasonCode, 'no-meaningful-change');
+  assert.equal(monitoringPulse.contributionIntent.decision, 'submit');
+  assert.equal(monitoringPulse.contributionIntent.reasonCode, 'reviewable-checkpoint');
+  assert.equal(monitoringPulse.strategyDecision.selectedAction, 'complete-and-submit-owned-work');
+  assert.equal(monitoringPulse.task.status, 'blocked-no-material-outcome');
   assert.equal(monitoringPulse.submission, null);
 });

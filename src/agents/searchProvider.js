@@ -332,6 +332,13 @@ export function createSearchProvider({
 export function createSearchProviderFromEnv(env = globalThis.process?.env || {}, options = {}) {
   const endpoint = options.endpoint || env.SEARCH_ENDPOINT || env.SEARCH_PROVIDER_ENDPOINT || '';
   const provider = options.provider || env.SEARCH_PROVIDER || (endpoint ? 'http-json' : DEFAULT_SEARCH_PROVIDER);
+  const localOnly = options.localOnly ?? (
+    env.SEARCH_LOCAL_ONLY !== undefined
+      ? parseBoolean(env.SEARCH_LOCAL_ONLY, false)
+      : options.endpoint
+        ? false
+        : parseBoolean(env.AGENT_LOCAL_ONLY, false)
+  );
   return createSearchProvider({
     provider,
     apiKey: options.apiKey || env.SEARCH_API_KEY || env.SEARCH_PROVIDER_API_KEY || '',
@@ -352,7 +359,8 @@ export function createSearchProviderFromEnv(env = globalThis.process?.env || {},
     transportCircuitFailureWindowMs: options.transportCircuitFailureWindowMs ?? Number(env.SEARCH_TRANSPORT_CIRCUIT_FAILURE_WINDOW_MS || 15 * 60 * 1000),
     transportCircuitCooldownMs: options.transportCircuitCooldownMs ?? Number(env.SEARCH_TRANSPORT_CIRCUIT_COOLDOWN_MS || 5 * 60 * 1000),
     requestTemplate: parseJson(env.SEARCH_REQUEST_TEMPLATE || '{}', {}) || {},
-    localOnly: options.localOnly ?? parseBoolean(env.SEARCH_LOCAL_ONLY || env.AGENT_LOCAL_ONLY, false),
+    localOnly,
+    fetchImpl: options.fetchImpl,
   });
 }
 
