@@ -1624,6 +1624,7 @@ export default function EngineWorkspace() {
   const backendProjectSeedInFlightRef = useRef({});
   const backendProjectSeedConfirmedRef = useRef({});
   const initiationApprovalInFlightRef = useRef(false);
+  const leaderPlanAutoSubmitIdsRef = useRef(new Set());
   const backendSchedulerRefreshTimerRef = useRef(null);
   const backendAgentPulseRefreshTimerRef = useRef(null);
   const backendAgentAutonomousActionRefreshTimerRef = useRef(null);
@@ -4540,6 +4541,64 @@ export default function EngineWorkspace() {
       return null;
     }
   };
+
+  useEffect(() => {
+    const projectId = activeProject?.id;
+    const planStatus = activeProject?.leaderWorkPlan?.status;
+    if (
+      !projectId
+      || !activeProject?.initiation
+      || activeRoute !== 'project_detail'
+      || projectMode !== 'dashboard'
+      || planStatus === 'submitted'
+      || !shouldAttemptBackendProjectWrite(activeProject)
+      || leaderPlanAutoSubmitIdsRef.current.has(projectId)
+    ) return undefined;
+
+    leaderPlanAutoSubmitIdsRef.current.add(projectId);
+    let started = false;
+    const timer = setTimeout(async () => {
+      started = true;
+      try {
+        const planResult = await requestAgentBackend(`/projects/${encodeURIComponent(projectId)}/leader-work-plan/submit`, {
+          method: 'POST',
+          body: { now: new Date().toISOString() },
+          timeoutMs: 20_000,
+        });
+        if (!planResult.project?.id) return;
+        await Promise.allSettled([
+          syncBackendManagerDashboard({ silent: true, projectId }),
+          syncBackendTimelineAndEvents({ silent: true, projectId }),
+        ]);
+        setProjects(previous => previous.map(project => (
+          project.id === projectId
+            ? { ...project, ...planResult.project, language: planResult.project.language || project.language || activeLanguage }
+            : project
+        )));
+        setBackendStation(previous => ({
+          ...previous,
+          connectionStatus: 'online',
+          lastAction: 'Leader submitted the formal project work plan',
+          lastProjectSyncAt: new Date().toISOString(),
+          error: null,
+        }));
+      } catch (error) {
+        leaderPlanAutoSubmitIdsRef.current.delete(projectId);
+        setBackendStation(previous => ({
+          ...previous,
+          lastAction: 'Leader work plan submission failed',
+          error: error.name === 'AbortError'
+            ? 'Leader work plan submission timed out. Dashboard remains in the planning state.'
+            : error.message || String(error),
+        }));
+      }
+    }, 4000);
+
+    return () => {
+      clearTimeout(timer);
+      if (!started) leaderPlanAutoSubmitIdsRef.current.delete(projectId);
+    };
+  }, [activeProject?.id, activeProject?.leaderWorkPlan?.status, activeLanguage, activeRoute, projectMode]);
 
   const syncBackendManagerReadyPackage = async ({ silent = true, projectId = activeProject?.id } = {}) => {
     if (!projectId) return null;
@@ -10867,41 +10926,6 @@ export default function EngineWorkspace() {
       })),
     ]);
     setActiveRoute('project_detail');
-
-    if (shouldAttemptBackendProjectWrite(projectReadyForWork) && projectReadyForWork.leaderWorkPlan?.status === 'drafting') {
-      setTimeout(async () => {
-        try {
-          const planResult = await requestAgentBackend(`/projects/${encodeURIComponent(createdProjectId)}/leader-work-plan/submit`, {
-            method: 'POST',
-            body: { now: new Date().toISOString() },
-            timeoutMs: 20_000,
-          });
-          if (!planResult.project?.id) return;
-          setProjects(previous => previous.map(project => (
-            project.id === createdProjectId
-              ? { ...project, ...planResult.project, language: planResult.project.language || project.language || activeLanguage }
-              : project
-          )));
-          setBackendStation(previous => ({
-            ...previous,
-            connectionStatus: 'online',
-            lastAction: 'Leader submitted the formal project work plan',
-            lastProjectSyncAt: new Date().toISOString(),
-            error: null,
-          }));
-          setTimeout(() => syncBackendManagerDashboard({ silent: true, projectId: createdProjectId }), 0);
-          setTimeout(() => syncBackendTimelineAndEvents({ silent: true, projectId: createdProjectId }), 0);
-        } catch (error) {
-          setBackendStation(previous => ({
-            ...previous,
-            lastAction: 'Leader work plan submission failed',
-            error: error.name === 'AbortError'
-              ? 'Leader work plan submission timed out. Dashboard remains in the planning state.'
-              : error.message || String(error),
-          }));
-        }
-      }, 900);
-    }
 
     kickoffReadModelRefresh = await kickoffReadModelRefreshPromise?.catch(() => null) || null;
     if (kickoffReadModelRefresh?.project?.id) {

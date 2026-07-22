@@ -86,6 +86,7 @@ test('propagates the server-owned HTTP trace into a durable Agent work cycle', a
   });
   const listener = await runtime.listen();
   try {
+    runtime.api.service.reconcileProjectLeaderWorkPlan({ projectId, now: '2026-07-10T18:29:30.000Z' });
     const response = await fetch(`${listener.url}/projects/${projectId}/agents/leader/work-cycle`, {
       method: 'POST',
       headers: {

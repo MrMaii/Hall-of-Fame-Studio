@@ -53914,6 +53914,10 @@ export function createAgentProjectService({
           now,
           language,
         });
+        const leaderPlanResult = this.reconcileProjectLeaderWorkPlan({
+          projectId,
+          now: offsetIso(now, 250),
+        });
         const chatResult = this.submitChatMessage({
           projectId,
           text: input.chatText || '@Alan Turing assign Marie Curie to produce the first product-team timeline artifact, then ask Steve Jobs to review framing.',
@@ -53985,6 +53989,7 @@ export function createAgentProjectService({
           status: passed ? 'passed' : 'failed',
           readyForLocalMvpWorkflowSmoke: passed,
           localProbeCreated: true,
+          leaderWorkPlan: leaderPlanResult.leaderWorkPlan,
           project: {
             id: workResult.project?.id || initiateResult.project?.id || projectId,
             name: workResult.project?.name || initiateResult.project?.name || projectName,
@@ -54041,6 +54046,7 @@ export function createAgentProjectService({
               ? `Backend Workflow Smoke produced product-brief submission ${submissionId} with transcript, timeline, event ledger, Flow Graph, and Proof Map proof.`
               : 'Backend Workflow Smoke did not produce the expected product-brief submission across transcript, timeline, event ledger, Flow Graph, and Proof Map proof.',
             initiatedProject: Boolean(initiateResult.project?.id),
+            leaderPlanSubmitted: leaderPlanResult.leaderWorkPlan?.status === 'submitted',
             chatProofCreated: Boolean(chatResult.messages?.length || chatResult.message?.id),
             agentWorkCreated: Boolean(workResult.cycle?.id || workResult.log?.id),
             submissionCreated: Boolean(submissionId),

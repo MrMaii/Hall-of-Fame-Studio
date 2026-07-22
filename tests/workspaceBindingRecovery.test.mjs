@@ -40,6 +40,13 @@ test('binding a workspace recovers artifacts created before the workspace was av
 
     response = api.handle({
       method: 'POST',
+      path: `/projects/${projectId}/leader-work-plan/submit`,
+      body: { now: '2026-07-20T10:00:30.000Z' },
+    });
+    assert.equal(response.status, 200);
+
+    response = api.handle({
+      method: 'POST',
       path: `/projects/${projectId}/agents/researcher/work-cycle`,
       body: {
         includeReadModels: false,
@@ -130,6 +137,13 @@ test('Agent artifacts keep the human task title as the local Workspace filename'
         reviewerId: 'researcher',
         now: '2026-07-20T10:00:00.000Z',
       },
+    });
+    assert.equal(response.status, 200);
+
+    response = api.handle({
+      method: 'POST',
+      path: `/projects/${projectId}/leader-work-plan/submit`,
+      body: { now: '2026-07-20T10:00:30.000Z' },
     });
     assert.equal(response.status, 200);
 

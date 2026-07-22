@@ -250,6 +250,12 @@ try {
   assert(consoleShellLatencyMs < 5000, `The project dashboard shell took ${consoleShellLatencyMs}ms while core reads were slow.`);
   delayConsoleCoreReads = false;
   await page.getByTestId('project-dashboard-briefing-header').waitFor({ state: 'visible', timeout: 20000 });
+  await page.getByTestId('project-dashboard-leader-planning').waitFor({ state: 'visible', timeout: 5000 });
+  assert((await page.getByTestId('project-dashboard-execution-rail').count()) === 0, 'Formal progress must stay hidden while the Leader plan is drafting.');
+  await page.getByTestId('project-dashboard-execution-rail').waitFor({ state: 'visible', timeout: 20000 });
+  await page.getByTestId('project-dashboard-leader-planning').waitFor({ state: 'hidden', timeout: 5000 });
+  const expectedCompletionText = await page.getByTestId('project-dashboard-expected-completion').innerText();
+  assert(!/待负责人排期|Awaiting Leader schedule/i.test(expectedCompletionText), 'Leader plan submission must publish an expected completion time.');
   const ordinaryProjectText = await page.getByTestId('project-overview').innerText();
   assert(!ordinaryProjectText.includes('ID:'), 'The project view must not expose the internal project id.');
   assert(!ordinaryProjectText.includes('backend-backed'), 'The project view must not expose backend source status codes.');
@@ -283,9 +289,13 @@ try {
     window.__guidedTimelinePhaseObserver?.disconnect();
     return window.__guidedTimelinePhaseHistory || [];
   });
+  const guidedTourPhases = guidedPhaseHistory.filter(phase => phase !== 'waiting');
+  const finalOverviewIndex = guidedTourPhases.lastIndexOf('overview');
+  const completedGuidedStory = guidedTourPhases.slice(finalOverviewIndex);
   assert(
-    JSON.stringify(guidedPhaseHistory.filter(phase => phase !== 'waiting')) === JSON.stringify(['overview', 'start', 'travel']),
-    `The guided camera must tell one deterministic overview-to-latest story; received ${guidedPhaseHistory.join(' -> ')}.`,
+    JSON.stringify(completedGuidedStory) === JSON.stringify(['overview', 'start', 'travel'])
+      && !guidedTourPhases.slice(0, finalOverviewIndex).some(phase => phase === 'start' || phase === 'travel'),
+    `The guided camera must complete one uninterrupted overview-to-latest story after loading settles; received ${guidedPhaseHistory.join(' -> ')}.`,
   );
   assert(!(await page.getByTestId('manager-flow-zoom').isDisabled()), 'Timeline controls must unlock after the camera reaches the latest work.');
   const latestTimelineTargetIsCentered = await page.evaluate(() => {

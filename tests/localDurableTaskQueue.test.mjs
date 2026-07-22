@@ -201,6 +201,7 @@ test('persists acknowledged project, Agent, and Autopilot lanes across restart',
     });
     let store = createAgentProjectFileStore({ filePath, projects: [seed.project], messages: seed.messages, hydrateProject: hydrateAgentProject, replaceWithSeed: true });
     let service = createAgentProjectService({ store });
+    service.reconcileProjectLeaderWorkPlan({ projectId, now: '2026-07-11T08:00:00.100Z' });
     service.startAutonomousRunControlSession({ projectId, sessionId: 'durable-session', now: '2026-07-11T08:00:00.000Z', maxLoops: 1, maxStepsPerLoop: 1, maxTotalSteps: 1, forceNewSession: true, requestBodyOverrides: { includeReadModels: false } });
     const projectRun = service.runDueAutonomousCycles({ now: '2026-07-11T08:01:00.000Z', forceDue: true, forceProjectIds: [projectId], forceReason: 'durable-project-proof' });
     assert.equal(projectRun.processed.length, 1);
@@ -266,7 +267,7 @@ test('recovers a persisted worker receipt after acknowledgement crashes without 
       team: [{ id: 'leader', name: 'Ada', title: 'Leader', skill: 'planning' }, { id: 'reviewer', name: 'Grace', title: 'Reviewer', skill: 'review' }],
     });
     let store = createAgentProjectFileStore({ filePath, projects: [seed.project], messages: seed.messages, hydrateProject: hydrateAgentProject, replaceWithSeed: true });
-    const baselineAutonomousRunCount = store.getProject(projectId).autonomousLedger?.length || 0;
+    let baselineAutonomousRunCount = store.getProject(projectId).autonomousLedger?.length || 0;
     const originalSaveProject = store.saveProject.bind(store);
     let failAcknowledgementOnce = true;
     store.saveProject = (project) => {
@@ -277,6 +278,8 @@ test('recovers a persisted worker receipt after acknowledgement crashes without 
       return originalSaveProject(project);
     };
     let service = createAgentProjectService({ store });
+    service.reconcileProjectLeaderWorkPlan({ projectId, now: '2026-07-11T08:00:00.100Z' });
+    baselineAutonomousRunCount = store.getProject(projectId).autonomousLedger?.length || 0;
     const first = service.runDueAutonomousCycles({ now: '2026-07-11T08:01:00.000Z', forceDue: true, forceProjectIds: [projectId], forceReason: 'receipt-crash-proof' });
     assert.equal(first.processed.length, 0);
     assert.equal(first.skipped.some((row) => row.reason === 'durable-receipt-persisted-ack-pending'), true);
