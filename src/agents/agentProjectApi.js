@@ -3092,7 +3092,7 @@ export function createAgentProjectApi({ service, accessControl = {}, localAuth =
             } : deferredReadModels(route.projectId)),
           });
         }
-        if (method === 'POST' && route.action === 'leader-work-plan' && route.tail[0] === 'reconcile') {
+        if (method === 'POST' && route.action === 'leader-work-plan' && ['submit', 'reconcile'].includes(route.tail[0])) {
           const result = service.reconcileProjectLeaderWorkPlan({ projectId: route.projectId, ...body });
           return json(200, {
             route: result.route,

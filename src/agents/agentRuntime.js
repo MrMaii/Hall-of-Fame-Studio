@@ -2564,12 +2564,21 @@ export function createLeaderManagedTaskPlan({ project = {}, leaderId, now = nowI
       leaderTodos: buildLeaderTodos({ task: governedTask, leaderId: leader?.id, now }),
     };
   });
+  const expectedCompletionAt = tasks
+    .map((task) => Date.parse(task.dueAt || ''))
+    .filter(Number.isFinite)
+    .sort((left, right) => right - left)[0] || null;
   return {
     schemaVersion: 'leader-managed-task-plan/v1',
     projectId: project.id || null,
     leaderId: leader?.id || null,
     leaderName: leader?.name || null,
+    status: 'submitted',
+    version: 1,
     createdAt: now,
+    submittedAt: now,
+    expectedCompletionAt: expectedCompletionAt === null ? null : new Date(expectedCompletionAt).toISOString(),
+    taskIds: tasks.map((task) => task.id).filter(Boolean),
     tasks,
     coverage: {
       agentCount: team.length,
@@ -2702,7 +2711,7 @@ export function createLeaderAssignmentPackage({ project = {}, leaderId, now = no
           ...(task.timelineLogIds || []),
           ...(evidence.timelineLogIds || []),
         ])),
-        status: task.status === 'pending' ? 'in-progress' : task.status,
+        status: ['pending', 'awaiting-plan'].includes(task.status) ? 'in-progress' : task.status,
       };
     }),
     plan,

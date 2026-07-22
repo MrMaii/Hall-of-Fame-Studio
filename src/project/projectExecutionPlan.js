@@ -7,6 +7,14 @@ const timeValue = (value) => {
 
 const isComplete = (status) => /^(done|completed|complete|cancelled)$/i.test(String(status || ''));
 
+const isSubmittedPlan = (plan = {}) => (
+  plan.schemaVersion === 'leader-managed-task-plan/v1'
+  && plan.status === 'submitted'
+  && Boolean(plan.submittedAt)
+  && Array.isArray(plan.tasks)
+  && plan.tasks.length > 0
+);
+
 const taskProgress = (project = {}, task = {}) => taskAssetProgress({ project, task });
 
 const derivedTodos = (project = {}, task = {}) => {
@@ -25,26 +33,22 @@ const derivedTodos = (project = {}, task = {}) => {
 
 export function buildProjectExecutionPlan({ project = {}, language = 'zh', now = new Date().toISOString() } = {}) {
   const text = (chinese, english) => language === 'en' ? english : chinese;
-  const tasks = Array.isArray(project.tasks) ? project.tasks : [];
+  const leader = (project.team || []).find((member) => (
+    member.id === project.leaderWorkPlan?.leaderId || member.isLeader
+  )) || null;
+  const submitted = isSubmittedPlan(project.leaderWorkPlan);
+  const plannedTaskIds = new Set((project.leaderWorkPlan?.taskIds?.length
+    ? project.leaderWorkPlan.taskIds
+    : project.leaderWorkPlan?.tasks?.map((task) => task.id) || []).map(String));
+  const tasks = submitted
+    ? (Array.isArray(project.tasks) ? project.tasks : []).filter((task) => plannedTaskIds.has(String(task.id)))
+    : [];
   const team = Array.isArray(project.team) ? project.team : [];
   const openTasks = tasks.filter((task) => !isComplete(task.status));
   const formalProgress = tasks.length
     ? Math.round(tasks.reduce((sum, task) => sum + taskProgress(project, task), 0) / tasks.length)
-    : clamp(Math.round(Number(project.progress) || 0));
-  const progressPercent = clamp(formalProgress);
-  const stages = [
-    { key: 'kickoff', label: text('立项', 'Kickoff'), position: 0 },
-    { key: 'execution', label: text('执行', 'Execution'), position: 34 },
-    { key: 'review', label: text('复核', 'Review'), position: 72 },
-    { key: 'delivery', label: text('交付', 'Delivery'), position: 100 },
-  ];
-  const currentPhase = progressPercent >= 96
-    ? stages[3]
-    : progressPercent >= 72
-      ? stages[2]
-      : progressPercent >= 5
-        ? stages[1]
-        : stages[0];
+    : null;
+  const progressPercent = formalProgress === null ? null : clamp(formalProgress);
   const startCandidates = [
     project.createdAt,
     project.initiatedAt,
@@ -52,7 +56,7 @@ export function buildProjectExecutionPlan({ project = {}, language = 'zh', now =
     ...tasks.flatMap((task) => [task.assignedAt, task.deadlineSetAt]),
   ].map(timeValue).filter(Number.isFinite);
   const dueCandidates = [
-    project.expectedCompletionAt,
+    project.leaderWorkPlan?.expectedCompletionAt,
     ...openTasks.map((task) => task.dueAt),
     ...tasks.map((task) => task.dueAt),
   ].map(timeValue).filter(Number.isFinite);
@@ -66,7 +70,7 @@ export function buildProjectExecutionPlan({ project = {}, language = 'zh', now =
     || task.assignee
     || team.find((member) => member.id === task.ownerId)?.name
     || text('待分配', 'Unassigned');
-  const rows = openTasks
+  const rows = tasks
     .map((task) => {
       const owner = team.find(member => member.id === task.ownerId || member.name === task.assignee) || {};
       const asset = describeTaskAsset({ project, task, agent: owner, language });
@@ -85,9 +89,37 @@ export function buildProjectExecutionPlan({ project = {}, language = 'zh', now =
       todos: derivedTodos(project, task),
     }; })
     .sort((left, right) => (timeValue(left.dueAt) ?? Number.MAX_SAFE_INTEGER) - (timeValue(right.dueAt) ?? Number.MAX_SAFE_INTEGER));
+  const allRows = tasks
+    .map((task) => {
+      const owner = team.find(member => member.id === task.ownerId || member.name === task.assignee) || {};
+      const asset = describeTaskAsset({ project, task, agent: owner, language });
+      return {
+        id: task.id,
+        label: asset.title || task.text || text('工作节点', 'Work milestone'),
+        ownerName: ownerName(task),
+        dueAt: task.dueAt || null,
+        status: task.status || 'pending',
+        progressPercent: taskProgress(project, task),
+      };
+    })
+    .sort((left, right) => (timeValue(left.dueAt) ?? Number.MAX_SAFE_INTEGER) - (timeValue(right.dueAt) ?? Number.MAX_SAFE_INTEGER));
+  const stages = allRows.map((row, index) => ({
+    ...row,
+    key: row.id || `milestone-${index + 1}`,
+    position: allRows.length === 1 ? 100 : Math.round((index / (allRows.length - 1)) * 100),
+  }));
+  const currentPhase = stages.find((row) => !isComplete(row.status))
+    || stages[stages.length - 1]
+    || { key: 'leader-planning', label: text('负责人正在制定工作计划', 'Leader is preparing the work plan') };
+  const planStatus = submitted ? 'ready' : (project.initiation ? 'planning' : 'not-started');
 
   return {
     schemaVersion: 'project-execution-plan/v1',
+    planStatus,
+    progressAvailable: submitted && tasks.length > 0,
+    leaderId: project.leaderWorkPlan?.leaderId || leader?.id || project.initiation?.leaderId || null,
+    leaderName: project.leaderWorkPlan?.leaderName || leader?.name || project.initiation?.firstLead || text('负责人', 'Leader'),
+    submittedAt: submitted ? project.leaderWorkPlan.submittedAt : null,
     progressPercent,
     markerPercent: progressPercent,
     elapsedPercent,

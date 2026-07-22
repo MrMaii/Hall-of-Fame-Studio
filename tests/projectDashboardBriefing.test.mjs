@@ -8,6 +8,15 @@ test('project briefing prioritizes current work, people, official updates, and q
     name: '登录与权限系统',
     objective: '交付可以运行并通过测试的登录与权限系统。',
     status: 'executing',
+    leaderWorkPlan: {
+      schemaVersion: 'leader-managed-task-plan/v1',
+      status: 'submitted',
+      submittedAt: '2026-07-19T08:00:00.000Z',
+      leaderId: 'lead',
+      leaderName: 'Lead',
+      taskIds: ['task-1', 'task-2'],
+      tasks: [{ id: 'task-1' }, { id: 'task-2' }],
+    },
     team: [
       { id: 'lead', name: 'Lead', role: 'Leader' },
       { id: 'reviewer', name: 'Reviewer', role: 'Reviewer' },

@@ -1,14 +1,15 @@
 import { ChevronRight, FolderKanban, Plus, Settings, Users } from 'lucide-react';
 import { projectCatalogPresentation, projectCatalogRowState } from './projectCatalogRecovery.js';
+import { buildProjectExecutionPlan } from './projectExecutionPlan.js';
 
-const STATUS_LABELS = { executing: '进行中', initiated: '准备中', paused: '已暂停', completed: '已完成' };
+const STATUS_LABELS = { planning: '制定计划中', executing: '进行中', initiated: '准备中', paused: '已暂停', completed: '已完成' };
 
 function projectSummary(project = {}) {
   return project.goal || project.description || project.initiation?.summary || '打开项目查看当前工作、团队进展和最新结果。';
 }
 
 export default function ProjectHub({ projects = [], modelReady = false, lastSyncedAt = null, catalogStatus = 'idle', activeLanguage = 'zh', onCreateProject, onOpenProject, onOpenSettings, onOpenAdvanced } = {}) {
-  const activeCount = projects.filter((project) => ['executing', 'initiated'].includes(project.status)).length;
+  const activeCount = projects.filter((project) => ['planning', 'executing', 'initiated'].includes(project.status)).length;
   const openTaskCount = projects.reduce((total, project) => total + (project.tasks || []).filter((task) => task.status !== 'done').length, 0);
   const catalogPresentation = projectCatalogPresentation({
     syncStatus: catalogStatus,
@@ -62,8 +63,11 @@ export default function ProjectHub({ projects = [], modelReady = false, lastSync
             <div className="mt-4 grid gap-4 lg:grid-cols-2">
               {projects.map((project) => {
                 const teamCount = Array.isArray(project.team) ? project.team.length : 0;
-                const progress = Number.isFinite(Number(project.progress)) ? Math.max(0, Math.min(100, Number(project.progress))) : 0;
-                const progressLabel = progress >= 100 && project.status !== 'completed' ? '当前阶段完成' : `${progress}%`;
+                const executionPlan = buildProjectExecutionPlan({ project, language: activeLanguage });
+                const progress = executionPlan.progressPercent;
+                const progressLabel = executionPlan.progressAvailable
+                  ? (progress >= 100 && project.status !== 'completed' ? '当前阶段完成' : `${progress}%`)
+                  : `${executionPlan.leaderName} 正在制定工作计划`;
                 const rowState = projectCatalogRowState(project, catalogStatus);
                 const recovered = rowState !== 'verified';
                 return (
@@ -71,7 +75,9 @@ export default function ProjectHub({ projects = [], modelReady = false, lastSync
                     <div className="flex items-start justify-between gap-5"><div className="min-w-0"><div className="flex items-center gap-2 text-sm text-[#59684b]"><FolderKanban size={15} /> {recovered ? rowState === 'offline' ? '离线目录' : '正在校验' : STATUS_LABELS[project.status] || '进行中'}</div><h3 className="mt-3 line-clamp-2 break-words font-serif text-3xl leading-tight">{project.name}</h3></div><ChevronRight size={21} className="mt-1 shrink-0 text-[#9b968c] group-hover:text-[#251b13]" /></div>
                     <p className="mt-4 line-clamp-2 min-h-10 break-words text-sm leading-relaxed text-[#5c574d]">{projectSummary(project)}</p>
                     <div className="mt-5 flex items-center justify-between gap-4 border-t border-[#e1ded5] pt-4 text-sm text-[#6b665c]"><span className="inline-flex items-center gap-2"><Users size={15} /> {teamCount} 位成员</span><span>{progressLabel}</span></div>
-                    <div className="mt-2 h-1.5 bg-[#e7e3d9]" aria-label={`项目进度 ${progress}%`}><div className="h-full bg-[#59684b]" style={{ width: `${progress}%` }} /></div>
+                    {executionPlan.progressAvailable
+                      ? <div className="mt-2 h-1.5 bg-[#e7e3d9]" aria-label={`项目进度 ${progress}%`}><div className="h-full bg-[#59684b]" style={{ width: `${progress}%` }} /></div>
+                      : <div className="mt-2 border-l-2 border-[#8f1e18] pl-3 text-xs leading-relaxed text-[#6b665c]">计划提交后才会显示正式进度和预计完成时间。</div>}
                   </button>
                 );
               })}

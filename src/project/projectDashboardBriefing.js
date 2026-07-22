@@ -90,6 +90,7 @@ const buildUpdates = (events = [], language = 'zh') => {
 
 const projectStage = ({ project = {}, openTasks = [], pendingReviews = [], language = 'zh' }) => {
   if (project.status === 'completed') return language === 'zh' ? '项目已完成' : 'Completed';
+  if (project.leaderWorkPlan?.status !== 'submitted' && project.initiation) return language === 'zh' ? '制定工作计划' : 'Work planning';
   if (pendingReviews.length) return language === 'zh' ? '质量复核' : 'Quality review';
   if (openTasks.length) return language === 'zh' ? '项目执行' : 'Execution';
   if (project.initiation) return language === 'zh' ? '交付确认' : 'Delivery confirmation';
@@ -108,10 +109,16 @@ export function buildProjectDashboardBriefing({
   const pendingReviews = (project.submissionReviews || []).filter(review => !['approved', 'accepted'].includes(String(review.verdict || review.status || '').toLowerCase()));
   const outcome = describeProjectOutcome(project, language);
   const assetCatalog = buildProjectAssetCatalog(project, language);
+  const leader = team.find(member => member.id === project.leaderWorkPlan?.leaderId || member.isLeader) || team[0] || {};
+  const planReady = project.leaderWorkPlan?.status === 'submitted';
   const statusRows = agentRows.length ? agentRows : team.map(agent => ({ agent, state: { status: 'waiting', currentPlan: {} } }));
   const teamRows = statusRows.map((row, index) => {
     const agent = row.agent || team.find(item => item.id === row.agentId) || {};
-    const status = statusMeta(row, language);
+    const status = !planReady
+      ? (agent.id === leader.id
+        ? { key: 'active', label: language === 'zh' ? '制定计划中' : 'Planning' }
+        : { key: 'waiting', label: language === 'zh' ? '等待工作计划' : 'Waiting for plan' })
+      : statusMeta(row, language);
     const latestAction = clampSentence(
       row.latestWorklog?.summary
         || row.latestWorklog?.text
@@ -145,15 +152,23 @@ export function buildProjectDashboardBriefing({
       agent,
       avatarSrc: agent.avatarUrl || agent.avatar || agent.image || null,
       status,
-      sentence: activeAsset
+      sentence: !planReady
+        ? (agent.id === leader.id
+          ? (language === 'zh' ? '正在制定项目工作计划' : 'Preparing the project work plan')
+          : (language === 'zh' ? `等待 ${leader.name || 'Leader'} 提交工作计划后开始` : `Waiting for ${leader.name || 'the Leader'} to submit the work plan`))
+        : activeAsset
         ? (language === 'zh' ? `正在完成《${activeAsset.title}》` : `Working on “${activeAsset.title}”`)
         : agentWorkSentence({ ...row, agent }, language),
       latestAction: /pulse|runtime|ledger|receipt|check-in|脉冲|台账|回执|运行记录|管理记录/i.test(latestAction)
         ? (language === 'zh' ? `${activeAsset?.statusLabel || '尚未形成文件'}；过程记录已收进详情。` : `${activeAsset?.statusLabel || 'No file yet'}; operational records remain in details.`)
         : latestAction || (language === 'zh' ? '尚无可以向用户展示的新内容。' : 'No new user-visible content yet.'),
-      nextStep: nextStep || (language === 'zh' ? '完成当前工作并同步项目结果。' : 'Complete the current work and publish the result.'),
-      todos,
-      deadlineAt: activeTask?.dueAt || row.state?.currentPlan?.deadlineAt || null,
+      nextStep: !planReady
+        ? (agent.id === leader.id
+          ? (language === 'zh' ? '提交包含节点、负责人和预计完成时间的正式工作计划。' : 'Submit the formal plan with milestones, owners, and expected finish times.')
+          : (language === 'zh' ? '计划提交后按负责人分配开始工作。' : 'Begin work after the plan assigns an owner.'))
+        : nextStep || (language === 'zh' ? '完成当前工作并同步项目结果。' : 'Complete the current work and publish the result.'),
+      todos: planReady ? todos : [],
+      deadlineAt: planReady ? (activeTask?.dueAt || row.state?.currentPlan?.deadlineAt || null) : null,
       deliverable: activeAsset?.title || activeTask?.workDefinition?.deliverable || row.state?.currentPlan?.deliverable || null,
       deliverablePurpose: activeAsset?.purpose || null,
       deliverablePath: activeAsset?.path || null,
@@ -164,17 +179,23 @@ export function buildProjectDashboardBriefing({
 
   const visibleAssetCount = assetCatalog.filter(asset => asset.progressPercent >= 35).length;
   const reviewAssetCount = assetCatalog.filter(asset => asset.reviewStatus && asset.reviewStatus !== 'accepted').length;
-  const focusSummary = language === 'zh'
+  const focusSummary = !planReady
+    ? (language === 'zh'
+      ? `立项会议已经确认《${outcome.title}》及团队职责。${leader.name || 'Leader'} 正在制定工作节点、负责人和预计完成时间；计划提交前不计算项目进度。`
+      : `Kickoff confirmed “${outcome.title}” and team responsibilities. ${leader.name || 'The Leader'} is defining milestones, owners, and expected finish times; project progress remains unavailable until submission.`)
+    : language === 'zh'
     ? `项目最终要交付《${outcome.title}》。当前 ${visibleAssetCount}/${assetCatalog.length || 0} 份分工产物已经形成文件${reviewAssetCount ? `，其中 ${reviewAssetCount} 份正在审阅或修改` : ''}。`
     : `The project will deliver “${outcome.title}”. ${visibleAssetCount}/${assetCatalog.length || 0} assigned deliverables now exist as files${reviewAssetCount ? `, with ${reviewAssetCount} in review or revision` : ''}.`;
 
   const stage = projectStage({ project, openTasks, pendingReviews, language });
-  const nextMilestone = clampSentence(
+  const nextMilestone = !planReady
+    ? (language === 'zh' ? `${leader.name || 'Leader'} 提交项目工作计划` : `${leader.name || 'Leader'} submits the project work plan`)
+    : clampSentence(
     assetCatalog.find(asset => asset.progressPercent < 100)?.title
       || pendingReviews[0]?.comments
       || project.initiation?.nextActionResolution?.tasks?.find(task => task.status !== 'done')?.text,
     42,
-  ) || (language === 'zh' ? '确认下一轮工作' : 'Confirm next work cycle');
+    ) || (language === 'zh' ? '确认下一轮工作' : 'Confirm next work cycle');
   const updates = buildUpdates(recentEvents, language);
   const blockedCount = teamRows.filter(row => row.status.key === 'blocked').length;
   const waitingCount = teamRows.filter(row => row.status.key === 'waiting').length;

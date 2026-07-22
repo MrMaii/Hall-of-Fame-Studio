@@ -32,7 +32,7 @@ const tasks = [
   { id: 'draft', text: 'Prepare the first draft', assignee: 'leader', status: 'pending' },
 ];
 
-test('Leader gives every Agent a formal work contract and deadline before execution begins', () => withApi((api) => {
+test('Leader submits a formal work contract and deadline for every Agent before execution begins', () => withApi((api) => {
   const now = '2026-07-20T10:00:00.000Z';
   const response = api.handle({
     method: 'POST',
@@ -50,8 +50,25 @@ test('Leader gives every Agent a formal work contract and deadline before execut
     },
   });
   assert.equal(response.status, 200);
+  assert.equal(response.body.project.status, 'planning');
+  assert.equal(response.body.project.leaderWorkPlan?.status, 'drafting');
+  assert.ok(response.body.project.tasks.every((task) => task.status === 'awaiting-plan' && !task.dueAt));
+  assert.equal(response.body.project.autonomousSchedulerLedger?.length || 0, 0);
 
-  const projectTasks = response.body.project.tasks;
+  const submitted = api.handle({
+    method: 'POST',
+    path: '/projects/leader-governance-project/leader-work-plan/submit',
+    body: { now: '2026-07-20T10:01:00.000Z' },
+  });
+  assert.equal(submitted.status, 200);
+  assert.equal(submitted.body.route, 'leader-work-plan-submitted');
+  assert.equal(submitted.body.project.status, 'executing');
+  assert.equal(submitted.body.leaderWorkPlan?.status, 'submitted');
+  assert.equal(submitted.body.leaderWorkPlan?.version, 1);
+  assert.ok(submitted.body.leaderWorkPlan?.submittedAt);
+  assert.ok(submitted.body.leaderWorkPlan?.expectedCompletionAt);
+
+  const projectTasks = submitted.body.project.tasks;
   const owners = new Set(projectTasks.map((task) => task.ownerId));
   for (const member of team) {
     assert.ok(owners.has(member.id), `${member.name} must have Leader-assigned formal work.`);
@@ -87,7 +104,7 @@ test('Leader gives every Agent a formal work contract and deadline before execut
   assert.ok(dashboard.body.tasks.rows.length >= team.length);
   assert.ok(dashboard.body.tasks.rows.every((task) => task.dueAt && task.workDefinition?.deliverable && task.leaderTodos?.length));
 
-  const logCount = response.body.project.logs.length;
+  const logCount = submitted.body.project.logs.length;
   const assignedAtByTaskId = new Map(projectTasks.map((task) => [task.id, task.assignedAt]));
   const reconciled = api.handle({
     method: 'POST',
@@ -137,18 +154,18 @@ test('Agent without Leader-assigned work waits without publishing formal work or
     },
   });
   assert.equal(cycle.status, 200);
-  assert.equal(cycle.body.cycle?.status, 'waiting-for-leader-assignment');
+  assert.equal(cycle.body.cycle?.status, 'waiting-for-leader-plan');
   assert.equal(cycle.body.artifact, null);
   assert.equal(cycle.body.submission, null);
   assert.equal(cycle.body.log, null);
 
   const reconciled = api.handle({
     method: 'POST',
-    path: `/projects/${projectId}/leader-work-plan/reconcile`,
+    path: `/projects/${projectId}/leader-work-plan/submit`,
     body: { now: '2026-07-20T10:06:00.000Z' },
   });
   assert.equal(reconciled.status, 200);
-  assert.equal(reconciled.body.route, 'leader-work-plan-reconciled');
+  assert.equal(reconciled.body.route, 'leader-work-plan-submitted');
   assert.equal(reconciled.body.leaderWorkPlan?.coverage?.assignedAgentCount, team.length);
   assert.ok(reconciled.body.project.tasks.some((task) => task.ownerId === 'analyst' && task.dueAt));
 }));
@@ -175,7 +192,14 @@ test('Leader work plan follows the inherited language of a Chinese project', () 
   });
   assert.equal(response.status, 200);
 
-  const generatedTasks = response.body.project.tasks.filter((task) => task.source === 'leader-work-plan');
+  const submitted = api.handle({
+    method: 'POST',
+    path: '/projects/leader-governance-zh-project/leader-work-plan/submit',
+    body: { now: '2026-07-20T10:01:00.000Z' },
+  });
+  assert.equal(submitted.status, 200);
+
+  const generatedTasks = submitted.body.project.tasks.filter((task) => task.source === 'leader-work-plan');
   assert.ok(generatedTasks.length > 0);
   for (const task of generatedTasks) {
     assert.match(task.text, /青少年心理健康与每日工作时间关系研究/);
@@ -183,7 +207,7 @@ test('Leader work plan follows the inherited language of a Chinese project', () 
     assert.equal(task.workDefinition?.language, 'zh');
     assert.match(task.workDefinition?.deliverable || '', /方案|报告|说明|计划|论文|成果/);
   }
-  const rewrittenReviewTask = response.body.project.tasks.find((task) => task.id === 'generic-review');
+  const rewrittenReviewTask = submitted.body.project.tasks.find((task) => task.id === 'generic-review');
   assert.match(rewrittenReviewTask?.text || '', /完成《.*证据与质量审查报告》/);
   assert.doesNotMatch(rewrittenReviewTask?.text || '', /审批后发布第一包时间线证据/);
 }));
@@ -209,17 +233,24 @@ test('completed history does not replace each Agent current formal work', () => 
   });
   assert.equal(response.status, 200);
 
-  const openOwners = new Set(response.body.project.tasks
+  const submitted = api.handle({
+    method: 'POST',
+    path: '/projects/leader-current-work-project/leader-work-plan/submit',
+    body: { now: '2026-07-20T10:01:00.000Z' },
+  });
+  assert.equal(submitted.status, 200);
+
+  const openOwners = new Set(submitted.body.project.tasks
     .filter((task) => task.status !== 'done')
     .map((task) => task.ownerId));
   for (const member of team) {
     assert.ok(openOwners.has(member.id), `${member.name} must have current formal work, not only completed history.`);
   }
-  const leaderCurrentTask = response.body.project.tasks.find((task) => task.ownerId === 'leader' && task.status !== 'done');
+  const leaderCurrentTask = submitted.body.project.tasks.find((task) => task.ownerId === 'leader' && task.status !== 'done');
   assert.match(leaderCurrentTask?.text || '', /Complete.*Delivery Plan/i);
   assert.doesNotMatch(leaderCurrentTask?.text || '', /coordinate|deadline/i);
   assert.match(leaderCurrentTask?.workDefinition?.artifactFileName || '', /Delivery Plan\.md$/i);
-  const crisisLeaderTask = response.body.project.tasks.find((task) => task.ownerId === 'reviewer' && task.status !== 'done');
+  const crisisLeaderTask = submitted.body.project.tasks.find((task) => task.ownerId === 'reviewer' && task.status !== 'done');
   assert.doesNotMatch(crisisLeaderTask?.text || '', /统筹|coordinate/i);
 }));
 

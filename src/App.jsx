@@ -10868,6 +10868,41 @@ export default function EngineWorkspace() {
     ]);
     setActiveRoute('project_detail');
 
+    if (shouldAttemptBackendProjectWrite(projectReadyForWork) && projectReadyForWork.leaderWorkPlan?.status === 'drafting') {
+      setTimeout(async () => {
+        try {
+          const planResult = await requestAgentBackend(`/projects/${encodeURIComponent(createdProjectId)}/leader-work-plan/submit`, {
+            method: 'POST',
+            body: { now: new Date().toISOString() },
+            timeoutMs: 20_000,
+          });
+          if (!planResult.project?.id) return;
+          setProjects(previous => previous.map(project => (
+            project.id === createdProjectId
+              ? { ...project, ...planResult.project, language: planResult.project.language || project.language || activeLanguage }
+              : project
+          )));
+          setBackendStation(previous => ({
+            ...previous,
+            connectionStatus: 'online',
+            lastAction: 'Leader submitted the formal project work plan',
+            lastProjectSyncAt: new Date().toISOString(),
+            error: null,
+          }));
+          setTimeout(() => syncBackendManagerDashboard({ silent: true, projectId: createdProjectId }), 0);
+          setTimeout(() => syncBackendTimelineAndEvents({ silent: true, projectId: createdProjectId }), 0);
+        } catch (error) {
+          setBackendStation(previous => ({
+            ...previous,
+            lastAction: 'Leader work plan submission failed',
+            error: error.name === 'AbortError'
+              ? 'Leader work plan submission timed out. Dashboard remains in the planning state.'
+              : error.message || String(error),
+          }));
+        }
+      }, 900);
+    }
+
     kickoffReadModelRefresh = await kickoffReadModelRefreshPromise?.catch(() => null) || null;
     if (kickoffReadModelRefresh?.project?.id) {
       projectReadyForWork = {
@@ -20864,7 +20899,12 @@ export default function EngineWorkspace() {
                   language: activeLanguage,
                   projectDashboardSnapshotSourceMeta,
                   projectText,
-                  onRefreshBriefing: () => syncBackendManagerDashboard({ silent: false, projectId: activeProject.id }),
+                  onRefreshBriefing: async () => {
+                    await Promise.all([
+                      syncBackendProjectCatalog({ silent: true }),
+                      syncBackendManagerDashboard({ silent: false, projectId: activeProject.id }),
+                    ]);
+                  },
                   onOpenMeeting: () => enterProjectScene('meeting'),
                   onOpenChat: () => enterProjectScene('chat'),
                   onOpenTimeline: () => enterProjectScene('timeline'),

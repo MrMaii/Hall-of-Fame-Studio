@@ -691,7 +691,7 @@ function extractKickoffActionFromPath(path = '') {
 function commandShouldRequestModelIntent(command = '') {
   return /^POST\s+/i.test(command)
     && !/\/llm\//i.test(command)
-    && !/\/leader-work-plan\/reconcile/i.test(command)
+    && !/\/leader-work-plan\/(?:submit|reconcile)/i.test(command)
     && !/\/manager-flow-graph\/nodes\/[^/]+\/confirm/i.test(command);
 }
 
@@ -4594,6 +4594,21 @@ export function runProjectAutonomousCycle({
   language = effectiveProjectLanguage(project),
 } = {}) {
   const currentLanguage = normalizeLanguage(language);
+  if (project.initiation && project.leaderWorkPlan?.status !== 'submitted') {
+    return {
+      project,
+      cycle: {
+        id: `project_cycle_${project.id || 'project'}_${Date.parse(now) || Date.now()}`,
+        projectId: project.id || null,
+        cadence,
+        trigger,
+        ranAt: now,
+        status: 'waiting-for-leader-plan',
+        reason: 'Project execution starts only after the Leader submits milestones, owners, and expected completion times.',
+      },
+      messages: [],
+    };
+  }
   const result = advanceAutonomousProjectCycle({
     project,
     team: project.team || [],
@@ -4710,7 +4725,8 @@ export function runAgentWorkCycle({
   const managementResponderTargets = managementResponderTargetIds
     .map((targetId) => team.find((member) => member.id === targetId || member.name === targetId))
     .filter(Boolean);
-  const task = openAgentTask(project, agent, taskId);
+  const waitingForLeaderPlan = project.initiation && project.leaderWorkPlan?.status !== 'submitted';
+  const task = waitingForLeaderPlan ? null : openAgentTask(project, agent, taskId);
   const timestamp = Date.parse(now) || Date.now();
   const cycleId = `agent_cycle_${agent.id}_${timestamp}`;
   const nextRunAt = new Date(safeDateMs(now) + agentWorkIntervalMs(project, previousState, intervalMs)).toISOString();
@@ -4729,7 +4745,7 @@ export function runAgentWorkCycle({
       dueAt,
       nextRunAt: null,
       ranAt: now,
-      status: 'waiting-for-leader-assignment',
+      status: waitingForLeaderPlan ? 'waiting-for-leader-plan' : 'waiting-for-leader-assignment',
       managementPriority: resolvedManagementPriority,
       managementReasons: resolvedManagementReasons,
     }, { projectId: project.id, workerKind: 'agent-worker', now });
@@ -4738,11 +4754,19 @@ export function runAgentWorkCycle({
       agentId: agent.id,
       name: previousState.name || agent.name,
       role: previousState.role || agent.role,
-      status: 'waiting-for-leader-assignment',
+      status: waitingForLeaderPlan ? 'waiting-for-leader-plan' : 'waiting-for-leader-assignment',
       currentPlan: {
         ...(previousState.currentPlan || {}),
-        focus: currentLanguage === 'zh' ? '等待负责人分配正式工作' : 'Await Leader-assigned formal work',
-        next: currentLanguage === 'zh' ? '负责人明确产物、做法和截止时间后开始执行。' : 'Start after the Leader defines the deliverable, approach, and deadline.',
+        focus: waitingForLeaderPlan
+          ? (agent.isLeader
+            ? (currentLanguage === 'zh' ? '制定项目工作计划' : 'Prepare the project work plan')
+            : (currentLanguage === 'zh' ? '等待负责人提交项目工作计划' : 'Await the Leader work plan'))
+          : (currentLanguage === 'zh' ? '等待负责人分配正式工作' : 'Await Leader-assigned formal work'),
+        next: waitingForLeaderPlan
+          ? (agent.isLeader
+            ? (currentLanguage === 'zh' ? '提交包含节点、负责人和预计完成时间的正式工作计划。' : 'Submit the formal plan with milestones, owners, and expected finish times.')
+            : (currentLanguage === 'zh' ? '计划提交后再开始执行，当前不产生项目进度。' : 'Begin only after plan submission; do not create project progress yet.'))
+          : (currentLanguage === 'zh' ? '负责人明确产物、做法和截止时间后开始执行。' : 'Start after the Leader defines the deliverable, approach, and deadline.'),
         taskId: null,
       },
       lastAgentRunAt: now,
@@ -8706,8 +8730,8 @@ export function createKickoffProjectFromMeeting({
     name,
     objective: projectBrief,
     currentObjective: brief || name,
-    status: 'executing',
-    progress: 8,
+    status: 'planning',
+    progress: 0,
     autonomy,
     lastAutonomousRunAt: null,
     nextAutonomousRunAt: null,
@@ -8762,16 +8786,54 @@ export function createKickoffProjectFromMeeting({
     reviewerId: reviewer?.id,
     now,
   });
-  const assignmentPackage = createLeaderAssignmentPackage({
-    project: peerManagedBaseProject,
-    leaderId: leader?.id,
-    now,
-  });
-  const assignedProject = {
+  const leaderWorkPlan = {
+    schemaVersion: 'leader-managed-task-plan/v1',
+    projectId,
+    leaderId: leader?.id || null,
+    leaderName: leader?.name || null,
+    status: 'drafting',
+    version: 0,
+    startedAt: now,
+    submittedAt: null,
+    expectedCompletionAt: null,
+    taskIds: [],
+    tasks: [],
+    coverage: {
+      agentCount: confirmedTeam.length,
+      assignedAgentCount: 0,
+      taskCount: 0,
+    },
+  };
+  const assignmentPackage = {
+    leader,
+    plan: leaderWorkPlan,
+    tasks: [],
+    assignmentMessages: [],
+    assignmentLogs: [],
+    acknowledgementMessages: [],
+    acknowledgementLogs: [],
+    ledgerEvents: [],
+  };
+  const planningProject = {
     ...peerManagedBaseProject,
-    tasks: assignmentPackage.tasks,
-    leaderWorkPlan: assignmentPackage.plan,
-    logs: [...assignmentPackage.acknowledgementLogs, ...assignmentPackage.assignmentLogs, ...peerManagedBaseProject.logs],
+    tasks: openTasks.map((task) => ({
+      ...task,
+      status: task.status === 'done' ? 'done' : 'awaiting-plan',
+      dueAt: null,
+      deadlineSetBy: null,
+      deadlineSetAt: null,
+      leaderTodos: [],
+    })),
+    leaderWorkPlan,
+    logs: [{
+      id: `log_${projectId}_leader_plan_drafting`,
+      time: now,
+      agent: leader?.name || 'Leader',
+      agentId: leader?.id || null,
+      log: `${leader?.name || 'Leader'} is preparing the project work plan with accountable milestones, owners, and expected completion times.`,
+      eventType: 'leader-plan-drafting',
+      source: 'kickoff-leader-planning',
+    }, ...peerManagedBaseProject.logs],
   };
   const directorBriefMessage = attachMessageReceipts({
     id: directorBriefMessageId,
@@ -8792,7 +8854,7 @@ export function createKickoffProjectFromMeeting({
     },
   }, confirmedTeam, { seenAt: now });
   const kickoffCharter = createKickoffCharter({
-    project: assignedProject,
+    project: planningProject,
     leaderId: leader?.id,
     reviewerId: reviewer?.id,
     roleNegotiation,
@@ -8812,7 +8874,7 @@ export function createKickoffProjectFromMeeting({
     },
   };
   const kickoffProject = appendProjectEvents({
-    ...assignedProject,
+    ...planningProject,
     kickoffCharter: kickoffCharterWithNextActionResolution,
   }, [
     createProjectLedgerEvent({
@@ -8863,6 +8925,17 @@ export function createKickoffProjectFromMeeting({
       },
       payload: nextActionResolution,
     }),
+    createProjectLedgerEvent({
+      id: `evt_${projectId}_leader_plan_drafting`,
+      type: 'leader-plan-drafting',
+      time: now,
+      actor: leader?.name || 'Leader',
+      summary: `${leader?.name || 'Leader'} started the formal project work plan after kickoff approval.`,
+      source: 'kickoff-leader-planning',
+      channelId: 'management',
+      entityIds: { leaderId: leader?.id || null },
+      payload: leaderWorkPlan,
+    }),
     ...(kickoffCharterWithNextActionResolution.ledgerEvents || [kickoffCharterWithNextActionResolution.ledgerEvent]).filter(Boolean),
     ...(assignmentPackage.ledgerEvents || []),
   ]);
@@ -8891,7 +8964,7 @@ export function createKickoffProjectFromMeeting({
       weight: 'Next Action Resolution',
       nextActionIds: nextActionResolution.actionIds,
     },
-  ].map((message) => attachMessageReceipts(message, assignedProject.team || [], { seenAt: now }));
+  ].map((message) => attachMessageReceipts(message, planningProject.team || [], { seenAt: now }));
   const kickoffDecisionProject = applyChatMessagesToAgentStates({
     project: kickoffProject,
     team: kickoffProject.team || [],
@@ -8899,26 +8972,12 @@ export function createKickoffProjectFromMeeting({
     now,
     source: 'kickoff-decision-broadcast',
   });
-  const kickoffChatProject = applyChatMessagesToAgentStates({
+  const firstPulse = {
     project: kickoffDecisionProject,
-    team: kickoffProject.team || [],
-    messages: [
-      ...assignmentPackage.assignmentMessages,
-      ...assignmentPackage.acknowledgementMessages,
-    ].map((message) => ({ ...message, projectId })),
-    now,
-    source: 'backend-kickoff-chat',
-  });
-  const firstPulse = runProjectAutonomousCycle({
-    project: kickoffChatProject,
-    cadence: autonomy?.cadence || 'hourly',
     messages: [],
-    now,
-    trigger: 'initiation-approval',
-    schedulerReason: 'initiation-approved-first-work-pulse',
-    dueAt: now,
-    source: 'backend-kickoff-first-pulse-chat',
-  });
+    skipped: true,
+    reason: 'awaiting-leader-work-plan',
+  };
   const kickoffMessages = [
     {
       id: `system_${projectId}_kickoff`,
@@ -8927,7 +8986,7 @@ export function createKickoffProjectFromMeeting({
       type: 'system',
       author: 'System',
       time: 'Kickoff',
-      text: `${name} created from backend kickoff: role negotiation, Leader election, assignments, and first autonomous pulse are recorded.`,
+      text: `${name} was approved. ${leader?.name || 'Leader'} is now preparing the formal work plan before team execution begins.`,
     },
     directorBriefMessage,
     ...roleNegotiation.transcript.map((item) => ({
@@ -8966,13 +9025,6 @@ export function createKickoffProjectFromMeeting({
       targets: item.hearsOthers || [],
     })),
     ...kickoffDecisionMessages,
-    ...assignmentPackage.assignmentMessages.map((message) => ({ ...message, projectId, time: 'Kickoff' })),
-    ...assignmentPackage.acknowledgementMessages.map((message) => ({ ...message, projectId, time: 'Kickoff' })),
-    ...firstPulse.messages.map((message) => ({
-      ...message,
-      projectId,
-      time: message.time === 'Completed' ? 'Completed' : 'First Pulse',
-    })),
   ];
 
   return {
@@ -54696,7 +54748,7 @@ export function createAgentProjectService({
       meeting = approvalResult.meeting || meeting;
       const projectId = approvalResult.project?.id || config.projectId;
       let sessionResult = null;
-      if (input.startAutopilot !== false) {
+      if (input.startAutopilot !== false && approvalResult.project?.leaderWorkPlan?.status === 'submitted') {
         sessionResult = this.startAutonomousRunControlSession({
           projectId,
           now: offsetIso(now, 1000),
@@ -68474,25 +68526,83 @@ export function createAgentProjectService({
         || project.team?.find((agent) => agent.isLeader)?.id
         || project.team?.[0]?.id;
       if (!leaderId) throw new Error('Leader work plan requires a confirmed project Leader.');
+      const publishing = project.leaderWorkPlan?.status !== 'submitted';
       const assignmentPackage = createLeaderAssignmentPackage({ project, leaderId, now });
-      const nextProject = appendProjectEvents({
+      assignmentPackage.plan = {
+        ...assignmentPackage.plan,
+        version: publishing
+          ? Math.max(1, Number(project.leaderWorkPlan?.version || 0) + 1)
+          : Math.max(1, Number(project.leaderWorkPlan?.version || 1)),
+        startedAt: project.leaderWorkPlan?.startedAt || assignmentPackage.plan.createdAt,
+        createdAt: project.leaderWorkPlan?.createdAt || project.leaderWorkPlan?.startedAt || assignmentPackage.plan.createdAt,
+        submittedAt: publishing ? now : (project.leaderWorkPlan?.submittedAt || now),
+      };
+      const leaderName = assignmentPackage.plan.leaderName || 'Leader';
+      const planSubmissionLog = publishing ? {
+        id: `log_${projectId}_leader_plan_submitted_${Date.parse(now) || Date.now()}`,
+        time: now,
+        agent: leaderName,
+        agentId: leaderId,
+        log: `${leaderName} submitted the project work plan with ${assignmentPackage.plan.tasks.length} accountable milestones and an expected completion time of ${assignmentPackage.plan.expectedCompletionAt || 'not scheduled'}.`,
+        eventType: 'leader-plan-submitted',
+        source: 'leader-work-plan',
+      } : null;
+      const assignedProject = appendProjectEvents({
         ...project,
+        status: project.status === 'completed' ? 'completed' : 'executing',
         tasks: assignmentPackage.tasks,
         leaderWorkPlan: assignmentPackage.plan,
         logs: [
+          planSubmissionLog,
           ...assignmentPackage.acknowledgementLogs,
           ...assignmentPackage.assignmentLogs,
           ...(project.logs || []),
-        ],
-      }, assignmentPackage.ledgerEvents || []);
+        ].filter(Boolean),
+      }, [
+        ...(publishing ? [createProjectLedgerEvent({
+          id: `evt_${projectId}_leader_plan_submitted_${Date.parse(now) || Date.now()}`,
+          type: 'leader-plan-submitted',
+          time: now,
+          actor: leaderName,
+          summary: `${leaderName} submitted the formal project work plan.`,
+          source: 'leader-work-plan',
+          channelId: 'management',
+          evidenceIds: assignmentPackage.plan.taskIds,
+          entityIds: { leaderId },
+          payload: assignmentPackage.plan,
+        })] : []),
+        ...(assignmentPackage.ledgerEvents || []),
+      ]);
+      const assignmentMessages = [
+        ...assignmentPackage.assignmentMessages,
+        ...assignmentPackage.acknowledgementMessages,
+      ].map((message) => ({ ...message, projectId }));
+      const projectWithAssignments = assignmentMessages.length ? applyChatMessagesToAgentStates({
+        project: assignedProject,
+        team: assignedProject.team || [],
+        messages: assignmentMessages,
+        now,
+        source: 'leader-work-plan-submission',
+      }) : assignedProject;
+      const firstPulse = publishing ? runProjectAutonomousCycle({
+        project: projectWithAssignments,
+        cadence: project.autonomy?.cadence || 'hourly',
+        messages: [],
+        now,
+        trigger: 'leader-plan-submitted',
+        schedulerReason: 'leader-plan-submitted-first-work-pulse',
+        dueAt: now,
+        source: 'leader-work-plan-first-pulse',
+      }) : { project: projectWithAssignments, messages: [], skipped: true, reason: 'plan-already-submitted' };
       const result = persistResult({
-        route: 'leader-work-plan-reconciled',
-        project: nextProject,
+        route: publishing ? 'leader-work-plan-submitted' : 'leader-work-plan-reconciled',
+        project: firstPulse.project,
         messages: [
-          ...assignmentPackage.assignmentMessages,
-          ...assignmentPackage.acknowledgementMessages,
-        ].map((message) => ({ ...message, projectId })),
+          ...assignmentMessages,
+          ...firstPulse.messages.map((message) => ({ ...message, projectId })),
+        ],
         leaderWorkPlan: assignmentPackage.plan,
+        firstPulse,
       });
       return {
         ...result,
