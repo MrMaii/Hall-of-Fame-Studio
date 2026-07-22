@@ -51,7 +51,7 @@ export default function AdvancedMeetingRoom({
   );
   const intentTargetText = (target) => target === 'start the kickoff conversation'
     ? text('开始立项讨论', 'Start the kickoff conversation')
-    : localizeText(target, activeLanguage);
+    : String(target || '');
   const interactionIntentText = (intent) => ({
     listen: text('听取', 'Listen'),
     consider: text('形成判断', 'Consider'),
@@ -332,7 +332,7 @@ export default function AdvancedMeetingRoom({
                 <div data-testid="project-meeting-completion" className="border border-[#59684b] bg-[#1d2618] px-4 py-3 shrink-0">
                   <div className="font-mono text-[8px] uppercase tracking-widest text-[#b9d18f]">{text('会议纪要已提交', 'Meeting minutes submitted')}</div>
                   <div className="mt-2 font-serif text-sm text-[#efe2bd]">{projectMeetingCompletion.report?.recorderName}</div>
-                  <div data-testid="project-meeting-summary-path" className="mt-1 break-all font-mono text-[8px] text-[#bcae86]">{projectMeetingCompletion.report?.workspaceRelativePath}</div>
+                  <div data-testid="project-meeting-summary-path" data-no-localize="" className="mt-1 break-all font-mono text-[8px] text-[#bcae86]">{projectMeetingCompletion.report?.workspaceRelativePath}</div>
                 </div>
               )}
               {projectMeetingSetupError && (

@@ -254,8 +254,50 @@ try {
   assert(!ordinaryProjectText.includes('ID:'), 'The project view must not expose the internal project id.');
   assert(!ordinaryProjectText.includes('backend-backed'), 'The project view must not expose backend source status codes.');
   console.log(`Full project console shell visible in ${consoleShellLatencyMs}ms with core reads delayed by 5000ms.`);
+  await page.evaluate(() => {
+    window.__guidedTimelinePhaseHistory = [];
+    const recordPhase = () => {
+      const phase = document.querySelector('[data-testid="manager-flow-guided-entry"]')?.getAttribute('data-phase');
+      if (phase && window.__guidedTimelinePhaseHistory.at(-1) !== phase) window.__guidedTimelinePhaseHistory.push(phase);
+    };
+    window.__guidedTimelinePhaseObserver = new MutationObserver(recordPhase);
+    window.__guidedTimelinePhaseObserver.observe(document.body, {
+      attributes: true,
+      attributeFilter: ['data-phase'],
+      childList: true,
+      subtree: true,
+    });
+  });
   await page.getByTestId('project-open-timeline').click();
   await page.getByTestId('manager-flow-legend').waitFor({ state: 'visible', timeout: 10000 });
+  const guidedTimelineEntry = page.getByTestId('manager-flow-guided-entry');
+  await guidedTimelineEntry.waitFor({ state: 'visible', timeout: 10000 });
+  await page.waitForFunction(() => document.querySelector('[data-testid="manager-flow-guided-entry"]')?.getAttribute('data-phase') === 'overview', null, { timeout: 5000 });
+  assert(Number(await page.getByTestId('manager-flow-graph').getAttribute('data-timeline-density')) === 0.36, 'Overview must use the outcome density before focusing the timeline.');
+  await page.waitForFunction(() => document.querySelector('[data-testid="manager-flow-guided-entry"]')?.getAttribute('data-phase') === 'start', null, { timeout: 5000 });
+  assert(await page.getByTestId('manager-flow-zoom-phase').getAttribute('aria-pressed') === 'true', 'The start focus must use the medium phase scale.');
+  await page.waitForFunction(() => document.querySelector('[data-testid="manager-flow-guided-entry"]')?.getAttribute('data-phase') === 'travel', null, { timeout: 5000 });
+  assert(await page.getByTestId('manager-flow-zoom').isDisabled(), 'Timeline controls must stay locked while the guided camera is moving.');
+  await guidedTimelineEntry.waitFor({ state: 'detached', timeout: 5000 });
+  const guidedPhaseHistory = await page.evaluate(() => {
+    window.__guidedTimelinePhaseObserver?.disconnect();
+    return window.__guidedTimelinePhaseHistory || [];
+  });
+  assert(
+    JSON.stringify(guidedPhaseHistory.filter(phase => phase !== 'waiting')) === JSON.stringify(['overview', 'start', 'travel']),
+    `The guided camera must tell one deterministic overview-to-latest story; received ${guidedPhaseHistory.join(' -> ')}.`,
+  );
+  assert(!(await page.getByTestId('manager-flow-zoom').isDisabled()), 'Timeline controls must unlock after the camera reaches the latest work.');
+  const latestTimelineTargetIsCentered = await page.evaluate(() => {
+    const viewport = document.querySelector('.manager-flow-viewport');
+    const latest = document.querySelector('[data-guided-entry-target="latest"]');
+    if (!viewport || !latest) return false;
+    const viewportRect = viewport.getBoundingClientRect();
+    const latestRect = latest.getBoundingClientRect();
+    const distance = Math.abs((latestRect.left + latestRect.width / 2) - (viewportRect.left + viewportRect.width / 2));
+    return distance <= Math.max(80, viewportRect.width * 0.16);
+  });
+  assert(latestTimelineTargetIsCentered, 'The guided timeline entry must stop with the latest work near the viewport center.');
   await page.getByRole('button', { name: '返回项目' }).click();
   await page.getByTestId('project-dashboard-view').waitFor({ state: 'visible', timeout: 10000 });
 
@@ -274,7 +316,7 @@ try {
 
   await page.getByTestId('project-open-meeting').click();
   await page.getByTestId('project-meeting-setup').waitFor({ state: 'visible', timeout: 10000 });
-  const meetingAgenda = 'Decide whether the current build is ready and assign the next action.';
+  const meetingAgenda = '确认当前版本是否可以交付，并明确每个人的下一步工作。';
   await page.getByTestId('project-meeting-agenda').fill(meetingAgenda);
   for (const agentId of ['turing', 'curie', 'musk']) {
     await page.getByTestId(`project-meeting-participant-${agentId}`).click();
@@ -302,8 +344,19 @@ try {
   assert(meetingSummaryPath.startsWith('meeting-notes/'), 'The recorder must publish the meeting minutes into the local meeting-notes folder.');
   await page.getByTestId('project-scene-back').click();
 
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  const reducedMotionTimelineOpenedAt = Date.now();
   await page.getByTestId('project-open-timeline').click();
   await page.getByTestId('manager-flow-legend').waitFor({ state: 'visible', timeout: 10000 });
+  await page.waitForFunction(() => !document.querySelector('[data-testid="manager-flow-zoom"]')?.disabled, null, { timeout: 2500 });
+  assert(Date.now() - reducedMotionTimelineOpenedAt < 2500, 'Reduced-motion entry must move directly to the latest work and release controls promptly.');
+  const reducedMotionTransitionIsInstant = await page.getByTestId('manager-flow-graph').evaluate((graph) => (
+    getComputedStyle(graph).transitionDuration
+      .split(',')
+      .every(value => Number.parseFloat(value) <= 0.00001)
+  ));
+  assert(reducedMotionTransitionIsInstant, 'Reduced-motion entry must remove camera travel, not merely shorten the tour timers.');
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
 
   const temporarySession = await page.evaluate(() => JSON.parse(window.sessionStorage.getItem('hall_of_fame_studio.local_auth_session.v1') || 'null'));
   const directCatalogResponse = await fetch(`${backendUrl}/projects`, {

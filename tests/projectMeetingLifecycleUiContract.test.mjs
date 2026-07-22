@@ -8,6 +8,7 @@ const advancedRoomSource = readFileSync(new URL('../src/meeting/AdvancedMeetingR
 const apiSource = readFileSync(new URL('../src/agents/agentProjectApi.js', import.meta.url), 'utf8');
 
 test('ordinary project meetings require a confirmed agenda, attendees, and recorder before entering', () => {
+  assert.ok(appSource.includes('hydrateProject({ ...project, ...backendProjectPayload })'), 'partial backend snapshots must preserve the already loaded team');
   assert.ok(appSource.includes("const ProjectMeetingSetup = lazy(() => import('./meeting/ProjectMeetingSetup.jsx'));"));
   assert.ok(appSource.includes('if (!usesCustomMeetingSubmit && !projectMeetingSession)'));
   for (const control of [
@@ -29,6 +30,7 @@ test('backend-authored meeting sessions replace the browser-only intent preview'
   assert.ok(apiSource.includes('service.completeProjectMeeting'));
   assert.ok(appSource.includes('const previewExchange = useBackendMeeting ? null'));
   assert.ok(appSource.includes('meetingSessionId: projectMeetingSession?.id || null'));
+  assert.ok(appSource.includes('language: activeLanguage'));
   assert.ok(appSource.includes('if (backendResult?.meetingSession) setProjectMeetingSession(backendResult.meetingSession)'));
 });
 

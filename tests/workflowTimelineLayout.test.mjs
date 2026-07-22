@@ -9,6 +9,7 @@ import {
   clampTimelinePan,
   fitTimelineCanvasZoom,
   planWorkflowTimelineLayout,
+  selectWorkflowTimelineBoundaryNode,
   preserveTimelineViewportAnchor,
   reprojectTimelineWorldPoint,
   timelineAxisCenteredPanY,
@@ -16,6 +17,18 @@ import {
   timelinePixelsPerMinuteForDensity,
   timelineTimestampAtViewportX,
 } from '../src/workflow/workflowTimelineLayout.js';
+
+test('timeline boundary selection is chronological and deterministic', () => {
+  const nodes = [
+    { id: 'middle', time: '2026-07-18T10:00:00.000Z', sequence: 2 },
+    { id: 'latest-lower-sequence', time: '2026-07-18T11:00:00.000Z', sequence: 1 },
+    { id: 'first', time: '2026-07-18T09:00:00.000Z', sequence: 9 },
+    { id: 'latest', time: '2026-07-18T11:00:00.000Z', sequence: 4 },
+  ];
+  assert.equal(selectWorkflowTimelineBoundaryNode(nodes, 'first').id, 'first');
+  assert.equal(selectWorkflowTimelineBoundaryNode(nodes, 'latest').id, 'latest');
+  assert.equal(selectWorkflowTimelineBoundaryNode([], 'latest'), null);
+});
 
 const SAME_MINUTE = '2026-07-18T17:21:00.000Z';
 

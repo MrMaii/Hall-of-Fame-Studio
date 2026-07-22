@@ -1,6 +1,9 @@
-import { useCallback, useLayoutEffect } from 'react';
+import { useCallback, useLayoutEffect, useRef, useState } from 'react';
 import { localizeManagerFlowDisplayText } from '../i18n/managerFlowChinese.js';
-import { timelineAxisCenteredPanY } from '../workflow/workflowTimelineLayout.js';
+import {
+  selectWorkflowTimelineBoundaryNode,
+  timelineAxisCenteredPanY,
+} from '../workflow/workflowTimelineLayout.js';
 
 const AdvancedProjectTimeline = ({ view }) => {
   const {
@@ -15,6 +18,7 @@ const AdvancedProjectTimeline = ({ view }) => {
     activeLanguage,
     activeProject,
     agentDisplay,
+    applyGuidedTimelineCamera,
     backendCommandAvailable,
     backendStation,
     canvasH,
@@ -38,6 +42,7 @@ const AdvancedProjectTimeline = ({ view }) => {
     getAnchor,
     getTimeBranch,
     graphTime,
+    guidedCameraScale,
     handleGraphMouseDown,
     handleGraphMouseMove,
     handleGraphWheel,
@@ -106,11 +111,101 @@ const AdvancedProjectTimeline = ({ view }) => {
     ],
   });
 
+  const [guidedEntryPhase, setGuidedEntryPhase] = useState('waiting');
+  const reducedMotionPreference = typeof window !== 'undefined'
+    && Boolean(window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches);
+  const guidedEntryActionsRef = useRef({});
+  const hasGuidedEntryNodes = visibleNodesByPosition.length > 0;
+  const guidedFirstNodeId = selectWorkflowTimelineBoundaryNode(visibleNodesByPosition, 'first')?.id || null;
+  const guidedLatestNodeId = selectWorkflowTimelineBoundaryNode(visibleNodesByPosition, 'latest')?.id || null;
+  guidedEntryActionsRef.current = {
+    applyGuidedTimelineCamera,
+  };
+
+  useLayoutEffect(() => {
+    const controller = new AbortController();
+    const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
+    const wait = (delay) => new Promise((resolve) => {
+      const timer = window.setTimeout(resolve, delay);
+      controller.signal.addEventListener('abort', () => {
+        window.clearTimeout(timer);
+        resolve();
+      }, { once: true });
+    });
+    const waitForCamera = (fallbackDelay) => new Promise((resolve) => {
+      const graph = timelineViewportRef.current?.querySelector('[data-testid="manager-flow-graph"]');
+      if (!graph || reducedMotion) {
+        resolve();
+        return;
+      }
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        graph.removeEventListener('transitionend', onTransitionEnd);
+        window.clearTimeout(fallbackTimer);
+        resolve();
+      };
+      const onTransitionEnd = (event) => {
+        if (event.target === graph && event.propertyName === 'transform') finish();
+      };
+      const fallbackTimer = window.setTimeout(finish, fallbackDelay);
+      graph.addEventListener('transitionend', onTransitionEnd);
+      controller.signal.addEventListener('abort', finish, { once: true });
+    });
+    const run = async () => {
+      if (focusedTimelineProofIds.length > 0 || managerFlowGraphLoadError) {
+        setGuidedEntryPhase('ready');
+        return;
+      }
+      if (managerFlowGraphLoading) {
+        setGuidedEntryPhase('waiting');
+        return;
+      }
+      if (!hasGuidedEntryNodes) {
+        setGuidedEntryPhase('ready');
+        return;
+      }
+
+      setGuidedEntryPhase('overview');
+      guidedEntryActionsRef.current.applyGuidedTimelineCamera('overview');
+      if (reducedMotion) {
+        guidedEntryActionsRef.current.applyGuidedTimelineCamera('latest');
+        setGuidedEntryPhase('ready');
+        return;
+      }
+
+      await wait(720);
+      if (controller.signal.aborted) return;
+      setGuidedEntryPhase('start');
+      guidedEntryActionsRef.current.applyGuidedTimelineCamera('start');
+      await waitForCamera(1100);
+      if (controller.signal.aborted) return;
+      await wait(320);
+      if (controller.signal.aborted) return;
+      setGuidedEntryPhase('travel');
+      guidedEntryActionsRef.current.applyGuidedTimelineCamera('latest');
+      await waitForCamera(2600);
+      if (!controller.signal.aborted) setGuidedEntryPhase('ready');
+    };
+    run();
+    return () => controller.abort();
+  }, [activeProject.id, focusedTimelineProofIds.length, hasGuidedEntryNodes, managerFlowGraphLoadError, managerFlowGraphLoading, timelineViewportRef]);
+
+  const guidedEntryTourActive = ['overview', 'start', 'travel'].includes(guidedEntryPhase);
+  const guidedEntryLocked = guidedEntryPhase === 'waiting' || guidedEntryTourActive;
+  const guidedEntryLabel = {
+    waiting: projectText('正在准备项目全景…'),
+    overview: projectText('先看清项目全局'),
+    start: projectText('回到项目起点，建立时间顺序'),
+    travel: projectText('沿时间线前往最新进展'),
+  }[guidedEntryPhase] || '';
+
   const lockGraphAxisToViewport = useCallback(() => {
     const viewport = timelineViewportRef.current;
     if (!viewport) return;
     const centeredPanY = timelineAxisCenteredPanY({
-      timeAxisY,
+      timeAxisY: timeAxisY * guidedCameraScale,
       viewportHeight: viewport.clientHeight,
     });
     reportGraphViewportHeight(viewport.clientHeight);
@@ -119,7 +214,7 @@ const AdvancedProjectTimeline = ({ view }) => {
         ? previousPan
         : { ...previousPan, y: centeredPanY }
     ));
-  }, [reportGraphViewportHeight, setTlPan, timeAxisY, timelineViewportRef]);
+  }, [guidedCameraScale, reportGraphViewportHeight, setTlPan, timeAxisY, timelineViewportRef]);
 
   useLayoutEffect(() => {
     if (
@@ -181,7 +276,7 @@ const AdvancedProjectTimeline = ({ view }) => {
                 <button
                   type="button"
                   onClick={() => syncBackendManagerFlowGraph({ silent: false })}
-                  disabled={!backendCommandAvailable || backendStation.loading || managerFlowGraphLoading}
+                  disabled={guidedEntryLocked || !backendCommandAvailable || backendStation.loading || managerFlowGraphLoading}
                   className="inline-flex items-center gap-1.5 border border-[#3a2a1c] px-3 py-1.5 font-mono text-[9px] uppercase tracking-widest text-[#bcae86] hover:border-[#7b6542] hover:text-[#efe2bd] disabled:opacity-40"
                 >
                   <Database size={12} /> {projectText('Sync Graph')}
@@ -195,8 +290,9 @@ const AdvancedProjectTimeline = ({ view }) => {
                     max="220"
                     step="4"
                     value={Math.round(tlZoom * 100)}
+                    disabled={guidedEntryLocked}
                     onChange={(event) => handleGraphZoomChange(Number(event.target.value) / 100)}
-                    className="w-32 accent-[#bcae86]"
+                    className="w-32 accent-[#bcae86] disabled:cursor-not-allowed disabled:opacity-35"
                   />
                   <span className="w-20 text-right font-mono text-[8px] uppercase tracking-widest text-[#bcae86]">{Math.round(tlZoom * 100)}% / {projectText(scaleProfiles[zoomScale]?.label)}</span>
                 </label>
@@ -212,23 +308,24 @@ const AdvancedProjectTimeline = ({ view }) => {
                       data-testid={testId}
                       type="button"
                       aria-pressed={zoomScale === scale}
+                      disabled={guidedEntryLocked}
                       onClick={() => handleGraphZoomChange(zoom)}
-                      className={`border-r border-[#3a2a1c] px-2 py-1.5 font-mono text-[8px] uppercase tracking-widest last:border-r-0 ${zoomScale === scale ? 'bg-[#bcae86] text-[#141210]' : 'text-[#7d6a49] hover:text-[#efe2bd]'}`}
+                      className={`border-r border-[#3a2a1c] px-2 py-1.5 font-mono text-[8px] uppercase tracking-widest last:border-r-0 disabled:cursor-not-allowed disabled:opacity-35 ${zoomScale === scale ? 'bg-[#bcae86] text-[#141210]' : 'text-[#7d6a49] hover:text-[#efe2bd]'}`}
                     >
                       {projectText(label)}
                     </button>
                   ))}
                 </div>
-                <button data-testid="manager-flow-fit-view" type="button" onClick={fitGraphView} className="border border-[#3a2a1c] px-3 py-1.5 font-mono text-[9px] uppercase tracking-widest text-[#bcae86] hover:border-[#7b6542] hover:text-[#efe2bd]">
+                <button data-testid="manager-flow-fit-view" type="button" onClick={fitGraphView} disabled={guidedEntryLocked} className="border border-[#3a2a1c] px-3 py-1.5 font-mono text-[9px] uppercase tracking-widest text-[#bcae86] hover:border-[#7b6542] hover:text-[#efe2bd] disabled:cursor-not-allowed disabled:opacity-35">
                   {projectText('Fit View')}
                 </button>
-                <button data-testid="manager-flow-focus-selected" type="button" onClick={focusSelectedNode} disabled={!selectedNode} className="border border-[#3a2a1c] px-3 py-1.5 font-mono text-[9px] uppercase tracking-widest text-[#bcae86] hover:border-[#7b6542] hover:text-[#efe2bd] disabled:opacity-35">
+                <button data-testid="manager-flow-focus-selected" type="button" onClick={focusSelectedNode} disabled={guidedEntryLocked || !selectedNode} className="border border-[#3a2a1c] px-3 py-1.5 font-mono text-[9px] uppercase tracking-widest text-[#bcae86] hover:border-[#7b6542] hover:text-[#efe2bd] disabled:opacity-35">
                   {projectText('Focus Selected')}
                 </button>
-                <button data-testid="manager-flow-focus-latest" type="button" onClick={focusLatestNode} disabled={!visibleNodes.length} className="border border-[#3a2a1c] px-3 py-1.5 font-mono text-[9px] uppercase tracking-widest text-[#bcae86] hover:border-[#7b6542] hover:text-[#efe2bd] disabled:opacity-35">
+                <button data-testid="manager-flow-focus-latest" type="button" onClick={focusLatestNode} disabled={guidedEntryLocked || !visibleNodes.length} className="border border-[#3a2a1c] px-3 py-1.5 font-mono text-[9px] uppercase tracking-widest text-[#bcae86] hover:border-[#7b6542] hover:text-[#efe2bd] disabled:opacity-35">
                   {projectText('Latest Commit')}
                 </button>
-                <button type="button" onClick={resetGraphView} className="border border-[#3a2a1c] px-3 py-1.5 font-mono text-[9px] uppercase tracking-widest text-[#7d6a49] hover:border-[#7b6542] hover:text-[#efe2bd]">
+                <button type="button" onClick={resetGraphView} disabled={guidedEntryLocked} className="border border-[#3a2a1c] px-3 py-1.5 font-mono text-[9px] uppercase tracking-widest text-[#7d6a49] hover:border-[#7b6542] hover:text-[#efe2bd] disabled:cursor-not-allowed disabled:opacity-35">
                   {projectText('Reset')}
                 </button>
               </div>
@@ -257,15 +354,26 @@ const AdvancedProjectTimeline = ({ view }) => {
   
           <div className="relative z-10 flex-1 flex overflow-hidden">
             <div
-              className={`manager-flow-viewport relative flex-1 overflow-hidden ${tlDragging ? '' : 'tl-canvas-grab'}`}
+              className={`manager-flow-viewport relative flex-1 overflow-hidden ${guidedEntryLocked ? 'cursor-default' : tlDragging ? '' : 'tl-canvas-grab'}`}
+              data-guided-entry-phase={guidedEntryPhase}
+              data-guided-entry-active={guidedEntryTourActive ? 'true' : 'false'}
               ref={timelineViewportRef}
-              onWheel={handleGraphWheel}
-              onMouseDown={handleGraphMouseDown}
-              onMouseMove={handleGraphMouseMove}
+              onWheel={guidedEntryLocked ? undefined : handleGraphWheel}
+              onMouseDown={guidedEntryLocked ? undefined : handleGraphMouseDown}
+              onMouseMove={guidedEntryLocked ? undefined : handleGraphMouseMove}
               onMouseUp={() => setTlDragging(false)}
               onMouseLeave={() => setTlDragging(false)}
-              onDoubleClick={resetGraphView}
+              onDoubleClick={guidedEntryLocked ? undefined : resetGraphView}
             >
+              {(guidedEntryTourActive || guidedEntryPhase === 'waiting') && (
+                <div data-testid="manager-flow-guided-entry" data-phase={guidedEntryPhase} role="status" aria-live="polite" aria-atomic="true" className="manager-flow-guided-entry pointer-events-auto absolute left-1/2 top-5 z-50 -translate-x-1/2 border border-[#bcae86]/60 bg-[#141210]/94 px-5 py-3 text-center shadow-[0_12px_36px_rgba(0,0,0,0.38)] backdrop-blur-sm">
+                  <div className="font-mono text-[8px] uppercase tracking-[0.24em] text-[#bcae86]">{projectText('正在带你看懂项目进展')}</div>
+                  <div className="mt-1 font-serif text-base text-[#efe2bd]">{guidedEntryLabel}</div>
+                  <div className="mt-2 flex justify-center gap-1.5" aria-hidden="true">
+                    {['overview', 'start', 'travel'].map((phase) => <span key={phase} className={`manager-flow-guided-progress h-1 w-8 ${guidedEntryPhase === phase ? 'bg-[#efe2bd]' : 'bg-[#3a2a1c]'}`} />)}
+                  </div>
+                </div>
+              )}
               <div className="absolute left-5 top-5 z-40 grid grid-cols-2 md:grid-cols-4 gap-2 max-w-3xl">
                 {[
                   ['Nodes', visibleNodes.length],
@@ -318,18 +426,14 @@ const AdvancedProjectTimeline = ({ view }) => {
               )}
   
               <div
-                className="relative"
+                className={`manager-flow-graph relative ${tlDragging ? 'is-dragging' : ''}`}
                 data-testid="manager-flow-graph"
                 data-timeline-density={tlZoom}
                 style={{
                   width: canvasW,
                   height: canvasH,
-                  top: tlPan.y,
-                  transform: `translate3d(${tlPan.x}px, 0px, 0)`,
+                  transform: `translate3d(${tlPan.x}px, ${tlPan.y}px, 0) scale(${guidedCameraScale})`,
                   transformOrigin: '0 0',
-                  transition: tlDragging
-                    ? 'none'
-                    : 'transform 0.28s cubic-bezier(0.16,1,0.3,1), width 0.28s cubic-bezier(0.16,1,0.3,1), height 0.28s cubic-bezier(0.16,1,0.3,1)',
                 }}
               >
                 <div data-testid="manager-flow-time-axis" className="absolute left-0 right-0 border-t border-[#7b6542]/75" style={{ top: timeAxisY }}>
@@ -386,7 +490,7 @@ const AdvancedProjectTimeline = ({ view }) => {
                             markerEnd="url(#flow-arrow)"
                             opacity={selectedNode && !isSelected ? 0.18 : 0.78}
                           />
-                          {isSelected && (
+                          {isSelected && !reducedMotionPreference && (
                             <circle className="manager-flow-transfer-pulse" r="3" fill="#efe2bd" opacity="0.85">
                               <animateMotion dur="2.6s" repeatCount="indefinite" path={anchor.path} />
                             </circle>
@@ -403,6 +507,7 @@ const AdvancedProjectTimeline = ({ view }) => {
                     type="button"
                     data-testid={`manager-flow-overflow-${group.id}`}
                     data-overflow-count={group.count}
+                    disabled={guidedEntryLocked}
                     data-expanded={group.expanded ? 'true' : 'false'}
                     aria-label={`${group.expanded ? projectText('Collapse') : projectText('More')} ${group.count}`}
                     onClick={() => toggleTimelineOverflowGroup(group)}
@@ -443,15 +548,17 @@ const AdvancedProjectTimeline = ({ view }) => {
                       data-timeline-time={node.time || ''}
                       data-timeline-category={node.category}
                       data-timeline-directional-decision={node.category === 'decision' ? 'true' : 'false'}
+                      data-guided-entry-target={node.id === guidedLatestNodeId ? 'latest' : node.id === guidedFirstNodeId ? 'first' : undefined}
                       data-timeline-proof-ids={JSON.stringify([
                         node.id,
                         ...(node.proofIds || []),
                         ...(node.timelineLogIds || []),
                         ...(node.eventIds || []),
                       ])}
+                      disabled={guidedEntryLocked}
                       onClick={() => setSelectedTimelineEventId(isSelected ? null : node.id)}
                       title={graphText(fullCommitMessage, '流程记录')}
-                      className={`manager-flow-node-card absolute flex flex-col overflow-hidden text-left border bg-[#141210]/96 shadow-[7px_7px_0_rgba(0,0,0,0.22)] ${isSelected ? 'z-30 border-[#efe2bd]' : isRelated ? 'z-20 border-[#7b6542]' : 'z-10 border-[#3a2a1c]'} ${isDimmed ? 'opacity-35' : 'opacity-100'} ${isFocused ? 'ring-2 ring-[#b9782b] ring-offset-2 ring-offset-[#0d0c0b]' : ''}`}
+                      className={`manager-flow-node-card absolute flex flex-col overflow-hidden text-left border bg-[#141210]/96 shadow-[7px_7px_0_rgba(0,0,0,0.22)] disabled:cursor-default ${isSelected ? 'z-30 border-[#efe2bd]' : isRelated ? 'z-20 border-[#7b6542]' : 'z-10 border-[#3a2a1c]'} ${isDimmed ? 'opacity-35' : 'opacity-100'} ${isFocused || (guidedEntryPhase === 'travel' && node.id === guidedLatestNodeId) ? 'ring-2 ring-[#b9782b] ring-offset-2 ring-offset-[#0d0c0b]' : ''}`}
                       style={{ left: box.x, top: box.y, width: box.w, height: box.h, borderColor: isSelected ? '#efe2bd' : meta.color }}
                     >
                       <div className="flex h-7 shrink-0 items-center justify-between gap-2 px-3 font-mono text-[8px] uppercase tracking-widest text-white" style={{ background: meta.color }}>

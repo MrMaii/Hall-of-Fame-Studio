@@ -125,6 +125,17 @@ export function buildWorkflowTimelineDisplayNodes({ nodes = [], scale = 'day' } 
   return { nodes: displayNodes, memberToDisplayId };
 }
 
+export function selectWorkflowTimelineBoundaryNode(nodes = [], boundary = 'latest') {
+  const direction = boundary === 'first' ? 1 : -1;
+  return [...nodes].sort((a, b) => {
+    const timeDifference = ((Date.parse(a?.time) || 0) - (Date.parse(b?.time) || 0)) * direction;
+    if (timeDifference) return timeDifference;
+    const sequenceDifference = ((Number(a?.sequence) || 0) - (Number(b?.sequence) || 0)) * direction;
+    if (sequenceDifference) return sequenceDifference;
+    return String(a?.id || '').localeCompare(String(b?.id || '')) * direction;
+  })[0] || null;
+}
+
 function nodeDimensions(detail) {
   if (detail === 'expanded') return { width: 292, height: 144 };
   if (detail === 'medium') return { width: 260, height: 126 };

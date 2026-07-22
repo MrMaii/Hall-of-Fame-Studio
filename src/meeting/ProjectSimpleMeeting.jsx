@@ -78,7 +78,7 @@ export default function ProjectSimpleMeeting({
           )}
           {meetingCompletion && (
             <div data-testid="project-meeting-completion" className="border border-[#59684b] bg-[#1d2618] px-4 py-3 text-sm text-[#b9d18f]">
-              会议纪要已提交：<span data-testid="project-meeting-summary-path" className="break-all">{meetingCompletion.report?.workspaceRelativePath}</span>
+              会议纪要已提交：<span data-testid="project-meeting-summary-path" data-no-localize="" className="break-all">{meetingCompletion.report?.workspaceRelativePath}</span>
             </div>
           )}
           {meetingError && <div role="alert" className="border border-[#8f1e18] bg-[#251b13] px-4 py-3 text-sm text-[#e7b3ae]">{meetingError}</div>}

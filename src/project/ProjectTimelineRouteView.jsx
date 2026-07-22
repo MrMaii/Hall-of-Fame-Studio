@@ -42,7 +42,9 @@ import {
   buildWorkflowTimelineDisplayNodes,
   buildWorkflowTimelineStemPath,
   clampTimelinePan,
+  fitTimelineCanvasZoom,
   planWorkflowTimelineLayout,
+  selectWorkflowTimelineBoundaryNode,
   timelineAxisCenteredPanY,
   timelinePanXForTimestamp,
   timelineTimestampAtViewportX,
@@ -86,6 +88,7 @@ export default function ProjectTimelineRouteView({ view }) {
   } = view;
     const [timelineViewportHeight, setTimelineViewportHeight] = useState(920);
     const [expandedOverflowGroupId, setExpandedOverflowGroupId] = useState(null);
+    const [guidedCameraScale, setGuidedCameraScale] = useState(1);
 
     const iconByKey = {
       activity: Activity,
@@ -542,11 +545,11 @@ export default function ProjectTimelineRouteView({ view }) {
           x: 0,
           y: timelineAxisCenteredPanY({ timeAxisY, viewportHeight: initialViewport?.height }),
         };
-    const clampGraphPanForLayout = ({ pan, layout = timelineLayout, viewport = graphViewport() }) => {
+    const clampGraphPanForLayout = ({ pan, layout = timelineLayout, viewport = graphViewport(), visualScale = 1 }) => {
       if (!viewport) return pan;
       const clamped = clampTimelinePan({
         pan,
-        zoom: 1,
+        zoom: visualScale,
         canvas: { width: layout.canvasW, height: layout.canvasH },
         viewport,
       });
@@ -563,6 +566,62 @@ export default function ProjectTimelineRouteView({ view }) {
       setTlPan(clampGraphPan({
         x: viewport.width / 2 - (box.x + box.w / 2),
         y: timelineAxisCenteredPanY({ timeAxisY, viewportHeight: viewport.height }),
+      }));
+      return true;
+    };
+    const applyGuidedTimelineCamera = (target) => {
+      const viewport = graphViewport();
+      if (!viewport) return false;
+      const nextZoom = target === 'overview' ? 0.36 : 0.88;
+      const nextScale = target === 'overview' ? 'month' : 'week';
+      const nextDisplay = buildWorkflowTimelineDisplayNodes({
+        nodes: sortedSemanticNodesForScale(nextScale),
+        scale: nextScale,
+      });
+      const nextLayout = planWorkflowTimelineLayout({
+        nodes: nextDisplay.nodes,
+        scale: nextScale,
+        detail: 'medium',
+        timeDensity: nextZoom,
+        viewportHeight: viewport.height,
+      });
+      const visualScale = target === 'overview'
+        ? fitTimelineCanvasZoom({
+            canvas: { width: nextLayout.canvasW, height: nextLayout.canvasH },
+            viewport,
+            padding: 56,
+            minZoom: 0.22,
+            maxZoom: 0.82,
+          })
+        : 1;
+      const boundaryNode = target === 'overview'
+        ? null
+        : selectWorkflowTimelineBoundaryNode(nextDisplay.nodes, target === 'start' ? 'first' : 'latest');
+      const boundaryBox = boundaryNode ? nextLayout.nodeLayout[boundaryNode.id] : null;
+      const requestedPan = boundaryBox
+        ? {
+            x: viewport.width / 2 - (boundaryBox.x + boundaryBox.w / 2) * visualScale,
+            y: timelineAxisCenteredPanY({
+              timeAxisY: nextLayout.timeAxisY * visualScale,
+              viewportHeight: viewport.height,
+            }),
+          }
+        : {
+            x: viewport.width / 2 - nextLayout.canvasW * visualScale / 2,
+            y: timelineAxisCenteredPanY({
+              timeAxisY: nextLayout.timeAxisY * visualScale,
+              viewportHeight: viewport.height,
+            }),
+          };
+      setTlZoom(nextZoom);
+      setTimelineScale(nextScale);
+      setExpandedOverflowGroupId(null);
+      setGuidedCameraScale(visualScale);
+      setTlPan(clampGraphPanForLayout({
+        pan: requestedPan,
+        layout: nextLayout,
+        viewport,
+        visualScale,
       }));
       return true;
     };
@@ -627,6 +686,7 @@ export default function ProjectTimelineRouteView({ view }) {
             y: timelineAxisCenteredPanY({ timeAxisY: nextLayout.timeAxisY, viewportHeight: viewport.height }),
           };
       commitGraphViewportChange(() => {
+        setGuidedCameraScale(1);
         setTlZoom(nextZoom);
         setTimelineScale(nextScale);
         setExpandedOverflowGroupId(null);
@@ -653,14 +713,13 @@ export default function ProjectTimelineRouteView({ view }) {
         y: timelineAxisCenteredPanY({ timeAxisY: nextLayout.timeAxisY, viewportHeight: viewport.height }),
       };
       setTlZoom(nextZoom);
+      setGuidedCameraScale(1);
       setExpandedOverflowGroupId(null);
       setTlPan(clampGraphPanForLayout({ pan: nextPan, layout: nextLayout, viewport }));
     };
     const focusSelectedNode = () => selectedNode && focusGraphNode(selectedNode.id);
     const focusLatestNode = () => {
-      const latest = [...visibleNodesByPosition].sort((a, b) => (
-        (Date.parse(b.time) || 0) - (Date.parse(a.time) || 0) || (b.sequence || 0) - (a.sequence || 0)
-      ))[0];
+      const latest = selectWorkflowTimelineBoundaryNode(visibleNodesByPosition, 'latest');
       if (!latest) return;
       setSelectedTimelineEventId(latest.id);
       focusGraphNode(latest.id);
@@ -710,10 +769,9 @@ export default function ProjectTimelineRouteView({ view }) {
         timeDensity: nextZoom,
         viewportHeight: graphViewport()?.height || timelineViewportHeight,
       });
-      const latest = [...nextDisplay.nodes].sort((a, b) => (
-        (Date.parse(b.time) || 0) - (Date.parse(a.time) || 0) || (b.sequence || 0) - (a.sequence || 0)
-      ))[0];
+      const latest = selectWorkflowTimelineBoundaryNode(nextDisplay.nodes, 'latest');
       setTlZoom(nextZoom);
+      setGuidedCameraScale(1);
       setTimelineScale(nextScale);
       setExpandedOverflowGroupId(null);
       setSelectedTimelineEventId(null);
@@ -892,6 +950,7 @@ export default function ProjectTimelineRouteView({ view }) {
             X,
             activeProject,
             agentDisplay,
+            applyGuidedTimelineCamera,
             backendCommandAvailable,
             backendStation,
             canvasH,
@@ -915,6 +974,7 @@ export default function ProjectTimelineRouteView({ view }) {
             getAnchor,
             getTimeBranch,
             graphTime,
+            guidedCameraScale,
             handleGraphMouseDown,
             handleGraphMouseMove,
             handleGraphWheel,

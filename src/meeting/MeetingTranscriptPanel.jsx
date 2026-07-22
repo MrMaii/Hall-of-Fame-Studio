@@ -34,10 +34,10 @@ export default function MeetingTranscriptPanel({
                 {log.score > 0 && <span className="font-mono text-xs text-[#bcae86] ml-auto">{log.score}/10</span>}
               </div>
               <div className={`mb-1 inline-flex border px-1.5 py-0.5 text-xs ${isDirector ? 'border-[#efe2bd] text-[#efe2bd]' : 'border-[#7b6542] text-[#bcae86]'}`}>{logSignalLabel}</div>
-              <div className={`font-serif text-sm leading-relaxed text-[#d8c99f] ${logCanExpand && !logExpanded ? 'line-clamp-4' : ''}`}>{log.text}</div>
+              <div data-no-localize="" className={`font-serif text-sm leading-relaxed text-[#d8c99f] ${logCanExpand && !logExpanded ? 'line-clamp-4' : ''}`}>{log.text}</div>
               {nextStepMatch?.[1] && (
                 <div className="mt-2 border-l-2 border-[#b9782b] bg-[#251b13] px-3 py-2 text-xs leading-relaxed text-[#efe2bd]">
-                  <span className="font-semibold">下一步：</span>{nextStepMatch[1]}
+                  <span className="font-semibold">下一步：</span><span data-no-localize="">{nextStepMatch[1]}</span>
                 </div>
               )}
               {logCanExpand && (

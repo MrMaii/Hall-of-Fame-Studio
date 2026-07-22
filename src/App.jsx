@@ -3361,14 +3361,14 @@ export default function EngineWorkspace() {
     Array.isArray(projectList)
       ? projectList
         .filter(project => project?.id)
-        .map(project => hydrateProject({ ...project, dataSource: 'backend-catalog' }))
+        .map(project => ({ ...project, dataSource: 'backend-catalog' }))
       : []
   );
 
   const mergeBackendProjectsIntoState = (backendProjects = []) => {
     const incoming = normalizeBackendProjects(backendProjects);
-    setProjects(prev => reconcileVerifiedProjectCatalog(prev, incoming));
-    return incoming;
+    setProjects(prev => reconcileVerifiedProjectCatalog(prev, incoming).map(hydrateProject));
+    return incoming.map(hydrateProject);
   };
 
   const syncBackendProjectCatalog = async ({ silent = true, baseUrl = null, authToken = '' } = {}) => {
@@ -6362,15 +6362,14 @@ export default function EngineWorkspace() {
   const applyBackendProjectSnapshot = (payload = {}) => {
     if (!payload.project?.id) return;
     const snapshotProjectId = String(payload.project.id);
-    const backendProject = hydrateProject(
-      isManagerDemoProject(payload.project) || isDevelopmentFallbackProject(payload.project)
-        ? payload.project
-        : {
-            ...payload.project,
-            backendSyncStatus: payload.project.backendSyncStatus || 'online',
-            dataSource: payload.project.dataSource || 'backend-backed',
-          }
-    );
+    const backendProjectPayload = isManagerDemoProject(payload.project) || isDevelopmentFallbackProject(payload.project)
+      ? payload.project
+      : {
+          ...payload.project,
+          backendSyncStatus: payload.project.backendSyncStatus || 'online',
+          dataSource: payload.project.dataSource || 'backend-backed',
+        };
+    const backendProject = hydrateProject(backendProjectPayload);
     setBackendStation(prev => ({
       ...prev,
       lastProjectSyncProjectId: backendProject.id || snapshotProjectId,
@@ -6380,7 +6379,7 @@ export default function EngineWorkspace() {
       const nextProjects = prev.map(project => {
         if (String(project.id).toLowerCase() !== snapshotProjectId.toLowerCase()) return project;
         replaced = true;
-        return backendProject;
+        return hydrateProject({ ...project, ...backendProjectPayload });
       });
       return replaced ? nextProjects : [backendProject, ...nextProjects];
     });
@@ -11458,6 +11457,7 @@ export default function EngineWorkspace() {
         agenda: projectMeetingSetupDraft.agenda.trim(),
         participantIds: projectMeetingSetupDraft.participantIds,
         recorderId: projectMeetingSetupDraft.recorderId,
+        language: activeLanguage,
         now: new Date().toISOString(),
       });
       const session = payload?.meetingSession;
@@ -11483,6 +11483,7 @@ export default function EngineWorkspace() {
     try {
       const payload = await runBackendProjectCommand('meeting/complete', {
         meetingSessionId: projectMeetingSession.id,
+        language: activeLanguage,
         now: new Date().toISOString(),
       });
       if (!payload?.meetingReport?.workspaceRelativePath) {
@@ -11539,6 +11540,7 @@ export default function EngineWorkspace() {
           now: submittedAt,
           messageId,
           meetingSessionId: projectMeetingSession?.id || null,
+          language: activeLanguage,
           compactResult: true,
         });
         if (backendResult?.meetingSession) setProjectMeetingSession(backendResult.meetingSession);
@@ -22107,7 +22109,7 @@ export default function EngineWorkspace() {
   const renderProjectMeeting = (meetingProject = activeProject, meetingOptions = {}) => {
     if (!meetingProject) return null;
     const closeMeeting = meetingOptions.onBack || (() => { exitProjectScene(); setMeetingStartTime(null); setMeetingElapsed(0); });
-    const meetingTitle = meetingOptions.title || 'Roundtable';
+    const meetingTitle = meetingOptions.title || (activeLanguage === 'zh' ? '项目会议' : 'Project Meeting');
     const hideMeetingTelemetry = Boolean(meetingOptions.hideMeetingTelemetry);
     const submitMeetingInput = meetingOptions.onSubmit || submitRoomInput;
     const usesCustomMeetingSubmit = Boolean(meetingOptions.onSubmit);

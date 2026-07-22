@@ -63,9 +63,10 @@ test('complete project timeline stays lazy and keeps the original node-flow cont
   assert.ok(timelineSource.includes('reportGraphViewportHeight'));
   assert.ok(routeViewSource.includes('timelineAxisCenteredPanY'));
   assert.ok(timelineSource.includes('lockGraphAxisToViewport'));
+  assert.ok(timelineSource.includes('timeAxisY: timeAxisY * guidedCameraScale'));
   assert.ok(timelineSource.includes('ResizeObserver'));
-  assert.ok(timelineSource.includes('top: tlPan.y'));
-  assert.ok(timelineSource.includes('translate3d(${tlPan.x}px, 0px, 0)'));
+  assert.ok(timelineSource.includes('translate3d(${tlPan.x}px, ${tlPan.y}px, 0) scale(${guidedCameraScale})'));
+  assert.ok(timelineSource.includes('manager-flow-graph relative'));
   assert.ok(!routeViewSource.includes('tlDragStartRef.current.panY + event.clientY'), 'vertical dragging must not move the main time axis');
   assert.ok(appSource.includes('y: previousPan.y'), 'proof focusing may move time horizontally but must preserve the axis lock');
 
@@ -112,4 +113,26 @@ test('manager flow loading is project-scoped and always exposes a retryable term
   assert.ok(routeViewSource.includes('managerFlowGraphLoading'));
   assert.ok(timelineSource.includes('manager-flow-loading'));
   assert.ok(timelineSource.includes('manager-flow-load-error'));
+});
+
+test('ordinary timeline entry guides the user from overview to the beginning and then the latest work', () => {
+  assert.ok(timelineSource.includes("setGuidedEntryPhase('overview')"));
+  assert.ok(timelineSource.includes("applyGuidedTimelineCamera('overview')"));
+  assert.ok(timelineSource.includes("setGuidedEntryPhase('start')"));
+  assert.ok(timelineSource.includes("applyGuidedTimelineCamera('start')"));
+  assert.ok(timelineSource.includes("setGuidedEntryPhase('travel')"));
+  assert.ok(timelineSource.includes("applyGuidedTimelineCamera('latest')"));
+  assert.ok(timelineSource.includes("setGuidedEntryPhase('ready')"));
+  assert.ok(timelineSource.includes('manager-flow-guided-entry'));
+  assert.ok(timelineSource.includes('guidedEntryLocked ? undefined : handleGraphWheel'));
+  assert.ok(timelineSource.includes('disabled={guidedEntryLocked}'));
+  assert.ok(timelineSource.includes("focusedTimelineProofIds.length > 0"), 'proof deep links must skip the default tour and keep their direct focus');
+  assert.ok(timelineSource.includes("'(prefers-reduced-motion: reduce)'"));
+  assert.ok(timelineSource.includes('waitForCamera'));
+  assert.ok(timelineSource.includes('event.propertyName === \'transform\''));
+  assert.ok(timelineSource.includes("managerFlowGraphLoadError"), 'load failures must terminate the tour instead of trapping controls');
+  assert.ok(timelineSource.includes("if (!hasGuidedEntryNodes)"), 'loaded empty projects must remain usable');
+  assert.ok(!timelineSource.includes('guidedEntryStartedRef'), 'StrictMode cleanup must not strand a one-shot started flag');
+  assert.ok(routeViewSource.includes("target === 'overview' ? 0.36 : 0.88"));
+  assert.ok(routeViewSource.includes('fitTimelineCanvasZoom'));
 });
