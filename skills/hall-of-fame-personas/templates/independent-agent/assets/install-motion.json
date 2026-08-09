@@ -1,0 +1,11 @@
+{
+  "agent_name": "Example Agent",
+  "headline": [
+    "Think clearly.",
+    "Act deliberately."
+  ],
+  "promise": "Give the agent you already use this Agent's distinctive judgment in one paste.",
+  "repository": "OWNER/REPOSITORY",
+  "skill_name": "agent-slug",
+  "output": "assets/install.gif"
+}
